@@ -1,0 +1,33 @@
+{
+  "name": "designsette-shell",
+  "version": "1.0.0",
+  "description": "",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.7.0",
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.18",
+    "@types/node": "^25.0.2",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.2",
+    "electron": "^39.2.7",
+    "electron-vite": "^5.0.0",
+    "tailwindcss": "^4.1.18",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.90.12",
+    "@xyflow/react": "^12.10.0",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3"
+  }
+}
