@@ -1,5 +1,8 @@
-import { contextBridge } from 'electron'
+import { contextBridge } from "electron";
 
-contextBridge.exposeInMainWorld('electronAPI', {
+// Preload script for secure context bridge
+// Currently using HTTP/SSE via custom protocol instead of IPC
+
+contextBridge.exposeInMainWorld("electronAPI", {
   // Add IPC methods here as needed
-})
+});

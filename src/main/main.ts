@@ -1,38 +1,54 @@
-import { app, BrowserWindow } from 'electron'
-import path from 'path'
+import { app, BrowserWindow, protocol } from "electron";
+import path from "path";
+
+import { app as HonoAPI } from "./api";
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: "designsette",
+    privileges: {
+      standard: true,
+      stream: true,
+      secure: true,
+      supportFetchAPI: true,
+    },
+  },
+]);
 
 const createWindow = () => {
   const mainWindow = new BrowserWindow({
     width: 900,
     height: 670,
-    titleBarStyle: 'hidden',
+    titleBarStyle: "hidden",
     webPreferences: {
-      preload: path.join(__dirname, '../preload/preload.js'),
+      preload: path.join(__dirname, "../preload/preload.js"),
       contextIsolation: true,
-      nodeIntegration: false
-    }
-  })
+      nodeIntegration: false,
+    },
+  });
 
-  if (process.env.NODE_ENV === 'development') {
-    mainWindow.loadURL('http://localhost:5173')
-    mainWindow.webContents.openDevTools()
+  if (process.env.NODE_ENV === "development") {
+    mainWindow.loadURL("http://localhost:5173");
+    mainWindow.webContents.openDevTools();
   } else {
-    mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'))
+    mainWindow.loadFile(path.join(__dirname, "../renderer/index.html"));
   }
-}
+};
 
 app.whenReady().then(() => {
-  createWindow()
+  protocol.handle("designsette", (req) => HonoAPI.fetch(req));
 
-  app.on('activate', () => {
+  createWindow();
+
+  app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow()
+      createWindow();
     }
-  })
-})
+  });
+});
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit()
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") {
+    app.quit();
   }
-})
+});
