@@ -5,11 +5,17 @@ import {
 import { Markdown } from "@/renderer/components/ui/markdown";
 import {
   Message,
-  MessageAvatar,
   MessageContent,
 } from "@/renderer/components/ui/message";
+import {
+  PromptInput,
+  PromptInputAction,
+  PromptInputActions,
+  PromptInputTextarea,
+} from "@/renderer/components/ui/prompt-input";
 import { Button } from "@/renderer/components/ui/button";
 import { cn } from "@/renderer/lib/utils";
+import { ArrowUp, Square } from "lucide-react";
 import { useState } from "react";
 
 type AppChatProps = React.ComponentProps<"div">;
@@ -39,40 +45,45 @@ export function AppChat({ className, ...props }: AppChatProps) {
         "Creating a responsive layout with CSS Grid is straightforward. Here's a basic example:\n\n```css\n.container {\n  display: grid;\n  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));\n  gap: 1rem;\n}\n```\n\nThis creates a grid where:\n- Columns automatically fit as many as possible\n- Each column is at least 250px wide\n- Columns expand to fill available space\n- There's a 1rem gap between items\n\nWould you like me to explain more about how this works?",
     },
   ]);
+  const [input, setInput] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
 
-  const addMessage = () => {
-    // Add a new message
-    setMessages([
-      ...messages,
-      {
-        id: messages.length + 1,
-        role:
-          messages[messages.length - 1].role === "user" ? "assistant" : "user",
-        content:
-          messages[messages.length - 1].role === "user"
-            ? "That's a great question! Let me explain further. CSS Grid is a powerful layout system that allows for two-dimensional layouts. The `minmax()` function is particularly useful as it sets a minimum and maximum size for grid tracks."
-            : "Thanks for the explanation! Could you tell me more about grid areas?",
-      },
-    ]);
+  const handleSubmit = () => {
+    if (!input.trim() || isLoading) return;
+
+    const userMessage = {
+      id: messages.length + 1,
+      role: "user",
+      content: input.trim(),
+    };
+
+    setMessages((prev) => [...prev, userMessage]);
+    setInput("");
+    setIsLoading(true);
+
+    // Simulate assistant response
+    setTimeout(() => {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: prev.length + 1,
+          role: "assistant",
+          content:
+            "That's a great question! Let me explain further. CSS Grid is a powerful layout system that allows for two-dimensional layouts. The `minmax()` function is particularly useful as it sets a minimum and maximum size for grid tracks.",
+        },
+      ]);
+      setIsLoading(false);
+    }, 2000);
   };
 
   return (
     <div
       className={cn(
-        "flex w-full flex-col overflow-hidden bg-neutral-800 h-screen",
+        "flex w-full flex-col overflow-hidden bg-neutral-800 h-full",
         className
       )}
       {...props}
     >
-      <div className="flex items-center justify-between border-b ">
-        {/* <div />
-        <div className="flex items-center gap-2">
-          <Button size="sm" onClick={addMessage}>
-            Add Message
-          </Button>
-        </div> */}
-      </div>
-
       <ChatContainerRoot className="flex-1">
         <ChatContainerContent className="p-4">
           {messages.map((message) => {
@@ -101,6 +112,40 @@ export function AppChat({ className, ...props }: AppChatProps) {
           })}
         </ChatContainerContent>
       </ChatContainerRoot>
+
+      <div className="border-t border-neutral-700 p-4">
+        <PromptInput
+          value={input}
+          onValueChange={setInput}
+          isLoading={isLoading}
+          onSubmit={handleSubmit}
+          className="bg-neutral-700 border-neutral-600"
+        >
+          <PromptInputTextarea
+            placeholder="Ask me anything..."
+            className="bg-transparent dark:bg-transparent"
+          />
+          <PromptInputActions className="justify-end pt-2">
+            <PromptInputAction
+              tooltip={isLoading ? "Stop generation" : "Send message"}
+            >
+              <Button
+                variant="default"
+                size="icon"
+                className="h-8 w-8 rounded-full"
+                onClick={handleSubmit}
+                disabled={!input.trim() && !isLoading}
+              >
+                {isLoading ? (
+                  <Square className="size-4 fill-current" />
+                ) : (
+                  <ArrowUp className="size-4" />
+                )}
+              </Button>
+            </PromptInputAction>
+          </PromptInputActions>
+        </PromptInput>
+      </div>
     </div>
   );
 }
