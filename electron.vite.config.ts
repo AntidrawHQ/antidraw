@@ -7,11 +7,22 @@ export default defineConfig({
   main: {
     build: {
       outDir: "dist/main",
+      watch: {},
+    },
+    resolve: {
+      alias: {
+        "@": path.resolve(__dirname, "./src"),
+      },
     },
   },
   preload: {
     build: {
       outDir: "dist/preload",
+    },
+    resolve: {
+      alias: {
+        "@": path.resolve(__dirname, "./src"),
+      },
     },
   },
   renderer: {
