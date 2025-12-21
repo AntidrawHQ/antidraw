@@ -1,12 +1,13 @@
+import { ChatMessageResponse } from "@/main/api";
 import { fetchEventSource } from "@microsoft/fetch-event-source";
 
 export async function* sendMessage(params: {
   message: string;
   conversationID?: string;
-}): AsyncGenerator<string> {
+}): AsyncGenerator<ChatMessageResponse> {
   const { message, conversationID } = params;
 
-  const stream = new ReadableStream<string>({
+  const stream = new ReadableStream<ChatMessageResponse>({
     start(controller) {
       fetchEventSource("designsette://_internal/chat/message", {
         method: "POST",
@@ -18,7 +19,9 @@ export async function* sendMessage(params: {
           conversationID,
         }),
 
-        onmessage: (ev) => controller.enqueue(ev.data),
+        onmessage: (ev) => {
+          controller.enqueue(JSON.parse(ev.data) as ChatMessageResponse);
+        },
         onerror: (err) => controller.error(err),
         onclose: () => controller.close(),
       });

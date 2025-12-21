@@ -1,8 +1,9 @@
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
-import { streamSSE } from "hono/streaming";
+import { SSEMessage, SSEStreamingApi, streamSSE } from "hono/streaming";
 import { z } from "zod";
-import { sendMessage } from "@/main/claude-code-ops";
+import { sendMessage } from "@/main/api/claude-code-ops";
+import { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
 export const app = new Hono();
 
@@ -10,6 +11,30 @@ const chatMessageSchema = z.object({
   message: z.string(),
   claudeCodeSessionID: z.string().optional(),
 });
+
+export type ChatMessage = z.infer<typeof chatMessageSchema>;
+
+export type ChatMessageResponse =
+  | {
+      type: "message";
+      message: SDKMessage;
+    }
+  | {
+      type: "error";
+      message: "ERROR_INITING_CLAUDE_CODE";
+    };
+
+const writeSSETyped = (
+  stream: SSEStreamingApi,
+  payload: Omit<SSEMessage, "data"> & {
+    data: ChatMessageResponse;
+  }
+) => {
+  stream.writeSSE({
+    ...payload,
+    data: JSON.stringify(payload.data),
+  });
+};
 
 app.post("/chat/message", zValidator("json", chatMessageSchema), (ctx) => {
   return streamSSE(ctx, async (stream) => {
@@ -21,19 +46,22 @@ app.post("/chat/message", zValidator("json", chatMessageSchema), (ctx) => {
     });
 
     if (res.isErr()) {
-      stream.writeSSE({
-        data: JSON.stringify({
-          error: true,
-          message: "ERROR_INITING_CLAUDE_CODE" as const,
-        }),
+      writeSSETyped(stream, {
+        data: {
+          type: "error",
+          message: "ERROR_INITING_CLAUDE_CODE",
+        },
       });
 
       return;
     }
 
     for await (let message of res.value) {
-      stream.writeSSE({
-        data: JSON.stringify(message),
+      writeSSETyped(stream, {
+        data: {
+          type: "message",
+          message: message,
+        },
       });
     }
   });

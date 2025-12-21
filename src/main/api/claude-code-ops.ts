@@ -12,6 +12,7 @@ export const sendMessage = (params: {
       prompt: message,
       options: {
         resume: claudeCodeSessionID,
+        includePartialMessages: true,
       },
     });
 
