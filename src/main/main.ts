@@ -20,6 +20,7 @@ const createWindow = () => {
     width: 900,
     height: 670,
     titleBarStyle: "hidden",
+    backgroundColor: "#0a0a0a", // Matches dark mode background - prevents white flash on resize
     webPreferences: {
       preload: path.join(__dirname, "../preload/preload.js"),
       contextIsolation: true,
