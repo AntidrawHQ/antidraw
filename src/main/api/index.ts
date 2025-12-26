@@ -1,10 +1,16 @@
 import { Hono } from "hono";
+export type {
+  Conversation,
+  Message,
+  ConversationWithMessages,
+} from "./models/chat.model";
 import { zValidator } from "@hono/zod-validator";
 import { SSEMessage, SSEStreamingApi, streamSSE } from "hono/streaming";
 import { z } from "zod";
 import { sendMessage } from "@/main/api/claude-code-ops";
 import { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
+  createConversation,
   resolveOrCreateConversation,
   addMessage,
   updateConversationSession,
@@ -154,3 +160,14 @@ app.get(
     return ctx.json(conversation.value);
   }
 );
+
+app.post("/chat/conversation", async (ctx) => {
+  const result = await createConversation();
+
+  if (result.isErr()) {
+    const { status, code, message } = result.error;
+    return ctx.json({ error: { code, message } }, status);
+  }
+
+  return ctx.json(result.value, 201);
+});

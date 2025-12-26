@@ -1,6 +1,7 @@
 import { conversations, messages } from "@/main/api/models/chat.model";
 import { db } from "@/main/db";
-import { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { createUserSDKMessage } from "@/shared/utils/message";
+import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { eq } from "drizzle-orm";
 import { ok, err } from "neverthrow";
 
@@ -34,9 +35,15 @@ export const resolveOrCreateConversation = async (conversationId?: string) => {
 
 export const getConversation = async (
   conversationID: string,
-  includeMessages: boolean = false
+  options: {
+    includeMessages: boolean;
+  } = {
+    includeMessages: false,
+  }
 ) => {
   try {
+    const { includeMessages } = options;
+
     const res = await db.query.conversations.findFirst({
       where: eq(conversations.id, conversationID),
       ...(includeMessages
@@ -72,21 +79,11 @@ export const convertUserPromptToSDKMessage = (
   prompt: string,
   sessionId: string
 ) => {
-  return {
-    type: "user",
-    message: {
-      role: "user",
-      content: [
-        {
-          type: "text",
-          text: prompt,
-        },
-      ],
-    },
-    session_id: sessionId,
+  return createUserSDKMessage({
+    text: prompt,
+    sessionId,
     uuid: crypto.randomUUID(),
-    parent_tool_use_id: null,
-  } satisfies SDKUserMessage;
+  });
 };
 
 export const addMessage = async (params: {
