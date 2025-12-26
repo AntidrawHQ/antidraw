@@ -3,10 +3,7 @@ import {
   ChatContainerRoot,
 } from "@/renderer/components/ui/chat-container";
 import { Markdown } from "@/renderer/components/ui/markdown";
-import {
-  Message,
-  MessageContent,
-} from "@/renderer/components/ui/message";
+import { Message, MessageContent } from "@/renderer/components/ui/message";
 import {
   PromptInput,
   PromptInputAction,
@@ -17,63 +14,45 @@ import { Button } from "@/renderer/components/ui/button";
 import { cn } from "@/renderer/lib/utils";
 import { ArrowUp, Square } from "lucide-react";
 import { useState } from "react";
+import {
+  useConversationMessages,
+  useCreateConversation,
+  useSendMessage,
+  useToolMap,
+} from "./lib/claude-code-ops";
+import { Tool } from "@/renderer/components/ui/tool";
 
 type AppChatProps = React.ComponentProps<"div">;
 
 export function AppChat({ className, ...props }: AppChatProps) {
-  const [messages, setMessages] = useState([
-    {
-      id: 1,
-      role: "user",
-      content: "Hello! Can you help me with a coding question?",
-    },
-    {
-      id: 2,
-      role: "assistant",
-      content:
-        "Of course! I'd be happy to help with your coding question. What would you like to know?",
-    },
-    {
-      id: 3,
-      role: "user",
-      content: "How do I create a responsive layout with CSS Grid?",
-    },
-    {
-      id: 4,
-      role: "assistant",
-      content:
-        "Creating a responsive layout with CSS Grid is straightforward. Here's a basic example:\n\n```css\n.container {\n  display: grid;\n  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));\n  gap: 1rem;\n}\n```\n\nThis creates a grid where:\n- Columns automatically fit as many as possible\n- Each column is at least 250px wide\n- Columns expand to fill available space\n- There's a 1rem gap between items\n\nWould you like me to explain more about how this works?",
-    },
-  ]);
+  const [conversationId, setConversationId] = useState<string | null>(null);
   const [input, setInput] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
 
-  const handleSubmit = () => {
+  const createConversation = useCreateConversation();
+  const sendMessage = useSendMessage();
+  const { data: conversation } = useConversationMessages(conversationId);
+  const { data: toolMap } = useToolMap(conversationId);
+
+  const messages = conversation?.messages ?? [];
+
+  const isLoading = createConversation.isPending || sendMessage.isPending;
+
+  const handleSubmit = async () => {
     if (!input.trim() || isLoading) return;
 
-    const userMessage = {
-      id: messages.length + 1,
-      role: "user",
-      content: input.trim(),
-    };
-
-    setMessages((prev) => [...prev, userMessage]);
+    const prompt = input.trim();
     setInput("");
-    setIsLoading(true);
 
-    // Simulate assistant response
-    setTimeout(() => {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: prev.length + 1,
-          role: "assistant",
-          content:
-            "That's a great question! Let me explain further. CSS Grid is a powerful layout system that allows for two-dimensional layouts. The `minmax()` function is particularly useful as it sets a minimum and maximum size for grid tracks.",
-        },
-      ]);
-      setIsLoading(false);
-    }, 2000);
+    if (!conversationId) {
+      const conv = await createConversation.mutateAsync();
+      setConversationId(conv.id);
+      await sendMessage.mutateAsync({
+        message: prompt,
+        conversationId: conv.id,
+      });
+    } else {
+      await sendMessage.mutateAsync({ message: prompt, conversationId });
+    }
   };
 
   return (
@@ -86,26 +65,66 @@ export function AppChat({ className, ...props }: AppChatProps) {
     >
       <ChatContainerRoot className="flex-1">
         <ChatContainerContent className="p-4">
-          {messages.map((message) => {
-            const isAssistant = message.role === "assistant";
+          {messages.map((msg) => {
+            const sdkMessage = msg.sdkMessage;
+            if (sdkMessage.type !== "user" && sdkMessage.type !== "assistant") {
+              return null;
+            }
+
+            const isAssistant = sdkMessage.type === "assistant";
+            const content = sdkMessage.message.content;
+            const blocks = Array.isArray(content)
+              ? content
+              : typeof content === "string"
+              ? [{ type: "text" as const, text: content }]
+              : [];
 
             return (
               <Message
-                key={message.id}
-                className={
-                  message.role === "user" ? "justify-end" : "justify-start"
-                }
+                key={msg.id}
+                className={isAssistant ? "justify-start" : "justify-end"}
               >
-                <div className="overflow-auto">
-                  {isAssistant ? (
-                    <div className="bg-secondary text-foreground prose prose-sm prose-invert rounded-lg p-2">
-                      <Markdown>{message.content}</Markdown>
-                    </div>
-                  ) : (
-                    <MessageContent className="bg-neutral-700 text-neutral-200 prose prose-sm prose-invert">
-                      {message.content}
-                    </MessageContent>
-                  )}
+                <div className="overflow-auto space-y-2 w-full">
+                  {blocks.map((block, idx) => {
+                    if (block.type === "text") {
+                      return isAssistant ? (
+                        <div
+                          key={idx}
+                          className="bg-secondary text-foreground prose prose-sm prose-invert rounded-lg p-2"
+                        >
+                          <Markdown>{block.text}</Markdown>
+                        </div>
+                      ) : (
+                        <MessageContent
+                          key={idx}
+                          className="bg-neutral-700 text-neutral-200 prose prose-sm prose-invert"
+                        >
+                          {block.text}
+                        </MessageContent>
+                      );
+                    }
+
+                    if (block.type === "tool_use") {
+                      const toolPart = toolMap?.get(block.id);
+                      if (toolPart) {
+                        return (
+                          <Tool
+                            key={idx}
+                            toolPart={toolPart}
+                            className="w-full"
+                          />
+                        );
+                      }
+                      return null;
+                    }
+
+                    // Skip tool_result - handled by Tool component above
+                    if (block.type === "tool_result") {
+                      return null;
+                    }
+
+                    return null;
+                  })}
                 </div>
               </Message>
             );

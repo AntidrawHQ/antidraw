@@ -6,19 +6,34 @@ import {
   getConversationWithMessages,
   sendMessage,
 } from "./api";
+import { selectToolMap } from "./tool-utils";
 
-export const useConversationMessages = (conversationId: string) => {
+// Shared query options for conversation data
+const conversationQueryOptions = (conversationId: string) => ({
+  queryKey: ["conversation", conversationId] as const,
+  queryFn: async () => {
+    const result = await getConversationWithMessages(conversationId);
+    if (result.isErr()) {
+      throw new Error(result.error.message);
+    }
+    return result.value;
+  },
+  staleTime: Infinity,
+});
+
+export const useConversationMessages = (conversationId: string | null) => {
   return useQuery({
-    queryKey: ["conversation", conversationId],
-    queryFn: async () => {
-      const result = await getConversationWithMessages(conversationId);
+    ...conversationQueryOptions(conversationId!),
+    enabled: !!conversationId,
+  });
+};
 
-      if (result.isErr()) {
-        throw new Error(result.error.message);
-      }
-
-      return result.value;
-    },
+// Returns Map<string, ToolPart> for tool correlation
+export const useToolMap = (conversationId: string | null) => {
+  return useQuery({
+    ...conversationQueryOptions(conversationId!),
+    enabled: !!conversationId,
+    select: selectToolMap,
   });
 };
 
