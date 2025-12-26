@@ -9,6 +9,7 @@ import {
   addMessage,
   updateConversationSession,
   convertUserPromptToSDKMessage,
+  getConversation,
 } from "./services/chat.service";
 
 export const app = new Hono();
@@ -127,5 +128,29 @@ app.post(
         });
       }
     });
+  }
+);
+
+app.get(
+  "/chat/:conversationId",
+  zValidator(
+    "param",
+    z.object({
+      conversationId: z.uuid(),
+    })
+  ),
+  async (ctx) => {
+    const { conversationId } = ctx.req.valid("param");
+
+    const conversation = await getConversation(conversationId, {
+      includeMessages: true,
+    });
+
+    if (conversation.isErr()) {
+      const { status, code, message } = conversation.error;
+      return ctx.json({ error: { code, message } }, status);
+    }
+
+    return ctx.json(conversation.value);
   }
 );
