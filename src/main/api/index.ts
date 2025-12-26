@@ -75,11 +75,25 @@ app.post(
       );
     }
 
+    // For resumed conversations, persist user message before streaming (we already have session ID)
+    if (claudeCodeSessionID) {
+      const userMsg = convertUserPromptToSDKMessage(
+        message,
+        claudeCodeSessionID
+      );
+      // TODO: think about the experience when this fails.
+      await addMessage({
+        conversationId: conversation.id,
+        messageType: "user_prompt",
+        sdkMessage: userMsg,
+      });
+    }
+
     return streamSSE(ctx, async (stream) => {
       let sessionId = claudeCodeSessionID;
 
       for await (let sdkMessage of res.value) {
-        // Capture session_id from init message
+        // Capture session_id from init message (new conversations only)
         if (
           !sessionId &&
           sdkMessage.type === "system" &&
@@ -88,8 +102,9 @@ app.post(
           sessionId = sdkMessage.session_id;
           await updateConversationSession(conversation.id, sessionId);
 
-          // Persist user message with real session_id (don't stream - FE already has it)
+          // For new conversations, we must wait for init to get session_id before persisting user message
           const userMsg = convertUserPromptToSDKMessage(message, sessionId);
+          // TODO: think about the experience when this fails.
           await addMessage({
             conversationId: conversation.id,
             messageType: "user_prompt",
@@ -98,6 +113,7 @@ app.post(
         }
 
         // Persist and stream SDK message
+        // TODO: think about the experience when this fails.
         await addMessage({
           conversationId: conversation.id,
           messageType: "sdk_message",
