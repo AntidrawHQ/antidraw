@@ -1,5 +1,5 @@
 {
-  "name": "@designsette/inner",
+  "name": "antidraw-workspace",
   "private": true,
   "version": "1.0.0",
   "type": "module",

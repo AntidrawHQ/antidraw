@@ -1,14 +1,15 @@
 {
-  "name": "designsette",
+  "name": "antidraw",
   "version": "1.0.0",
   "private": true,
   "packageManager": "pnpm@10.7.0",
   "scripts": {
-    "dev:shell": "pnpm --filter @designsette/shell dev",
-    "dev:inner": "pnpm --filter @designsette/inner dev",
-    "build:shell": "pnpm --filter @designsette/shell build",
-    "build:inner": "pnpm --filter @designsette/inner build",
+    "dev:shell": "pnpm --filter @antidraw/shell dev",
+    "dev:template": "pnpm --filter antidraw-workspace dev",
+    "build:shell": "pnpm --filter @antidraw/shell build",
+    "build:template": "pnpm --filter antidraw-workspace build",
+    "build:create-workspace": "pnpm --filter @antidrawapp/create-workspace build",
     "build": "pnpm -r build",
-    "dev": "pnpm -r --parallel dev"
+    "dev": "pnpm --filter @antidraw/shell --filter antidraw-workspace --parallel dev"
   }
 }

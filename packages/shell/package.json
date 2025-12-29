@@ -1,8 +1,8 @@
 {
-  "name": "@designsette/shell",
+  "name": "@antidraw/shell",
   "version": "1.0.0",
   "private": true,
-  "description": "Electron shell for designsette",
+  "description": "Electron shell for Antidraw",
   "main": "dist/main/main.js",
   "scripts": {
     "dev": "electron-vite dev",

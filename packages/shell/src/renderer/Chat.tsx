@@ -76,8 +76,8 @@ export function AppChat({ className, ...props }: AppChatProps) {
             const blocks = Array.isArray(content)
               ? content
               : typeof content === "string"
-              ? [{ type: "text" as const, text: content }]
-              : [];
+                ? [{ type: "text" as const, text: content }]
+                : [];
 
             return (
               <Message
@@ -132,7 +132,7 @@ export function AppChat({ className, ...props }: AppChatProps) {
         </ChatContainerContent>
       </ChatContainerRoot>
 
-      <div className="border-t border-neutral-700 p-4">
+      <div className="p-4">
         <PromptInput
           value={input}
           onValueChange={setInput}

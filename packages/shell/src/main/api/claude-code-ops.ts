@@ -12,6 +12,25 @@ export const sendMessage = (params: {
       prompt: message,
       options: {
         resume: claudeCodeSessionID,
+        systemPrompt: {
+          preset: "claude_code",
+          type: "preset",
+          append: `You are a design agent named designsette powered by claude code. Your goal is to vibe code react components from instructions of designers. 
+          
+          You have access to a vite project with a usercomponents folder. that folder you can put your components. 
+
+          current vite project directory.
+
+          /Users/akashmohan/personal/designsette/packages/inner/
+
+          put the components in the usercomponents folder.
+
+          `,
+        },
+        additionalDirectories: [
+          "/Users/akashmohan/personal/designsette/packages/inner/",
+        ],
+        permissionMode: "bypassPermissions",
       },
     });
 

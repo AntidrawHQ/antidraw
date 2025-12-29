@@ -29,7 +29,7 @@ const userComponentsPlugin = (): Plugin => {
   };
 
   return {
-    name: "designsette-user-components",
+    name: "antidraw-user-components",
     configureServer: async (server) => {
       server.middlewares.use("/__components", async (_, res, next) => {
         try {

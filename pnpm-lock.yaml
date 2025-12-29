@@ -8,7 +8,16 @@ importers:
 
   .: {}
 
-  packages/inner:
+  packages/create-workspace:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.3
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+
+  packages/create-workspace/template:
     dependencies:
       '@tailwindcss/vite':
         specifier: ^4.1.18
