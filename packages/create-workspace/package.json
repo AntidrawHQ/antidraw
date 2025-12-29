@@ -13,7 +13,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "prepublishOnly": "pnpm build"
+    "prepublishOnly": "rm -rf template/node_modules && pnpm build"
   },
   "keywords": [
     "antidraw",

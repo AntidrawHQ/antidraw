@@ -1,0 +1,13 @@
+# Ignore node_modules in template
+template/node_modules
+
+# Ignore lock files (users generate their own)
+template/package-lock.json
+template/pnpm-lock.yaml
+template/yarn.lock
+
+# Source files (we ship dist)
+src
+
+# Config files
+tsconfig.json

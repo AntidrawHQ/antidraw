@@ -119,8 +119,8 @@ Done! Your workspace is ready.
 
 Next steps:
   cd ${destPath}
-  pnpm install
-  pnpm dev
+  npm install
+  npm run dev
 `);
 };
 
