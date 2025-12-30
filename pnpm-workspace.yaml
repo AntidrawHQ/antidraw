@@ -1,7 +1,0 @@
-packages:
-  - 'packages/*'
-  - 'packages/create-workspace/template'
-
-onlyBuiltDependencies:
-  - electron
-  - esbuild
