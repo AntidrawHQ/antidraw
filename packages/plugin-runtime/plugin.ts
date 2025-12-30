@@ -4,6 +4,8 @@ import react from "@vitejs/plugin-react"
 import tailwindcss from "@tailwindcss/vite"
 
 const USER_COMPONENTS_DIR = "./src/user-components"
+const VIRTUAL_USER_COMPONENTS = "@designsette/user-components"
+const RESOLVED_VIRTUAL_USER_COMPONENTS = "\0@designsette/user-components"
 
 export const designsette = (): Plugin[] => {
   return [
@@ -13,10 +15,32 @@ export const designsette = (): Plugin[] => {
         resolve: {
           alias: {
             "@": path.resolve(process.cwd(), "./src"),
-            "@designsette/user-components": path.resolve(process.cwd(), USER_COMPONENTS_DIR),
           },
         },
       }),
+    },
+    {
+      name: "designsette:user-components",
+      resolveId(id) {
+        if (id === VIRTUAL_USER_COMPONENTS) {
+          return RESOLVED_VIRTUAL_USER_COMPONENTS
+        }
+      },
+      load(id) {
+        if (id === RESOLVED_VIRTUAL_USER_COMPONENTS) {
+          return `
+const modules = import.meta.glob("/src/user-components/*.tsx", { eager: true })
+
+export const userComponents = Object.fromEntries(
+  Object.entries(modules)
+    .map(([path, mod]) => [
+      path.replace("/src/user-components/", "").replace(".tsx", ""),
+      mod.default,
+    ])
+)
+`
+        }
+      },
     },
     {
       name: "designsette:component-api",
@@ -29,7 +53,7 @@ export const designsette = (): Plugin[] => {
             const files = await fs.readdir(dir).catch(() => [])
 
             const components = files
-              .filter((f: string) => f.endsWith(".tsx") && f !== "index.tsx")
+              .filter((f: string) => f.endsWith(".tsx"))
               .map((f: string) => ({ name: f.replace(".tsx", "") }))
 
             res.setHeader("Content-Type", "application/json")
@@ -40,8 +64,8 @@ export const designsette = (): Plugin[] => {
         })
       },
     },
-    react(),
-    tailwindcss(),
+    ...react(),
+    ...tailwindcss(),
   ]
 }
 
