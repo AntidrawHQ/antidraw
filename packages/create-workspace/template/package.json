@@ -11,14 +11,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@designsette/runtime": "workspace:*",
-    "react": "19.2.0",
-    "react-dom": "19.2.0"
-  },
-  "devDependencies": {
-    "@types/react": "19.2.5",
-    "@types/react-dom": "19.2.3",
-    "typescript": "5.9.3",
-    "vite": "7.0.0"
+    "@designsette/runtime": "workspace:*"
   }
 }
