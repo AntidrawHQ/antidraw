@@ -16,6 +16,7 @@ export const designsette = (): Plugin[] => {
           alias: {
             "@": path.resolve(process.cwd(), "./src"),
           },
+          dedupe: ["react", "react-dom", "@tanstack/react-router"],
         },
       }),
     },

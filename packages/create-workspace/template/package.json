@@ -11,6 +11,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@designsette/runtime": "workspace:*"
+    "@designsette/runtime": "^0.1.0"
   }
 }
