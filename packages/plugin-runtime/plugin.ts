@@ -4,13 +4,13 @@ import react from "@vitejs/plugin-react"
 import tailwindcss from "@tailwindcss/vite"
 
 const USER_COMPONENTS_DIR = "./src/user-components"
-const VIRTUAL_USER_COMPONENTS = "@designsette/user-components"
-const RESOLVED_VIRTUAL_USER_COMPONENTS = "\0@designsette/user-components"
+const VIRTUAL_USER_COMPONENTS = "@antidrawapp/user-components"
+const RESOLVED_VIRTUAL_USER_COMPONENTS = "\0@antidrawapp/user-components"
 
-export const designsette = (): Plugin[] => {
+export const antidraw = (): Plugin[] => {
   return [
     {
-      name: "designsette:config",
+      name: "antidraw:config",
       config: () => ({
         resolve: {
           alias: {
@@ -21,7 +21,7 @@ export const designsette = (): Plugin[] => {
       }),
     },
     {
-      name: "designsette:user-components",
+      name: "antidraw:user-components",
       resolveId(id) {
         if (id === VIRTUAL_USER_COMPONENTS) {
           return RESOLVED_VIRTUAL_USER_COMPONENTS
@@ -44,7 +44,7 @@ export const userComponents = Object.fromEntries(
       },
     },
     {
-      name: "designsette:component-api",
+      name: "antidraw:component-api",
       configureServer: async (server) => {
         const fs = await import("fs/promises")
         const dir = path.resolve(process.cwd(), USER_COMPONENTS_DIR)
@@ -70,4 +70,4 @@ export const userComponents = Object.fromEntries(
   ]
 }
 
-export default designsette
+export default antidraw

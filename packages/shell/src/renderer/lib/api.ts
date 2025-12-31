@@ -14,7 +14,7 @@ export async function* sendMessage(params: {
 
   const stream = new ReadableStream<ChatMessageResponse>({
     start(controller) {
-      fetchEventSource("designsette://_internal/chat/message", {
+      fetchEventSource("antidraw://_internal/chat/message", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -39,7 +39,7 @@ export async function* sendMessage(params: {
 export const getConversationWithMessages = async (conversationId: string) => {
   try {
     const response = await fetch(
-      `designsette://_internal/chat/${conversationId}`
+      `antidraw://_internal/chat/${conversationId}`
     );
 
     if (!response.ok) {
@@ -64,7 +64,7 @@ export const getConversationWithMessages = async (conversationId: string) => {
 
 export const createConversation = async () => {
   try {
-    const response = await fetch("designsette://_internal/chat/conversation", {
+    const response = await fetch("antidraw://_internal/chat/conversation", {
       method: "POST",
     });
 

@@ -1,5 +1,5 @@
 {
-  "name": "designsette-workspace",
+  "name": "antidraw-workspace",
   "private": true,
   "version": "1.0.0",
   "type": "module",
@@ -11,6 +11,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@designsette/runtime": "^0.1.0"
+    "@antidrawapp/runtime": "^0.1.0"
   }
 }

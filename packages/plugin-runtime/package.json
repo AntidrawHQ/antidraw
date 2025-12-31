@@ -1,5 +1,5 @@
 {
-  "name": "@designsette/runtime",
+  "name": "@antidrawapp/runtime",
   "version": "0.1.0",
   "type": "module",
   "exports": {

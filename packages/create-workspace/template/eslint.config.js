@@ -1,1 +1,1 @@
-export { default } from "@designsette/runtime/eslint"
+export { default } from "@antidrawapp/runtime/eslint"

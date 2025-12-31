@@ -6,7 +6,7 @@ import { sendMessage } from "@/renderer/lib/api";
 
 window.sendMessage = sendMessage;
 
-// window.designsetteIPC.sendMessage({
+// window.antidrawIPC.sendMessage({
 //   message: "hey there",
 //   conversationId: "default-conversation",
 // });

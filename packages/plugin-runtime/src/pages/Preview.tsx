@@ -1,6 +1,6 @@
 import { createElement, useEffect, useRef } from "react"
 import { useSearch } from "@tanstack/react-router"
-import { userComponents } from "@designsette/user-components"
+import { userComponents } from "@antidrawapp/user-components"
 
 type ComponentMap = Record<string, React.ComponentType>
 

@@ -1,5 +1,5 @@
 {
-  "name": "designsette",
+  "name": "antidraw",
   "version": "1.0.0",
   "private": true,
   "workspaces": [
@@ -8,9 +8,9 @@
   ],
   "scripts": {
     "dev:shell": "npm run dev -w @antidraw/shell",
-    "dev:template": "npm run dev -w designsette-workspace",
+    "dev:template": "npm run dev -w antidraw-workspace",
     "build:shell": "npm run build -w @antidraw/shell",
-    "build:template": "npm run build -w designsette-workspace",
+    "build:template": "npm run build -w antidraw-workspace",
     "build:create-workspace": "npm run build -w @antidrawapp/create-workspace",
     "build": "npm run build --workspaces --if-present"
   }

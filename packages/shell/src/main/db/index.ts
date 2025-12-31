@@ -10,7 +10,7 @@ const getDbPath = () => {
   if (process.env.NODE_ENV === "development") {
     return "file:./src/main/db/dev.db";
   }
-  return `file:${path.join(app.getPath("userData"), "designsette.db")}`;
+  return `file:${path.join(app.getPath("userData"), "antidraw.db")}`;
 };
 
 export const client = createClient({

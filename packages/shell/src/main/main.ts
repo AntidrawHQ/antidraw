@@ -5,7 +5,7 @@ import { app as HonoAPI } from "./api";
 
 protocol.registerSchemesAsPrivileged([
   {
-    scheme: "designsette",
+    scheme: "antidraw",
     privileges: {
       standard: true,
       stream: true,
@@ -37,7 +37,7 @@ const createWindow = () => {
 };
 
 app.whenReady().then(() => {
-  protocol.handle("designsette", (req) => HonoAPI.fetch(req));
+  protocol.handle("antidraw", (req) => HonoAPI.fetch(req));
 
   createWindow();
 

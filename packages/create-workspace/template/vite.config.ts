@@ -1,6 +1,6 @@
 import { defineConfig } from "vite"
-import { designsette } from "@designsette/runtime/plugin"
+import { antidraw } from "@antidrawapp/runtime/plugin"
 
 export default defineConfig({
-  plugins: [...designsette()],
+  plugins: [...antidraw()],
 })
