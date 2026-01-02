@@ -46,6 +46,7 @@
     "lucide-react": "^0.562.0",
     "marked": "^17.0.1",
     "neverthrow": "^8.2.0",
+    "npm": "^11.7.0",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-markdown": "^10.1.0",
