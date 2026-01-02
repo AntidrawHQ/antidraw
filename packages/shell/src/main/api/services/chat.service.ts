@@ -5,13 +5,14 @@ import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { eq } from "drizzle-orm";
 import { ok, err } from "neverthrow";
 
-export const createConversation = async (title?: string) => {
+export const createConversation = async (workspaceId: string, title?: string) => {
   try {
     const id = crypto.randomUUID();
     const [conversation] = await db
       .insert(conversations)
       .values({
         id,
+        workspaceId,
         title: title ?? null,
       })
       .returning();
@@ -26,11 +27,14 @@ export const createConversation = async (title?: string) => {
   }
 };
 
-export const resolveOrCreateConversation = async (conversationId?: string) => {
+export const resolveOrCreateConversation = async (
+  workspaceId: string,
+  conversationId?: string
+) => {
   if (conversationId) {
     return getConversation(conversationId);
   }
-  return createConversation();
+  return createConversation(workspaceId);
 };
 
 export const getConversation = async (

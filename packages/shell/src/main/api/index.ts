@@ -4,11 +4,14 @@ export type {
   Message,
   ConversationWithMessages,
 } from "./models/chat.model";
+export type { Workspace } from "./models/workspace.model";
+export type { CreateWorkspaceResponse } from "./controllers/workspace.controller";
 import { zValidator } from "@hono/zod-validator";
-import { SSEMessage, SSEStreamingApi, streamSSE } from "hono/streaming";
+import type { SSEMessage, SSEStreamingApi } from "hono/streaming";
+import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import { sendMessage } from "@/main/api/claude-code-ops";
-import { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
   createConversation,
   resolveOrCreateConversation,
@@ -17,11 +20,15 @@ import {
   convertUserPromptToSDKMessage,
   getConversation,
 } from "./services/chat.service";
+import { workspaceController } from "./controllers/workspace.controller";
 
 export const app = new Hono();
 
+app.route("/workspaces", workspaceController);
+
 const chatMessageSchema = z.object({
   message: z.string(),
+  workspaceId: z.uuid(),
   conversationId: z.string().optional(),
 });
 
@@ -53,9 +60,12 @@ app.post(
   "/chat/message",
   zValidator("json", chatMessageSchema),
   async (ctx) => {
-    const { message, conversationId } = await ctx.req.valid("json");
+    const { message, workspaceId, conversationId } = ctx.req.valid("json");
 
-    const conversationRes = await resolveOrCreateConversation(conversationId);
+    const conversationRes = await resolveOrCreateConversation(
+      workspaceId,
+      conversationId
+    );
 
     if (conversationRes.isErr()) {
       const { status, code, message } = conversationRes.error;
@@ -67,6 +77,7 @@ app.post(
 
     const res = sendMessage({
       message,
+      workspaceId,
       claudeCodeSessionID,
     });
 
@@ -161,13 +172,22 @@ app.get(
   }
 );
 
-app.post("/chat/conversation", async (ctx) => {
-  const result = await createConversation();
-
-  if (result.isErr()) {
-    const { status, code, message } = result.error;
-    return ctx.json({ error: { code, message } }, status);
-  }
-
-  return ctx.json(result.value, 201);
+const createConversationSchema = z.object({
+  workspaceId: z.uuid(),
 });
+
+app.post(
+  "/chat/conversation",
+  zValidator("json", createConversationSchema),
+  async (ctx) => {
+    const { workspaceId } = ctx.req.valid("json");
+    const result = await createConversation(workspaceId);
+
+    if (result.isErr()) {
+      const { status, code, message } = result.error;
+      return ctx.json({ error: { code, message } }, status);
+    }
+
+    return ctx.json(result.value, 201);
+  }
+);
