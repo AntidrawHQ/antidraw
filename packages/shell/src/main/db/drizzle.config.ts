@@ -1,4 +1,6 @@
 import { defineConfig } from "drizzle-kit";
+import os from "node:os";
+import path from "node:path";
 
 // All paths are relative to project root (where you run drizzle-kit from)
 export default defineConfig({
@@ -6,6 +8,6 @@ export default defineConfig({
   out: "./src/main/db/drizzle",
   dialect: "sqlite",
   dbCredentials: {
-    url: "file:./src/main/db/dev.db",
+    url: `file:${path.join(os.homedir(), ".antidraw", "antidraw.db")}`,
   },
 });
