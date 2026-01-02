@@ -1,7 +1,11 @@
 import path from "path"
+import { fileURLToPath } from "url"
 import type { Plugin } from "vite"
 import react from "@vitejs/plugin-react"
 import tailwindcss from "@tailwindcss/vite"
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const runtimeSrc = path.resolve(__dirname, "../src")
 
 const USER_COMPONENTS_DIR = "./src/user-components"
 const VIRTUAL_USER_COMPONENTS = "@antidrawapp/user-components"
@@ -17,6 +21,10 @@ export const antidraw = (): Plugin[] => {
             "@": path.resolve(process.cwd(), "./src"),
           },
           dedupe: ["react", "react-dom", "@tanstack/react-router"],
+        },
+        optimizeDeps: {
+          // Scan runtime source to auto-discover CJS deps needing pre-bundling
+          entries: [runtimeSrc + "/**"],
         },
       }),
     },
