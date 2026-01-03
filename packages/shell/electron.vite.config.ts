@@ -8,6 +8,11 @@ export default defineConfig({
     build: {
       outDir: "dist/main",
       watch: {},
+      rollupOptions: {
+        output: {
+          format: "es",
+        },
+      },
     },
     resolve: {
       alias: {
@@ -18,6 +23,12 @@ export default defineConfig({
   preload: {
     build: {
       outDir: "dist/preload",
+      rollupOptions: {
+        output: {
+          format: "cjs",
+          entryFileNames: "[name].cjs",
+        },
+      },
     },
     resolve: {
       alias: {
