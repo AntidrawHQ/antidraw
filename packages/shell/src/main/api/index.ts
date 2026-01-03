@@ -6,6 +6,8 @@ export type {
 } from "./models/chat.model";
 export type { Workspace } from "./models/workspace.model";
 export type { CreateWorkspaceResponse } from "./controllers/workspace.controller";
+export type { DevServerState } from "@/main/lib/runtime-store";
+export type { DevServerInfo } from "@/main/services/dev-server.service";
 import { zValidator } from "@hono/zod-validator";
 import type { SSEMessage, SSEStreamingApi } from "hono/streaming";
 import { streamSSE } from "hono/streaming";

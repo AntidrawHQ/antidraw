@@ -2,6 +2,10 @@ import { app, BrowserWindow, protocol } from "electron";
 import path from "path";
 
 import { app as HonoAPI } from "./api";
+import {
+  cleanupOrphanedProcesses,
+  stopAllDevServers,
+} from "./services/dev-server.service";
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -22,7 +26,7 @@ const createWindow = () => {
     titleBarStyle: "hidden",
     backgroundColor: "#0a0a0a", // Matches dark mode background - prevents white flash on resize
     webPreferences: {
-      preload: path.join(__dirname, "../preload/preload.js"),
+      preload: path.join(__dirname, "../preload/preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
     },
@@ -37,6 +41,9 @@ const createWindow = () => {
 };
 
 app.whenReady().then(() => {
+  // Cleanup any orphaned dev servers from previous crash
+  cleanupOrphanedProcesses();
+
   protocol.handle("antidraw", (req) => HonoAPI.fetch(req));
 
   createWindow();
@@ -52,4 +59,9 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
     app.quit();
   }
+});
+
+// Graceful shutdown - stop all dev servers before quitting
+app.on("before-quit", () => {
+  stopAllDevServers();
 });
