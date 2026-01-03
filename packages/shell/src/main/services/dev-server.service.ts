@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess, execSync } from "child_process";
+import { spawn, exec, type ChildProcess, execSync } from "child_process";
 import getPort from "get-port";
 import { ok, err, type Result } from "neverthrow";
 import { getWorkspaceSourcePath } from "@/main/api/init";
@@ -40,6 +40,21 @@ const killProcessTree = (pid: number): void => {
   } catch {
     // Process may already be dead
   }
+};
+
+const killProcessTreeAsync = (pid: number): Promise<void> => {
+  return new Promise((resolve) => {
+    if (process.platform === "win32") {
+      exec(`taskkill /pid ${pid} /T /F`, () => resolve());
+    } else {
+      try {
+        process.kill(-pid, "SIGTERM");
+      } catch {
+        // Process may already be dead
+      }
+      resolve();
+    }
+  });
 };
 
 const isProcessRunning = (pid: number): boolean => {
@@ -211,7 +226,7 @@ export const stopAllDevServers = (): void => {
   devServerStore.clear();
 };
 
-export const cleanupOrphanedProcesses = (): void => {
+export const cleanupOrphanedProcesses = async (): Promise<void> => {
   const storedServers = devServerStore.getAll();
 
   for (const server of storedServers) {
@@ -219,7 +234,7 @@ export const cleanupOrphanedProcesses = (): void => {
       console.log(
         `Killing orphaned dev server: ${server.workspaceId} (PID: ${server.pid})`
       );
-      killProcessTree(server.pid);
+      await killProcessTreeAsync(server.pid);
     }
     devServerStore.remove(server.workspaceId);
   }

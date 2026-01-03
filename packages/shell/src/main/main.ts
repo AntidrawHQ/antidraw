@@ -41,12 +41,14 @@ const createWindow = () => {
 };
 
 app.whenReady().then(() => {
-  // Cleanup any orphaned dev servers from previous crash
-  cleanupOrphanedProcesses();
-
   protocol.handle("antidraw", (req) => HonoAPI.fetch(req));
 
   createWindow();
+
+  // Cleanup any orphaned dev servers from previous crash (non-blocking)
+  cleanupOrphanedProcesses().catch((err) => {
+    console.error("Failed to cleanup orphaned processes:", err);
+  });
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
