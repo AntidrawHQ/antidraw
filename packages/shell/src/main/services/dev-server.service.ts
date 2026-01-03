@@ -1,4 +1,5 @@
 import { spawn, exec, type ChildProcess, execSync } from "child_process";
+import { access } from "fs/promises";
 import getPort from "get-port";
 import { ok, err, type Result } from "neverthrow";
 import { getWorkspaceSourcePath } from "@/main/api/init";
@@ -18,7 +19,6 @@ export const DevServerErrorCode = {
   SPAWN_FAILED: "SPAWN_FAILED",
   STARTUP_TIMEOUT: "STARTUP_TIMEOUT",
   NOT_RUNNING: "NOT_RUNNING",
-  ALREADY_RUNNING: "ALREADY_RUNNING",
 } as const;
 
 type DevServerErrorCode =
@@ -72,7 +72,7 @@ export const startDevServer = async (
   // Check if already running
   const existing = runningProcesses.get(workspaceId);
 
-  if (existing && !existing.killed) {
+  if (existing && !existing.killed && existing.pid && isProcessRunning(existing.pid)) {
     const stored = devServerStore.get(workspaceId);
 
     if (stored) {
@@ -81,6 +81,17 @@ export const startDevServer = async (
   }
 
   const workspacePath = getWorkspaceSourcePath(workspaceId);
+
+  try {
+    await access(workspacePath);
+  } catch {
+    return err({
+      status: 404,
+      code: DevServerErrorCode.WORKSPACE_NOT_FOUND,
+      message: `Workspace source path not found: ${workspacePath}`,
+    } satisfies DevServerError);
+  }
+
   const port = await getPort();
 
   const proc = spawn("npm", ["run", "dev", "--", "--port", port.toString()], {
@@ -206,8 +217,7 @@ export const getDevServerStatus = (
     } satisfies DevServerError);
   }
 
-  const proc = runningProcesses.get(workspaceId);
-  const running = proc ? !proc.killed : isProcessRunning(stored.pid);
+  const running = isProcessRunning(stored.pid);
 
   return ok({
     ...stored,

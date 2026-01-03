@@ -7,7 +7,11 @@ export const useUserComponents = (workspaceId: string | null) => {
   return useQuery({
     queryKey: ["userComponents", workspaceId, devServer?.port],
     queryFn: async () => {
-      const viteDevServerUrl = `http://localhost:${devServer!.port}`;
+      if (!devServer?.port) {
+        throw new Error("Dev server port unavailable");
+      }
+
+      const viteDevServerUrl = `http://localhost:${devServer.port}`;
 
       const response = await fetch(`${viteDevServerUrl}/__components`);
 
