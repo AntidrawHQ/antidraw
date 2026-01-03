@@ -9,6 +9,8 @@ import {
 import "@xyflow/react/dist/style.css";
 import { memo, useMemo, useState, useCallback, useEffect, useRef } from "react";
 import { useUserComponents } from "./store/userComponents";
+import { useWorkspaceStore } from "./store/workspace";
+import { useDevServerStatus } from "./lib/workspace-ops";
 
 type IframeNodeProps = {
   url: string;
@@ -88,22 +90,23 @@ type UserComponent = {
 
 const CanvasContent = ({
   userComponents,
+  port,
 }: {
   userComponents: UserComponent[];
+  port: number;
 }) => {
   const nodeTypes: NodeTypes = useMemo(
     () =>
       userComponents.reduce((acc, component) => {
-        const ComponentNode = ({ selected, dragging }: NodeProps) => (
+        const ComponentNode = ({ selected }: NodeProps) => (
           <IframeNode
-            url={`http://localhost:5174/preview?componentName=${component.name}`}
+            url={`http://localhost:${port}/preview?componentName=${component.name}`}
             selected={selected}
-            dragging={dragging}
           />
         );
         return { ...acc, [component.name]: ComponentNode };
       }, {} as NodeTypes),
-    [userComponents]
+    [userComponents, port]
   );
 
   const initialNodes: Node[] = userComponents.map((component, index) => ({
@@ -159,19 +162,46 @@ const CanvasContent = ({
 };
 
 export const AppCanvas = () => {
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
+  const { data: devServer, isPending: isDevServerPending } =
+    useDevServerStatus(activeWorkspaceId);
   const {
     data: userComponents,
-    isPending,
+    isPending: isComponentsPending,
     isError,
-  } = useUserComponents("default-project");
+  } = useUserComponents(activeWorkspaceId);
 
-  if (isPending) {
-    return <div>Loading user components...</div>;
+  if (!activeWorkspaceId) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-neutral-400">
+        No workspace selected
+      </div>
+    );
   }
 
-  if (isError) {
-    return <div>Error loading user components.</div>;
+  if (!devServer) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-neutral-400">
+        {isDevServerPending ? "Checking dev server..." : "Dev server not running"}
+      </div>
+    );
   }
 
-  return <CanvasContent userComponents={userComponents} />;
+  if (isComponentsPending) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-neutral-400">
+        Loading components...
+      </div>
+    );
+  }
+
+  if (isError || !userComponents) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-neutral-400">
+        Error loading components
+      </div>
+    );
+  }
+
+  return <CanvasContent userComponents={userComponents} port={devServer.port} />;
 };

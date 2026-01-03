@@ -21,10 +21,12 @@ import {
   useToolMap,
 } from "./lib/claude-code-ops";
 import { Tool } from "@/renderer/components/ui/tool";
+import { useWorkspaceStore } from "./store/workspace";
 
 type AppChatProps = React.ComponentProps<"div">;
 
 export function AppChat({ className, ...props }: AppChatProps) {
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [input, setInput] = useState("");
 
@@ -38,20 +40,25 @@ export function AppChat({ className, ...props }: AppChatProps) {
   const isLoading = createConversation.isPending || sendMessage.isPending;
 
   const handleSubmit = async () => {
-    if (!input.trim() || isLoading) return;
+    if (!activeWorkspaceId || !input.trim() || isLoading) return;
 
     const prompt = input.trim();
     setInput("");
 
     if (!conversationId) {
-      const conv = await createConversation.mutateAsync();
+      const conv = await createConversation.mutateAsync(activeWorkspaceId);
       setConversationId(conv.id);
       await sendMessage.mutateAsync({
         message: prompt,
+        workspaceId: activeWorkspaceId,
         conversationId: conv.id,
       });
     } else {
-      await sendMessage.mutateAsync({ message: prompt, conversationId });
+      await sendMessage.mutateAsync({
+        message: prompt,
+        workspaceId: activeWorkspaceId,
+        conversationId,
+      });
     }
   };
 

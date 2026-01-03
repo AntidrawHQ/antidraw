@@ -1,12 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
+import { useDevServerStatus } from "@/renderer/lib/workspace-ops";
 
-export const useUserComponents = (projectId: string) => {
+export const useUserComponents = (workspaceId: string | null) => {
+  const { data: devServer } = useDevServerStatus(workspaceId);
+
   return useQuery({
-    queryKey: ["userComponents", projectId],
+    queryKey: ["userComponents", workspaceId, devServer?.port],
     queryFn: async () => {
-      // Simulate fetching user components
-
-      const viteDevServerUrl = "http://localhost:5174";
+      const viteDevServerUrl = `http://localhost:${devServer!.port}`;
 
       const response = await fetch(`${viteDevServerUrl}/__components`);
 
@@ -22,5 +23,6 @@ export const useUserComponents = (projectId: string) => {
 
       return components.components;
     },
+    enabled: !!workspaceId && !!devServer?.port,
   });
 };

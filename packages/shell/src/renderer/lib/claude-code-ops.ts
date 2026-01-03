@@ -41,8 +41,8 @@ export const useCreateConversation = () => {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async () => {
-      const result = await createConversation();
+    mutationFn: async (workspaceId: string) => {
+      const result = await createConversation(workspaceId);
 
       if (result.isErr()) {
         throw new Error(result.error.message);
@@ -64,11 +64,16 @@ export const useSendMessage = () => {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (params: { message: string; conversationId: string }) => {
-      const { message, conversationId } = params;
+    mutationFn: async (params: {
+      message: string;
+      workspaceId: string;
+      conversationId: string;
+    }) => {
+      const { message, workspaceId, conversationId } = params;
 
       const stream = sendMessage({
         message,
+        workspaceId,
         conversationId,
       });
 
