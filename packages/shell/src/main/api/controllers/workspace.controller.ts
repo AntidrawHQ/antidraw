@@ -35,7 +35,7 @@ workspaceController.post(
 
     return streamSSE(ctx, async (stream) => {
       for await (const event of createWorkspace(name)) {
-        stream.writeSSE({
+        await stream.writeSSE({
           data: JSON.stringify(event),
         });
       }
