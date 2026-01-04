@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   createConversation,
   getConversationWithMessages,
+  listWorkspaceConversations,
   sendMessage,
 } from "./api";
 import { selectToolMap } from "./tool-utils";
@@ -25,6 +26,20 @@ export const useConversationMessages = (conversationId: string | null) => {
   return useQuery({
     ...conversationQueryOptions(conversationId!),
     enabled: !!conversationId,
+  });
+};
+
+export const useWorkspaceConversations = (workspaceId: string | null) => {
+  return useQuery({
+    queryKey: ["workspace-conversations", workspaceId] as const,
+    queryFn: async () => {
+      const result = await listWorkspaceConversations(workspaceId!);
+      if (result.isErr()) {
+        throw new Error(result.error.message);
+      }
+      return result.value;
+    },
+    enabled: !!workspaceId,
   });
 };
 

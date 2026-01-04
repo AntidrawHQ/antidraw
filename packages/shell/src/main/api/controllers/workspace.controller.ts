@@ -14,6 +14,7 @@ import {
   stopDevServer,
   getDevServerStatus,
 } from "@/main/services/dev-server.service";
+import { listConversations } from "../services/chat.service";
 
 export const workspaceController = new Hono();
 
@@ -76,6 +77,24 @@ workspaceController.delete(
   async (ctx) => {
     const { workspaceId } = ctx.req.valid("param");
     const result = await deleteWorkspace(workspaceId);
+
+    if (result.isErr()) {
+      const { status, code, message } = result.error;
+      return ctx.json({ error: { code, message } }, status);
+    }
+
+    return ctx.json(result.value);
+  }
+);
+
+// Conversation endpoints
+
+workspaceController.get(
+  "/:workspaceId/conversations",
+  zValidator("param", workspaceIdParamSchema),
+  async (ctx) => {
+    const { workspaceId } = ctx.req.valid("param");
+    const result = await listConversations(workspaceId);
 
     if (result.isErr()) {
       const { status, code, message } = result.error;

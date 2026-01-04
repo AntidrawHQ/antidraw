@@ -2,7 +2,7 @@ import { conversations, messages } from "@/main/api/models/chat.model";
 import { db } from "@/main/db";
 import { createUserSDKMessage } from "@/shared/utils/message";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { eq } from "drizzle-orm";
+import { eq, desc } from "drizzle-orm";
 import { ok, err } from "neverthrow";
 
 export const createConversation = async (workspaceId: string, title?: string) => {
@@ -23,6 +23,24 @@ export const createConversation = async (workspaceId: string, title?: string) =>
       status: 500 as const,
       code: "DB_ERROR",
       message: "Failed to create conversation",
+    });
+  }
+};
+
+export const listConversations = async (workspaceId: string) => {
+  try {
+    const result = await db
+      .select()
+      .from(conversations)
+      .where(eq(conversations.workspaceId, workspaceId))
+      .orderBy(desc(conversations.updatedAt));
+
+    return ok(result);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "DB_ERROR",
+      message: "Failed to list conversations",
     });
   }
 };

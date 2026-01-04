@@ -203,6 +203,32 @@ export const getDevServerStatus = async (workspaceId: string) => {
 // Chat API
 // ============================================================================
 
+export const listWorkspaceConversations = async (workspaceId: string) => {
+  try {
+    const response = await fetch(
+      `antidraw://_internal/workspaces/${workspaceId}/conversations`
+    );
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      return err({
+        status: response.status as 500,
+        code: errorBody?.error?.code ?? "FETCH_ERROR",
+        message: errorBody?.error?.message ?? response.statusText,
+      });
+    }
+
+    const data: Conversation[] = await response.json();
+    return ok(data);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "NETWORK_ERROR",
+      message: "Failed to list conversations",
+    });
+  }
+};
+
 // TODO: workspaceId is always required even for existing conversations.
 // Lookup workspaceId from conversation when conversationId is provided.
 export async function* sendMessage(params: {

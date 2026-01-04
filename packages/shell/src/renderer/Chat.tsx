@@ -27,13 +27,14 @@ type AppChatProps = React.ComponentProps<"div">;
 
 export function AppChat({ className, ...props }: AppChatProps) {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
-  const [conversationId, setConversationId] = useState<string | null>(null);
+  const activeConversationId = useWorkspaceStore((s) => s.activeConversationId);
+  const setActiveConversationId = useWorkspaceStore((s) => s.setActiveConversationId);
   const [input, setInput] = useState("");
 
   const createConversation = useCreateConversation();
   const sendMessage = useSendMessage();
-  const { data: conversation } = useConversationMessages(conversationId);
-  const { data: toolMap } = useToolMap(conversationId);
+  const { data: conversation } = useConversationMessages(activeConversationId);
+  const { data: toolMap } = useToolMap(activeConversationId);
 
   const messages = conversation?.messages ?? [];
 
@@ -45,9 +46,9 @@ export function AppChat({ className, ...props }: AppChatProps) {
     const prompt = input.trim();
     setInput("");
 
-    if (!conversationId) {
+    if (!activeConversationId) {
       const conv = await createConversation.mutateAsync(activeWorkspaceId);
-      setConversationId(conv.id);
+      setActiveConversationId(conv.id);
       await sendMessage.mutateAsync({
         message: prompt,
         workspaceId: activeWorkspaceId,
@@ -57,7 +58,7 @@ export function AppChat({ className, ...props }: AppChatProps) {
       await sendMessage.mutateAsync({
         message: prompt,
         workspaceId: activeWorkspaceId,
-        conversationId,
+        conversationId: activeConversationId,
       });
     }
   };
