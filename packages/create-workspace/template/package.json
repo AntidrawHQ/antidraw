@@ -11,6 +11,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@antidrawapp/runtime": "^0.1.0"
+    "@antidrawapp/runtime": "^0.3.0"
   }
 }

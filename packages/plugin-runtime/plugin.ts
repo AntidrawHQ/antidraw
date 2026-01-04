@@ -7,7 +7,7 @@ import tailwindcss from "@tailwindcss/vite"
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const runtimeSrc = path.resolve(__dirname, "../src")
 
-const USER_COMPONENTS_DIR = "./src/user-components"
+const USER_COMPONENTS_DIR = "./src/components/user-components"
 const VIRTUAL_USER_COMPONENTS = "@antidrawapp/user-components"
 const RESOLVED_VIRTUAL_USER_COMPONENTS = "\0@antidrawapp/user-components"
 
@@ -38,12 +38,12 @@ export const antidraw = (): Plugin[] => {
       load(id) {
         if (id === RESOLVED_VIRTUAL_USER_COMPONENTS) {
           return `
-const modules = import.meta.glob("/src/user-components/*.tsx", { eager: true })
+const modules = import.meta.glob("/src/components/user-components/*.tsx", { eager: true })
 
 export const userComponents = Object.fromEntries(
   Object.entries(modules)
     .map(([path, mod]) => [
-      path.replace("/src/user-components/", "").replace(".tsx", ""),
+      path.replace("/src/components/user-components/", "").replace(".tsx", ""),
       mod.default,
     ])
 )

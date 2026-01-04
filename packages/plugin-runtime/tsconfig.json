@@ -14,7 +14,7 @@
     "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"],
-      "@antidrawapp/user-components": ["./src/user-components/index.ts"]
+      "@antidrawapp/user-components": ["./src/components/user-components/index.ts"]
     }
   },
   "include": ["src/**/*", "plugin.ts"],
