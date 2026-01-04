@@ -7,7 +7,7 @@ import {
   NodeResizer,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { memo, useMemo, useState, useCallback, useEffect, useRef } from "react";
+import { memo, useState, useCallback, useEffect, useRef } from "react";
 import { useUserComponents } from "./store/userComponents";
 import { useWorkspaceStore } from "./store/workspace";
 import { useDevServerStatus } from "./lib/workspace-ops";
@@ -84,6 +84,28 @@ const IframeNode = memo(({ url, selected }: IframeNodeProps) => {
   );
 });
 
+// Node data type for iframe nodes
+type IframeNodeData = {
+  url: string;
+  componentName: string;
+};
+
+// Define node type alias for better type inference
+type IframeReactFlowNode = Node<IframeNodeData, "iframe">;
+
+// Wrapper component that React Flow renders - defined OUTSIDE component to prevent recreation
+const IframeNodeRenderer = ({
+  data,
+  selected,
+}: NodeProps<IframeReactFlowNode>) => (
+  <IframeNode url={data.url} selected={selected} />
+);
+
+// Define nodeTypes at module level - this is critical for React Flow performance
+const nodeTypes: NodeTypes = {
+  iframe: IframeNodeRenderer,
+};
+
 type UserComponent = {
   name: string;
 };
@@ -95,27 +117,19 @@ const CanvasContent = ({
   userComponents: UserComponent[];
   port: number;
 }) => {
-  const nodeTypes: NodeTypes = useMemo(
-    () =>
-      userComponents.reduce((acc, component) => {
-        const ComponentNode = ({ selected }: NodeProps) => (
-          <IframeNode
-            url={`http://localhost:${port}/preview?componentName=${component.name}`}
-            selected={selected}
-          />
-        );
-        return { ...acc, [component.name]: ComponentNode };
-      }, {} as NodeTypes),
-    [userComponents, port]
+  // Create initial nodes with URL stored in data (not baked into component type)
+  const initialNodes: IframeReactFlowNode[] = userComponents.map(
+    (component, index) => ({
+      id: `${component.name.toLowerCase()}-1`,
+      type: "iframe" as const,
+      position: { x: 100 + index * 600, y: 100 },
+      style: { width: 400, height: 300 },
+      data: {
+        url: `http://localhost:${port}/preview?componentName=${component.name}`,
+        componentName: component.name,
+      },
+    })
   );
-
-  const initialNodes: Node[] = userComponents.map((component, index) => ({
-    id: `${component.name.toLowerCase()}-1`,
-    type: component.name,
-    position: { x: 100 + index * 600, y: 100 },
-    style: { width: 400, height: 300 },
-    data: {},
-  }));
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
 
@@ -125,7 +139,7 @@ const CanvasContent = ({
         const { componentName, width, height } = event.data;
         setNodes((nds) =>
           nds.map((node) =>
-            node.type === componentName
+            node.data.componentName === componentName
               ? { ...node, style: { ...node.style, width, height } }
               : node
           )
@@ -136,6 +150,35 @@ const CanvasContent = ({
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
   }, [setNodes]);
+
+  // Sync new components into nodes when userComponents changes
+  useEffect(() => {
+    setNodes((currentNodes) => {
+      const existingComponentNames = new Set(
+        currentNodes.map((n) => n.data.componentName)
+      );
+      const newComponents = userComponents.filter(
+        (c) => !existingComponentNames.has(c.name)
+      );
+
+      if (newComponents.length === 0) return currentNodes;
+
+      const maxX = Math.max(...currentNodes.map((n) => n.position.x), 0);
+      return [
+        ...currentNodes,
+        ...newComponents.map((component, index) => ({
+          id: `${component.name.toLowerCase()}-1`,
+          type: "iframe" as const,
+          position: { x: maxX + 500 + index * 600, y: 100 },
+          style: { width: 400, height: 300 },
+          data: {
+            url: `http://localhost:${port}/preview?componentName=${component.name}`,
+            componentName: component.name,
+          },
+        })),
+      ];
+    });
+  }, [userComponents, port, setNodes]);
 
   return (
     <div style={{ height: "100vh", width: "100%" }}>
@@ -163,6 +206,7 @@ const CanvasContent = ({
 
 export const AppCanvas = () => {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
+
   const { data: devServer, isPending: isDevServerPending } =
     useDevServerStatus(activeWorkspaceId);
   const {
@@ -182,7 +226,9 @@ export const AppCanvas = () => {
   if (!devServer) {
     return (
       <div className="flex-1 flex items-center justify-center text-neutral-400">
-        {isDevServerPending ? "Checking dev server..." : "Dev server not running"}
+        {isDevServerPending
+          ? "Checking dev server..."
+          : "Dev server not running"}
       </div>
     );
   }
@@ -203,5 +249,7 @@ export const AppCanvas = () => {
     );
   }
 
-  return <CanvasContent userComponents={userComponents} port={devServer.port} />;
+  return (
+    <CanvasContent userComponents={userComponents} port={devServer.port} />
+  );
 };
