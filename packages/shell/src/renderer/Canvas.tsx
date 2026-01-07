@@ -11,6 +11,7 @@ import { memo, useState, useCallback, useEffect, useRef } from "react";
 import { useUserComponents } from "./store/userComponents";
 import { useWorkspaceStore } from "./store/workspace";
 import { useDevServerStatus } from "./lib/workspace-ops";
+import { cn } from "./lib/utils";
 
 type IframeNodeProps = {
   url: string;
@@ -113,9 +114,11 @@ type UserComponent = {
 const CanvasContent = ({
   userComponents,
   port,
+  className,
 }: {
   userComponents: UserComponent[];
   port: number;
+  className?: string;
 }) => {
   // Create initial nodes with URL stored in data (not baked into component type)
   const initialNodes: IframeReactFlowNode[] = userComponents.map(
@@ -181,7 +184,7 @@ const CanvasContent = ({
   }, [userComponents, port, setNodes]);
 
   return (
-    <div style={{ height: "100vh", width: "100%" }}>
+    <div className={cn("h-full w-full", className)}>
       <ReactFlow
         nodes={nodes}
         onNodesChange={onNodesChange}
@@ -204,7 +207,11 @@ const CanvasContent = ({
   );
 };
 
-export const AppCanvas = () => {
+type AppCanvasProps = {
+  className?: string;
+};
+
+export const AppCanvas = ({ className }: AppCanvasProps) => {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
 
   const { data: devServer, isPending: isDevServerPending } =
@@ -217,7 +224,7 @@ export const AppCanvas = () => {
 
   if (!activeWorkspaceId) {
     return (
-      <div className="flex-1 flex items-center justify-center text-neutral-400">
+      <div className={cn("flex-1 flex items-center justify-center text-neutral-400", className)}>
         No workspace selected
       </div>
     );
@@ -225,7 +232,7 @@ export const AppCanvas = () => {
 
   if (!devServer) {
     return (
-      <div className="flex-1 flex items-center justify-center text-neutral-400">
+      <div className={cn("flex-1 flex items-center justify-center text-neutral-400", className)}>
         {isDevServerPending
           ? "Checking dev server..."
           : "Dev server not running"}
@@ -235,7 +242,7 @@ export const AppCanvas = () => {
 
   if (isComponentsPending) {
     return (
-      <div className="flex-1 flex items-center justify-center text-neutral-400">
+      <div className={cn("flex-1 flex items-center justify-center text-neutral-400", className)}>
         Loading components...
       </div>
     );
@@ -243,13 +250,13 @@ export const AppCanvas = () => {
 
   if (isError || !userComponents) {
     return (
-      <div className="flex-1 flex items-center justify-center text-neutral-400">
+      <div className={cn("flex-1 flex items-center justify-center text-neutral-400", className)}>
         Error loading components
       </div>
     );
   }
 
   return (
-    <CanvasContent userComponents={userComponents} port={devServer.port} />
+    <CanvasContent userComponents={userComponents} port={devServer.port} className={className} />
   );
 };

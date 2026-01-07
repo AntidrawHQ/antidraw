@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AppCanvas } from "./Canvas";
-import { AppChat } from "./Chat";
+import { Sidebar } from "./Sidebar";
 
 const queryClient = new QueryClient();
 
@@ -17,9 +17,9 @@ function App() {
         </div>
 
         {/* Main content */}
-        <div className="flex flex-1 overflow-hidden">
-          <AppChat className="basis-2/5 min-w-sm" />
-          <AppCanvas />
+        <div className="relative flex-1 overflow-hidden">
+          <AppCanvas className="absolute inset-0" />
+          <Sidebar className="absolute left-0 top-0 h-full z-10" />
         </div>
       </div>
     </QueryClientProvider>
