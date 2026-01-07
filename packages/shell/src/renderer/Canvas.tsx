@@ -195,7 +195,7 @@ const CanvasContent = ({
         selectNodesOnDrag={true}
         panOnScroll={true}
         panOnDrag={[1, 2]}
-        onlyRenderVisibleElements={true}
+        onlyRenderVisibleElements={false}
         proOptions={{ hideAttribution: true }}
       >
         {/* Children: Background, Controls, MiniMap, Panels */}
