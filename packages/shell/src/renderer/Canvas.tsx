@@ -69,6 +69,7 @@ const IframeNode = memo(({ url, selected }: IframeNodeProps) => {
         <iframe
           ref={iframeRef}
           src={url}
+          loading="lazy"
           className="iframe-content h-full w-full border-0"
           sandbox="allow-scripts allow-same-origin"
         />
@@ -198,7 +199,7 @@ const CanvasContent = ({
         selectNodesOnDrag={true}
         panOnScroll={true}
         panOnDrag={[1, 2]}
-        onlyRenderVisibleElements={false}
+        onlyRenderVisibleElements={true}
         proOptions={{ hideAttribution: true }}
       >
         {/* Children: Background, Controls, MiniMap, Panels */}
@@ -224,7 +225,12 @@ export const AppCanvas = ({ className }: AppCanvasProps) => {
 
   if (!activeWorkspaceId) {
     return (
-      <div className={cn("flex-1 flex items-center justify-center text-neutral-400", className)}>
+      <div
+        className={cn(
+          "flex-1 flex items-center justify-center text-neutral-400",
+          className
+        )}
+      >
         No workspace selected
       </div>
     );
@@ -232,7 +238,12 @@ export const AppCanvas = ({ className }: AppCanvasProps) => {
 
   if (!devServer) {
     return (
-      <div className={cn("flex-1 flex items-center justify-center text-neutral-400", className)}>
+      <div
+        className={cn(
+          "flex-1 flex items-center justify-center text-neutral-400",
+          className
+        )}
+      >
         {isDevServerPending
           ? "Checking dev server..."
           : "Dev server not running"}
@@ -242,7 +253,12 @@ export const AppCanvas = ({ className }: AppCanvasProps) => {
 
   if (isComponentsPending) {
     return (
-      <div className={cn("flex-1 flex items-center justify-center text-neutral-400", className)}>
+      <div
+        className={cn(
+          "flex-1 flex items-center justify-center text-neutral-400",
+          className
+        )}
+      >
         Loading components...
       </div>
     );
@@ -250,13 +266,22 @@ export const AppCanvas = ({ className }: AppCanvasProps) => {
 
   if (isError || !userComponents) {
     return (
-      <div className={cn("flex-1 flex items-center justify-center text-neutral-400", className)}>
+      <div
+        className={cn(
+          "flex-1 flex items-center justify-center text-neutral-400",
+          className
+        )}
+      >
         Error loading components
       </div>
     );
   }
 
   return (
-    <CanvasContent userComponents={userComponents} port={devServer.port} className={className} />
+    <CanvasContent
+      userComponents={userComponents}
+      port={devServer.port}
+      className={className}
+    />
   );
 };
