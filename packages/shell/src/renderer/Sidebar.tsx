@@ -16,29 +16,29 @@ const DEFAULT_SIDEBAR_WIDTH = 400;
 
 // Placeholder titles and descriptions for conversations without real data
 const placeholderTitles = [
-  "Design System Components",
-  "API Integration Help",
-  "Bug: Canvas not rendering",
-  "Performance optimization",
-  "Authentication flow",
-  "Mobile responsive fixes",
-  "Database schema design",
-  "Unit test coverage",
-  "Refactoring legacy code",
-  "New feature brainstorm",
+  "Landing page with aurora effect",
+  "Dark mode sidebar variants",
+  "Conversation switcher with search",
+  "Travel booking hero section",
+  "Workspace dropdown menu",
+  "Chat header with tabs",
+  "Integration grid layout",
+  "Ticket table component",
+  "Glass morphism cards",
+  "Neon gradient landing",
 ];
 
 const placeholderDescriptions = [
-  "Button variants, color tokens, and typography scale",
-  "REST endpoints, error handling, and response types",
-  "Debugging React lifecycle and cleanup issues",
-  "Memoization strategies and render optimization",
-  "OAuth2 implementation with token refresh",
-  "Breakpoints and touch interactions",
-  "Normalizing relations and indexing strategy",
-  "Testing edge cases and error boundaries",
-  "Breaking down monolithic components",
-  "Exploring user requirements and constraints",
+  "Animated aurora background with floating particles",
+  "Exploring compact and expanded sidebar layouts",
+  "Fuzzy search, keyboard nav, and selection states",
+  "Hero with destination cards and booking form",
+  "Multi-workspace selection with icons and search",
+  "Tabbed navigation for conversations and settings",
+  "Responsive grid with hover effects and categories",
+  "Sortable data table with status badges",
+  "Translucent cards with backdrop blur effect",
+  "Vibrant gradients with glow and animations",
 ];
 
 const getPlaceholderTitle = (convId: string): string => {
@@ -228,7 +228,7 @@ export const Sidebar = ({ className }: SidebarProps) => {
                   onMouseEnter={() => setSelectedIndex(idx)}
                   className={cn(
                     "w-full flex flex-col items-start gap-0.5 py-2 px-2.5 border-none rounded-md cursor-pointer text-left mb-0.5",
-                    idx === selectedIndex ? "bg-white/[0.12]" : "bg-transparent hover:bg-white/[0.08]"
+                    idx === selectedIndex ? "bg-white/[0.12]" : "bg-transparent hover:bg-white/[0.04]"
                   )}
                 >
                   <div className="w-full flex items-center justify-between gap-2">
@@ -240,7 +240,7 @@ export const Sidebar = ({ className }: SidebarProps) => {
                     >
                       {renderHighlighted(conv.displayTitle, conv.indices)}
                     </span>
-                    <span className="text-[10px] text-neutral-600 shrink-0">
+                    <span className="text-xs text-neutral-600 shrink-0">
                       {formatRelativeTime(new Date(conv.updatedAt))}
                     </span>
                   </div>
@@ -271,7 +271,7 @@ export const Sidebar = ({ className }: SidebarProps) => {
           <div className="p-2 border-b border-[#2d2d2d]">
             <button
               onClick={() => setShowList(true)}
-              className="w-full flex items-center justify-between gap-1.5 py-1.5 px-2.5 bg-transparent border-none rounded-md cursor-pointer hover:bg-white/10"
+              className="w-full flex items-center justify-between gap-1.5 py-1.5 px-2.5 bg-transparent border-none rounded-md cursor-pointer hover:bg-white/[0.04]"
             >
               <span className="text-[13px] font-medium text-neutral-200 overflow-hidden text-ellipsis whitespace-nowrap">
                 {activeConversation?.title ?? (activeConversationId ? getPlaceholderTitle(activeConversationId) : "New Conversation")}

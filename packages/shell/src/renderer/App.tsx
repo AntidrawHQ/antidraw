@@ -17,9 +17,9 @@ function App() {
         </div>
 
         {/* Main content */}
-        <div className="relative flex-1 overflow-hidden">
-          <AppCanvas className="absolute inset-0" />
-          <Sidebar className="absolute left-0 top-0 h-full z-10" />
+        <div className="flex flex-1 overflow-hidden">
+          <Sidebar />
+          <AppCanvas className="flex-1" />
         </div>
       </div>
     </QueryClientProvider>
