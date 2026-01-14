@@ -11,8 +11,9 @@ import { fuzzyMatch } from "./lib/fuzzy-search";
 import { AppChat } from "./Chat";
 
 // Sidebar resize constraints
-const MIN_SIDEBAR_WIDTH = 400;
-const DEFAULT_SIDEBAR_WIDTH = 400;
+const MIN_SIDEBAR_WIDTH = 200;
+const MAX_SIDEBAR_WIDTH = 500;
+const DEFAULT_SIDEBAR_WIDTH = 280;
 
 // Placeholder titles and descriptions for conversations without real data
 const placeholderTitles = [
@@ -96,7 +97,7 @@ export const Sidebar = ({ className }: SidebarProps) => {
     const handleMouseMove = (e: MouseEvent) => {
       if (!isResizing) return;
       const newWidth = e.clientX;
-      if (newWidth >= MIN_SIDEBAR_WIDTH) {
+      if (newWidth >= MIN_SIDEBAR_WIDTH && newWidth <= MAX_SIDEBAR_WIDTH) {
         setSidebarWidth(newWidth);
       }
     };
@@ -240,7 +241,7 @@ export const Sidebar = ({ className }: SidebarProps) => {
                     >
                       {renderHighlighted(conv.displayTitle, conv.indices)}
                     </span>
-                    <span className="text-xs text-neutral-600 shrink-0">
+                    <span className="text-[10px] text-neutral-600 shrink-0">
                       {formatRelativeTime(new Date(conv.updatedAt))}
                     </span>
                   </div>
@@ -268,15 +269,23 @@ export const Sidebar = ({ className }: SidebarProps) => {
         /* Chat View */
         <div className="flex-1 flex flex-col overflow-hidden">
           {/* Conversation Selector Header */}
-          <div className="p-2 border-b border-[#2d2d2d]">
+          <div className="p-2 border-b border-[#2d2d2d] flex items-center gap-1">
             <button
               onClick={() => setShowList(true)}
-              className="w-full flex items-center justify-between gap-1.5 py-1.5 px-2.5 bg-transparent border-none rounded-md cursor-pointer hover:bg-white/[0.04]"
+              className="flex-1 flex items-center justify-between gap-1.5 py-1.5 px-2.5 bg-transparent border-none rounded-md cursor-pointer hover:bg-white/[0.04] min-w-0"
             >
               <span className="text-[13px] font-medium text-neutral-200 overflow-hidden text-ellipsis whitespace-nowrap">
                 {activeConversation?.title ?? (activeConversationId ? getPlaceholderTitle(activeConversationId) : "New Conversation")}
               </span>
               <ChevronsUpDown className="w-3.5 h-3.5 text-[#71717a] shrink-0" />
+            </button>
+            <button
+              onClick={handleNewConversation}
+              disabled={createConversation.isPending}
+              className="p-1.5 rounded-md hover:bg-white/[0.04] text-[#71717a] hover:text-neutral-200 disabled:opacity-50 shrink-0"
+              title="New conversation"
+            >
+              <Plus className="w-4 h-4" />
             </button>
           </div>
 

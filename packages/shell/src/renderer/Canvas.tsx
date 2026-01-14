@@ -112,6 +112,17 @@ type UserComponent = {
   name: string;
 };
 
+// Grid pattern background component
+const GridPattern = () => (
+  <div
+    className="absolute inset-0 opacity-50 pointer-events-none"
+    style={{
+      backgroundImage: "radial-gradient(#2d2d2d 1px, transparent 1px)",
+      backgroundSize: "20px 20px",
+    }}
+  />
+);
+
 const CanvasContent = ({
   userComponents,
   port,
@@ -185,7 +196,8 @@ const CanvasContent = ({
   }, [userComponents, port, setNodes]);
 
   return (
-    <div className={cn("h-full w-full", className)}>
+    <div className={cn("h-full w-full bg-neutral-800 relative", className)}>
+      <GridPattern />
       <ReactFlow
         nodes={nodes}
         onNodesChange={onNodesChange}
@@ -227,11 +239,15 @@ export const AppCanvas = ({ className }: AppCanvasProps) => {
     return (
       <div
         className={cn(
-          "flex-1 flex items-center justify-center text-neutral-400",
+          "flex-1 flex items-center justify-center bg-neutral-800 relative",
           className
         )}
       >
-        No workspace selected
+        <GridPattern />
+        <div className="text-center z-10">
+          <div className="text-sm text-[#71717a]">Canvas</div>
+          <div className="text-[11px] text-neutral-600">No workspace selected</div>
+        </div>
       </div>
     );
   }
@@ -240,13 +256,17 @@ export const AppCanvas = ({ className }: AppCanvasProps) => {
     return (
       <div
         className={cn(
-          "flex-1 flex items-center justify-center text-neutral-400",
+          "flex-1 flex items-center justify-center bg-neutral-800 relative",
           className
         )}
       >
-        {isDevServerPending
-          ? "Checking dev server..."
-          : "Dev server not running"}
+        <GridPattern />
+        <div className="text-center z-10">
+          <div className="text-sm text-[#71717a]">Canvas</div>
+          <div className="text-[11px] text-neutral-600">
+            {isDevServerPending ? "Checking dev server..." : "Dev server not running"}
+          </div>
+        </div>
       </div>
     );
   }
@@ -255,11 +275,15 @@ export const AppCanvas = ({ className }: AppCanvasProps) => {
     return (
       <div
         className={cn(
-          "flex-1 flex items-center justify-center text-neutral-400",
+          "flex-1 flex items-center justify-center bg-neutral-800 relative",
           className
         )}
       >
-        Loading components...
+        <GridPattern />
+        <div className="text-center z-10">
+          <div className="text-sm text-[#71717a]">Canvas</div>
+          <div className="text-[11px] text-neutral-600">Loading components...</div>
+        </div>
       </div>
     );
   }
@@ -268,11 +292,15 @@ export const AppCanvas = ({ className }: AppCanvasProps) => {
     return (
       <div
         className={cn(
-          "flex-1 flex items-center justify-center text-neutral-400",
+          "flex-1 flex items-center justify-center bg-neutral-800 relative",
           className
         )}
       >
-        Error loading components
+        <GridPattern />
+        <div className="text-center z-10">
+          <div className="text-sm text-[#71717a]">Canvas</div>
+          <div className="text-[11px] text-neutral-600">Error loading components</div>
+        </div>
       </div>
     );
   }

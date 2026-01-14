@@ -10,16 +10,18 @@ function App() {
       <div className="flex h-screen w-full flex-col">
         {/* Draggable titlebar */}
         <div
-          className="h-8 flex items-center justify-center w-full shrink-0 bg-neutral-800"
+          className="h-[38px] flex items-center justify-center w-full shrink-0 bg-neutral-800 border-b border-[#2d2d2d]"
           style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
         >
-          <span className="text-center text-xs text-neutral-400">antidraw</span>
+          <span className="text-center text-[13px] font-medium text-neutral-400 tracking-tight">
+            AntiDraw
+          </span>
         </div>
 
         {/* Main content */}
         <div className="flex flex-1 overflow-hidden">
           <Sidebar />
-          <AppCanvas className="flex-1" />
+          <AppCanvas className="flex-1 border-l border-[#2d2d2d]" />
         </div>
       </div>
     </QueryClientProvider>
