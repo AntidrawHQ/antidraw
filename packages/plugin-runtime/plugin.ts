@@ -16,6 +16,9 @@ export const antidraw = (): Plugin[] => {
     {
       name: "antidraw:config",
       config: () => ({
+        server: {
+          https: true, // Enables HTTP/2 multiplexing (Vite auto-generates self-signed cert)
+        },
         resolve: {
           alias: {
             "@": path.resolve(process.cwd(), "./src"),

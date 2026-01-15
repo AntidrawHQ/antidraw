@@ -1,4 +1,4 @@
-import { app, BrowserWindow, protocol } from "electron";
+import { app, BrowserWindow, protocol, session } from "electron";
 import path from "path";
 
 import { app as HonoAPI } from "./api";
@@ -41,6 +41,15 @@ const createWindow = () => {
 };
 
 app.whenReady().then(() => {
+  // Trust self-signed certs for localhost (enables HTTPS dev servers without warnings)
+  session.defaultSession.setCertificateVerifyProc((request, callback) => {
+    if (request.hostname === "localhost" || request.hostname === "127.0.0.1") {
+      callback(0); // Trust
+    } else {
+      callback(-2); // Use default verification
+    }
+  });
+
   protocol.handle("antidraw", (req) => HonoAPI.fetch(req));
 
   createWindow();

@@ -140,7 +140,7 @@ const CanvasContent = ({
       position: { x: 100 + index * 600, y: 100 },
       style: { width: 400, height: 300 },
       data: {
-        url: `http://localhost:${port}/preview?componentName=${component.name}`,
+        url: `https://localhost:${port}/preview?componentName=${component.name}`,
         componentName: component.name,
       },
     })
@@ -187,7 +187,7 @@ const CanvasContent = ({
           position: { x: maxX + 500 + index * 600, y: 100 },
           style: { width: 400, height: 300 },
           data: {
-            url: `http://localhost:${port}/preview?componentName=${component.name}`,
+            url: `https://localhost:${port}/preview?componentName=${component.name}`,
             componentName: component.name,
           },
         })),
