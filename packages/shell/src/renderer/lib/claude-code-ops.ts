@@ -1,4 +1,5 @@
 import type { ConversationWithMessages, Message } from "@/main/api";
+import type { ImageAttachment } from "@/shared/utils/message";
 import { createUserSDKMessage } from "@/shared/utils/message";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -83,13 +84,15 @@ export const useSendMessage = () => {
       message: string;
       workspaceId: string;
       conversationId: string;
+      images?: ImageAttachment[];
     }) => {
-      const { message, workspaceId, conversationId } = params;
+      const { message, workspaceId, conversationId, images } = params;
 
       const stream = sendMessage({
         message,
         workspaceId,
         conversationId,
+        images,
       });
 
       for await (const response of stream) {
@@ -120,7 +123,7 @@ export const useSendMessage = () => {
       }
     },
 
-    onMutate: async ({ message, conversationId }) => {
+    onMutate: async ({ message, conversationId, images }) => {
       // Cancel any outgoing refetches
       await queryClient.cancelQueries({
         queryKey: ["conversation", conversationId],
@@ -143,6 +146,7 @@ export const useSendMessage = () => {
         text: message,
         sessionId: previousChat.claudeCodeSessionId ?? "",
         uuid: crypto.randomUUID(),
+        images,
       });
 
       const optimisticUserMessage: Message = {

@@ -2,6 +2,11 @@ import {
   ChatContainerContent,
   ChatContainerRoot,
 } from "@/renderer/components/ui/chat-container";
+import {
+  FileUpload,
+  FileUploadContent,
+  FileUploadTrigger,
+} from "@/renderer/components/ui/file-upload";
 import { Markdown } from "@/renderer/components/ui/markdown";
 import { Message, MessageContent } from "@/renderer/components/ui/message";
 import {
@@ -12,7 +17,7 @@ import {
 } from "@/renderer/components/ui/prompt-input";
 import { Button } from "@/renderer/components/ui/button";
 import { cn } from "@/renderer/lib/utils";
-import { ArrowUp, Square } from "lucide-react";
+import { ArrowUp, ImageIcon, Paperclip, Square, X } from "lucide-react";
 import { useState } from "react";
 import {
   useConversationMessages,
@@ -30,6 +35,28 @@ export function AppChat({ className, ...props }: AppChatProps) {
   const activeConversationId = useWorkspaceStore((s) => s.activeConversationId);
   const setActiveConversationId = useWorkspaceStore((s) => s.setActiveConversationId);
   const [input, setInput] = useState("");
+  const [attachedImages, setAttachedImages] = useState<File[]>([]);
+
+  const handleFilesAdded = (files: File[]) => {
+    const imageFiles = files.filter((f) => f.type.startsWith("image/"));
+    if (imageFiles.length > 0) {
+      setAttachedImages((prev) => [...prev, ...imageFiles]);
+    }
+  };
+
+  const handlePaste = (e: React.ClipboardEvent) => {
+    const files = Array.from(e.clipboardData.files).filter((f) =>
+      f.type.startsWith("image/")
+    );
+    if (files.length > 0) {
+      e.preventDefault();
+      handleFilesAdded(files);
+    }
+  };
+
+  const removeImage = (index: number) => {
+    setAttachedImages((prev) => prev.filter((_, i) => i !== index));
+  };
 
   const createConversation = useCreateConversation();
   const sendMessage = useSendMessage();
@@ -40,11 +67,29 @@ export function AppChat({ className, ...props }: AppChatProps) {
 
   const isLoading = createConversation.isPending || sendMessage.isPending;
 
+  const fileToBase64 = (file: File): Promise<{ data: string; mediaType: string }> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+        const base64 = result.split(",")[1];
+        resolve({ data: base64, mediaType: file.type });
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  };
+
   const handleSubmit = async () => {
     if (!activeWorkspaceId || !input.trim() || isLoading) return;
 
     const prompt = input.trim();
+    const imagesToSend = attachedImages.length > 0
+      ? await Promise.all(attachedImages.map(fileToBase64))
+      : undefined;
+
     setInput("");
+    setAttachedImages([]);
 
     if (!activeConversationId) {
       const conv = await createConversation.mutateAsync(activeWorkspaceId);
@@ -53,12 +98,14 @@ export function AppChat({ className, ...props }: AppChatProps) {
         message: prompt,
         workspaceId: activeWorkspaceId,
         conversationId: conv.id,
+        images: imagesToSend,
       });
     } else {
       await sendMessage.mutateAsync({
         message: prompt,
         workspaceId: activeWorkspaceId,
         conversationId: activeConversationId,
+        images: imagesToSend,
       });
     }
   };
@@ -93,7 +140,31 @@ export function AppChat({ className, ...props }: AppChatProps) {
                 className={isAssistant ? "justify-start" : "justify-end"}
               >
                 <div className="overflow-auto space-y-2 w-full">
+                  {(() => {
+                    const imageBlocks = blocks.filter(
+                      (b) => b.type === "image" && b.source?.type === "base64"
+                    );
+                    if (imageBlocks.length > 0) {
+                      return (
+                        <div className="flex flex-wrap gap-1">
+                          {imageBlocks.map((block, idx) => (
+                            <img
+                              key={`img-${idx}`}
+                              src={`data:${block.source.media_type};base64,${block.source.data}`}
+                              alt="Attached image"
+                              className="h-10 w-10 rounded object-cover border border-neutral-600"
+                            />
+                          ))}
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
                   {blocks.map((block, idx) => {
+                    if (block.type === "image") {
+                      return null;
+                    }
+
                     if (block.type === "text") {
                       return isAssistant ? (
                         <div
@@ -140,39 +211,80 @@ export function AppChat({ className, ...props }: AppChatProps) {
         </ChatContainerContent>
       </ChatContainerRoot>
 
-      <div className="p-4">
-        <PromptInput
-          value={input}
-          onValueChange={setInput}
-          isLoading={isLoading}
-          onSubmit={handleSubmit}
-          className="bg-neutral-700 border-neutral-600"
-        >
-          <PromptInputTextarea
-            placeholder="Ask me anything..."
-            className="bg-transparent dark:bg-transparent"
-          />
-          <PromptInputActions className="justify-end pt-2">
-            <PromptInputAction
-              tooltip={isLoading ? "Stop generation" : "Send message"}
-            >
-              <Button
-                variant="default"
-                size="icon"
-                className="h-8 w-8 rounded-full"
-                onClick={handleSubmit}
-                disabled={!input.trim() && !isLoading}
+      <FileUpload onFilesAdded={handleFilesAdded} accept="image/*">
+        <div className="p-4">
+          <PromptInput
+            value={input}
+            onValueChange={setInput}
+            isLoading={isLoading}
+            onSubmit={handleSubmit}
+            className="bg-neutral-700 border-neutral-600"
+          >
+            {attachedImages.length > 0 && (
+              <div className="flex flex-wrap gap-2 p-2 pb-0">
+                {attachedImages.map((file, index) => (
+                  <div key={index} className="relative group">
+                    <img
+                      src={URL.createObjectURL(file)}
+                      alt={file.name}
+                      className="h-16 w-16 rounded-lg object-cover border border-neutral-600"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeImage(index)}
+                      className="absolute -top-1.5 -right-1.5 bg-neutral-600 hover:bg-neutral-500 rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <X className="size-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <PromptInputTextarea
+              placeholder="Ask me anything..."
+              className="bg-transparent dark:bg-transparent"
+              onPaste={handlePaste}
+            />
+            <PromptInputActions className="justify-end pt-2">
+              <PromptInputAction tooltip="Attach image">
+                <FileUploadTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 rounded-full"
+                  >
+                    <Paperclip className="size-4" />
+                  </Button>
+                </FileUploadTrigger>
+              </PromptInputAction>
+              <PromptInputAction
+                tooltip={isLoading ? "Stop generation" : "Send message"}
               >
-                {isLoading ? (
-                  <Square className="size-4 fill-current" />
-                ) : (
-                  <ArrowUp className="size-4" />
-                )}
-              </Button>
-            </PromptInputAction>
-          </PromptInputActions>
-        </PromptInput>
-      </div>
+                <Button
+                  variant="default"
+                  size="icon"
+                  className="h-8 w-8 rounded-full"
+                  onClick={handleSubmit}
+                  disabled={!input.trim() && !isLoading}
+                >
+                  {isLoading ? (
+                    <Square className="size-4 fill-current" />
+                  ) : (
+                    <ArrowUp className="size-4" />
+                  )}
+                </Button>
+              </PromptInputAction>
+            </PromptInputActions>
+          </PromptInput>
+        </div>
+
+        <FileUploadContent className="border-2 border-dashed border-neutral-500">
+          <div className="flex flex-col items-center gap-2 text-neutral-300">
+            <ImageIcon className="size-12" />
+            <p className="text-lg font-medium">Drop images here</p>
+          </div>
+        </FileUploadContent>
+      </FileUpload>
     </div>
   );
 }

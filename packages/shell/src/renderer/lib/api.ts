@@ -7,6 +7,7 @@ import type {
   DevServerState,
   Workspace,
 } from "@/main/api";
+import type { ImageAttachment } from "@/shared/utils/message";
 import { fetchEventSource } from "@microsoft/fetch-event-source";
 import { ok, err } from "neverthrow";
 
@@ -235,8 +236,9 @@ export async function* sendMessage(params: {
   message: string;
   workspaceId: string;
   conversationId?: string;
+  images?: ImageAttachment[];
 }): AsyncGenerator<ChatMessageResponse> {
-  const { message, workspaceId, conversationId } = params;
+  const { message, workspaceId, conversationId, images } = params;
 
   const stream = new ReadableStream<ChatMessageResponse>({
     start(controller) {
@@ -249,6 +251,7 @@ export async function* sendMessage(params: {
           message,
           workspaceId,
           conversationId,
+          images,
         }),
 
         onmessage: (ev) => {

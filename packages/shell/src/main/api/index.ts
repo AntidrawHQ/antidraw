@@ -28,10 +28,16 @@ export const app = new Hono();
 
 app.route("/workspaces", workspaceController);
 
+const imageAttachmentSchema = z.object({
+  data: z.string(),
+  mediaType: z.string(),
+});
+
 const chatMessageSchema = z.object({
   message: z.string(),
   workspaceId: z.uuid(),
   conversationId: z.string().optional(),
+  images: z.array(imageAttachmentSchema).optional(),
 });
 
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
@@ -62,7 +68,7 @@ app.post(
   "/chat/message",
   zValidator("json", chatMessageSchema),
   async (ctx) => {
-    const { message, workspaceId, conversationId } = ctx.req.valid("json");
+    const { message, workspaceId, conversationId, images } = ctx.req.valid("json");
 
     const conversationRes = await resolveOrCreateConversation(
       workspaceId,
@@ -81,6 +87,7 @@ app.post(
       message,
       workspaceId,
       claudeCodeSessionID,
+      images,
     });
 
     if (res.isErr()) {
@@ -99,7 +106,8 @@ app.post(
     if (claudeCodeSessionID) {
       const userMsg = convertUserPromptToSDKMessage(
         message,
-        claudeCodeSessionID
+        claudeCodeSessionID,
+        images
       );
       // TODO: think about the experience when this fails.
       await addMessage({
@@ -123,7 +131,7 @@ app.post(
           await updateConversationSession(conversation.id, sessionId);
 
           // For new conversations, we must wait for init to get session_id before persisting user message
-          const userMsg = convertUserPromptToSDKMessage(message, sessionId);
+          const userMsg = convertUserPromptToSDKMessage(message, sessionId, images);
           // TODO: think about the experience when this fails.
           await addMessage({
             conversationId: conversation.id,
