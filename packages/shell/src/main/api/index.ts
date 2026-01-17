@@ -3,25 +3,33 @@ export type {
   Conversation,
   Message,
   ConversationWithMessages,
+  StreamStatus,
 } from "./models/chat.model";
+import type { Conversation, Message } from "./models/chat.model";
 export type { Workspace } from "./models/workspace.model";
 export type { CreateWorkspaceResponse } from "./controllers/workspace.controller";
 export type { DevServerState } from "@/main/lib/runtime-store";
 export type { DevServerInfo } from "@/main/services/dev-server.service";
 import { zValidator } from "@hono/zod-validator";
-import type { SSEMessage, SSEStreamingApi } from "hono/streaming";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import { sendMessage } from "@/main/api/claude-code-ops";
-import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
   createConversation,
   resolveOrCreateConversation,
   addMessage,
   updateConversationSession,
+  updateConversationStatus,
   convertUserPromptToSDKMessage,
   getConversation,
 } from "./services/chat.service";
+import {
+  streamEvents,
+  activeStreams,
+  registerStream,
+  unregisterStream,
+  cancelStream as cancelActiveStream,
+} from "@/main/lib/stream-manager";
 import { workspaceController } from "./controllers/workspace.controller";
 
 export const app = new Hono();
@@ -29,40 +37,97 @@ export const app = new Hono();
 app.route("/workspaces", workspaceController);
 
 const chatMessageSchema = z.object({
-  message: z.string(),
+  message: z.string().min(1),
   workspaceId: z.uuid(),
-  conversationId: z.string().optional(),
+  conversationId: z.string().uuid().optional(),
+  userMessageId: z.string().uuid(), // Frontend-generated, used for dedup
 });
 
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
 
-export type ChatMessageResponse =
-  | {
-      type: "message";
-      message: SDKMessage;
-    }
-  | {
-      type: "error";
-      message: "ERROR_INITING_CLAUDE_CODE" | (string & {});
-    };
+// Stream event types for SSE
+export type StreamEvent =
+  | { type: "message"; message: Message }
+  | { type: "complete" }
+  | { type: "error"; error: string };
 
-const writeSSETyped = (
-  stream: SSEStreamingApi,
-  payload: Omit<SSEMessage, "data"> & {
-    data: ChatMessageResponse;
-  }
+// Background processor for streaming messages
+const processStream = async (
+  conversation: Conversation,
+  message: string,
+  workspaceId: string,
+  userMessageId: string
 ) => {
-  stream.writeSSE({
-    ...payload,
-    data: JSON.stringify(payload.data),
-  });
+  const abortController = registerStream(conversation.id);
+
+  try {
+    const claudeCodeSessionID = conversation.claudeCodeSessionId ?? undefined;
+    const res = sendMessage({ message, workspaceId, claudeCodeSessionID });
+
+    if (res.isErr()) {
+      throw new Error("Failed to init Claude Code");
+    }
+
+    let sessionId = claudeCodeSessionID;
+
+    // For RESUMED conversations: persist user message immediately with frontend's ID
+    if (sessionId) {
+      const userMsg = convertUserPromptToSDKMessage(message, sessionId);
+      await addMessage({
+        id: userMessageId, // Use frontend-generated ID for dedup
+        conversationId: conversation.id,
+        messageType: "user_prompt",
+        sdkMessage: userMsg,
+      });
+    }
+
+    for await (const sdkMessage of res.value) {
+      // Manual abort check (SDK doesn't support AbortSignal natively)
+      if (abortController.signal.aborted) break;
+
+      // For NEW conversations: wait for init message to get session_id
+      if (
+        !sessionId &&
+        sdkMessage.type === "system" &&
+        sdkMessage.subtype === "init"
+      ) {
+        sessionId = sdkMessage.session_id;
+        await updateConversationSession(conversation.id, sessionId);
+
+        const userMsg = convertUserPromptToSDKMessage(message, sessionId);
+        await addMessage({
+          id: userMessageId, // Use frontend-generated ID for dedup
+          conversationId: conversation.id,
+          messageType: "user_prompt",
+          sdkMessage: userMsg,
+        });
+      }
+
+      // SDK messages use server-generated IDs
+      await addMessage({
+        conversationId: conversation.id,
+        messageType: "sdk_message",
+        sdkMessage,
+      });
+    }
+
+    await updateConversationStatus(conversation.id, "completed");
+    streamEvents.emit("complete", conversation.id);
+  } catch (e) {
+    const errorMessage = e instanceof Error ? e.message : "Unknown error";
+    streamEvents.emit("error", conversation.id, errorMessage);
+    await updateConversationStatus(conversation.id, "error");
+  } finally {
+    unregisterStream(conversation.id);
+  }
 };
 
 app.post(
   "/chat/message",
   zValidator("json", chatMessageSchema),
   async (ctx) => {
-    const { message, workspaceId, conversationId } = ctx.req.valid("json");
+    const { message, workspaceId, conversationId, userMessageId } =
+      ctx.req.valid("json");
 
     const conversationRes = await resolveOrCreateConversation(
       workspaceId,
@@ -75,78 +140,49 @@ app.post(
     }
 
     const conversation = conversationRes.value;
-    const claudeCodeSessionID = conversation.claudeCodeSessionId ?? undefined;
 
-    const res = sendMessage({
-      message,
-      workspaceId,
-      claudeCodeSessionID,
-    });
-
-    if (res.isErr()) {
+    // Short circuit with in-memory check first (faster, handles race condition)
+    if (activeStreams.has(conversation.id)) {
       return ctx.json(
         {
           error: {
-            code: res.error,
-            message: "Failed to initialize Claude Code",
+            code: "ALREADY_STREAMING",
+            message: "Wait for current response",
           },
         },
-        500
+        409
       );
     }
 
-    // For resumed conversations, persist user message before streaming (we already have session ID)
-    if (claudeCodeSessionID) {
-      const userMsg = convertUserPromptToSDKMessage(
-        message,
-        claudeCodeSessionID
-      );
-      // TODO: think about the experience when this fails.
-      await addMessage({
-        conversationId: conversation.id,
-        messageType: "user_prompt",
-        sdkMessage: userMsg,
-      });
-    }
-
-    return streamSSE(ctx, async (stream) => {
-      let sessionId = claudeCodeSessionID;
-
-      for await (let sdkMessage of res.value) {
-        // Capture session_id from init message (new conversations only)
-        if (
-          !sessionId &&
-          sdkMessage.type === "system" &&
-          sdkMessage.subtype === "init"
-        ) {
-          sessionId = sdkMessage.session_id;
-          await updateConversationSession(conversation.id, sessionId);
-
-          // For new conversations, we must wait for init to get session_id before persisting user message
-          const userMsg = convertUserPromptToSDKMessage(message, sessionId);
-          // TODO: think about the experience when this fails.
-          await addMessage({
-            conversationId: conversation.id,
-            messageType: "user_prompt",
-            sdkMessage: userMsg,
-          });
-        }
-
-        // Persist and stream SDK message
-        // TODO: think about the experience when this fails.
-        await addMessage({
-          conversationId: conversation.id,
-          messageType: "sdk_message",
-          sdkMessage,
-        });
-        writeSSETyped(stream, {
-          data: {
-            type: "message",
-            message: sdkMessage,
+    // DB check as fallback (handles app restart edge case)
+    if (conversation.streamStatus === "streaming") {
+      return ctx.json(
+        {
+          error: {
+            code: "ALREADY_STREAMING",
+            message: "Wait for current response",
           },
-        });
+        },
+        409
+      );
+    }
+
+    await updateConversationStatus(conversation.id, "streaming");
+
+    // Fire and forget - .catch handles errors without blocking response
+    processStream(conversation, message, workspaceId, userMessageId).catch(
+      async (err) => {
+        console.error("Unexpected stream error:", err);
+        await updateConversationStatus(conversation.id, "error");
+        streamEvents.emit(
+          "error",
+          conversation.id,
+          err instanceof Error ? err.message : "Unknown error"
+        );
       }
-    });
+    );
+
+    return ctx.json({ conversationId: conversation.id }, 202);
   }
 );
 
@@ -171,6 +207,68 @@ app.get(
     }
 
     return ctx.json(conversation.value);
+  }
+);
+
+// SSE endpoint for subscribing to stream events
+app.get(
+  "/chat/:conversationId/stream",
+  zValidator("param", z.object({ conversationId: z.uuid() })),
+  async (ctx) => {
+    const { conversationId } = ctx.req.valid("param");
+
+    return streamSSE(ctx, async (stream) => {
+      const onMessage = (convId: string, message: Message) => {
+        if (convId !== conversationId) return;
+        stream.writeSSE({
+          data: JSON.stringify({ type: "message", message } satisfies StreamEvent),
+        });
+      };
+
+      const onComplete = (convId: string) => {
+        if (convId !== conversationId) return;
+        stream.writeSSE({
+          data: JSON.stringify({ type: "complete" } satisfies StreamEvent),
+        });
+      };
+
+      const onError = (convId: string, error: string) => {
+        if (convId !== conversationId) return;
+        stream.writeSSE({
+          data: JSON.stringify({ type: "error", error } satisfies StreamEvent),
+        });
+      };
+
+      streamEvents.on("message", onMessage);
+      streamEvents.on("complete", onComplete);
+      streamEvents.on("error", onError);
+
+      ctx.req.raw.signal.addEventListener("abort", () => {
+        streamEvents.off("message", onMessage);
+        streamEvents.off("complete", onComplete);
+        streamEvents.off("error", onError);
+      });
+
+      // Keep alive until client disconnects
+      await new Promise(() => {});
+    });
+  }
+);
+
+// Cancel an active stream
+app.delete(
+  "/chat/:conversationId/stream",
+  zValidator("param", z.object({ conversationId: z.uuid() })),
+  async (ctx) => {
+    const { conversationId } = ctx.req.valid("param");
+
+    if (cancelActiveStream(conversationId)) {
+      await updateConversationStatus(conversationId, "cancelled");
+      streamEvents.emit("complete", conversationId);
+      return ctx.json({ cancelled: true });
+    }
+
+    return ctx.json({ cancelled: false }, 404);
   }
 );
 

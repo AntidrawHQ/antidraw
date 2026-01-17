@@ -15,7 +15,7 @@ import { cn } from "@/renderer/lib/utils";
 import { ArrowUp, Square } from "lucide-react";
 import { useState } from "react";
 import {
-  useConversationMessages,
+  useConversationWithStream,
   useCreateConversation,
   useSendMessage,
   useToolMap,
@@ -33,18 +33,22 @@ export function AppChat({ className, ...props }: AppChatProps) {
 
   const createConversation = useCreateConversation();
   const sendMessage = useSendMessage();
-  const { data: conversation } = useConversationMessages(activeConversationId);
+  const { data: conversation } = useConversationWithStream(activeConversationId);
   const { data: toolMap } = useToolMap(activeConversationId);
 
   const messages = conversation?.messages ?? [];
+  const isStreaming = conversation?.streamStatus === "streaming";
 
-  const isLoading = createConversation.isPending || sendMessage.isPending;
+  const isLoading = createConversation.isPending || sendMessage.isPending || isStreaming;
 
   const handleSubmit = async () => {
     if (!activeWorkspaceId || !input.trim() || isLoading) return;
 
     const prompt = input.trim();
     setInput("");
+
+    // Generate userMessageId for dedup
+    const userMessageId = crypto.randomUUID();
 
     if (!activeConversationId) {
       const conv = await createConversation.mutateAsync(activeWorkspaceId);
@@ -53,12 +57,14 @@ export function AppChat({ className, ...props }: AppChatProps) {
         message: prompt,
         workspaceId: activeWorkspaceId,
         conversationId: conv.id,
+        userMessageId,
       });
     } else {
       await sendMessage.mutateAsync({
         message: prompt,
         workspaceId: activeWorkspaceId,
         conversationId: activeConversationId,
+        userMessageId,
       });
     }
   };

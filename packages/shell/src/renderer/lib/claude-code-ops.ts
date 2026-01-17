@@ -6,6 +6,8 @@ import {
   getConversationWithMessages,
   listWorkspaceConversations,
   sendMessage,
+  subscribeToConversation,
+  type StreamEvent,
 } from "./api";
 import { selectToolMap } from "./tool-utils";
 
@@ -27,6 +29,65 @@ export const useConversationMessages = (conversationId: string | null) => {
     ...conversationQueryOptions(conversationId!),
     enabled: !!conversationId,
   });
+};
+
+// Hook that subscribes to stream events when conversation is streaming
+export const useConversationWithStream = (conversationId: string | null) => {
+  const queryClient = useQueryClient();
+
+  // Main data query
+  const query = useQuery({
+    ...conversationQueryOptions(conversationId!),
+    enabled: !!conversationId,
+  });
+
+  const isStreaming = query.data?.streamStatus === "streaming";
+
+  // Stream subscription as a query (not useEffect!)
+  useQuery({
+    queryKey: ["conversation-stream", conversationId],
+    queryFn: async () => {
+      const stream = subscribeToConversation(conversationId!);
+
+      for await (const event of stream) {
+        if (event.type === "message") {
+          queryClient.setQueryData<ConversationWithMessages>(
+            ["conversation", conversationId],
+            (old) => {
+              if (!old) return old;
+              // Dedup by ID - works because frontend generates userMessageId
+              if (old.messages.some((m) => m.id === event.message.id)) return old;
+              return { ...old, messages: [...old.messages, event.message] };
+            }
+          );
+        }
+
+        if (event.type === "complete") {
+          queryClient.setQueryData<ConversationWithMessages>(
+            ["conversation", conversationId],
+            (old) => (old ? { ...old, streamStatus: "completed" } : old)
+          );
+          return { status: "complete" as const };
+        }
+
+        if (event.type === "error") {
+          queryClient.setQueryData<ConversationWithMessages>(
+            ["conversation", conversationId],
+            (old) => (old ? { ...old, streamStatus: "error" } : old)
+          );
+          return { status: "error" as const };
+        }
+      }
+
+      return { status: "complete" as const };
+    },
+    enabled: !!conversationId && isStreaming,
+    staleTime: Infinity,
+    gcTime: 0,
+    retry: false,
+  });
+
+  return query;
 };
 
 export const useWorkspaceConversations = (workspaceId: string | null) => {
@@ -75,6 +136,7 @@ export const useCreateConversation = () => {
   });
 };
 
+// Send mutation with optimistic update
 export const useSendMessage = () => {
   const queryClient = useQueryClient();
 
@@ -83,44 +145,18 @@ export const useSendMessage = () => {
       message: string;
       workspaceId: string;
       conversationId: string;
+      userMessageId: string; // Frontend generates this
     }) => {
-      const { message, workspaceId, conversationId } = params;
+      const result = await sendMessage(params);
 
-      const stream = sendMessage({
-        message,
-        workspaceId,
-        conversationId,
-      });
-
-      for await (const response of stream) {
-        if (response.type === "error") {
-          throw new Error(response.message);
-        }
-
-        // Incrementally update cache with each streamed message
-        queryClient.setQueryData<ConversationWithMessages>(
-          ["conversation", conversationId],
-          (prev) => {
-            if (!prev) return prev;
-
-            const newMessage: Message = {
-              id: response.message.uuid ?? crypto.randomUUID(),
-              conversationId,
-              messageType: "sdk_message",
-              sdkMessage: response.message,
-              createdAt: new Date(),
-            };
-
-            return {
-              ...prev,
-              messages: [...prev.messages, newMessage],
-            };
-          }
-        );
+      if (result.isErr()) {
+        throw new Error(result.error.message);
       }
+
+      return result.value;
     },
 
-    onMutate: async ({ message, conversationId }) => {
+    onMutate: async ({ message, conversationId, userMessageId }) => {
       // Cancel any outgoing refetches
       await queryClient.cancelQueries({
         queryKey: ["conversation", conversationId],
@@ -138,15 +174,15 @@ export const useSendMessage = () => {
         throw new Error("Conversation not found in cache");
       }
 
-      // Optimistically add user message
+      // Optimistic user message with same ID backend will use
       const sdkMessage = createUserSDKMessage({
         text: message,
         sessionId: previousChat.claudeCodeSessionId ?? "",
-        uuid: crypto.randomUUID(),
+        uuid: userMessageId as `${string}-${string}-${string}-${string}-${string}`,
       });
 
-      const optimisticUserMessage: Message = {
-        id: crypto.randomUUID(),
+      const userMessage: Message = {
+        id: userMessageId, // Same ID sent to backend - dedup works!
         conversationId,
         messageType: "user_prompt",
         sdkMessage,
@@ -157,7 +193,8 @@ export const useSendMessage = () => {
         ["conversation", conversationId],
         {
           ...previousChat,
-          messages: [...previousChat.messages, optimisticUserMessage],
+          streamStatus: "streaming",
+          messages: [...previousChat.messages, userMessage],
         }
       );
 
