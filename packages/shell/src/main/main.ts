@@ -2,6 +2,18 @@ import { app, BrowserWindow, protocol, session } from "electron";
 import path from "path";
 
 import { app as HonoAPI } from "./api";
+
+// Increase file descriptor limit for POSIX systems (macOS/Linux)
+// Each network connection uses a file descriptor - with many iframes
+// making concurrent requests, the default limit (often 256-1024) can be exhausted
+if (process.platform !== "win32") {
+  try {
+    process.setFdLimit(8192);
+  } catch {
+    // Fall back to system default if hard limit is lower than 8192
+  }
+}
+
 import {
   cleanupOrphanedProcesses,
   stopAllDevServers,
