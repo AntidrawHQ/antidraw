@@ -132,7 +132,7 @@ export const startDevServer = async (
       const output = data.toString();
       console.log(`[${workspaceId}] ${output.trim()}`);
 
-      // Vite outputs "ready in X ms" or "Local: http://localhost:PORT"
+      // Vite outputs "ready in X ms" or "Local: https://localhost:PORT"
       if (output.includes("ready in") || output.includes(`localhost:${port}`)) {
         clearTimeout(timeout);
         proc.stdout.off("data", onData);

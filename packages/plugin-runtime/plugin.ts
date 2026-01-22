@@ -1,3 +1,4 @@
+import fs from "fs"
 import path from "path"
 import { fileURLToPath } from "url"
 import type { Plugin } from "vite"
@@ -6,6 +7,7 @@ import tailwindcss from "@tailwindcss/vite"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const runtimeSrc = path.resolve(__dirname, "../src")
+const certsDir = path.resolve(__dirname, "../certs")
 
 const USER_COMPONENTS_DIR = "./src/components/user-components"
 const VIRTUAL_USER_COMPONENTS = "@antidrawapp/user-components"
@@ -16,6 +18,12 @@ export const antidraw = (): Plugin[] => {
     {
       name: "antidraw:config",
       config: () => ({
+        server: {
+          https: {
+            key: fs.readFileSync(path.join(certsDir, "localhost.key")),
+            cert: fs.readFileSync(path.join(certsDir, "localhost.crt")),
+          },
+        },
         resolve: {
           alias: {
             "@": path.resolve(process.cwd(), "./src"),

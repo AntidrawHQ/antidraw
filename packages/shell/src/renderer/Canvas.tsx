@@ -12,13 +12,15 @@ import { useUserComponents } from "./store/userComponents";
 import { useWorkspaceStore } from "./store/workspace";
 import { useDevServerStatus } from "./lib/workspace-ops";
 import { cn } from "./lib/utils";
+import { Semaphore } from "./lib/semaphore";
 
 type IframeNodeProps = {
-  url: string;
+  url: string | undefined;
   selected: boolean;
+  onLoad?: () => void;
 };
 
-const IframeNode = memo(({ url, selected }: IframeNodeProps) => {
+const IframeNode = memo(({ url, selected, onLoad }: IframeNodeProps) => {
   const [isResizing, setIsResizing] = useState(false);
   const [interactionMode, setInteractionMode] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -66,13 +68,19 @@ const IframeNode = memo(({ url, selected }: IframeNodeProps) => {
 
       {/* Iframe wrapper with overflow-hidden to clip iframe content */}
       <div className="absolute inset-0 overflow-hidden">
-        <iframe
-          ref={iframeRef}
-          src={url}
-          loading="lazy"
-          className="iframe-content h-full w-full border-0"
-          sandbox="allow-scripts allow-same-origin"
-        />
+        {url ? (
+          <iframe
+            ref={iframeRef}
+            src={url}
+            className="iframe-content h-full w-full border-0"
+            sandbox="allow-scripts allow-same-origin"
+            onLoad={onLoad}
+          />
+        ) : (
+          <div className="flex items-center justify-center h-full bg-neutral-900">
+            <span className="text-xs text-neutral-500">Loading...</span>
+          </div>
+        )}
       </div>
 
       {/* Overlay on top of iframe - blocks events when not in interaction mode */}
@@ -95,13 +103,43 @@ type IframeNodeData = {
 // Define node type alias for better type inference
 type IframeReactFlowNode = Node<IframeNodeData, "iframe">;
 
+// Semaphore to limit concurrent iframe loads
+const iframeSemaphore = new Semaphore(10);
+
 // Wrapper component that React Flow renders - defined OUTSIDE component to prevent recreation
 const IframeNodeRenderer = ({
   data,
   selected,
-}: NodeProps<IframeReactFlowNode>) => (
-  <IframeNode url={data.url} selected={selected} />
-);
+}: NodeProps<IframeReactFlowNode>) => {
+  const [url, setUrl] = useState<string | undefined>(undefined);
+  const releaseRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    iframeSemaphore.acquire().then((release) => {
+      if (cancelled) {
+        release();
+        return;
+      }
+      releaseRef.current = release;
+      setUrl(data.url);
+    });
+
+    return () => {
+      cancelled = true;
+      releaseRef.current?.();
+      releaseRef.current = null;
+    };
+  }, [data.url]);
+
+  const handleLoad = useCallback(() => {
+    releaseRef.current?.();
+    releaseRef.current = null;
+  }, []);
+
+  return <IframeNode url={url} selected={selected} onLoad={handleLoad} />;
+};
 
 // Define nodeTypes at module level - this is critical for React Flow performance
 const nodeTypes: NodeTypes = {
@@ -140,7 +178,7 @@ const CanvasContent = ({
       position: { x: 100 + index * 600, y: 100 },
       style: { width: 400, height: 300 },
       data: {
-        url: `http://localhost:${port}/preview?componentName=${component.name}`,
+        url: `https://localhost:${port}/preview?componentName=${component.name}`,
         componentName: component.name,
       },
     })
@@ -187,7 +225,7 @@ const CanvasContent = ({
           position: { x: maxX + 500 + index * 600, y: 100 },
           style: { width: 400, height: 300 },
           data: {
-            url: `http://localhost:${port}/preview?componentName=${component.name}`,
+            url: `https://localhost:${port}/preview?componentName=${component.name}`,
             componentName: component.name,
           },
         })),
