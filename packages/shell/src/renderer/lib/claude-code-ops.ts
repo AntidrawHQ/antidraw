@@ -1,15 +1,16 @@
 import type { Conversation, ConversationWithMessages, Message } from "@/main/api";
 import { createUserSDKMessage } from "@/shared/utils/message";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect } from "react";
 import {
+  cancelConversationStream,
   createConversation,
   generateConversationTitle,
   getConversationWithMessages,
   listWorkspaceConversations,
   sendMessage,
-  subscribeToConversation,
-  type StreamEvent,
 } from "./api";
+import { subscribeToStream } from "./stream-subscription";
 import { selectToolMap } from "./tool-utils";
 
 // Shared query options for conversation data
@@ -42,61 +43,14 @@ export const useConversationWithStream = (conversationId: string | null) => {
     enabled: !!conversationId,
   });
 
-  // @CLAUDE-CODE: will this reactively update ? wont this be stale ? 
   const isStreaming = query.data?.streamStatus === "streaming";
 
-  // Stream subscription as a query (not useEffect!)
-  useQuery({
-    queryKey: ["conversation-stream", conversationId],
-    queryFn: async () => {
-      const stream = subscribeToConversation(conversationId!);
-
-      for await (const event of stream) {
-        if (event.type === "message") {
-          queryClient.setQueryData<ConversationWithMessages>(
-            ["conversation", conversationId],
-            (old) => {
-              if (!old) return old;
-              // Dedup by ID - works because frontend generates userMessageId
-              if (old.messages.some((m) => m.id === event.message.id))
-                return old;
-              return { ...old, messages: [...old.messages, event.message] };
-            },
-          );
-        }
-
-        if (event.type === "complete") {
-          queryClient.setQueryData<ConversationWithMessages>(
-            ["conversation", conversationId],
-            (old) => (old ? { ...old, streamStatus: "completed" } : old),
-          );
-          return { status: "complete" as const };
-        }
-
-        if (event.type === "cancelled") {
-          queryClient.setQueryData<ConversationWithMessages>(
-            ["conversation", conversationId],
-            (old) => (old ? { ...old, streamStatus: "cancelled" } : old),
-          );
-          return { status: "cancelled" as const };
-        }
-
-        if (event.type === "error") {
-          queryClient.setQueryData<ConversationWithMessages>(
-            ["conversation", conversationId],
-            (old) => (old ? { ...old, streamStatus: "error" } : old),
-          );
-          return { status: "error" as const };
-        }
-      }
-
-      return { status: "complete" as const };
-    },
-    enabled: !!conversationId && isStreaming,
-    staleTime: Infinity,
-    gcTime: 0,
-    retry: false,
-  });
+  // SSE subscription - fire and forget, runs until server terminates
+  useEffect(() => {
+    if (!conversationId || !isStreaming) return;
+    subscribeToStream(conversationId, queryClient);
+    // No cleanup - subscription runs until server sends terminal event
+  }, [conversationId, isStreaming, queryClient]);
 
   return query;
 };
@@ -268,3 +222,17 @@ export const useGenerateTitle = () => {
   });
 };
 
+export const useCancelStream = () => {
+  return useMutation({
+    mutationFn: async (conversationId: string) => {
+      const result = await cancelConversationStream(conversationId);
+
+      if (result.isErr()) {
+        throw new Error(result.error.message);
+      }
+
+      return result.value;
+    },
+    // No cache updates needed - SSE handler will receive "complete" event
+  });
+};

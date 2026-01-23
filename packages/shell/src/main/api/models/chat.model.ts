@@ -6,12 +6,11 @@ import { workspaces } from "./workspace.model";
 
 // Use text + TS type (not SQLite enum - simpler, no migration issues for new statuses)
 export type StreamStatus =
-// @CLAUDE-CODE: what does idle do. what's the difference b/w completed and idle ? do we need completed ? when a stream ends it goes back to idel ?
-| "idle"
+  // @CLAUDE-CODE: what does idle do. what's the difference b/w completed and idle ? do we need completed ? when a stream ends it goes back to idel ?
+  | "idle"
   | "streaming"
   | "completed"
-  | "error"
-  | "cancelled";
+  | "error";
 
 export const conversations = sqliteTable("conversations", {
   id: text("id").primaryKey(),

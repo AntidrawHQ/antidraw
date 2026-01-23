@@ -50,7 +50,6 @@ export type ChatMessage = z.infer<typeof chatMessageSchema>;
 export type StreamEvent =
   | { type: "message"; message: Message }
   | { type: "complete" }
-  | { type: "cancelled" }
   | { type: "error"; error: string };
 
 // Background processor for streaming messages
@@ -60,15 +59,20 @@ const processStream = async (
   workspaceId: string,
   userMessageId: string,
 ) => {
-  const abortController = registerStream(conversation.id);
-
   try {
     const claudeCodeSessionID = conversation.claudeCodeSessionId ?? undefined;
-    const res = sendMessage({ message, workspaceId, claudeCodeSessionID });
+    const res = sendMessage({
+      message,
+      workspaceId,
+      claudeCodeSessionID,
+    });
 
     if (res.isErr()) {
       throw new Error("Failed to init Claude Code");
     }
+
+    // Register the query for cancellation via interrupt()
+    registerStream(conversation.id, res.value);
 
     let sessionId = claudeCodeSessionID;
 
@@ -84,7 +88,6 @@ const processStream = async (
     }
 
     for await (const sdkMessage of res.value) {
-      if (abortController.signal.aborted) break;
 
       // For NEW conversations: wait for init message to get session_id
       if (
@@ -236,13 +239,6 @@ app.get(
         });
       };
 
-      const onCancelled = (convId: string) => {
-        if (convId !== conversationId) return;
-        stream.writeSSE({
-          data: JSON.stringify({ type: "cancelled" } satisfies StreamEvent),
-        });
-      };
-
       const onError = (convId: string, error: string) => {
         if (convId !== conversationId) return;
         stream.writeSSE({
@@ -252,13 +248,11 @@ app.get(
 
       streamEvents.on("message", onMessage);
       streamEvents.on("complete", onComplete);
-      streamEvents.on("cancelled", onCancelled);
       streamEvents.on("error", onError);
 
       ctx.req.raw.signal.addEventListener("abort", () => {
         streamEvents.off("message", onMessage);
         streamEvents.off("complete", onComplete);
-        streamEvents.off("cancelled", onCancelled);
         streamEvents.off("error", onError);
       });
 
@@ -275,9 +269,8 @@ app.delete(
   async (ctx) => {
     const { conversationId } = ctx.req.valid("param");
 
-    if (cancelActiveStream(conversationId)) {
-      await updateConversationStatus(conversationId, "cancelled");
-      streamEvents.emit("cancelled", conversationId);
+    // Just trigger interrupt - stream will end naturally via processStream
+    if (await cancelActiveStream(conversationId)) {
       return ctx.json({ cancelled: true });
     }
 
@@ -322,7 +315,7 @@ app.post(
     if (result.isErr()) {
       return ctx.json(
         { error: { code: result.error, message: "Failed to generate title" } },
-        500
+        500,
       );
     }
 
@@ -330,7 +323,7 @@ app.post(
     const updateResult = await updateConversationTitleAndSummary(
       conversationId,
       title,
-      summary
+      summary,
     );
 
     if (updateResult.isErr()) {

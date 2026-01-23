@@ -1,10 +1,10 @@
 import { EventEmitter } from "events";
 import type { Message } from "@/main/api/models/chat.model";
+import type { Query } from "@anthropic-ai/claude-agent-sdk";
 
 type ConversationEvents = {
   message: [conversationId: string, message: Message];
   complete: [conversationId: string];
-  cancelled: [conversationId: string];
   error: [conversationId: string, error: string];
 };
 
@@ -12,23 +12,20 @@ class ConversationEventEmitter extends EventEmitter<ConversationEvents> {}
 
 // Simple exports - no wrapper object
 export const streamEvents = new ConversationEventEmitter();
-export const activeStreams = new Map<string, AbortController>();
+export const activeStreams = new Map<string, Query>();
 
-export const registerStream = (conversationId: string): AbortController => {
-  const controller = new AbortController();
-  activeStreams.set(conversationId, controller);
-  return controller;
+export const registerStream = (conversationId: string, query: Query): void => {
+  activeStreams.set(conversationId, query);
 };
 
 export const unregisterStream = (conversationId: string): void => {
-  // @CLAUDE-CODE: will it be problamatic to unregister a stream without aborting the abort controller ?
   activeStreams.delete(conversationId);
 };
 
-export const cancelStream = (conversationId: string): boolean => {
-  const controller = activeStreams.get(conversationId);
-  if (controller) {
-    controller.abort();
+export const cancelStream = async (conversationId: string): Promise<boolean> => {
+  const query = activeStreams.get(conversationId);
+  if (query) {
+    await query.interrupt();
     return true;
   }
   return false;

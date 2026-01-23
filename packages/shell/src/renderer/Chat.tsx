@@ -15,6 +15,7 @@ import { cn } from "@/renderer/lib/utils";
 import { ArrowUp, Square } from "lucide-react";
 import { useState } from "react";
 import {
+  useCancelStream,
   useConversationWithStream,
   useCreateConversation,
   useGenerateTitle,
@@ -35,6 +36,7 @@ export function AppChat({ className, ...props }: AppChatProps) {
   const createConversation = useCreateConversation();
   const sendMessage = useSendMessage();
   const generateTitle = useGenerateTitle();
+  const cancelStream = useCancelStream();
   const { data: conversation } = useConversationWithStream(activeConversationId);
   const { data: toolMap } = useToolMap(activeConversationId);
 
@@ -75,6 +77,12 @@ export function AppChat({ className, ...props }: AppChatProps) {
         workspaceId: activeWorkspaceId,
         firstMessage: prompt,
       });
+    }
+  };
+
+  const handleStop = () => {
+    if (activeConversationId) {
+      cancelStream.mutate(activeConversationId);
     }
   };
 
@@ -168,23 +176,30 @@ export function AppChat({ className, ...props }: AppChatProps) {
             className="bg-transparent dark:bg-transparent"
           />
           <PromptInputActions className="justify-end pt-2">
-            <PromptInputAction
-              tooltip={isLoading ? "Stop generation" : "Send message"}
-            >
-              <Button
-                variant="default"
-                size="icon"
-                className="h-8 w-8 rounded-full"
-                onClick={handleSubmit}
-                disabled={!input.trim() && !isLoading}
-              >
-                {isLoading ? (
+            {isStreaming ? (
+              <PromptInputAction tooltip="Stop generation">
+                <Button
+                  variant="default"
+                  size="icon"
+                  className="h-8 w-8 rounded-full"
+                  onClick={handleStop}
+                >
                   <Square className="size-4 fill-current" />
-                ) : (
+                </Button>
+              </PromptInputAction>
+            ) : (
+              <PromptInputAction tooltip="Send message">
+                <Button
+                  variant="default"
+                  size="icon"
+                  className="h-8 w-8 rounded-full"
+                  onClick={handleSubmit}
+                  disabled={!input.trim() || isLoading}
+                >
                   <ArrowUp className="size-4" />
-                )}
-              </Button>
-            </PromptInputAction>
+                </Button>
+              </PromptInputAction>
+            )}
           </PromptInputActions>
         </PromptInput>
       </div>

@@ -267,13 +267,18 @@ export const sendMessage = async (params: {
 
 // Subscribe to conversation stream events via SSE
 export const subscribeToConversation = async function* (
-  conversationId: string
+  conversationId: string,
 ): AsyncGenerator<StreamEvent> {
   const stream = new ReadableStream<StreamEvent>({
     start(controller) {
       fetchEventSource(`antidraw://_internal/chat/${conversationId}/stream`, {
         onmessage: (ev) => {
-          controller.enqueue(JSON.parse(ev.data) as StreamEvent);
+          const event = JSON.parse(ev.data) as StreamEvent;
+          controller.enqueue(event);
+          // Close stream on terminal events - for-await loop will exit naturally
+          if (event.type === "complete" || event.type === "error") {
+            controller.close();
+          }
         },
         onerror: (error) => controller.error(error),
         onclose: () => controller.close(),
