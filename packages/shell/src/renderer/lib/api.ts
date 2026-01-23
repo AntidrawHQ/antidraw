@@ -367,3 +367,39 @@ export const createConversation = async (workspaceId: string) => {
     });
   }
 };
+
+export type GenerateTitleResponse = { title: string; summary: string };
+
+export const generateConversationTitle = async (
+  conversationId: string,
+  firstMessage: string
+) => {
+  try {
+    const response = await fetch(
+      `antidraw://_internal/chat/${conversationId}/generate-title`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ firstMessage }),
+      }
+    );
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      return err({
+        status: response.status as 404 | 500,
+        code: errorBody?.error?.code ?? "FETCH_ERROR",
+        message: errorBody?.error?.message ?? response.statusText,
+      });
+    }
+
+    const data: GenerateTitleResponse = await response.json();
+    return ok(data);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "NETWORK_ERROR",
+      message: "Failed to generate title",
+    });
+  }
+};

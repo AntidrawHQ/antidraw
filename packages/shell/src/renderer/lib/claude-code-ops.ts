@@ -1,8 +1,9 @@
-import type { ConversationWithMessages, Message } from "@/main/api";
+import type { Conversation, ConversationWithMessages, Message } from "@/main/api";
 import { createUserSDKMessage } from "@/shared/utils/message";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   createConversation,
+  generateConversationTitle,
   getConversationWithMessages,
   listWorkspaceConversations,
   sendMessage,
@@ -41,6 +42,7 @@ export const useConversationWithStream = (conversationId: string | null) => {
     enabled: !!conversationId,
   });
 
+  // @CLAUDE-CODE: will this reactively update ? wont this be stale ? 
   const isStreaming = query.data?.streamStatus === "streaming";
 
   // Stream subscription as a query (not useEffect!)
@@ -56,24 +58,33 @@ export const useConversationWithStream = (conversationId: string | null) => {
             (old) => {
               if (!old) return old;
               // Dedup by ID - works because frontend generates userMessageId
-              if (old.messages.some((m) => m.id === event.message.id)) return old;
+              if (old.messages.some((m) => m.id === event.message.id))
+                return old;
               return { ...old, messages: [...old.messages, event.message] };
-            }
+            },
           );
         }
 
         if (event.type === "complete") {
           queryClient.setQueryData<ConversationWithMessages>(
             ["conversation", conversationId],
-            (old) => (old ? { ...old, streamStatus: "completed" } : old)
+            (old) => (old ? { ...old, streamStatus: "completed" } : old),
           );
           return { status: "complete" as const };
+        }
+
+        if (event.type === "cancelled") {
+          queryClient.setQueryData<ConversationWithMessages>(
+            ["conversation", conversationId],
+            (old) => (old ? { ...old, streamStatus: "cancelled" } : old),
+          );
+          return { status: "cancelled" as const };
         }
 
         if (event.type === "error") {
           queryClient.setQueryData<ConversationWithMessages>(
             ["conversation", conversationId],
-            (old) => (old ? { ...old, streamStatus: "error" } : old)
+            (old) => (old ? { ...old, streamStatus: "error" } : old),
           );
           return { status: "error" as const };
         }
@@ -130,7 +141,12 @@ export const useCreateConversation = () => {
       // Pre-populate cache with empty messages
       queryClient.setQueryData<ConversationWithMessages>(
         ["conversation", conversation.id],
-        { ...conversation, messages: [] }
+        { ...conversation, messages: [] },
+      );
+      // Add to workspace conversations list
+      queryClient.setQueryData<Conversation[]>(
+        ["workspace-conversations", conversation.workspaceId],
+        (old) => (old ? [conversation, ...old] : [conversation]),
       );
     },
   });
@@ -195,7 +211,7 @@ export const useSendMessage = () => {
           ...previousChat,
           streamStatus: "streaming",
           messages: [...previousChat.messages, userMessage],
-        }
+        },
       );
 
       return { previousChat };
@@ -205,9 +221,50 @@ export const useSendMessage = () => {
       if (context?.previousChat) {
         queryClient.setQueryData(
           ["conversation", conversationId],
-          context.previousChat
+          context.previousChat,
         );
       }
     },
   });
 };
+
+export const useGenerateTitle = () => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      conversationId,
+      firstMessage,
+    }: {
+      conversationId: string;
+      firstMessage: string;
+      workspaceId: string;
+    }) => {
+      const result = await generateConversationTitle(conversationId, firstMessage);
+
+      if (result.isErr()) {
+        throw new Error(result.error.message);
+      }
+
+      return result.value;
+    },
+    onSuccess: (data, { conversationId, workspaceId }) => {
+      // Update conversation cache
+      queryClient.setQueryData<ConversationWithMessages>(
+        ["conversation", conversationId],
+        (old) => (old ? { ...old, title: data.title, summary: data.summary } : old)
+      );
+      // Update sidebar list
+      queryClient.setQueryData<Conversation[]>(
+        ["workspace-conversations", workspaceId],
+        (old) =>
+          old?.map((c) =>
+            c.id === conversationId
+              ? { ...c, title: data.title, summary: data.summary }
+              : c
+          )
+      );
+    },
+  });
+};
+

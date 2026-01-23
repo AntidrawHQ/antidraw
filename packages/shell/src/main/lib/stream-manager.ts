@@ -4,6 +4,7 @@ import type { Message } from "@/main/api/models/chat.model";
 type ConversationEvents = {
   message: [conversationId: string, message: Message];
   complete: [conversationId: string];
+  cancelled: [conversationId: string];
   error: [conversationId: string, error: string];
 };
 
@@ -20,6 +21,7 @@ export const registerStream = (conversationId: string): AbortController => {
 };
 
 export const unregisterStream = (conversationId: string): void => {
+  // @CLAUDE-CODE: will it be problamatic to unregister a stream without aborting the abort controller ?
   activeStreams.delete(conversationId);
 };
 

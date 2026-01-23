@@ -13,13 +13,14 @@ export type { DevServerInfo } from "@/main/services/dev-server.service";
 import { zValidator } from "@hono/zod-validator";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
-import { sendMessage } from "@/main/api/claude-code-ops";
+import { sendMessage, generateTitle } from "@/main/api/claude-code-ops";
 import {
   createConversation,
   resolveOrCreateConversation,
   addMessage,
   updateConversationSession,
   updateConversationStatus,
+  updateConversationTitleAndSummary,
   convertUserPromptToSDKMessage,
   getConversation,
 } from "./services/chat.service";
@@ -49,6 +50,7 @@ export type ChatMessage = z.infer<typeof chatMessageSchema>;
 export type StreamEvent =
   | { type: "message"; message: Message }
   | { type: "complete" }
+  | { type: "cancelled" }
   | { type: "error"; error: string };
 
 // Background processor for streaming messages
@@ -56,7 +58,7 @@ const processStream = async (
   conversation: Conversation,
   message: string,
   workspaceId: string,
-  userMessageId: string
+  userMessageId: string,
 ) => {
   const abortController = registerStream(conversation.id);
 
@@ -82,7 +84,6 @@ const processStream = async (
     }
 
     for await (const sdkMessage of res.value) {
-      // Manual abort check (SDK doesn't support AbortSignal natively)
       if (abortController.signal.aborted) break;
 
       // For NEW conversations: wait for init message to get session_id
@@ -131,7 +132,7 @@ app.post(
 
     const conversationRes = await resolveOrCreateConversation(
       workspaceId,
-      conversationId
+      conversationId,
     );
 
     if (conversationRes.isErr()) {
@@ -150,7 +151,7 @@ app.post(
             message: "Wait for current response",
           },
         },
-        409
+        409,
       );
     }
 
@@ -163,7 +164,7 @@ app.post(
             message: "Wait for current response",
           },
         },
-        409
+        409,
       );
     }
 
@@ -177,13 +178,13 @@ app.post(
         streamEvents.emit(
           "error",
           conversation.id,
-          err instanceof Error ? err.message : "Unknown error"
+          err instanceof Error ? err.message : "Unknown error",
         );
-      }
+      },
     );
 
     return ctx.json({ conversationId: conversation.id }, 202);
-  }
+  },
 );
 
 app.get(
@@ -192,7 +193,7 @@ app.get(
     "param",
     z.object({
       conversationId: z.uuid(),
-    })
+    }),
   ),
   async (ctx) => {
     const { conversationId } = ctx.req.valid("param");
@@ -207,7 +208,7 @@ app.get(
     }
 
     return ctx.json(conversation.value);
-  }
+  },
 );
 
 // SSE endpoint for subscribing to stream events
@@ -221,7 +222,10 @@ app.get(
       const onMessage = (convId: string, message: Message) => {
         if (convId !== conversationId) return;
         stream.writeSSE({
-          data: JSON.stringify({ type: "message", message } satisfies StreamEvent),
+          data: JSON.stringify({
+            type: "message",
+            message,
+          } satisfies StreamEvent),
         });
       };
 
@@ -229,6 +233,13 @@ app.get(
         if (convId !== conversationId) return;
         stream.writeSSE({
           data: JSON.stringify({ type: "complete" } satisfies StreamEvent),
+        });
+      };
+
+      const onCancelled = (convId: string) => {
+        if (convId !== conversationId) return;
+        stream.writeSSE({
+          data: JSON.stringify({ type: "cancelled" } satisfies StreamEvent),
         });
       };
 
@@ -241,18 +252,20 @@ app.get(
 
       streamEvents.on("message", onMessage);
       streamEvents.on("complete", onComplete);
+      streamEvents.on("cancelled", onCancelled);
       streamEvents.on("error", onError);
 
       ctx.req.raw.signal.addEventListener("abort", () => {
         streamEvents.off("message", onMessage);
         streamEvents.off("complete", onComplete);
+        streamEvents.off("cancelled", onCancelled);
         streamEvents.off("error", onError);
       });
 
       // Keep alive until client disconnects
       await new Promise(() => {});
     });
-  }
+  },
 );
 
 // Cancel an active stream
@@ -264,12 +277,12 @@ app.delete(
 
     if (cancelActiveStream(conversationId)) {
       await updateConversationStatus(conversationId, "cancelled");
-      streamEvents.emit("complete", conversationId);
+      streamEvents.emit("cancelled", conversationId);
       return ctx.json({ cancelled: true });
     }
 
     return ctx.json({ cancelled: false }, 404);
-  }
+  },
 );
 
 const createConversationSchema = z.object({
@@ -289,5 +302,42 @@ app.post(
     }
 
     return ctx.json(result.value, 201);
-  }
+  },
+);
+
+const generateTitleSchema = z.object({
+  firstMessage: z.string().min(1),
+});
+
+app.post(
+  "/chat/:conversationId/generate-title",
+  zValidator("param", z.object({ conversationId: z.uuid() })),
+  zValidator("json", generateTitleSchema),
+  async (ctx) => {
+    const { conversationId } = ctx.req.valid("param");
+    const { firstMessage } = ctx.req.valid("json");
+
+    const result = await generateTitle(firstMessage);
+
+    if (result.isErr()) {
+      return ctx.json(
+        { error: { code: result.error, message: "Failed to generate title" } },
+        500
+      );
+    }
+
+    const { title, summary } = result.value;
+    const updateResult = await updateConversationTitleAndSummary(
+      conversationId,
+      title,
+      summary
+    );
+
+    if (updateResult.isErr()) {
+      const { status, code, message } = updateResult.error;
+      return ctx.json({ error: { code, message } }, status);
+    }
+
+    return ctx.json({ title, summary });
+  },
 );

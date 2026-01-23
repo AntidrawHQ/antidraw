@@ -17,6 +17,7 @@ import { useState } from "react";
 import {
   useConversationWithStream,
   useCreateConversation,
+  useGenerateTitle,
   useSendMessage,
   useToolMap,
 } from "./lib/claude-code-ops";
@@ -33,6 +34,7 @@ export function AppChat({ className, ...props }: AppChatProps) {
 
   const createConversation = useCreateConversation();
   const sendMessage = useSendMessage();
+  const generateTitle = useGenerateTitle();
   const { data: conversation } = useConversationWithStream(activeConversationId);
   const { data: toolMap } = useToolMap(activeConversationId);
 
@@ -50,21 +52,28 @@ export function AppChat({ className, ...props }: AppChatProps) {
     // Generate userMessageId for dedup
     const userMessageId = crypto.randomUUID();
 
-    if (!activeConversationId) {
+    let conversationId = activeConversationId;
+
+    if (!conversationId) {
       const conv = await createConversation.mutateAsync(activeWorkspaceId);
       setActiveConversationId(conv.id);
-      await sendMessage.mutateAsync({
-        message: prompt,
+      conversationId = conv.id;
+    }
+
+    await sendMessage.mutateAsync({
+      message: prompt,
+      workspaceId: activeWorkspaceId,
+      conversationId,
+      userMessageId,
+    });
+
+    // Fire-and-forget title generation if conversation has no title/summary yet
+    const needsTitle = !conversation?.title && !conversation?.summary;
+    if (needsTitle) {
+      generateTitle.mutate({
+        conversationId,
         workspaceId: activeWorkspaceId,
-        conversationId: conv.id,
-        userMessageId,
-      });
-    } else {
-      await sendMessage.mutateAsync({
-        message: prompt,
-        workspaceId: activeWorkspaceId,
-        conversationId: activeConversationId,
-        userMessageId,
+        firstMessage: prompt,
       });
     }
   };

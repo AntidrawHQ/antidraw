@@ -193,3 +193,24 @@ export const updateConversationStatus = async (
     });
   }
 };
+
+export const updateConversationTitleAndSummary = async (
+  conversationId: string,
+  title: string,
+  summary: string
+) => {
+  try {
+    const updatedAt = new Date();
+    await db
+      .update(conversations)
+      .set({ title, summary, updatedAt })
+      .where(eq(conversations.id, conversationId));
+    return ok({ title, summary, updatedAt });
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "DB_ERROR",
+      message: "Failed to update conversation title and summary",
+    });
+  }
+};
