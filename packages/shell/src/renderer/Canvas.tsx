@@ -10,7 +10,7 @@ import "@xyflow/react/dist/style.css";
 import { memo, useState, useCallback, useEffect, useRef } from "react";
 import { useUserComponents } from "./store/userComponents";
 import { useWorkspaceStore } from "./store/workspace";
-import { useDevServerStatus } from "./lib/workspace-ops";
+import { useDevServerStatus, useAutoStartDevServer } from "./lib/workspace-ops";
 import { cn } from "./lib/utils";
 
 type IframeNodeProps = {
@@ -226,6 +226,9 @@ type AppCanvasProps = {
 
 export const AppCanvas = ({ className }: AppCanvasProps) => {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
+
+  // Auto-start dev server when workspace is selected
+  useAutoStartDevServer(activeWorkspaceId);
 
   const { data: devServer, isPending: isDevServerPending } =
     useDevServerStatus(activeWorkspaceId);
