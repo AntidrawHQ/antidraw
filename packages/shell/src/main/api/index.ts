@@ -173,18 +173,8 @@ app.post(
 
     await updateConversationStatus(conversation.id, "streaming");
 
-    // Fire and forget - .catch handles errors without blocking response
-    processStream(conversation, message, workspaceId, userMessageId).catch(
-      async (err) => {
-        console.error("Unexpected stream error:", err);
-        await updateConversationStatus(conversation.id, "error");
-        streamEvents.emit(
-          "error",
-          conversation.id,
-          err instanceof Error ? err.message : "Unknown error",
-        );
-      },
-    );
+    // Fire and forget - inner try/catch handles errors, this prevents unhandled rejections
+    processStream(conversation, message, workspaceId, userMessageId).catch(console.error);
 
     return ctx.json({ conversationId: conversation.id }, 202);
   },
