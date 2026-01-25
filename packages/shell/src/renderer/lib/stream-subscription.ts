@@ -50,16 +50,24 @@ const handleStreamEvent = (
   }
 
   if (event.type === "complete") {
+    // Immediate UI update
     queryClient.setQueryData<ConversationWithMessages>(
       ["conversation", conversationId],
       (old) => (old ? { ...old, streamStatus: "completed" } : old),
     );
+    // TODO: Rearchitect to a single stream endpoint that sends initial state + live events,
+    // eliminating the race condition between initial fetch and stream subscription.
+    // Refetch to ensure we have all messages (handles rare race condition)
+    queryClient.invalidateQueries({ queryKey: ["conversation", conversationId] });
   }
 
   if (event.type === "error") {
+    // Immediate UI update
     queryClient.setQueryData<ConversationWithMessages>(
       ["conversation", conversationId],
       (old) => (old ? { ...old, streamStatus: "error" } : old),
     );
+    // Refetch to ensure consistency
+    queryClient.invalidateQueries({ queryKey: ["conversation", conversationId] });
   }
 };
