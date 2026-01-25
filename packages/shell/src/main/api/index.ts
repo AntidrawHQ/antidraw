@@ -221,6 +221,13 @@ app.get(
   async (ctx) => {
     const { conversationId } = ctx.req.valid("param");
 
+    // Validate conversation exists before opening stream
+    const conversation = await getConversation(conversationId);
+    if (conversation.isErr()) {
+      const { status, code, message } = conversation.error;
+      return ctx.json({ error: { code, message } }, status);
+    }
+
     return streamSSE(ctx, async (stream) => {
       const onMessage = (convId: string, message: Message) => {
         if (convId !== conversationId) return;
