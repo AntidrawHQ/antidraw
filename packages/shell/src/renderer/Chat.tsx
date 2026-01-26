@@ -183,6 +183,7 @@ export function AppChat({ className, ...props }: AppChatProps) {
                   size="icon"
                   className="h-8 w-8 rounded-full"
                   onClick={handleStop}
+                  disabled={cancelStream.isPending}
                 >
                   <Square className="size-4 fill-current" />
                 </Button>
