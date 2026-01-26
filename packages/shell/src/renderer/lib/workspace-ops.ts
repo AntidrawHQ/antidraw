@@ -162,13 +162,13 @@ export const useAutoStartDevServer = (workspaceId: string | null) => {
   const startDevServer = useStartDevServer();
 
   useEffect(() => {
-    // Skip if no workspace, still checking status, already running, or mutation in progress
-    if (!workspaceId || isStatusPending || devServer?.running || startDevServer.isPending) {
+    // Skip if no workspace, still checking status, already running, mutation in progress, or previous attempt failed
+    if (!workspaceId || isStatusPending || devServer?.running || startDevServer.isPending || startDevServer.isError) {
       return;
     }
 
     startDevServer.mutate(workspaceId);
-  }, [workspaceId, devServer?.running, isStatusPending, startDevServer.isPending]);
+  }, [workspaceId, devServer?.running, isStatusPending, startDevServer.isPending, startDevServer.isError]);
 
   return {
     isStarting: startDevServer.isPending,
