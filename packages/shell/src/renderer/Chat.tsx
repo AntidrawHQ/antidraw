@@ -18,7 +18,7 @@ import {
 import { Button } from "@/renderer/components/ui/button";
 import { cn } from "@/renderer/lib/utils";
 import { ArrowUp, ImageIcon, Paperclip, Square, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   useConversationMessages,
   useCreateConversation,
@@ -27,6 +27,11 @@ import {
 } from "./lib/claude-code-ops";
 import { Tool } from "@/renderer/components/ui/tool";
 import { useWorkspaceStore } from "./store/workspace";
+import {
+  SUPPORTED_IMAGE_TYPES,
+  type ImageAttachment,
+  type SupportedImageMediaType,
+} from "@/shared/utils/message";
 
 type AppChatProps = React.ComponentProps<"div">;
 
@@ -38,7 +43,9 @@ export function AppChat({ className, ...props }: AppChatProps) {
   const [attachedImages, setAttachedImages] = useState<File[]>([]);
 
   const handleFilesAdded = (files: File[]) => {
-    const imageFiles = files.filter((f) => f.type.startsWith("image/"));
+    const imageFiles = files.filter((f) =>
+      SUPPORTED_IMAGE_TYPES.includes(f.type as SupportedImageMediaType)
+    );
     if (imageFiles.length > 0) {
       setAttachedImages((prev) => [...prev, ...imageFiles]);
     }
@@ -46,7 +53,7 @@ export function AppChat({ className, ...props }: AppChatProps) {
 
   const handlePaste = (e: React.ClipboardEvent) => {
     const files = Array.from(e.clipboardData.files).filter((f) =>
-      f.type.startsWith("image/")
+      SUPPORTED_IMAGE_TYPES.includes(f.type as SupportedImageMediaType)
     );
     if (files.length > 0) {
       e.preventDefault();
@@ -58,6 +65,17 @@ export function AppChat({ className, ...props }: AppChatProps) {
     setAttachedImages((prev) => prev.filter((_, i) => i !== index));
   };
 
+  // Create object URLs once per file array to prevent memory leaks
+  const imageUrls = useMemo(
+    () => attachedImages.map((file) => URL.createObjectURL(file)),
+    [attachedImages]
+  );
+
+  // Cleanup object URLs when they change or component unmounts
+  useEffect(() => {
+    return () => imageUrls.forEach((url) => URL.revokeObjectURL(url));
+  }, [imageUrls]);
+
   const createConversation = useCreateConversation();
   const sendMessage = useSendMessage();
   const { data: conversation } = useConversationMessages(activeConversationId);
@@ -67,13 +85,15 @@ export function AppChat({ className, ...props }: AppChatProps) {
 
   const isLoading = createConversation.isPending || sendMessage.isPending;
 
-  const fileToBase64 = (file: File): Promise<{ data: string; mediaType: string }> => {
+  const fileToBase64 = (
+    file: File
+  ): Promise<{ data: string; mediaType: SupportedImageMediaType }> => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => {
         const result = reader.result as string;
         const base64 = result.split(",")[1];
-        resolve({ data: base64, mediaType: file.type });
+        resolve({ data: base64, mediaType: file.type as SupportedImageMediaType });
       };
       reader.onerror = reject;
       reader.readAsDataURL(file);
@@ -84,9 +104,19 @@ export function AppChat({ className, ...props }: AppChatProps) {
     if (!activeWorkspaceId || !input.trim() || isLoading) return;
 
     const prompt = input.trim();
-    const imagesToSend = attachedImages.length > 0
-      ? await Promise.all(attachedImages.map(fileToBase64))
-      : undefined;
+
+    let imagesToSend: ImageAttachment[] | undefined;
+    try {
+      imagesToSend =
+        attachedImages.length > 0
+          ? await Promise.all(attachedImages.map(fileToBase64))
+          : undefined;
+    } catch (err) {
+      console.error("Failed to process images:", err);
+      // TODO: show toast if toast system exists
+      alert("Failed to process attached images. Please try again.");
+      return;
+    }
 
     setInput("");
     setAttachedImages([]);
@@ -141,8 +171,19 @@ export function AppChat({ className, ...props }: AppChatProps) {
               >
                 <div className="overflow-auto space-y-2 w-full">
                   {(() => {
+                    type Base64ImageBlock = {
+                      type: "image";
+                      source: {
+                        type: "base64";
+                        media_type: SupportedImageMediaType;
+                        data: string;
+                      };
+                    };
                     const imageBlocks = blocks.filter(
-                      (b) => b.type === "image" && b.source?.type === "base64"
+                      (b): b is Base64ImageBlock =>
+                        b.type === "image" &&
+                        "source" in b &&
+                        b.source?.type === "base64"
                     );
                     if (imageBlocks.length > 0) {
                       return (
@@ -225,7 +266,7 @@ export function AppChat({ className, ...props }: AppChatProps) {
                 {attachedImages.map((file, index) => (
                   <div key={index} className="relative group">
                     <img
-                      src={URL.createObjectURL(file)}
+                      src={imageUrls[index]}
                       alt={file.name}
                       className="h-16 w-16 rounded-lg object-cover border border-neutral-600"
                     />

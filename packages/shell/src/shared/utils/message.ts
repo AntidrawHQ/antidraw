@@ -5,9 +5,22 @@ import type {
   TextBlockParam,
 } from "@anthropic-ai/sdk/resources/messages";
 
+export type SupportedImageMediaType =
+  | "image/png"
+  | "image/jpeg"
+  | "image/gif"
+  | "image/webp";
+
+export const SUPPORTED_IMAGE_TYPES: SupportedImageMediaType[] = [
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+];
+
 export type ImageAttachment = {
   data: string;
-  mediaType: string;
+  mediaType: SupportedImageMediaType;
 };
 
 export const createUserSDKMessage = (params: {
@@ -22,11 +35,7 @@ export const createUserSDKMessage = (params: {
         type: "image",
         source: {
           type: "base64",
-          media_type: img.mediaType as
-            | "image/png"
-            | "image/jpeg"
-            | "image/gif"
-            | "image/webp",
+          media_type: img.mediaType,
           data: img.data,
         },
       })

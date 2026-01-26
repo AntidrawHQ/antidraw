@@ -30,7 +30,7 @@ app.route("/workspaces", workspaceController);
 
 const imageAttachmentSchema = z.object({
   data: z.string(),
-  mediaType: z.string(),
+  mediaType: z.enum(["image/png", "image/jpeg", "image/gif", "image/webp"]),
 });
 
 const chatMessageSchema = z.object({
