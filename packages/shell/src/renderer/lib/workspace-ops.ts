@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import type {
   Workspace,
   CreateWorkspaceResponse,
@@ -114,6 +115,8 @@ export const useStartDevServer = () => {
       }
       return result.value;
     },
+    retry: 3,
+    retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 30000), // exponential backoff: 2s, 4s, 8s (capped at 30s)
     onSuccess: (data) => {
       queryClient.setQueryData(["devServer", data.workspaceId], {
         ...data,
@@ -152,4 +155,23 @@ export const useDevServerStatus = (workspaceId: string | null) => {
     },
     enabled: !!workspaceId,
   });
+};
+
+export const useAutoStartDevServer = (workspaceId: string | null) => {
+  const { data: devServer, isPending: isStatusPending } = useDevServerStatus(workspaceId);
+  const startDevServer = useStartDevServer();
+
+  useEffect(() => {
+    // Skip if no workspace, still checking status, already running, mutation in progress, or previous attempt failed
+    if (!workspaceId || isStatusPending || devServer?.running || startDevServer.isPending || startDevServer.isError) {
+      return;
+    }
+
+    startDevServer.mutate(workspaceId);
+  }, [workspaceId, devServer?.running, isStatusPending, startDevServer.isPending, startDevServer.isError]);
+
+  return {
+    isStarting: startDevServer.isPending,
+    startError: startDevServer.error,
+  };
 };
