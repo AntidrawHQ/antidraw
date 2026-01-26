@@ -181,6 +181,18 @@ export const getDevServerStatus = async (workspaceId: string) => {
 
     if (!response.ok) {
       const errorBody = await response.json().catch(() => ({}));
+
+      // NOT_RUNNING is a valid status, not an error - map to running: false
+      if (errorBody?.error?.code === "NOT_RUNNING") {
+        return ok({
+          workspaceId,
+          pid: 0,
+          port: 0,
+          startedAt: 0,
+          running: false,
+        } satisfies DevServerInfo);
+      }
+
       return err({
         status: response.status as 404 | 500,
         code: errorBody?.error?.code ?? "FETCH_ERROR",
