@@ -11,7 +11,7 @@ export const useUserComponents = (workspaceId: string | null) => {
         throw new Error("Dev server port unavailable");
       }
 
-      const viteDevServerUrl = `http://localhost:${devServer.port}`;
+      const viteDevServerUrl = `https://localhost:${devServer.port}`;
 
       const response = await fetch(`${viteDevServerUrl}/__components`);
 

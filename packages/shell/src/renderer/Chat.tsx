@@ -20,8 +20,10 @@ import { cn } from "@/renderer/lib/utils";
 import { ArrowUp, ImageIcon, Paperclip, Square, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
-  useConversationMessages,
+  useCancelStream,
+  useConversationWithStream,
   useCreateConversation,
+  useGenerateTitle,
   useSendMessage,
   useToolMap,
 } from "./lib/claude-code-ops";
@@ -78,12 +80,15 @@ export function AppChat({ className, ...props }: AppChatProps) {
 
   const createConversation = useCreateConversation();
   const sendMessage = useSendMessage();
-  const { data: conversation } = useConversationMessages(activeConversationId);
+  const generateTitle = useGenerateTitle();
+  const cancelStream = useCancelStream();
+  const { data: conversation } = useConversationWithStream(activeConversationId);
   const { data: toolMap } = useToolMap(activeConversationId);
 
   const messages = conversation?.messages ?? [];
+  const isStreaming = conversation?.streamStatus === "streaming";
 
-  const isLoading = createConversation.isPending || sendMessage.isPending;
+  const isLoading = createConversation.isPending || sendMessage.isPending || isStreaming;
 
   const fileToBase64 = (
     file: File
@@ -121,22 +126,39 @@ export function AppChat({ className, ...props }: AppChatProps) {
     setInput("");
     setAttachedImages([]);
 
-    if (!activeConversationId) {
+    // Generate userMessageId for dedup
+    const userMessageId = crypto.randomUUID();
+
+    let conversationId = activeConversationId;
+
+    if (!conversationId) {
       const conv = await createConversation.mutateAsync(activeWorkspaceId);
       setActiveConversationId(conv.id);
-      await sendMessage.mutateAsync({
-        message: prompt,
+      conversationId = conv.id;
+    }
+
+    await sendMessage.mutateAsync({
+      message: prompt,
+      workspaceId: activeWorkspaceId,
+      conversationId,
+      userMessageId,
+      images: imagesToSend,
+    });
+
+    // Fire-and-forget title generation if conversation has no title/summary yet
+    const needsTitle = !conversation?.title && !conversation?.summary;
+    if (needsTitle) {
+      generateTitle.mutate({
+        conversationId,
         workspaceId: activeWorkspaceId,
-        conversationId: conv.id,
-        images: imagesToSend,
+        firstMessage: prompt,
       });
-    } else {
-      await sendMessage.mutateAsync({
-        message: prompt,
-        workspaceId: activeWorkspaceId,
-        conversationId: activeConversationId,
-        images: imagesToSend,
-      });
+    }
+  };
+
+  const handleStop = () => {
+    if (activeConversationId) {
+      cancelStream.mutate(activeConversationId);
     }
   };
 
@@ -252,7 +274,7 @@ export function AppChat({ className, ...props }: AppChatProps) {
         </ChatContainerContent>
       </ChatContainerRoot>
 
-      <FileUpload onFilesAdded={handleFilesAdded} accept="image/*">
+<FileUpload onFilesAdded={handleFilesAdded} accept="image/*">
         <div className="p-4">
           <PromptInput
             value={input}
@@ -298,23 +320,31 @@ export function AppChat({ className, ...props }: AppChatProps) {
                   </Button>
                 </FileUploadTrigger>
               </PromptInputAction>
-              <PromptInputAction
-                tooltip={isLoading ? "Stop generation" : "Send message"}
-              >
-                <Button
-                  variant="default"
-                  size="icon"
-                  className="h-8 w-8 rounded-full"
-                  onClick={handleSubmit}
-                  disabled={!input.trim() && !isLoading}
-                >
-                  {isLoading ? (
+              {isStreaming ? (
+                <PromptInputAction tooltip="Stop generation">
+                  <Button
+                    variant="default"
+                    size="icon"
+                    className="h-8 w-8 rounded-full"
+                    onClick={handleStop}
+                    disabled={cancelStream.isPending}
+                  >
                     <Square className="size-4 fill-current" />
-                  ) : (
+                  </Button>
+                </PromptInputAction>
+              ) : (
+                <PromptInputAction tooltip="Send message">
+                  <Button
+                    variant="default"
+                    size="icon"
+                    className="h-8 w-8 rounded-full"
+                    onClick={handleSubmit}
+                    disabled={!input.trim() || isLoading}
+                  >
                     <ArrowUp className="size-4" />
-                  )}
-                </Button>
-              </PromptInputAction>
+                  </Button>
+                </PromptInputAction>
+              )}
             </PromptInputActions>
           </PromptInput>
         </div>

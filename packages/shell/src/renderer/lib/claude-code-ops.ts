@@ -1,13 +1,17 @@
-import type { ConversationWithMessages, Message } from "@/main/api";
+import type { Conversation, ConversationWithMessages, Message } from "@/main/api";
 import type { ImageAttachment } from "@/shared/utils/message";
 import { createUserSDKMessage } from "@/shared/utils/message";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect } from "react";
 import {
+  cancelConversationStream,
   createConversation,
+  generateConversationTitle,
   getConversationWithMessages,
   listWorkspaceConversations,
   sendMessage,
 } from "./api";
+import { subscribeToStream } from "./stream-subscription";
 import { selectToolMap } from "./tool-utils";
 
 // Shared query options for conversation data
@@ -28,6 +32,28 @@ export const useConversationMessages = (conversationId: string | null) => {
     ...conversationQueryOptions(conversationId!),
     enabled: !!conversationId,
   });
+};
+
+// Hook that subscribes to stream events when conversation is streaming
+export const useConversationWithStream = (conversationId: string | null) => {
+  const queryClient = useQueryClient();
+
+  // Main data query
+  const query = useQuery({
+    ...conversationQueryOptions(conversationId!),
+    enabled: !!conversationId,
+  });
+
+  const isStreaming = query.data?.streamStatus === "streaming";
+
+  // SSE subscription - fire and forget, runs until server terminates
+  useEffect(() => {
+    if (!conversationId || !isStreaming) return;
+    subscribeToStream(conversationId, queryClient);
+    // No cleanup - subscription runs until server sends terminal event
+  }, [conversationId, isStreaming, queryClient]);
+
+  return query;
 };
 
 export const useWorkspaceConversations = (workspaceId: string | null) => {
@@ -70,12 +96,18 @@ export const useCreateConversation = () => {
       // Pre-populate cache with empty messages
       queryClient.setQueryData<ConversationWithMessages>(
         ["conversation", conversation.id],
-        { ...conversation, messages: [] }
+        { ...conversation, messages: [] },
+      );
+      // Add to workspace conversations list
+      queryClient.setQueryData<Conversation[]>(
+        ["workspace-conversations", conversation.workspaceId],
+        (old) => (old ? [conversation, ...old] : [conversation]),
       );
     },
   });
 };
 
+// Send mutation with optimistic update
 export const useSendMessage = () => {
   const queryClient = useQueryClient();
 
@@ -84,46 +116,19 @@ export const useSendMessage = () => {
       message: string;
       workspaceId: string;
       conversationId: string;
+      userMessageId: string; // Frontend generates this
       images?: ImageAttachment[];
     }) => {
-      const { message, workspaceId, conversationId, images } = params;
+      const result = await sendMessage(params);
 
-      const stream = sendMessage({
-        message,
-        workspaceId,
-        conversationId,
-        images,
-      });
-
-      for await (const response of stream) {
-        if (response.type === "error") {
-          throw new Error(response.message);
-        }
-
-        // Incrementally update cache with each streamed message
-        queryClient.setQueryData<ConversationWithMessages>(
-          ["conversation", conversationId],
-          (prev) => {
-            if (!prev) return prev;
-
-            const newMessage: Message = {
-              id: response.message.uuid ?? crypto.randomUUID(),
-              conversationId,
-              messageType: "sdk_message",
-              sdkMessage: response.message,
-              createdAt: new Date(),
-            };
-
-            return {
-              ...prev,
-              messages: [...prev.messages, newMessage],
-            };
-          }
-        );
+      if (result.isErr()) {
+        throw new Error(result.error.message);
       }
+
+      return result.value;
     },
 
-    onMutate: async ({ message, conversationId, images }) => {
+onMutate: async ({ message, conversationId, userMessageId, images }) => {
       // Cancel any outgoing refetches
       await queryClient.cancelQueries({
         queryKey: ["conversation", conversationId],
@@ -141,16 +146,16 @@ export const useSendMessage = () => {
         throw new Error("Conversation not found in cache");
       }
 
-      // Optimistically add user message
+      // Optimistic user message with same ID backend will use
       const sdkMessage = createUserSDKMessage({
         text: message,
         sessionId: previousChat.claudeCodeSessionId ?? "",
-        uuid: crypto.randomUUID(),
+        uuid: userMessageId as `${string}-${string}-${string}-${string}-${string}`,
         images,
       });
 
-      const optimisticUserMessage: Message = {
-        id: crypto.randomUUID(),
+      const userMessage: Message = {
+        id: userMessageId, // Same ID sent to backend - dedup works!
         conversationId,
         messageType: "user_prompt",
         sdkMessage,
@@ -161,8 +166,9 @@ export const useSendMessage = () => {
         ["conversation", conversationId],
         {
           ...previousChat,
-          messages: [...previousChat.messages, optimisticUserMessage],
-        }
+          streamStatus: "streaming",
+          messages: [...previousChat.messages, userMessage],
+        },
       );
 
       return { previousChat };
@@ -172,9 +178,64 @@ export const useSendMessage = () => {
       if (context?.previousChat) {
         queryClient.setQueryData(
           ["conversation", conversationId],
-          context.previousChat
+          context.previousChat,
         );
       }
     },
+  });
+};
+
+export const useGenerateTitle = () => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      conversationId,
+      firstMessage,
+    }: {
+      conversationId: string;
+      firstMessage: string;
+      workspaceId: string;
+    }) => {
+      const result = await generateConversationTitle(conversationId, firstMessage);
+
+      if (result.isErr()) {
+        throw new Error(result.error.message);
+      }
+
+      return result.value;
+    },
+    onSuccess: (data, { conversationId, workspaceId }) => {
+      // Update conversation cache
+      queryClient.setQueryData<ConversationWithMessages>(
+        ["conversation", conversationId],
+        (old) => (old ? { ...old, title: data.title, summary: data.summary } : old)
+      );
+      // Update sidebar list
+      queryClient.setQueryData<Conversation[]>(
+        ["workspace-conversations", workspaceId],
+        (old) =>
+          old?.map((c) =>
+            c.id === conversationId
+              ? { ...c, title: data.title, summary: data.summary }
+              : c
+          )
+      );
+    },
+  });
+};
+
+export const useCancelStream = () => {
+  return useMutation({
+    mutationFn: async (conversationId: string) => {
+      const result = await cancelConversationStream(conversationId);
+
+      if (result.isErr()) {
+        throw new Error(result.error.message);
+      }
+
+      return result.value;
+    },
+    // No cache updates needed - SSE handler will receive "complete" event
   });
 };

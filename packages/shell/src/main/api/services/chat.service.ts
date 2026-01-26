@@ -1,6 +1,11 @@
-import { conversations, messages } from "@/main/api/models/chat.model";
+import {
+  conversations,
+  messages,
+  type StreamStatus,
+} from "@/main/api/models/chat.model";
 import { db } from "@/main/db";
 import type { ImageAttachment } from "@/shared/utils/message";
+import { streamEvents } from "@/main/lib/stream-manager";
 import { createUserSDKMessage } from "@/shared/utils/message";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { eq, desc } from "drizzle-orm";
@@ -112,12 +117,14 @@ export const convertUserPromptToSDKMessage = (
 };
 
 export const addMessage = async (params: {
+  id?: string; // Optional - frontend can provide for dedup
   conversationId: string;
   messageType: "user_prompt" | "sdk_message";
   sdkMessage: SDKMessage;
 }) => {
+  const id = params.id ?? crypto.randomUUID();
+
   try {
-    const id = crypto.randomUUID();
     const [message] = await db
       .insert(messages)
       .values({
@@ -127,8 +134,23 @@ export const addMessage = async (params: {
         sdkMessage: params.sdkMessage,
       })
       .returning();
+
+    // Emit after insert - automatic, can't forget
+    streamEvents.emit("message", params.conversationId, message);
+
     return ok(message);
-  } catch (_e) {
+  } catch (e) {
+    // Handle duplicate ID (essentially impossible with UUID v4, but be safe)
+    if (
+      e instanceof Error &&
+      e.message.includes("SQLITE_CONSTRAINT_PRIMARYKEY")
+    ) {
+      return err({
+        status: 409 as const,
+        code: "DUPLICATE_ID",
+        message: "Message ID already exists",
+      });
+    }
     return err({
       status: 500 as const,
       code: "DB_ERROR",
@@ -152,6 +174,46 @@ export const updateConversationSession = async (
       status: 500 as const,
       code: "DB_ERROR",
       message: "Failed to update session",
+    });
+  }
+};
+
+export const updateConversationStatus = async (
+  conversationId: string,
+  status: StreamStatus
+) => {
+  try {
+    await db
+      .update(conversations)
+      .set({ streamStatus: status, updatedAt: new Date() })
+      .where(eq(conversations.id, conversationId));
+    return ok(undefined);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "DB_ERROR",
+      message: "Failed to update conversation status",
+    });
+  }
+};
+
+export const updateConversationTitleAndSummary = async (
+  conversationId: string,
+  title: string,
+  summary: string
+) => {
+  try {
+    const updatedAt = new Date();
+    await db
+      .update(conversations)
+      .set({ title, summary, updatedAt })
+      .where(eq(conversations.id, conversationId));
+    return ok({ title, summary, updatedAt });
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "DB_ERROR",
+      message: "Failed to update conversation title and summary",
     });
   }
 };
