@@ -26,6 +26,7 @@ export const cancelStream = async (conversationId: string): Promise<boolean> => 
   const query = activeStreams.get(conversationId);
   if (query) {
     await query.interrupt();
+    activeStreams.delete(conversationId); // Clean up immediately after interrupt
     return true;
   }
   return false;
