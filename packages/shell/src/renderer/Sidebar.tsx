@@ -222,7 +222,7 @@ export const Sidebar = ({ className }: SidebarProps) => {
             <button
               onClick={handleNewConversation}
               disabled={createConversation.isPending}
-              className="w-full flex items-center justify-center gap-1.5 py-2 px-3 bg-neutral-700 border border-[#2d2d2d] rounded-md cursor-pointer text-xs text-neutral-400 hover:bg-neutral-600 disabled:opacity-50"
+              className="w-full flex items-center justify-center gap-1.5 py-2 px-3 bg-neutral-700 border border-[#2d2d2d] rounded-md cursor-pointer text-xs text-neutral-400 hover:bg-white/[0.1] disabled:opacity-50"
             >
               <Plus className="w-3.5 h-3.5" />
               New Conversation
