@@ -15,8 +15,10 @@ import { cn } from "@/renderer/lib/utils";
 import { ArrowUp, Square } from "lucide-react";
 import { useState } from "react";
 import {
-  useConversationMessages,
+  useCancelStream,
+  useConversationWithStream,
   useCreateConversation,
+  useGenerateTitle,
   useSendMessage,
   useToolMap,
 } from "./lib/claude-code-ops";
@@ -33,12 +35,15 @@ export function AppChat({ className, ...props }: AppChatProps) {
 
   const createConversation = useCreateConversation();
   const sendMessage = useSendMessage();
-  const { data: conversation } = useConversationMessages(activeConversationId);
+  const generateTitle = useGenerateTitle();
+  const cancelStream = useCancelStream();
+  const { data: conversation } = useConversationWithStream(activeConversationId);
   const { data: toolMap } = useToolMap(activeConversationId);
 
   const messages = conversation?.messages ?? [];
+  const isStreaming = conversation?.streamStatus === "streaming";
 
-  const isLoading = createConversation.isPending || sendMessage.isPending;
+  const isLoading = createConversation.isPending || sendMessage.isPending || isStreaming;
 
   const handleSubmit = async () => {
     if (!activeWorkspaceId || !input.trim() || isLoading) return;
@@ -46,20 +51,38 @@ export function AppChat({ className, ...props }: AppChatProps) {
     const prompt = input.trim();
     setInput("");
 
-    if (!activeConversationId) {
+    // Generate userMessageId for dedup
+    const userMessageId = crypto.randomUUID();
+
+    let conversationId = activeConversationId;
+
+    if (!conversationId) {
       const conv = await createConversation.mutateAsync(activeWorkspaceId);
       setActiveConversationId(conv.id);
-      await sendMessage.mutateAsync({
-        message: prompt,
+      conversationId = conv.id;
+    }
+
+    await sendMessage.mutateAsync({
+      message: prompt,
+      workspaceId: activeWorkspaceId,
+      conversationId,
+      userMessageId,
+    });
+
+    // Fire-and-forget title generation if conversation has no title/summary yet
+    const needsTitle = !conversation?.title && !conversation?.summary;
+    if (needsTitle) {
+      generateTitle.mutate({
+        conversationId,
         workspaceId: activeWorkspaceId,
-        conversationId: conv.id,
+        firstMessage: prompt,
       });
-    } else {
-      await sendMessage.mutateAsync({
-        message: prompt,
-        workspaceId: activeWorkspaceId,
-        conversationId: activeConversationId,
-      });
+    }
+  };
+
+  const handleStop = () => {
+    if (activeConversationId) {
+      cancelStream.mutate(activeConversationId);
     }
   };
 
@@ -153,23 +176,31 @@ export function AppChat({ className, ...props }: AppChatProps) {
             className="bg-transparent dark:bg-transparent"
           />
           <PromptInputActions className="justify-end pt-2">
-            <PromptInputAction
-              tooltip={isLoading ? "Stop generation" : "Send message"}
-            >
-              <Button
-                variant="default"
-                size="icon"
-                className="h-8 w-8 rounded-full"
-                onClick={handleSubmit}
-                disabled={!input.trim() && !isLoading}
-              >
-                {isLoading ? (
+            {isStreaming ? (
+              <PromptInputAction tooltip="Stop generation">
+                <Button
+                  variant="default"
+                  size="icon"
+                  className="h-8 w-8 rounded-full"
+                  onClick={handleStop}
+                  disabled={cancelStream.isPending}
+                >
                   <Square className="size-4 fill-current" />
-                ) : (
+                </Button>
+              </PromptInputAction>
+            ) : (
+              <PromptInputAction tooltip="Send message">
+                <Button
+                  variant="default"
+                  size="icon"
+                  className="h-8 w-8 rounded-full"
+                  onClick={handleSubmit}
+                  disabled={!input.trim() || isLoading}
+                >
                   <ArrowUp className="size-4" />
-                )}
-              </Button>
-            </PromptInputAction>
+                </Button>
+              </PromptInputAction>
+            )}
           </PromptInputActions>
         </PromptInput>
       </div>

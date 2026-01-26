@@ -15,43 +15,6 @@ const MIN_SIDEBAR_WIDTH = 200;
 const MAX_SIDEBAR_WIDTH = 500;
 const DEFAULT_SIDEBAR_WIDTH = 280;
 
-// Placeholder titles and descriptions for conversations without real data
-const placeholderTitles = [
-  "Landing page with aurora effect",
-  "Dark mode sidebar variants",
-  "Conversation switcher with search",
-  "Travel booking hero section",
-  "Workspace dropdown menu",
-  "Chat header with tabs",
-  "Integration grid layout",
-  "Ticket table component",
-  "Glass morphism cards",
-  "Neon gradient landing",
-];
-
-const placeholderDescriptions = [
-  "Animated aurora background with floating particles",
-  "Exploring compact and expanded sidebar layouts",
-  "Fuzzy search, keyboard nav, and selection states",
-  "Hero with destination cards and booking form",
-  "Multi-workspace selection with icons and search",
-  "Tabbed navigation for conversations and settings",
-  "Responsive grid with hover effects and categories",
-  "Sortable data table with status badges",
-  "Translucent cards with backdrop blur effect",
-  "Vibrant gradients with glow and animations",
-];
-
-const getPlaceholderTitle = (convId: string): string => {
-  const hash = convId.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0);
-  return placeholderTitles[hash % placeholderTitles.length];
-};
-
-const getPlaceholderDescription = (convId: string): string => {
-  const hash = convId.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0);
-  return placeholderDescriptions[hash % placeholderDescriptions.length];
-};
-
 type SidebarProps = {
   className?: string;
 };
@@ -82,7 +45,7 @@ export const Sidebar = ({ className }: SidebarProps) => {
   const filtered = useMemo(() => {
     return conversations
       .map((conv) => {
-        const displayTitle = conv.title ?? getPlaceholderTitle(conv.id);
+        const displayTitle = conv.title ?? "Untitled Conversation";
         return {
           ...conv,
           displayTitle,
@@ -191,7 +154,7 @@ export const Sidebar = ({ className }: SidebarProps) => {
         )}
       />
 
-      {showList ? (
+      {showList || !activeConversationId ? (
         /* Conversation List View */
         <div className="flex-1 flex flex-col overflow-hidden" onKeyDown={handleKeyDown}>
           {/* Search */}
@@ -221,7 +184,7 @@ export const Sidebar = ({ className }: SidebarProps) => {
           {/* List */}
           <div className="flex-1 overflow-y-auto px-2 pb-2">
             {filtered.map((conv, idx) => {
-              const description = getPlaceholderDescription(conv.id);
+              const description = conv.summary;
               return (
                 <button
                   key={conv.id}
@@ -245,9 +208,11 @@ export const Sidebar = ({ className }: SidebarProps) => {
                       {formatRelativeTime(new Date(conv.updatedAt))}
                     </span>
                   </div>
-                  <span className="text-[11px] text-[#71717a] overflow-hidden text-ellipsis whitespace-nowrap w-full">
-                    {description}
-                  </span>
+                  {description && (
+                    <span className="text-[11px] text-[#71717a] overflow-hidden text-ellipsis whitespace-nowrap w-full">
+                      {description}
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -275,7 +240,7 @@ export const Sidebar = ({ className }: SidebarProps) => {
               className="flex-1 flex items-center justify-between gap-1.5 py-1.5 px-2.5 bg-transparent border-none rounded-md cursor-pointer hover:bg-white/[0.04] min-w-0"
             >
               <span className="text-[13px] font-medium text-neutral-200 overflow-hidden text-ellipsis whitespace-nowrap">
-                {activeConversation?.title ?? (activeConversationId ? getPlaceholderTitle(activeConversationId) : "New Conversation")}
+                {activeConversation?.title ?? "Untitled Conversation"}
               </span>
               <ChevronsUpDown className="w-3.5 h-3.5 text-[#71717a] shrink-0" />
             </button>

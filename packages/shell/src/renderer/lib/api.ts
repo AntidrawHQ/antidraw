@@ -1,21 +1,23 @@
 import type {
-  ChatMessageResponse,
   Conversation,
   ConversationWithMessages,
   CreateWorkspaceResponse,
   DevServerInfo,
   DevServerState,
+  StreamEvent,
   Workspace,
 } from "@/main/api";
 import { fetchEventSource } from "@microsoft/fetch-event-source";
 import { ok, err } from "neverthrow";
+
+export type { StreamEvent } from "@/main/api";
 
 // ============================================================================
 // Workspace API
 // ============================================================================
 
 export async function* createWorkspace(
-  name: string
+  name: string,
 ): AsyncGenerator<CreateWorkspaceResponse> {
   const stream = new ReadableStream<CreateWorkspaceResponse>({
     start(controller) {
@@ -123,7 +125,7 @@ export const startDevServer = async (workspaceId: string) => {
   try {
     const response = await fetch(
       `antidraw://_internal/workspaces/${workspaceId}/dev-server`,
-      { method: "POST" }
+      { method: "POST" },
     );
 
     if (!response.ok) {
@@ -150,7 +152,7 @@ export const stopDevServer = async (workspaceId: string) => {
   try {
     const response = await fetch(
       `antidraw://_internal/workspaces/${workspaceId}/dev-server`,
-      { method: "DELETE" }
+      { method: "DELETE" },
     );
 
     if (!response.ok) {
@@ -176,7 +178,7 @@ export const stopDevServer = async (workspaceId: string) => {
 export const getDevServerStatus = async (workspaceId: string) => {
   try {
     const response = await fetch(
-      `antidraw://_internal/workspaces/${workspaceId}/dev-server`
+      `antidraw://_internal/workspaces/${workspaceId}/dev-server`,
     );
 
     if (!response.ok) {
@@ -218,7 +220,7 @@ export const getDevServerStatus = async (workspaceId: string) => {
 export const listWorkspaceConversations = async (workspaceId: string) => {
   try {
     const response = await fetch(
-      `antidraw://_internal/workspaces/${workspaceId}/conversations`
+      `antidraw://_internal/workspaces/${workspaceId}/conversations`,
     );
 
     if (!response.ok) {
@@ -241,30 +243,66 @@ export const listWorkspaceConversations = async (workspaceId: string) => {
   }
 };
 
-// TODO: workspaceId is always required even for existing conversations.
-// Lookup workspaceId from conversation when conversationId is provided.
-export async function* sendMessage(params: {
+// Fire-and-forget message send - returns immediately with 202
+export const sendMessage = async (params: {
   message: string;
   workspaceId: string;
   conversationId?: string;
-}): AsyncGenerator<ChatMessageResponse> {
-  const { message, workspaceId, conversationId } = params;
+  userMessageId: string; // Frontend generates this for dedup
+}) => {
+  try {
+    const response = await fetch("antidraw://_internal/chat/message", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    });
 
-  const stream = new ReadableStream<ChatMessageResponse>({
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      return err({
+        status: response.status as 409 | 500,
+        code: errorBody?.error?.code ?? "FETCH_ERROR",
+        message: errorBody?.error?.message ?? response.statusText,
+      });
+    }
+
+    const data: { conversationId: string } = await response.json();
+    return ok(data);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "NETWORK_ERROR",
+      message: "Failed to send message",
+    });
+  }
+};
+
+// Subscribe to conversation stream events via SSE
+export const subscribeToConversation = async function* (
+  conversationId: string,
+): AsyncGenerator<StreamEvent> {
+  const stream = new ReadableStream<StreamEvent>({
     start(controller) {
-      fetchEventSource("antidraw://_internal/chat/message", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
+      fetchEventSource(`antidraw://_internal/chat/${conversationId}/stream`, {
+        onopen: async (response) => {
+          if (!response.ok) {
+            const errorBody = await response.json().catch(() => ({}));
+            const errorMessage =
+              errorBody?.error?.message ?? response.statusText;
+            controller.enqueue({
+              type: "error",
+              error: errorMessage,
+            } satisfies StreamEvent);
+            controller.close();
+          }
         },
-        body: JSON.stringify({
-          message,
-          workspaceId,
-          conversationId,
-        }),
-
         onmessage: (ev) => {
-          controller.enqueue(JSON.parse(ev.data) as ChatMessageResponse);
+          const event = JSON.parse(ev.data) as StreamEvent;
+          controller.enqueue(event);
+          // Close stream on terminal events - for-await loop will exit naturally
+          if (event.type === "complete" || event.type === "error") {
+            controller.close();
+          }
         },
         onerror: (error) => controller.error(error),
         onclose: () => controller.close(),
@@ -273,13 +311,39 @@ export async function* sendMessage(params: {
   });
 
   yield* stream;
-}
+};
+
+// Cancel an active stream
+export const cancelConversationStream = async (conversationId: string) => {
+  try {
+    const response = await fetch(
+      `antidraw://_internal/chat/${conversationId}/stream`,
+      { method: "DELETE" },
+    );
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      return err({
+        status: response.status as 404 | 500,
+        code: errorBody?.error?.code ?? "FETCH_ERROR",
+        message: errorBody?.error?.message ?? response.statusText,
+      });
+    }
+
+    const data: { cancelled: boolean } = await response.json();
+    return ok(data);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "NETWORK_ERROR",
+      message: "Failed to cancel stream",
+    });
+  }
+};
 
 export const getConversationWithMessages = async (conversationId: string) => {
   try {
-    const response = await fetch(
-      `antidraw://_internal/chat/${conversationId}`
-    );
+    const response = await fetch(`antidraw://_internal/chat/${conversationId}`);
 
     if (!response.ok) {
       const errorBody = await response.json().catch(() => ({}));
@@ -327,6 +391,42 @@ export const createConversation = async (workspaceId: string) => {
       status: 500 as const,
       code: "NETWORK_ERROR",
       message: "Failed to create conversation",
+    });
+  }
+};
+
+export type GenerateTitleResponse = { title: string; summary: string };
+
+export const generateConversationTitle = async (
+  conversationId: string,
+  firstMessage: string,
+) => {
+  try {
+    const response = await fetch(
+      `antidraw://_internal/chat/${conversationId}/generate-title`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ firstMessage }),
+      },
+    );
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      return err({
+        status: response.status as 404 | 500,
+        code: errorBody?.error?.code ?? "FETCH_ERROR",
+        message: errorBody?.error?.message ?? response.statusText,
+      });
+    }
+
+    const data: GenerateTitleResponse = await response.json();
+    return ok(data);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "NETWORK_ERROR",
+      message: "Failed to generate title",
     });
   }
 };
