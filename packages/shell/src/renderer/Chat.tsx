@@ -274,7 +274,7 @@ export function AppChat({ className, ...props }: AppChatProps) {
         </ChatContainerContent>
       </ChatContainerRoot>
 
-<FileUpload onFilesAdded={handleFilesAdded} accept="image/*">
+      <FileUpload onFilesAdded={handleFilesAdded} accept="image/*">
         <div className="p-4">
           <PromptInput
             value={input}
