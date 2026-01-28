@@ -189,10 +189,9 @@ export const Sidebar = ({ className }: SidebarProps) => {
                 <button
                   key={conv.id}
                   onClick={() => handleSelectConversation(conv.id)}
-                  onMouseEnter={() => setSelectedIndex(idx)}
                   className={cn(
                     "w-full flex flex-col items-start gap-0.5 py-2 px-2.5 border-none rounded-md cursor-pointer text-left mb-0.5",
-                    idx === selectedIndex ? "bg-white/[0.12]" : "bg-transparent hover:bg-white/[0.04]"
+                    idx === selectedIndex ? "bg-white/[0.06]" : "bg-transparent hover:bg-white/[0.06]"
                   )}
                 >
                   <div className="w-full flex items-center justify-between gap-2">
@@ -223,7 +222,7 @@ export const Sidebar = ({ className }: SidebarProps) => {
             <button
               onClick={handleNewConversation}
               disabled={createConversation.isPending}
-              className="w-full flex items-center justify-center gap-1.5 py-2 px-3 bg-neutral-700 border border-[#2d2d2d] rounded-md cursor-pointer text-xs text-neutral-400 hover:bg-neutral-600 disabled:opacity-50"
+              className="w-full flex items-center justify-center gap-1.5 py-2 px-3 bg-neutral-700 border border-[#2d2d2d] rounded-md cursor-pointer text-xs text-neutral-400 hover:bg-white/[0.1] disabled:opacity-50"
             >
               <Plus className="w-3.5 h-3.5" />
               New Conversation
@@ -237,7 +236,7 @@ export const Sidebar = ({ className }: SidebarProps) => {
           <div className="p-2 border-b border-[#2d2d2d] flex items-center gap-1">
             <button
               onClick={() => setShowList(true)}
-              className="flex-1 flex items-center justify-between gap-1.5 py-1.5 px-2.5 bg-transparent border-none rounded-md cursor-pointer hover:bg-white/[0.04] min-w-0"
+              className="flex-1 flex items-center justify-between gap-1.5 py-1.5 px-2.5 bg-transparent border-none rounded-md cursor-pointer hover:bg-white/[0.06] min-w-0"
             >
               <span className="text-[13px] font-medium text-neutral-200 overflow-hidden text-ellipsis whitespace-nowrap">
                 {activeConversation?.title ?? "Untitled Conversation"}
@@ -247,7 +246,7 @@ export const Sidebar = ({ className }: SidebarProps) => {
             <button
               onClick={handleNewConversation}
               disabled={createConversation.isPending}
-              className="p-1.5 rounded-md hover:bg-white/[0.04] text-[#71717a] hover:text-neutral-200 disabled:opacity-50 shrink-0"
+              className="p-1.5 rounded-md hover:bg-white/[0.06] text-[#71717a] hover:text-neutral-200 disabled:opacity-50 shrink-0"
               title="New conversation"
             >
               <Plus className="w-4 h-4" />

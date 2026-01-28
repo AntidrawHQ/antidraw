@@ -32,16 +32,23 @@ import {
   cancelStream as cancelActiveStream,
 } from "@/main/lib/stream-manager";
 import { workspaceController } from "./controllers/workspace.controller";
+import type { ImageAttachment } from "@/shared/utils/message";
 
 export const app = new Hono();
 
 app.route("/workspaces", workspaceController);
+
+const imageAttachmentSchema = z.object({
+  data: z.string(),
+  mediaType: z.enum(["image/png", "image/jpeg", "image/gif", "image/webp"]),
+});
 
 const chatMessageSchema = z.object({
   message: z.string().min(1),
   workspaceId: z.uuid(),
   conversationId: z.string().uuid().optional(),
   userMessageId: z.string().uuid(), // Frontend-generated, used for dedup
+  images: z.array(imageAttachmentSchema).optional(),
 });
 
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
@@ -58,6 +65,7 @@ const processStream = async (
   message: string,
   workspaceId: string,
   userMessageId: string,
+  images?: ImageAttachment[],
 ) => {
   try {
     const claudeCodeSessionID = conversation.claudeCodeSessionId ?? undefined;
@@ -65,6 +73,7 @@ const processStream = async (
       message,
       workspaceId,
       claudeCodeSessionID,
+      images,
     });
 
     if (res.isErr()) {
@@ -78,7 +87,7 @@ const processStream = async (
 
     // For RESUMED conversations: persist user message immediately with frontend's ID
     if (sessionId) {
-      const userMsg = convertUserPromptToSDKMessage(message, sessionId);
+      const userMsg = convertUserPromptToSDKMessage(message, sessionId, images);
       await addMessage({
         id: userMessageId, // Use frontend-generated ID for dedup
         conversationId: conversation.id,
@@ -98,7 +107,7 @@ const processStream = async (
         sessionId = sdkMessage.session_id;
         await updateConversationSession(conversation.id, sessionId);
 
-        const userMsg = convertUserPromptToSDKMessage(message, sessionId);
+        const userMsg = convertUserPromptToSDKMessage(message, sessionId, images);
         await addMessage({
           id: userMessageId, // Use frontend-generated ID for dedup
           conversationId: conversation.id,
@@ -130,7 +139,7 @@ app.post(
   "/chat/message",
   zValidator("json", chatMessageSchema),
   async (ctx) => {
-    const { message, workspaceId, conversationId, userMessageId } =
+    const { message, workspaceId, conversationId, userMessageId, images } =
       ctx.req.valid("json");
 
     const conversationRes = await resolveOrCreateConversation(
@@ -174,7 +183,7 @@ app.post(
     await updateConversationStatus(conversation.id, "streaming");
 
     // Fire and forget - inner try/catch handles errors, this prevents unhandled rejections
-    processStream(conversation, message, workspaceId, userMessageId).catch(console.error);
+    processStream(conversation, message, workspaceId, userMessageId, images).catch(console.error);
 
     return ctx.json({ conversationId: conversation.id }, 202);
   },

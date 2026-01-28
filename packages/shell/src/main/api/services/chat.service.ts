@@ -4,6 +4,7 @@ import {
   type StreamStatus,
 } from "@/main/api/models/chat.model";
 import { db } from "@/main/db";
+import type { ImageAttachment } from "@/shared/utils/message";
 import { streamEvents } from "@/main/lib/stream-manager";
 import { createUserSDKMessage } from "@/shared/utils/message";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -104,12 +105,14 @@ export const getConversation = async (
 
 export const convertUserPromptToSDKMessage = (
   prompt: string,
-  sessionId: string
+  sessionId: string,
+  images?: ImageAttachment[]
 ) => {
   return createUserSDKMessage({
     text: prompt,
     sessionId,
     uuid: crypto.randomUUID(),
+    images,
   });
 };
 

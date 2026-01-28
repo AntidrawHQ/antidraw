@@ -7,6 +7,7 @@ import type {
   StreamEvent,
   Workspace,
 } from "@/main/api";
+import type { ImageAttachment } from "@/shared/utils/message";
 import { fetchEventSource } from "@microsoft/fetch-event-source";
 import { ok, err } from "neverthrow";
 
@@ -249,6 +250,7 @@ export const sendMessage = async (params: {
   workspaceId: string;
   conversationId?: string;
   userMessageId: string; // Frontend generates this for dedup
+  images?: ImageAttachment[];
 }) => {
   try {
     const response = await fetch("antidraw://_internal/chat/message", {
