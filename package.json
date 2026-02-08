@@ -12,6 +12,8 @@
     "build:shell": "npm run build -w @antidraw/shell",
     "build:template": "npm run build -w antidraw-workspace",
     "build:create-workspace": "npm run build -w @antidrawapp/create-workspace",
-    "build": "npm run build --workspaces --if-present"
+    "build": "npm run build --workspaces --if-present",
+    "runtime:local": "tsx scripts/use-local-runtime.ts",
+    "runtime:npm": "tsx scripts/use-npm-runtime.ts"
   }
 }
