@@ -128,7 +128,7 @@ export const WorkspaceSwitcher = () => {
         className="flex items-center gap-1.5 py-1 px-2.5 bg-transparent border-none rounded-md cursor-pointer hover:bg-white/[0.06] min-w-0 max-w-[180px]"
         style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
       >
-        <span className="text-[12px] font-medium text-neutral-400 overflow-hidden text-ellipsis whitespace-nowrap">
+        <span className="text-[13px] font-medium text-neutral-200 overflow-hidden text-ellipsis whitespace-nowrap">
           {activeWorkspace?.name ?? "Select workspace"}
         </span>
         <ChevronsUpDown className="w-3 h-3 text-[#71717a] shrink-0" />
@@ -145,7 +145,7 @@ export const WorkspaceSwitcher = () => {
             <div className="flex items-center gap-2 bg-neutral-700 rounded-lg px-2.5 py-2 border border-[#2d2d2d]">
               <Search
                 className={cn(
-                  "w-3.5 h-3.5",
+                  "w-3.5 h-3.5 shrink-0",
                   search ? "text-neutral-200" : "text-[#71717a]"
                 )}
               />
@@ -155,7 +155,7 @@ export const WorkspaceSwitcher = () => {
                 placeholder="Search..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                className="flex-1 bg-transparent border-none outline-none text-[13px] text-neutral-200 placeholder:text-neutral-500"
+                className="flex-1 min-w-0 bg-transparent border-none outline-none text-[13px] text-neutral-200 placeholder:text-neutral-500"
               />
               <button
                 onClick={close}
