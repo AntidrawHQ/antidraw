@@ -1,6 +1,8 @@
 import {
   ReactFlow,
+  ReactFlowProvider,
   useNodesState,
+  useReactFlow,
   type Node,
   type NodeTypes,
   type NodeProps,
@@ -233,6 +235,19 @@ const CanvasContent = ({
     });
   }, [userComponents, port, setNodes]);
 
+  // Focus on component when clicked in ComponentPanel
+  const focusComponentName = useWorkspaceStore((s) => s.focusComponentName);
+  const setFocusComponentName = useWorkspaceStore((s) => s.setFocusComponentName);
+  const reactFlow = useReactFlow();
+
+  useEffect(() => {
+    if (!focusComponentName) return;
+    const nodeId = `${focusComponentName.toLowerCase()}-1`;
+    reactFlow.fitView({ nodes: [{ id: nodeId }], duration: 300, padding: 0.3 });
+    setFocusComponentName(null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusComponentName]);
+
   return (
     <div className={cn("h-full w-full bg-neutral-800 relative", className)}>
       <GridPattern />
@@ -347,10 +362,12 @@ export const AppCanvas = ({ className }: AppCanvasProps) => {
   }
 
   return (
-    <CanvasContent
-      userComponents={userComponents}
-      port={devServer.port}
-      className={className}
-    />
+    <ReactFlowProvider>
+      <CanvasContent
+        userComponents={userComponents}
+        port={devServer.port}
+        className={className}
+      />
+    </ReactFlowProvider>
   );
 };

@@ -9,20 +9,22 @@ import {
 import { formatRelativeTime } from "./lib/time-utils";
 import { fuzzyMatch } from "./lib/fuzzy-search";
 import { AppChat } from "./Chat";
+import { ComponentPanel } from "./ComponentPanel";
 
-// Sidebar resize constraints
+// SidePanel resize constraints
 const MIN_SIDEBAR_WIDTH = 200;
 const MAX_SIDEBAR_WIDTH = 500;
 const DEFAULT_SIDEBAR_WIDTH = 280;
 
-type SidebarProps = {
+type SidePanelProps = {
   className?: string;
 };
 
-export const Sidebar = ({ className }: SidebarProps) => {
+export const SidePanel = ({ className }: SidePanelProps) => {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const activeConversationId = useWorkspaceStore((s) => s.activeConversationId);
   const setActiveConversationId = useWorkspaceStore((s) => s.setActiveConversationId);
+  const activeSidePanel = useWorkspaceStore((s) => s.activeSidePanel);
 
   // UI state
   const [showList, setShowList] = useState(false);
@@ -58,8 +60,9 @@ export const Sidebar = ({ className }: SidebarProps) => {
   // Sidebar resize
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
-      if (!isResizing) return;
-      const newWidth = e.clientX;
+      if (!isResizing || !sidebarRef.current) return;
+      const panelLeft = sidebarRef.current.getBoundingClientRect().left;
+      const newWidth = e.clientX - panelLeft;
       if (newWidth >= MIN_SIDEBAR_WIDTH && newWidth <= MAX_SIDEBAR_WIDTH) {
         setSidebarWidth(newWidth);
       }
@@ -154,7 +157,9 @@ export const Sidebar = ({ className }: SidebarProps) => {
         )}
       />
 
-      {showList || !activeConversationId ? (
+      {activeSidePanel === "components" ? (
+        <ComponentPanel />
+      ) : showList || !activeConversationId ? (
         /* Conversation List View */
         <div className="flex-1 flex flex-col overflow-hidden" onKeyDown={handleKeyDown}>
           {/* Search */}
