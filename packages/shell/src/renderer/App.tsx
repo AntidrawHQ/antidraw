@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AppCanvas } from "./Canvas";
-import { Sidebar } from "./Sidebar";
+import { IconStrip } from "./IconStrip";
+import { SidePanel } from "./SidePanel";
 
 const queryClient = new QueryClient();
 
@@ -20,7 +21,8 @@ function App() {
 
         {/* Main content */}
         <div className="flex flex-1 overflow-hidden">
-          <Sidebar />
+          <IconStrip />
+          <SidePanel />
           <AppCanvas className="flex-1 border-l border-[#2d2d2d]" />
         </div>
       </div>
