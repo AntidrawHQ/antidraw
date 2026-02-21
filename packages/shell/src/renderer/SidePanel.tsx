@@ -165,14 +165,14 @@ export const SidePanel = ({ className }: SidePanelProps) => {
           {/* Search */}
           <div className="p-2">
             <div className="flex items-center gap-2 bg-neutral-700 rounded-lg px-2.5 py-2 border border-[#2d2d2d]">
-              <Search className={cn("w-3.5 h-3.5", search ? "text-neutral-200" : "text-[#71717a]")} />
+              <Search className={cn("w-3.5 h-3.5 shrink-0", search ? "text-neutral-200" : "text-[#71717a]")} />
               <input
                 ref={searchInputRef}
                 type="text"
                 placeholder="Search..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                className="flex-1 bg-transparent border-none outline-none text-[13px] text-neutral-200 placeholder:text-neutral-500"
+                className="flex-1 min-w-0 bg-transparent border-none outline-none text-[13px] text-neutral-200 placeholder:text-neutral-500"
               />
               <button
                 onClick={() => {
