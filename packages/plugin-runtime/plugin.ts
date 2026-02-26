@@ -81,6 +81,19 @@ export const userComponents = Object.fromEntries(
         })
       },
     },
+    {
+      name: "antidraw:tailwind-source",
+      enforce: "pre",
+      transform(code, id) {
+        if (id.endsWith(".css") && code.includes('@import "tailwindcss"')) {
+          const workspaceSrc = path.resolve(process.cwd(), "./src")
+          return code.replace(
+            '@import "tailwindcss";',
+            `@import "tailwindcss";\n@source "${workspaceSrc}";`
+          )
+        }
+      },
+    },
     ...react(),
     ...tailwindcss(),
   ]
