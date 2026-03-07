@@ -6,6 +6,7 @@ import type {
   DevServerInfo,
 } from "@/main/api";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useWorkspaceStore } from "@/renderer/store/workspace";
 import {
   createWorkspace,
   listWorkspaces,
@@ -155,6 +156,18 @@ export const useDevServerStatus = (workspaceId: string | null) => {
     },
     enabled: !!workspaceId,
   });
+};
+
+export const useAutoSelectWorkspace = () => {
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
+  const setActiveWorkspaceId = useWorkspaceStore((s) => s.setActiveWorkspaceId);
+  const { data: workspaces } = useWorkspaces();
+
+  useEffect(() => {
+    if (!activeWorkspaceId && workspaces?.length) {
+      setActiveWorkspaceId(workspaces[0].id);
+    }
+  }, [activeWorkspaceId, workspaces, setActiveWorkspaceId]);
 };
 
 export const useAutoStartDevServer = (workspaceId: string | null) => {
