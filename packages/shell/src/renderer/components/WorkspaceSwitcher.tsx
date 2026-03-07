@@ -2,11 +2,7 @@ import { useState, useRef, useEffect, useMemo } from "react";
 import { ChevronsUpDown, Check, Search } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
-import {
-  useWorkspaces,
-  useWorkspace,
-  useStopDevServer,
-} from "@/renderer/lib/workspace-ops";
+import { useWorkspaces, useStopDevServer } from "@/renderer/lib/workspace-ops";
 import { fuzzyMatch } from "@/renderer/lib/fuzzy-search";
 
 export const WorkspaceSwitcher = () => {
@@ -24,15 +20,8 @@ export const WorkspaceSwitcher = () => {
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const { data: workspaces } = useWorkspaces();
-  const { data: activeWorkspace } = useWorkspace(activeWorkspaceId);
+  const activeWorkspace = workspaces?.find((ws) => ws.id === activeWorkspaceId);
   const stopDevServer = useStopDevServer();
-
-  // Auto-select first workspace when none is active
-  useEffect(() => {
-    if (!activeWorkspaceId && workspaces && workspaces.length > 0) {
-      setActiveWorkspaceId(workspaces[0].id);
-    }
-  }, [activeWorkspaceId, workspaces, setActiveWorkspaceId]);
 
   // Filter workspaces by search
   const filtered = useMemo(() => {
@@ -53,7 +42,8 @@ export const WorkspaceSwitcher = () => {
         containerRef.current &&
         !containerRef.current.contains(e.target as Node)
       ) {
-        close();
+        setIsOpen(false);
+        setSearch("");
       }
     };
 
@@ -61,21 +51,14 @@ export const WorkspaceSwitcher = () => {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [isOpen]);
 
-  // Focus search input when dropdown opens
-  useEffect(() => {
-    if (isOpen && searchInputRef.current) {
-      searchInputRef.current.focus();
-    }
-  }, [isOpen]);
-
-  // Reset selection when search changes
-  useEffect(() => {
-    setSelectedIndex(0);
-  }, [search]);
-
   const close = () => {
     setIsOpen(false);
     setSearch("");
+  };
+
+  const open = () => {
+    setIsOpen(true);
+    requestAnimationFrame(() => searchInputRef.current?.focus());
   };
 
   const handleSelect = (id: string) => {
@@ -124,7 +107,7 @@ export const WorkspaceSwitcher = () => {
     <div ref={containerRef} className="relative">
       {/* Trigger button */}
       <button
-        onClick={() => setIsOpen((prev) => !prev)}
+        onClick={() => (isOpen ? close() : open())}
         className="flex items-center gap-1.5 py-1 px-2.5 bg-transparent border-none rounded-md cursor-pointer hover:bg-white/[0.06] min-w-0 max-w-[180px]"
         style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
       >
@@ -154,7 +137,10 @@ export const WorkspaceSwitcher = () => {
                 type="text"
                 placeholder="Search..."
                 value={search}
-                onChange={(e) => setSearch(e.target.value)}
+                onChange={(e) => {
+                  setSearch(e.target.value);
+                  setSelectedIndex(0);
+                }}
                 className="flex-1 min-w-0 bg-transparent border-none outline-none text-[13px] text-neutral-200 placeholder:text-neutral-500"
               />
               <button
