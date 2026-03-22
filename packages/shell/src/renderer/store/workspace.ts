@@ -23,8 +23,3 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
   focusComponentName: null,
   setFocusComponentName: (name) => set({ focusComponentName: name }),
 }));
-
-// Expose store for console debugging in development
-if (process.env.NODE_ENV === "development") {
-  (window as unknown as { workspaceStore: typeof useWorkspaceStore }).workspaceStore = useWorkspaceStore;
-}
