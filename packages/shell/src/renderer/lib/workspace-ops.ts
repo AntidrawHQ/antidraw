@@ -5,8 +5,9 @@ import type {
   DevServerState,
   DevServerInfo,
 } from "@/main/api";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, skipToken } from "@tanstack/react-query";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
+import { queryKeys } from "./query-keys";
 import {
   createWorkspace,
   listWorkspaces,
@@ -19,7 +20,7 @@ import {
 
 export const useWorkspaces = () => {
   return useQuery({
-    queryKey: ["workspaces"] as const,
+    queryKey: queryKeys.workspaces.all,
     queryFn: async () => {
       const result = await listWorkspaces();
       if (result.isErr()) {
@@ -34,15 +35,16 @@ export const useWorkspaces = () => {
 // The query is disabled until workspaceId is truthy via `enabled: !!workspaceId`.
 export const useWorkspace = (workspaceId: string | null) => {
   return useQuery({
-    queryKey: ["workspace", workspaceId] as const,
-    queryFn: async () => {
-      const result = await getWorkspace(workspaceId!);
-      if (result.isErr()) {
-        throw new Error(result.error.message);
-      }
-      return result.value;
-    },
-    enabled: !!workspaceId,
+    queryKey: queryKeys.workspaces.detail(workspaceId),
+    queryFn: workspaceId
+      ? async () => {
+          const result = await getWorkspace(workspaceId);
+          if (result.isErr()) {
+            throw new Error(result.error.message);
+          }
+          return result.value;
+        }
+      : skipToken,
   });
 };
 
@@ -77,8 +79,8 @@ export const useCreateWorkspace = () => {
 
       return workspace;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["workspaces"] });
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all });
     },
   });
 };
@@ -94,9 +96,9 @@ export const useDeleteWorkspace = () => {
       }
       return workspaceId;
     },
-    onSuccess: (deletedId) => {
-      queryClient.invalidateQueries({ queryKey: ["workspaces"] });
-      queryClient.removeQueries({ queryKey: ["workspace", deletedId] });
+    onSuccess: async (deletedId) => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all });
+      queryClient.removeQueries({ queryKey: queryKeys.workspaces.detail(deletedId) });
     },
   });
 };
@@ -119,7 +121,7 @@ export const useStartDevServer = () => {
     retry: 3,
     retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 30000), // exponential backoff: 2s, 4s, 8s (capped at 30s)
     onSuccess: (data) => {
-      queryClient.setQueryData(["devServer", data.workspaceId], {
+      queryClient.setQueryData(queryKeys.devServer.status(data.workspaceId), {
         ...data,
         running: true,
       } satisfies DevServerInfo);
@@ -139,22 +141,23 @@ export const useStopDevServer = () => {
       return workspaceId;
     },
     onSuccess: (workspaceId) => {
-      queryClient.removeQueries({ queryKey: ["devServer", workspaceId] });
+      queryClient.removeQueries({ queryKey: queryKeys.devServer.status(workspaceId) });
     },
   });
 };
 
 export const useDevServerStatus = (workspaceId: string | null) => {
   return useQuery({
-    queryKey: ["devServer", workspaceId] as const,
-    queryFn: async () => {
-      const result = await getDevServerStatus(workspaceId!);
-      if (result.isErr()) {
-        throw new Error(result.error.message);
-      }
-      return result.value;
-    },
-    enabled: !!workspaceId,
+    queryKey: queryKeys.devServer.status(workspaceId),
+    queryFn: workspaceId
+      ? async () => {
+          const result = await getDevServerStatus(workspaceId);
+          if (result.isErr()) {
+            throw new Error(result.error.message);
+          }
+          return result.value;
+        }
+      : skipToken,
   });
 };
 
