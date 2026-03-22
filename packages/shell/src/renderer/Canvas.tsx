@@ -1,13 +1,15 @@
 import {
   ReactFlow,
+  ReactFlowProvider,
   useNodesState,
+  useReactFlow,
   type Node,
   type NodeTypes,
   type NodeProps,
   NodeResizer,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { memo, useState, useCallback, useEffect, useRef } from "react";
+import { memo, useMemo, useState, useCallback, useEffect, useRef } from "react";
 import { useUserComponents } from "./store/userComponents";
 import { useWorkspaceStore } from "./store/workspace";
 import { useDevServerStatus, useAutoStartDevServer } from "./lib/workspace-ops";
@@ -151,13 +153,15 @@ type UserComponent = {
 };
 
 // Grid pattern background component
+const gridPatternStyle = {
+  backgroundImage: "radial-gradient(#2d2d2d 1px, transparent 1px)",
+  backgroundSize: "20px 20px",
+} as const;
+
 const GridPattern = () => (
   <div
     className="absolute inset-0 opacity-50 pointer-events-none"
-    style={{
-      backgroundImage: "radial-gradient(#2d2d2d 1px, transparent 1px)",
-      backgroundSize: "20px 20px",
-    }}
+    style={gridPatternStyle}
   />
 );
 
@@ -170,18 +174,21 @@ const CanvasContent = ({
   port: number;
   className?: string;
 }) => {
-  // Create initial nodes with URL stored in data (not baked into component type)
-  const initialNodes: IframeReactFlowNode[] = userComponents.map(
-    (component, index) => ({
-      id: `${component.name.toLowerCase()}-1`,
-      type: "iframe" as const,
-      position: { x: 100 + index * 600, y: 100 },
-      style: { width: 400, height: 300 },
-      data: {
-        url: `https://localhost:${port}/preview?componentName=${component.name}`,
-        componentName: component.name,
-      },
-    })
+  // Create initial nodes once on mount (useNodesState uses useState internally, no lazy init support)
+  const initialNodes = useMemo<IframeReactFlowNode[]>(
+    () =>
+      userComponents.map((component, index) => ({
+        id: `${component.name}-1`,
+        type: "iframe" as const,
+        position: { x: 100 + index * 600, y: 100 },
+        style: { width: 400, height: 300 },
+        data: {
+          url: `https://localhost:${port}/preview?componentName=${component.name}`,
+          componentName: component.name,
+        },
+      })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
   );
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
@@ -220,7 +227,7 @@ const CanvasContent = ({
       return [
         ...currentNodes,
         ...newComponents.map((component, index) => ({
-          id: `${component.name.toLowerCase()}-1`,
+          id: `${component.name}-1`,
           type: "iframe" as const,
           position: { x: maxX + 500 + index * 600, y: 100 },
           style: { width: 400, height: 300 },
@@ -232,6 +239,19 @@ const CanvasContent = ({
       ];
     });
   }, [userComponents, port, setNodes]);
+
+  // Focus on component when clicked in ComponentPanel
+  const reactFlow = useReactFlow();
+  const focusComponentName = useWorkspaceStore((s) => s.focusComponentName);
+  const setFocusComponentName = useWorkspaceStore((s) => s.setFocusComponentName);
+
+  useEffect(() => {
+    if (focusComponentName) {
+      const nodeId = `${focusComponentName}-1`;
+      reactFlow.fitView({ nodes: [{ id: nodeId }], duration: 300, padding: 0.3 });
+      setFocusComponentName(null);
+    }
+  }, [focusComponentName, reactFlow, setFocusComponentName]);
 
   return (
     <div className={cn("h-full w-full bg-neutral-800 relative", className)}>
@@ -258,6 +278,21 @@ const CanvasContent = ({
   );
 };
 
+type CanvasPlaceholderProps = {
+  subtitle: string;
+  className?: string;
+};
+
+const CanvasPlaceholder = ({ subtitle, className }: CanvasPlaceholderProps) => (
+  <div className={cn("flex-1 flex items-center justify-center bg-neutral-800 relative", className)}>
+    <GridPattern />
+    <div className="text-center z-10">
+      <div className="text-sm text-[#71717a]">Canvas</div>
+      <div className="text-[11px] text-neutral-600">{subtitle}</div>
+    </div>
+  </div>
+);
+
 type AppCanvasProps = {
   className?: string;
 };
@@ -277,80 +312,33 @@ export const AppCanvas = ({ className }: AppCanvasProps) => {
   } = useUserComponents(activeWorkspaceId);
 
   if (!activeWorkspaceId) {
-    return (
-      <div
-        className={cn(
-          "flex-1 flex items-center justify-center bg-neutral-800 relative",
-          className
-        )}
-      >
-        <GridPattern />
-        <div className="text-center z-10">
-          <div className="text-sm text-[#71717a]">Canvas</div>
-          <div className="text-[11px] text-neutral-600">No workspace selected</div>
-        </div>
-      </div>
-    );
+    return <CanvasPlaceholder subtitle="No workspace selected" className={className} />;
   }
 
   if (!devServer) {
     return (
-      <div
-        className={cn(
-          "flex-1 flex items-center justify-center bg-neutral-800 relative",
-          className
-        )}
-      >
-        <GridPattern />
-        <div className="text-center z-10">
-          <div className="text-sm text-[#71717a]">Canvas</div>
-          <div className="text-[11px] text-neutral-600">
-            {isDevServerPending ? "Checking dev server..." : "Dev server not running"}
-          </div>
-        </div>
-      </div>
+      <CanvasPlaceholder
+        subtitle={isDevServerPending ? "Checking dev server..." : "Dev server not running"}
+        className={className}
+      />
     );
   }
 
   if (isComponentsPending) {
-    return (
-      <div
-        className={cn(
-          "flex-1 flex items-center justify-center bg-neutral-800 relative",
-          className
-        )}
-      >
-        <GridPattern />
-        <div className="text-center z-10">
-          <div className="text-sm text-[#71717a]">Canvas</div>
-          <div className="text-[11px] text-neutral-600">Loading components...</div>
-        </div>
-      </div>
-    );
+    return <CanvasPlaceholder subtitle="Loading components..." className={className} />;
   }
 
   if (isError || !userComponents) {
-    return (
-      <div
-        className={cn(
-          "flex-1 flex items-center justify-center bg-neutral-800 relative",
-          className
-        )}
-      >
-        <GridPattern />
-        <div className="text-center z-10">
-          <div className="text-sm text-[#71717a]">Canvas</div>
-          <div className="text-[11px] text-neutral-600">Error loading components</div>
-        </div>
-      </div>
-    );
+    return <CanvasPlaceholder subtitle="Error loading components" className={className} />;
   }
 
   return (
-    <CanvasContent
-      userComponents={userComponents}
-      port={devServer.port}
-      className={className}
-    />
+    <ReactFlowProvider>
+      <CanvasContent
+        userComponents={userComponents}
+        port={devServer.port}
+        className={className}
+      />
+    </ReactFlowProvider>
   );
 };

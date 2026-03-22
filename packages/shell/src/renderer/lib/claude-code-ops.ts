@@ -1,8 +1,9 @@
 import type { Conversation, ConversationWithMessages, Message } from "@/main/api";
 import type { ImageAttachment } from "@/shared/utils/message";
 import { createUserSDKMessage } from "@/shared/utils/message";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { queryOptions, useMutation, useQuery, useQueryClient, skipToken } from "@tanstack/react-query";
 import { useEffect } from "react";
+import { queryKeys } from "./query-keys";
 import {
   cancelConversationStream,
   createConversation,
@@ -15,23 +16,23 @@ import { subscribeToStream } from "./stream-subscription";
 import { selectToolMap } from "./tool-utils";
 
 // Shared query options for conversation data
-const conversationQueryOptions = (conversationId: string) => ({
-  queryKey: ["conversation", conversationId] as const,
-  queryFn: async () => {
-    const result = await getConversationWithMessages(conversationId);
-    if (result.isErr()) {
-      throw new Error(result.error.message);
-    }
-    return result.value;
-  },
-  staleTime: Infinity,
-});
+const conversationQueryOpts = (conversationId: string | null) =>
+  queryOptions({
+    queryKey: queryKeys.conversations.detail(conversationId),
+    queryFn: conversationId
+      ? async () => {
+          const result = await getConversationWithMessages(conversationId);
+          if (result.isErr()) {
+            throw new Error(result.error.message);
+          }
+          return result.value;
+        }
+      : skipToken,
+    staleTime: Infinity,
+  });
 
 export const useConversationMessages = (conversationId: string | null) => {
-  return useQuery({
-    ...conversationQueryOptions(conversationId!),
-    enabled: !!conversationId,
-  });
+  return useQuery(conversationQueryOpts(conversationId));
 };
 
 // Hook that subscribes to stream events when conversation is streaming
@@ -39,10 +40,7 @@ export const useConversationWithStream = (conversationId: string | null) => {
   const queryClient = useQueryClient();
 
   // Main data query
-  const query = useQuery({
-    ...conversationQueryOptions(conversationId!),
-    enabled: !!conversationId,
-  });
+  const query = useQuery(conversationQueryOpts(conversationId));
 
   const isStreaming = query.data?.streamStatus === "streaming";
 
@@ -58,23 +56,23 @@ export const useConversationWithStream = (conversationId: string | null) => {
 
 export const useWorkspaceConversations = (workspaceId: string | null) => {
   return useQuery({
-    queryKey: ["workspace-conversations", workspaceId] as const,
-    queryFn: async () => {
-      const result = await listWorkspaceConversations(workspaceId!);
-      if (result.isErr()) {
-        throw new Error(result.error.message);
-      }
-      return result.value;
-    },
-    enabled: !!workspaceId,
+    queryKey: queryKeys.conversations.byWorkspace(workspaceId),
+    queryFn: workspaceId
+      ? async () => {
+          const result = await listWorkspaceConversations(workspaceId);
+          if (result.isErr()) {
+            throw new Error(result.error.message);
+          }
+          return result.value;
+        }
+      : skipToken,
   });
 };
 
 // Returns Map<string, ToolPart> for tool correlation
 export const useToolMap = (conversationId: string | null) => {
   return useQuery({
-    ...conversationQueryOptions(conversationId!),
-    enabled: !!conversationId,
+    ...conversationQueryOpts(conversationId),
     select: selectToolMap,
   });
 };
@@ -95,12 +93,12 @@ export const useCreateConversation = () => {
     onSuccess: (conversation) => {
       // Pre-populate cache with empty messages
       queryClient.setQueryData<ConversationWithMessages>(
-        ["conversation", conversation.id],
+        queryKeys.conversations.detail(conversation.id),
         { ...conversation, messages: [] },
       );
       // Add to workspace conversations list
       queryClient.setQueryData<Conversation[]>(
-        ["workspace-conversations", conversation.workspaceId],
+        queryKeys.conversations.byWorkspace(conversation.workspaceId),
         (old) => (old ? [conversation, ...old] : [conversation]),
       );
     },
@@ -131,13 +129,12 @@ export const useSendMessage = () => {
 onMutate: async ({ message, conversationId, userMessageId, images }) => {
       // Cancel any outgoing refetches
       await queryClient.cancelQueries({
-        queryKey: ["conversation", conversationId],
+        queryKey: queryKeys.conversations.detail(conversationId),
       });
 
-      const previousChat = queryClient.getQueryData<ConversationWithMessages>([
-        "conversation",
-        conversationId,
-      ]);
+      const previousChat = queryClient.getQueryData<ConversationWithMessages>(
+        queryKeys.conversations.detail(conversationId),
+      );
 
       if (!previousChat) {
         // This shouldn't happen if the flow is correct:
@@ -163,7 +160,7 @@ onMutate: async ({ message, conversationId, userMessageId, images }) => {
       };
 
       queryClient.setQueryData<ConversationWithMessages>(
-        ["conversation", conversationId],
+        queryKeys.conversations.detail(conversationId),
         {
           ...previousChat,
           streamStatus: "streaming",
@@ -177,7 +174,7 @@ onMutate: async ({ message, conversationId, userMessageId, images }) => {
     onError: (_err, { conversationId }, context) => {
       if (context?.previousChat) {
         queryClient.setQueryData(
-          ["conversation", conversationId],
+          queryKeys.conversations.detail(conversationId),
           context.previousChat,
         );
       }
@@ -208,12 +205,12 @@ export const useGenerateTitle = () => {
     onSuccess: (data, { conversationId, workspaceId }) => {
       // Update conversation cache
       queryClient.setQueryData<ConversationWithMessages>(
-        ["conversation", conversationId],
+        queryKeys.conversations.detail(conversationId),
         (old) => (old ? { ...old, title: data.title, summary: data.summary } : old)
       );
       // Update sidebar list
       queryClient.setQueryData<Conversation[]>(
-        ["workspace-conversations", workspaceId],
+        queryKeys.conversations.byWorkspace(workspaceId),
         (old) =>
           old?.map((c) =>
             c.id === conversationId

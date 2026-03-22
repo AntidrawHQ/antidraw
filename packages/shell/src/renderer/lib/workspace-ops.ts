@@ -1,11 +1,13 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import type {
   Workspace,
   CreateWorkspaceResponse,
   DevServerState,
   DevServerInfo,
 } from "@/main/api";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, skipToken } from "@tanstack/react-query";
+import { useWorkspaceStore } from "@/renderer/store/workspace";
+import { queryKeys } from "./query-keys";
 import {
   createWorkspace,
   listWorkspaces,
@@ -18,7 +20,7 @@ import {
 
 export const useWorkspaces = () => {
   return useQuery({
-    queryKey: ["workspaces"] as const,
+    queryKey: queryKeys.workspaces.all,
     queryFn: async () => {
       const result = await listWorkspaces();
       if (result.isErr()) {
@@ -33,15 +35,16 @@ export const useWorkspaces = () => {
 // The query is disabled until workspaceId is truthy via `enabled: !!workspaceId`.
 export const useWorkspace = (workspaceId: string | null) => {
   return useQuery({
-    queryKey: ["workspace", workspaceId] as const,
-    queryFn: async () => {
-      const result = await getWorkspace(workspaceId!);
-      if (result.isErr()) {
-        throw new Error(result.error.message);
-      }
-      return result.value;
-    },
-    enabled: !!workspaceId,
+    queryKey: queryKeys.workspaces.detail(workspaceId),
+    queryFn: workspaceId
+      ? async () => {
+          const result = await getWorkspace(workspaceId);
+          if (result.isErr()) {
+            throw new Error(result.error.message);
+          }
+          return result.value;
+        }
+      : skipToken,
   });
 };
 
@@ -76,8 +79,8 @@ export const useCreateWorkspace = () => {
 
       return workspace;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["workspaces"] });
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all });
     },
   });
 };
@@ -93,9 +96,9 @@ export const useDeleteWorkspace = () => {
       }
       return workspaceId;
     },
-    onSuccess: (deletedId) => {
-      queryClient.invalidateQueries({ queryKey: ["workspaces"] });
-      queryClient.removeQueries({ queryKey: ["workspace", deletedId] });
+    onSuccess: async (deletedId) => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all });
+      queryClient.removeQueries({ queryKey: queryKeys.workspaces.detail(deletedId) });
     },
   });
 };
@@ -118,7 +121,7 @@ export const useStartDevServer = () => {
     retry: 3,
     retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 30000), // exponential backoff: 2s, 4s, 8s (capped at 30s)
     onSuccess: (data) => {
-      queryClient.setQueryData(["devServer", data.workspaceId], {
+      queryClient.setQueryData(queryKeys.devServer.status(data.workspaceId), {
         ...data,
         running: true,
       } satisfies DevServerInfo);
@@ -138,37 +141,61 @@ export const useStopDevServer = () => {
       return workspaceId;
     },
     onSuccess: (workspaceId) => {
-      queryClient.removeQueries({ queryKey: ["devServer", workspaceId] });
+      queryClient.removeQueries({ queryKey: queryKeys.devServer.status(workspaceId) });
     },
   });
 };
 
 export const useDevServerStatus = (workspaceId: string | null) => {
   return useQuery({
-    queryKey: ["devServer", workspaceId] as const,
-    queryFn: async () => {
-      const result = await getDevServerStatus(workspaceId!);
-      if (result.isErr()) {
-        throw new Error(result.error.message);
-      }
-      return result.value;
-    },
-    enabled: !!workspaceId,
+    queryKey: queryKeys.devServer.status(workspaceId),
+    queryFn: workspaceId
+      ? async () => {
+          const result = await getDevServerStatus(workspaceId);
+          if (result.isErr()) {
+            throw new Error(result.error.message);
+          }
+          return result.value;
+        }
+      : skipToken,
   });
+};
+
+export const useAutoSelectWorkspace = () => {
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
+  const setActiveWorkspaceId = useWorkspaceStore((s) => s.setActiveWorkspaceId);
+  const { data: workspaces } = useWorkspaces();
+
+  useEffect(() => {
+    if (!activeWorkspaceId && workspaces?.length) {
+      setActiveWorkspaceId(workspaces[0].id);
+    }
+  }, [activeWorkspaceId, workspaces, setActiveWorkspaceId]);
 };
 
 export const useAutoStartDevServer = (workspaceId: string | null) => {
   const { data: devServer, isPending: isStatusPending } = useDevServerStatus(workspaceId);
   const startDevServer = useStartDevServer();
+  const attemptedRef = useRef<string | null>(null);
+
+  // Reset attempt tracking when workspace changes, allowing fresh retries
+  useEffect(() => {
+    attemptedRef.current = null;
+  }, [workspaceId]);
 
   useEffect(() => {
-    // Skip if no workspace, still checking status, already running, mutation in progress, or previous attempt failed
-    if (!workspaceId || isStatusPending || devServer?.running || startDevServer.isPending || startDevServer.isError) {
+    if (
+      !workspaceId ||
+      isStatusPending ||
+      devServer?.running ||
+      attemptedRef.current === workspaceId
+    ) {
       return;
     }
 
+    attemptedRef.current = workspaceId;
     startDevServer.mutate(workspaceId);
-  }, [workspaceId, devServer?.running, isStatusPending, startDevServer.isPending, startDevServer.isError]);
+  }, [workspaceId, devServer?.running, isStatusPending, startDevServer]);
 
   return {
     isStarting: startDevServer.isPending,
