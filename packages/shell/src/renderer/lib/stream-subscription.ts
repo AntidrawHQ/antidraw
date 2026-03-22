@@ -1,6 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type { ConversationWithMessages } from "@/main/api";
 import { subscribeToConversation, type StreamEvent } from "./api";
+import { queryKeys } from "./query-keys";
 
 const activeSubscriptions = new Map<string, Promise<void>>();
 
@@ -39,7 +40,7 @@ const handleStreamEvent = (
 ): void => {
   if (event.type === "message") {
     queryClient.setQueryData<ConversationWithMessages>(
-      ["conversation", conversationId],
+      queryKeys.conversations.detail(conversationId),
       (old) => {
         if (!old) return old;
         // Dedup by ID
@@ -52,22 +53,22 @@ const handleStreamEvent = (
   if (event.type === "complete") {
     // Immediate UI update
     queryClient.setQueryData<ConversationWithMessages>(
-      ["conversation", conversationId],
+      queryKeys.conversations.detail(conversationId),
       (old) => (old ? { ...old, streamStatus: "completed" } : old),
     );
     // TODO: Rearchitect to a single stream endpoint that sends initial state + live events,
     // eliminating the race condition between initial fetch and stream subscription.
     // Refetch to ensure we have all messages (handles rare race condition)
-    queryClient.invalidateQueries({ queryKey: ["conversation", conversationId] });
+    queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
   }
 
   if (event.type === "error") {
     // Immediate UI update
     queryClient.setQueryData<ConversationWithMessages>(
-      ["conversation", conversationId],
+      queryKeys.conversations.detail(conversationId),
       (old) => (old ? { ...old, streamStatus: "error" } : old),
     );
     // Refetch to ensure consistency
-    queryClient.invalidateQueries({ queryKey: ["conversation", conversationId] });
+    queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detail(conversationId) });
   }
 };
