@@ -18,7 +18,15 @@ const RootComponent = () => {
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <div className="flex h-screen w-full flex-col">
-          <Outlet />
+          {/* Draggable titlebar */}
+          <div
+            className="h-[38px] w-full shrink-0 bg-neutral-800 border-b border-[#2d2d2d]"
+            style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
+          />
+
+          <div className="flex-1 overflow-hidden">
+            <Outlet />
+          </div>
         </div>
       </TooltipProvider>
     </QueryClientProvider>
