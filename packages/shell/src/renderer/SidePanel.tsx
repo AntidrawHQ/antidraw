@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { ChevronsUpDown, Plus, Search } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
 import { useWorkspaceStore } from "./store/workspace";
@@ -8,33 +8,26 @@ import {
 } from "./lib/claude-code-ops";
 import { formatRelativeTime } from "./lib/time-utils";
 import { fuzzyMatch } from "./lib/fuzzy-search";
+import { renderHighlighted } from "./lib/render-highlighted";
 import { AppChat } from "./Chat";
 import { ComponentPanel } from "./ComponentPanel";
 
 // SidePanel resize constraints
-const MIN_SIDEBAR_WIDTH = 200;
-const MAX_SIDEBAR_WIDTH = 500;
-const DEFAULT_SIDEBAR_WIDTH = 280;
+const MIN_PANEL_WIDTH = 200;
+const MAX_PANEL_WIDTH = 500;
+const DEFAULT_PANEL_WIDTH = 280;
 
-type SidePanelProps = {
-  className?: string;
-};
-
-export const SidePanel = ({ className }: SidePanelProps) => {
+const ChatPanel = () => {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const activeConversationId = useWorkspaceStore((s) => s.activeConversationId);
   const setActiveConversationId = useWorkspaceStore((s) => s.setActiveConversationId);
-  const activeSidePanel = useWorkspaceStore((s) => s.activeSidePanel);
 
   // UI state
   const [showList, setShowList] = useState(false);
   const [search, setSearch] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
-  const [isResizing, setIsResizing] = useState(false);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const sidebarRef = useRef<HTMLDivElement>(null);
 
   // Data hooks
   const { data: conversations = [] } = useWorkspaceConversations(activeWorkspaceId);
@@ -57,47 +50,12 @@ export const SidePanel = ({ className }: SidePanelProps) => {
       .filter((c) => c.match);
   }, [conversations, search]);
 
-  // Sidebar resize
-  useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!isResizing || !sidebarRef.current) return;
-      const panelLeft = sidebarRef.current.getBoundingClientRect().left;
-      const newWidth = e.clientX - panelLeft;
-      if (newWidth >= MIN_SIDEBAR_WIDTH && newWidth <= MAX_SIDEBAR_WIDTH) {
-        setSidebarWidth(newWidth);
-      }
-    };
-
-    const handleMouseUp = () => {
-      setIsResizing(false);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    };
-
-    if (isResizing) {
-      document.body.style.cursor = "col-resize";
-      document.body.style.userSelect = "none";
-      document.addEventListener("mousemove", handleMouseMove);
-      document.addEventListener("mouseup", handleMouseUp);
-    }
-
-    return () => {
-      document.removeEventListener("mousemove", handleMouseMove);
-      document.removeEventListener("mouseup", handleMouseUp);
-    };
-  }, [isResizing]);
-
   // Focus search input when list opens
   useEffect(() => {
     if (showList && searchInputRef.current) {
       searchInputRef.current.focus();
     }
   }, [showList]);
-
-  // Reset selection when search changes
-  useEffect(() => {
-    setSelectedIndex(0);
-  }, [search]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "ArrowDown") {
@@ -130,138 +88,164 @@ export const SidePanel = ({ className }: SidePanelProps) => {
     setSearch("");
   };
 
-  const renderHighlighted = (text: string, indices: number[]) => {
-    if (!indices.length) return text;
-    return text.split("").map((char, i) => (
-      <span
-        key={i}
-        className={cn(indices.includes(i) && "text-white font-semibold")}
-      >
-        {char}
-      </span>
-    ));
-  };
+  if (showList || !activeConversationId) {
+    return (
+      <div className="flex-1 flex flex-col overflow-hidden" onKeyDown={handleKeyDown}>
+        {/* Search */}
+        <div className="p-2">
+          <div className="flex items-center gap-2 bg-neutral-700 rounded-lg px-2.5 py-2 border border-[#2d2d2d]">
+            <Search className={cn("w-3.5 h-3.5 shrink-0", search ? "text-neutral-200" : "text-[#71717a]")} />
+            <input
+              ref={searchInputRef}
+              type="text"
+              placeholder="Search..."
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setSelectedIndex(0);
+              }}
+              className="flex-1 min-w-0 bg-transparent border-none outline-none text-[13px] text-neutral-200 placeholder:text-neutral-500"
+            />
+            <button
+              onClick={() => {
+                setShowList(false);
+                setSearch("");
+              }}
+              className="px-1.5 py-0.5 bg-[#2d2d2d] border-none rounded text-[10px] text-neutral-400 cursor-pointer hover:bg-neutral-600"
+            >
+              ESC
+            </button>
+          </div>
+        </div>
+
+        {/* List */}
+        <div className="flex-1 overflow-y-auto px-2 pb-2">
+          {filtered.map((conv, idx) => {
+            const description = conv.summary;
+            return (
+              <button
+                key={conv.id}
+                onClick={() => handleSelectConversation(conv.id)}
+                className={cn(
+                  "w-full flex flex-col items-start gap-0.5 py-2 px-2.5 border-none rounded-md cursor-pointer text-left mb-0.5",
+                  idx === selectedIndex ? "bg-white/[0.06]" : "bg-transparent hover:bg-white/[0.06]"
+                )}
+              >
+                <div className="w-full flex items-center justify-between gap-2">
+                  <span
+                    className={cn(
+                      "flex-1 text-[13px] font-medium overflow-hidden text-ellipsis whitespace-nowrap",
+                      idx === selectedIndex ? "text-neutral-200" : "text-neutral-400"
+                    )}
+                  >
+                    {renderHighlighted(conv.displayTitle, conv.indices)}
+                  </span>
+                  <span className="text-[10px] text-neutral-600 shrink-0">
+                    {formatRelativeTime(new Date(conv.updatedAt))}
+                  </span>
+                </div>
+                {description && (
+                  <span className="text-[11px] text-[#71717a] overflow-hidden text-ellipsis whitespace-nowrap w-full">
+                    {description}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* New Button */}
+        <div className="p-2 border-t border-[#2d2d2d]">
+          <button
+            onClick={handleNewConversation}
+            disabled={createConversation.isPending}
+            className="w-full flex items-center justify-center gap-1.5 py-2 px-3 bg-neutral-700 border border-[#2d2d2d] rounded-md cursor-pointer text-xs text-neutral-400 hover:bg-white/[0.1] disabled:opacity-50"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            New Conversation
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 flex flex-col overflow-hidden">
+      {/* Conversation Selector Header */}
+      <div className="p-2 border-b border-[#2d2d2d] flex items-center gap-1">
+        <button
+          onClick={() => setShowList(true)}
+          className="flex-1 flex items-center justify-between gap-1.5 py-1.5 px-2.5 bg-transparent border-none rounded-md cursor-pointer hover:bg-white/[0.06] min-w-0"
+        >
+          <span className="text-[13px] font-medium text-neutral-200 overflow-hidden text-ellipsis whitespace-nowrap">
+            {activeConversation?.title ?? "Untitled Conversation"}
+          </span>
+          <ChevronsUpDown className="w-3.5 h-3.5 text-[#71717a] shrink-0" />
+        </button>
+        <button
+          onClick={handleNewConversation}
+          disabled={createConversation.isPending}
+          className="p-1.5 rounded-md hover:bg-white/[0.06] text-[#71717a] hover:text-neutral-200 disabled:opacity-50 shrink-0"
+          title="New conversation"
+        >
+          <Plus className="w-4 h-4" />
+        </button>
+      </div>
+
+      {/* Chat Content */}
+      <AppChat className="flex-1 min-h-0" />
+    </div>
+  );
+};
+
+type SidePanelProps = {
+  className?: string;
+};
+
+export const SidePanel = ({ className }: SidePanelProps) => {
+  const activeSidePanel = useWorkspaceStore((s) => s.activeSidePanel);
+
+  const panelRef = useRef<HTMLDivElement>(null);
+  const handleRef = useRef<HTMLDivElement>(null);
+
+  const handleResizeStart = useCallback(() => {
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    handleRef.current?.classList.add("!bg-[#71717a]");
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!panelRef.current) return;
+      const panelLeft = panelRef.current.getBoundingClientRect().left;
+      const newWidth = Math.max(MIN_PANEL_WIDTH, Math.min(e.clientX - panelLeft, MAX_PANEL_WIDTH));
+      panelRef.current.style.width = `${newWidth}px`;
+    };
+
+    const handleMouseUp = () => {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      handleRef.current?.classList.remove("!bg-[#71717a]");
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+  }, []);
 
   return (
     <div
-      ref={sidebarRef}
+      ref={panelRef}
       className={cn("relative flex flex-col overflow-hidden bg-neutral-800", className)}
-      style={{ width: sidebarWidth }}
+      style={{ width: DEFAULT_PANEL_WIDTH }}
     >
       {/* Resize Handle */}
       <div
-        onMouseDown={() => setIsResizing(true)}
-        className={cn(
-          "absolute top-0 right-0 w-1 h-full z-10 cursor-col-resize transition-colors",
-          isResizing ? "bg-[#71717a]" : "hover:bg-[#2d2d2d]"
-        )}
+        ref={handleRef}
+        onMouseDown={handleResizeStart}
+        className="absolute top-0 right-0 w-1 h-full z-10 cursor-col-resize transition-colors hover:bg-[#2d2d2d]"
       />
 
-      {activeSidePanel === "components" ? (
-        <ComponentPanel />
-      ) : showList || !activeConversationId ? (
-        /* Conversation List View */
-        <div className="flex-1 flex flex-col overflow-hidden" onKeyDown={handleKeyDown}>
-          {/* Search */}
-          <div className="p-2">
-            <div className="flex items-center gap-2 bg-neutral-700 rounded-lg px-2.5 py-2 border border-[#2d2d2d]">
-              <Search className={cn("w-3.5 h-3.5 shrink-0", search ? "text-neutral-200" : "text-[#71717a]")} />
-              <input
-                ref={searchInputRef}
-                type="text"
-                placeholder="Search..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="flex-1 min-w-0 bg-transparent border-none outline-none text-[13px] text-neutral-200 placeholder:text-neutral-500"
-              />
-              <button
-                onClick={() => {
-                  setShowList(false);
-                  setSearch("");
-                }}
-                className="px-1.5 py-0.5 bg-[#2d2d2d] border-none rounded text-[10px] text-neutral-400 cursor-pointer hover:bg-neutral-600"
-              >
-                ESC
-              </button>
-            </div>
-          </div>
-
-          {/* List */}
-          <div className="flex-1 overflow-y-auto px-2 pb-2">
-            {filtered.map((conv, idx) => {
-              const description = conv.summary;
-              return (
-                <button
-                  key={conv.id}
-                  onClick={() => handleSelectConversation(conv.id)}
-                  className={cn(
-                    "w-full flex flex-col items-start gap-0.5 py-2 px-2.5 border-none rounded-md cursor-pointer text-left mb-0.5",
-                    idx === selectedIndex ? "bg-white/[0.06]" : "bg-transparent hover:bg-white/[0.06]"
-                  )}
-                >
-                  <div className="w-full flex items-center justify-between gap-2">
-                    <span
-                      className={cn(
-                        "flex-1 text-[13px] font-medium overflow-hidden text-ellipsis whitespace-nowrap",
-                        idx === selectedIndex ? "text-neutral-200" : "text-neutral-400"
-                      )}
-                    >
-                      {renderHighlighted(conv.displayTitle, conv.indices)}
-                    </span>
-                    <span className="text-[10px] text-neutral-600 shrink-0">
-                      {formatRelativeTime(new Date(conv.updatedAt))}
-                    </span>
-                  </div>
-                  {description && (
-                    <span className="text-[11px] text-[#71717a] overflow-hidden text-ellipsis whitespace-nowrap w-full">
-                      {description}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-
-          {/* New Button */}
-          <div className="p-2 border-t border-[#2d2d2d]">
-            <button
-              onClick={handleNewConversation}
-              disabled={createConversation.isPending}
-              className="w-full flex items-center justify-center gap-1.5 py-2 px-3 bg-neutral-700 border border-[#2d2d2d] rounded-md cursor-pointer text-xs text-neutral-400 hover:bg-white/[0.1] disabled:opacity-50"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              New Conversation
-            </button>
-          </div>
-        </div>
-      ) : (
-        /* Chat View */
-        <div className="flex-1 flex flex-col overflow-hidden">
-          {/* Conversation Selector Header */}
-          <div className="p-2 border-b border-[#2d2d2d] flex items-center gap-1">
-            <button
-              onClick={() => setShowList(true)}
-              className="flex-1 flex items-center justify-between gap-1.5 py-1.5 px-2.5 bg-transparent border-none rounded-md cursor-pointer hover:bg-white/[0.06] min-w-0"
-            >
-              <span className="text-[13px] font-medium text-neutral-200 overflow-hidden text-ellipsis whitespace-nowrap">
-                {activeConversation?.title ?? "Untitled Conversation"}
-              </span>
-              <ChevronsUpDown className="w-3.5 h-3.5 text-[#71717a] shrink-0" />
-            </button>
-            <button
-              onClick={handleNewConversation}
-              disabled={createConversation.isPending}
-              className="p-1.5 rounded-md hover:bg-white/[0.06] text-[#71717a] hover:text-neutral-200 disabled:opacity-50 shrink-0"
-              title="New conversation"
-            >
-              <Plus className="w-4 h-4" />
-            </button>
-          </div>
-
-          {/* Chat Content */}
-          <AppChat className="flex-1 min-h-0" />
-        </div>
-      )}
+      {activeSidePanel === "components" ? <ComponentPanel /> : <ChatPanel />}
     </div>
   );
 };

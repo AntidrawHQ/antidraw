@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import type {
   Workspace,
   CreateWorkspaceResponse,
@@ -173,15 +173,26 @@ export const useAutoSelectWorkspace = () => {
 export const useAutoStartDevServer = (workspaceId: string | null) => {
   const { data: devServer, isPending: isStatusPending } = useDevServerStatus(workspaceId);
   const startDevServer = useStartDevServer();
+  const attemptedRef = useRef<string | null>(null);
+
+  // Reset attempt tracking when workspace changes, allowing fresh retries
+  useEffect(() => {
+    attemptedRef.current = null;
+  }, [workspaceId]);
 
   useEffect(() => {
-    // Skip if no workspace, still checking status, already running, mutation in progress, or previous attempt failed
-    if (!workspaceId || isStatusPending || devServer?.running || startDevServer.isPending || startDevServer.isError) {
+    if (
+      !workspaceId ||
+      isStatusPending ||
+      devServer?.running ||
+      attemptedRef.current === workspaceId
+    ) {
       return;
     }
 
+    attemptedRef.current = workspaceId;
     startDevServer.mutate(workspaceId);
-  }, [workspaceId, devServer?.running, isStatusPending, startDevServer.isPending, startDevServer.isError]);
+  }, [workspaceId, devServer?.running, isStatusPending, startDevServer]);
 
   return {
     isStarting: startDevServer.isPending,

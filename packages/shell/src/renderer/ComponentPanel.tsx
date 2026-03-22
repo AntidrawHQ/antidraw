@@ -1,5 +1,4 @@
 import { Blocks } from "lucide-react";
-import { cn } from "@/renderer/lib/utils";
 import { useWorkspaceStore } from "./store/workspace";
 import { useUserComponents } from "./store/userComponents";
 

@@ -4,6 +4,7 @@ import { cn } from "@/renderer/lib/utils";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
 import { useWorkspaces, useStopDevServer } from "@/renderer/lib/workspace-ops";
 import { fuzzyMatch } from "@/renderer/lib/fuzzy-search";
+import { renderHighlighted } from "@/renderer/lib/render-highlighted";
 import {
   Popover,
   PopoverTrigger,
@@ -50,7 +51,11 @@ export const WorkspaceSwitcher = () => {
 
     // Stop previous workspace's dev server
     if (activeWorkspaceId) {
-      stopDevServer.mutate(activeWorkspaceId);
+      stopDevServer.mutate(activeWorkspaceId, {
+        onError: (error) => {
+          console.error("Failed to stop dev server:", error);
+        },
+      });
     }
 
     setActiveWorkspaceId(id);
@@ -72,23 +77,12 @@ export const WorkspaceSwitcher = () => {
     }
   };
 
-  const renderHighlighted = (text: string, indices: number[]) => {
-    if (!indices.length) return text;
-    return text.split("").map((char, i) => (
-      <span
-        key={i}
-        className={cn(indices.includes(i) && "text-white font-semibold")}
-      >
-        {char}
-      </span>
-    ));
-  };
-
   return (
     <Popover
       open={isOpen}
       onOpenChange={(open) => {
         setIsOpen(open);
+        if (open) setSelectedIndex(0);
         if (!open) setSearch("");
       }}
     >

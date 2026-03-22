@@ -4,6 +4,7 @@ import { IconStrip } from "./IconStrip";
 import { SidePanel } from "./SidePanel";
 import { WorkspaceSwitcher } from "./components/WorkspaceSwitcher";
 import { useAutoSelectWorkspace } from "@/renderer/lib/workspace-ops";
+import { TooltipProvider } from "./components/ui/tooltip";
 
 const queryClient = new QueryClient();
 
@@ -40,12 +41,14 @@ const AppInner = () => {
   );
 };
 
-function App() {
+const App = () => {
   return (
     <QueryClientProvider client={queryClient}>
-      <AppInner />
+      <TooltipProvider>
+        <AppInner />
+      </TooltipProvider>
     </QueryClientProvider>
   );
-}
+};
 
 export default App;
