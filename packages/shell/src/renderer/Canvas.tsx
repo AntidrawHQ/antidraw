@@ -240,19 +240,18 @@ const CanvasContent = ({
     });
   }, [userComponents, port, setNodes]);
 
-  // Focus on component when clicked in ComponentPanel (subscribe to avoid re-rendering ReactFlow)
+  // Focus on component when clicked in ComponentPanel
   const reactFlow = useReactFlow();
+  const focusComponentName = useWorkspaceStore((s) => s.focusComponentName);
+  const setFocusComponentName = useWorkspaceStore((s) => s.setFocusComponentName);
 
   useEffect(() => {
-    const unsub = useWorkspaceStore.subscribe((state, prevState) => {
-      if (state.focusComponentName && state.focusComponentName !== prevState.focusComponentName) {
-        const nodeId = `${state.focusComponentName}-1`;
-        reactFlow.fitView({ nodes: [{ id: nodeId }], duration: 300, padding: 0.3 });
-        state.setFocusComponentName(null);
-      }
-    });
-    return unsub;
-  }, [reactFlow]);
+    if (focusComponentName) {
+      const nodeId = `${focusComponentName}-1`;
+      reactFlow.fitView({ nodes: [{ id: nodeId }], duration: 300, padding: 0.3 });
+      setFocusComponentName(null);
+    }
+  }, [focusComponentName, reactFlow, setFocusComponentName]);
 
   return (
     <div className={cn("h-full w-full bg-neutral-800 relative", className)}>
