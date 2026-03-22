@@ -10,7 +10,7 @@ import {
 } from "./lib/claude-code-ops";
 import type { Conversation } from "@/main/api";
 import { formatRelativeTime } from "./lib/time-utils";
-import { renderHighlighted } from "./lib/render-highlighted";
+import { renderHighlighted } from "./lib/search-utils";
 import { AppChat } from "./Chat";
 import { ComponentPanel } from "./ComponentPanel";
 import {

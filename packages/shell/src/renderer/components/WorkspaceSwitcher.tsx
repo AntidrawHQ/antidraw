@@ -3,7 +3,7 @@ import { ChevronsUpDown, Check } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
 import { useWorkspaces, useStopDevServer } from "@/renderer/lib/workspace-ops";
-import { renderHighlighted } from "@/renderer/lib/render-highlighted";
+import { renderHighlighted } from "@/renderer/lib/search-utils";
 import {
   Popover,
   PopoverTrigger,
