@@ -153,13 +153,15 @@ type UserComponent = {
 };
 
 // Grid pattern background component
+const gridPatternStyle = {
+  backgroundImage: "radial-gradient(#2d2d2d 1px, transparent 1px)",
+  backgroundSize: "20px 20px",
+} as const;
+
 const GridPattern = () => (
   <div
     className="absolute inset-0 opacity-50 pointer-events-none"
-    style={{
-      backgroundImage: "radial-gradient(#2d2d2d 1px, transparent 1px)",
-      backgroundSize: "20px 20px",
-    }}
+    style={gridPatternStyle}
   />
 );
 
@@ -176,7 +178,7 @@ const CanvasContent = ({
   const initialNodes = useMemo<IframeReactFlowNode[]>(
     () =>
       userComponents.map((component, index) => ({
-        id: `${component.name.toLowerCase()}-1`,
+        id: `${component.name}-1`,
         type: "iframe" as const,
         position: { x: 100 + index * 600, y: 100 },
         style: { width: 400, height: 300 },
@@ -225,7 +227,7 @@ const CanvasContent = ({
       return [
         ...currentNodes,
         ...newComponents.map((component, index) => ({
-          id: `${component.name.toLowerCase()}-1`,
+          id: `${component.name}-1`,
           type: "iframe" as const,
           position: { x: maxX + 500 + index * 600, y: 100 },
           style: { width: 400, height: 300 },
@@ -244,7 +246,7 @@ const CanvasContent = ({
   useEffect(() => {
     const unsub = useWorkspaceStore.subscribe((state, prevState) => {
       if (state.focusComponentName && state.focusComponentName !== prevState.focusComponentName) {
-        const nodeId = `${state.focusComponentName.toLowerCase()}-1`;
+        const nodeId = `${state.focusComponentName}-1`;
         reactFlow.fitView({ nodes: [{ id: nodeId }], duration: 300, padding: 0.3 });
         state.setFocusComponentName(null);
       }
