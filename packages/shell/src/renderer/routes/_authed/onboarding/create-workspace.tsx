@@ -1,9 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
 
-export const Route = createFileRoute("/_authed/onboarding/create-workspace")({
-  component: CreateWorkspacePage,
-});
-
 const CreateWorkspacePage = () => {
   return (
     <div className="flex h-full items-center justify-center">
@@ -11,3 +7,7 @@ const CreateWorkspacePage = () => {
     </div>
   );
 };
+
+export const Route = createFileRoute("/_authed/onboarding/create-workspace")({
+  component: CreateWorkspacePage,
+});

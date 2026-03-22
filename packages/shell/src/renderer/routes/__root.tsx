@@ -1,4 +1,8 @@
-import { createRootRouteWithContext, Outlet } from "@tanstack/react-router";
+import {
+  createRootRouteWithContext,
+  Outlet,
+  useRouteContext,
+} from "@tanstack/react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import type { QueryClient } from "@tanstack/react-query";
 import { TooltipProvider } from "@/renderer/components/ui/tooltip";
@@ -7,12 +11,8 @@ type RouterContext = {
   queryClient: QueryClient;
 };
 
-export const Route = createRootRouteWithContext<RouterContext>()({
-  component: RootComponent,
-});
-
 const RootComponent = () => {
-  const { queryClient } = Route.useRouteContext();
+  const { queryClient } = useRouteContext({ from: "__root__" });
 
   return (
     <QueryClientProvider client={queryClient}>
@@ -32,3 +32,7 @@ const RootComponent = () => {
     </QueryClientProvider>
   );
 };
+
+export const Route = createRootRouteWithContext<RouterContext>()({
+  component: RootComponent,
+});
