@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-type SidePanel = "chat" | "components";
+export type SidePanel = "chat" | "components";
 
 type WorkspaceStore = {
   activeWorkspaceId: string | null;
