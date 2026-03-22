@@ -28,7 +28,7 @@ const LoginPage = () => {
 
   const handleSignIn = () => {
     setAuthenticated(true);
-    router.navigate({ to: "/" });
+    router.navigate({ to: "/onboarding/claude-code" });
   };
 
   return (
