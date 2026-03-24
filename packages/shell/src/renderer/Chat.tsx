@@ -223,7 +223,7 @@ export function AppChat({ className, ...props }: AppChatProps) {
                 key={msg.id}
                 className={isAssistant ? "justify-start" : "justify-end"}
               >
-                <div className="overflow-auto space-y-2 w-full">
+                <div className="flex flex-col gap-1 overflow-auto w-full">
                   {(() => {
                     type Base64ImageBlock = {
                       type: "image";
@@ -264,7 +264,7 @@ export function AppChat({ className, ...props }: AppChatProps) {
                       return isAssistant ? (
                         <div
                           key={idx}
-                          className="bg-secondary text-foreground prose prose-sm prose-invert rounded-lg p-2"
+                          className="bg-secondary text-foreground prose prose-sm prose-invert rounded-lg"
                         >
                           <Markdown>{block.text}</Markdown>
                         </div>
@@ -285,7 +285,7 @@ export function AppChat({ className, ...props }: AppChatProps) {
                           <Tool
                             key={idx}
                             toolPart={toolPart}
-                            className="w-full"
+                            className="mt-1 w-full"
                           />
                         );
                       }

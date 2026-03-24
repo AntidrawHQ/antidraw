@@ -1,6 +1,5 @@
 "use client";
 
-import { Button } from "@/renderer/components/ui/button";
 import {
   Collapsible,
   CollapsibleContent,
@@ -8,12 +7,11 @@ import {
 } from "@/renderer/components/ui/collapsible";
 import { cn } from "@/renderer/lib/utils";
 import {
-  CheckCircle,
-  ChevronDown,
-  Loader2,
-  Settings,
-  XCircle,
-} from "lucide-react";
+  IconCircleCheckFilled,
+  IconCircleHalf2,
+  IconCircleXFilled,
+} from "@tabler/icons-react";
+import { ChevronDown } from "lucide-react";
 import { useState } from "react";
 
 export type ToolPart = {
@@ -34,168 +32,143 @@ export type ToolProps = {
   className?: string;
 };
 
-const Tool = ({ toolPart, defaultOpen = false, className }: ToolProps) => {
+/* ── State config ──────────────────────────────────────────────────────── */
+
+const stateConfig = {
+  "input-streaming": { icon: IconCircleHalf2, color: "#e8a040" },
+  "input-available": { icon: IconCircleHalf2, color: "#e8a040" },
+  "output-available": { icon: IconCircleCheckFilled, color: "#7c6cd6" },
+  "output-error": { icon: IconCircleXFilled, color: "#f06060" },
+} satisfies Record<string, { icon: typeof IconCircleHalf2; color: string }>;
+
+/* ── Title logic ───────────────────────────────────────────────────────── */
+
+const componentVerbMap = { Write: "Crafting", Edit: "Refining" } satisfies Record<string, string>;
+
+const getToolTitle = (toolPart: ToolPart): string => {
+  const { type, input } = toolPart;
+
+  const desc = input?.description;
+  if (typeof desc === "string" && desc) return desc;
+
+  const fp = input?.file_path;
+  if (typeof fp === "string" && fp) {
+    const name = fp.split("/").pop() ?? fp;
+    if (fp.includes("/user-components/")) {
+      const comp = name.replace(/\.\w+$/, "");
+      return `${componentVerbMap[type as keyof typeof componentVerbMap] ?? type} ${comp}`;
+    }
+    return `${type} ${name}`;
+  }
+
+  const pat = input?.pattern;
+  if (typeof pat === "string" && pat) return `${type} ${pat}`;
+
+  return type;
+};
+
+/* ── Colors ────────────────────────────────────────────────────────────── */
+
+const C = {
+  toolBg: "#333333",
+  toolBorder: "#444444",
+  toolHover: "#3d3d3d",
+  toolText: "#e5e5e5",
+  contentBg: "#262626",
+  keyColor: "#737373",
+  valueColor: "#e5e5e5",
+  errorColor: "#f06060",
+  chevronColor: "#888",
+};
+
+/* ── Component ─────────────────────────────────────────────────────────── */
+
+export const Tool = ({ toolPart, defaultOpen = false, className }: ToolProps) => {
   const [isOpen, setIsOpen] = useState(defaultOpen);
+  const cfg = stateConfig[toolPart.state];
+  const StateIcon = cfg.icon;
 
-  const { state, input, output } = toolPart;
-
-  const getStateIcon = () => {
-    switch (state) {
-      case "input-streaming":
-        return <Loader2 className="h-4 w-4 animate-spin text-blue-500" />;
-      case "input-available":
-        return <Settings className="h-4 w-4 text-orange-500" />;
-      case "output-available":
-        return <CheckCircle className="h-4 w-4 text-green-500" />;
-      case "output-error":
-        return <XCircle className="h-4 w-4 text-red-500" />;
-      default:
-        return <Settings className="text-muted-foreground h-4 w-4" />;
-    }
-  };
-
-  const getStateBadge = () => {
-    const baseClasses = "px-2 py-1 rounded-full text-xs font-medium";
-    switch (state) {
-      case "input-streaming":
-        return (
-          <span
-            className={cn(
-              baseClasses,
-              "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
-            )}
-          >
-            Processing
-          </span>
-        );
-      case "input-available":
-        return (
-          <span
-            className={cn(
-              baseClasses,
-              "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400"
-            )}
-          >
-            Ready
-          </span>
-        );
-      case "output-available":
-        return (
-          <span
-            className={cn(
-              baseClasses,
-              "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
-            )}
-          >
-            Completed
-          </span>
-        );
-      case "output-error":
-        return (
-          <span
-            className={cn(
-              baseClasses,
-              "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
-            )}
-          >
-            Error
-          </span>
-        );
-      default:
-        return (
-          <span
-            className={cn(
-              baseClasses,
-              "bg-gray-100 text-gray-700 dark:bg-gray-900/30 dark:text-gray-400"
-            )}
-          >
-            Pending
-          </span>
-        );
-    }
-  };
+  const { input, output, state } = toolPart;
 
   const formatValue = (value: unknown): string => {
     if (value === null) return "null";
     if (value === undefined) return "undefined";
     if (typeof value === "string") return value;
-    if (typeof value === "object") {
-      return JSON.stringify(value, null, 2);
-    }
+    if (typeof value === "object") return JSON.stringify(value, null, 2);
     return String(value);
   };
 
   return (
     <div
-      className={cn(
-        "border-border mt-3 overflow-hidden rounded-lg border bg-neutral-900",
-        className
-      )}
+      className={cn("overflow-hidden rounded-lg", className)}
+      style={{ backgroundColor: C.toolBg, border: `1px solid ${C.toolBorder}` }}
     >
       <Collapsible open={isOpen} onOpenChange={setIsOpen}>
         <CollapsibleTrigger asChild>
-          <Button
-            variant="ghost"
-            className="h-auto w-full justify-between rounded-b-none bg-neutral-900 px-3 py-2 font-normal hover:bg-neutral-700"
+          <button
+            type="button"
+            className="flex w-full cursor-pointer items-center gap-[6px] transition-colors"
+            style={{ paddingLeft: 10, paddingRight: 10, paddingTop: 8, paddingBottom: 8 }}
+            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = C.toolHover)}
+            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
           >
-            <div className="flex items-center gap-2">
-              {getStateIcon()}
-              <span className="font-mono text-sm font-medium">
-                {toolPart.type}
-              </span>
-              {getStateBadge()}
+            <div
+              className={cn(
+                "flex shrink-0 items-center",
+                toolPart.state === "input-streaming" && "animate-spin"
+              )}
+            >
+              <StateIcon size={18} strokeWidth={1.75} color={cfg.color} />
             </div>
-            <ChevronDown className={cn("h-4 w-4", isOpen && "rotate-180")} />
-          </Button>
+            <p
+              className="m-0 min-w-0 flex-1 truncate text-left text-[13px] font-medium"
+              style={{ color: C.toolText }}
+            >
+              {getToolTitle(toolPart)}
+            </p>
+            <ChevronDown
+              className={cn(
+                "size-3.5 shrink-0 transition-transform",
+                isOpen && "rotate-180"
+              )}
+              style={{ color: C.chevronColor }}
+            />
+          </button>
         </CollapsibleTrigger>
         <CollapsibleContent
-          className={cn(
-            "border-border border-t",
-            "data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down overflow-hidden"
-          )}
+          className="data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down overflow-hidden"
+          style={{ borderTop: `1px solid ${C.toolBorder}` }}
         >
-          <div className="space-y-3 bg-neutral-800 p-3">
-            {input && Object.keys(input).length > 0 && (
-              <div>
-                <h4 className="text-muted-foreground mb-2 text-sm font-medium">
-                  Input
-                </h4>
-                <div className="rounded border border-neutral-700 bg-neutral-900 p-2 font-mono text-sm">
-                  {Object.entries(input).map(([key, value]) => (
-                    <div key={key} className="mb-1">
-                      <span className="text-muted-foreground">{key}:</span>{" "}
-                      <span>{formatValue(value)}</span>
-                    </div>
-                  ))}
+          <div
+            className="p-2.5 font-mono text-[11px]"
+            style={{ backgroundColor: C.contentBg }}
+          >
+            {input &&
+              Object.entries(input).map(([key, value]) => (
+                <div key={key}>
+                  <span style={{ color: C.keyColor }}>{key}:</span>{" "}
+                  <span style={{ color: C.valueColor }}>
+                    {formatValue(value)}
+                  </span>
                 </div>
-              </div>
-            )}
+              ))}
 
-            {output && (
-              <div>
-                <h4 className="text-muted-foreground mb-2 text-sm font-medium">
-                  Output
-                </h4>
-                <div className="max-h-60 overflow-auto rounded border border-neutral-700 bg-neutral-900 p-2 font-mono text-sm">
-                  <pre className="whitespace-pre-wrap">
-                    {formatValue(output)}
-                  </pre>
+            {output &&
+              Object.entries(output).map(([key, value]) => (
+                <div key={key}>
+                  <span style={{ color: C.keyColor }}>{key}:</span>{" "}
+                  <span style={{ color: C.valueColor }}>
+                    {formatValue(value)}
+                  </span>
                 </div>
-              </div>
-            )}
+              ))}
 
             {state === "output-error" && toolPart.errorText && (
               <div>
-                <h4 className="mb-2 text-sm font-medium text-red-500">Error</h4>
-                <div className="rounded border border-red-900 bg-red-950/50 p-2 text-sm">
+                <span style={{ color: C.keyColor }}>error:</span>{" "}
+                <span style={{ color: C.errorColor }}>
                   {toolPart.errorText}
-                </div>
-              </div>
-            )}
-
-            {state === "input-streaming" && (
-              <div className="text-muted-foreground text-sm">
-                Processing tool call...
+                </span>
               </div>
             )}
           </div>
@@ -204,5 +177,3 @@ const Tool = ({ toolPart, defaultOpen = false, className }: ToolProps) => {
     </div>
   );
 };
-
-export { Tool };
