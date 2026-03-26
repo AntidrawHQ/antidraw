@@ -3,6 +3,8 @@ import {
   ReactFlowProvider,
   useNodesState,
   useReactFlow,
+  NodeToolbar,
+  Position,
   type Node,
   type NodeTypes,
   type NodeProps,
@@ -15,6 +17,7 @@ import { useWorkspaceStore } from "./store/workspace";
 import { useDevServerStatus, useAutoStartDevServer } from "./lib/workspace-ops";
 import { cn } from "./lib/utils";
 import { Semaphore } from "./lib/semaphore";
+import { PillToggleToolbar } from "./components/PillToggleToolbar";
 
 type IframeNodeProps = {
   url: string | undefined;
@@ -110,6 +113,7 @@ const iframeSemaphore = new Semaphore(10);
 
 // Wrapper component that React Flow renders - defined OUTSIDE component to prevent recreation
 const IframeNodeRenderer = ({
+  id,
   data,
   selected,
 }: NodeProps<IframeReactFlowNode>) => {
@@ -140,7 +144,14 @@ const IframeNodeRenderer = ({
     releaseRef.current = null;
   }, []);
 
-  return <IframeNode url={url} selected={selected} onLoad={handleLoad} />;
+  return (
+    <>
+      <NodeToolbar position={Position.Top} align="start" isVisible={true} offset={8}>
+        <PillToggleToolbar componentName={data.componentName} nodeId={id} selected={selected} />
+      </NodeToolbar>
+      <IframeNode url={url} selected={selected} onLoad={handleLoad} />
+    </>
+  );
 };
 
 // Define nodeTypes at module level - this is critical for React Flow performance

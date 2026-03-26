@@ -49,6 +49,7 @@
     "hono": "^4.11.1",
     "lucide-react": "^0.562.0",
     "marked": "^17.0.1",
+    "motion": "^12.38.0",
     "neverthrow": "^8.2.0",
     "npm": "^11.7.0",
     "radix-ui": "^1.4.3",
