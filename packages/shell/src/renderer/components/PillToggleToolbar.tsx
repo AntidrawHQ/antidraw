@@ -1,25 +1,6 @@
 import { useState } from "react";
 import { motion, AnimatePresence, LayoutGroup } from "motion/react";
-
-// ─── Icons ───────────────────────────────────────────────────────
-
-const icons = {
-  copy: (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-    </svg>
-  ),
-  refresh: (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-    </svg>
-  ),
-  maximize: (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="15 3 21 3 21 9" /><polyline points="9 21 3 21 3 15" /><line x1="21" y1="3" x2="14" y2="10" /><line x1="3" y1="21" x2="10" y2="14" />
-    </svg>
-  ),
-};
+import { Code, Copy, RefreshCw, Maximize2 } from "lucide-react";
 
 // ─── Design tokens ───────────────────────────────────────────────
 
@@ -90,8 +71,8 @@ const IconBtn = ({
   );
 };
 
-const Divider = () => (
-  <div style={{ width: 1, height: 16, background: c.borderSubtle, margin: "0 2px", flexShrink: 0 }} />
+const Divider = ({ spacing = 2 }: { spacing?: number }) => (
+  <div style={{ width: 1, height: 16, background: c.borderSubtle, margin: `0 ${spacing}px`, flexShrink: 0 }} />
 );
 
 // ─── Pill Toggle Toolbar ─────────────────────────────────────────
@@ -103,7 +84,6 @@ type PillToggleToolbarProps = {
 };
 
 export const PillToggleToolbar = ({ componentName, nodeId, selected }: PillToggleToolbarProps) => {
-  const [mode, setMode] = useState<"design" | "code">("design");
 
   return (
     <LayoutGroup id={nodeId}>
@@ -152,7 +132,7 @@ export const PillToggleToolbar = ({ componentName, nodeId, selected }: PillToggl
                 {componentName}
               </motion.span>
 
-              {/* Divider + Design/Code toggle + icons — morphs in on select */}
+              {/* Divider + action icons — morphs in on select */}
               <AnimatePresence>
                 {selected && (
                   <motion.div
@@ -173,51 +153,12 @@ export const PillToggleToolbar = ({ componentName, nodeId, selected }: PillToggl
                       whiteSpace: "nowrap",
                       width: "max-content",
                     }}>
-                    <Divider />
-                    <div style={{
-                      display: "flex", alignItems: "center", gap: 1,
-                      background: c.bgInset, borderRadius: 16, padding: 2,
-                      marginLeft: 4,
-                      position: "relative",
-                    }}>
-                      {(["design", "code"] as const).map((m) => (
-                        <button
-                          key={m}
-                          onClick={(e) => { e.stopPropagation(); setMode(m); }}
-                          style={{
-                            padding: "4px 12px", fontSize: 11, fontWeight: 500, fontFamily: "inherit",
-                            border: "none", borderRadius: 14, cursor: "pointer",
-                            background: "transparent",
-                            color: mode === m ? c.text : c.textMuted,
-                            transition: "color 150ms cubic-bezier(0.25, 0.1, 0.25, 1)",
-                            position: "relative",
-                            zIndex: 1,
-                          }}
-                        >
-                          {mode === m && (
-                            <motion.div
-                              layoutId="pill-toggle-indicator"
-                              layout="position"
-                              layoutDependency={mode}
-                              style={{
-                                position: "absolute",
-                                inset: 0,
-                                borderRadius: 14,
-                                background: "#2a2a2a",
-                                boxShadow: "0 1px 3px rgba(0,0,0,0.3)",
-                                zIndex: -1,
-                              }}
-                              transition={spring}
-                            />
-                          )}
-                          {m === "design" ? "Design" : "Code"}
-                        </button>
-                      ))}
-                    </div>
-                    <Divider />
-                    <IconBtn icon={icons.copy} size={26} />
-                    <IconBtn icon={icons.refresh} size={26} />
-                    <IconBtn icon={icons.maximize} size={26} />
+                    <Divider spacing={8} />
+                    <IconBtn icon={<Code size={14} />} label="See Code" size={26} />
+                    <Divider spacing={6} />
+                    <IconBtn icon={<Copy size={14} />} size={26} />
+                    <IconBtn icon={<RefreshCw size={14} />} size={26} />
+                    <IconBtn icon={<Maximize2 size={14} />} size={26} />
                     </div>
                   </motion.div>
                 )}
