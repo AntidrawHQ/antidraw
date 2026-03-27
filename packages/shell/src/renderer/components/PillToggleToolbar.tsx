@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { motion, AnimatePresence, LayoutGroup } from "motion/react";
 import { Code, Copy, RefreshCw, Maximize2 } from "lucide-react";
+import { useWorkspaceStore } from "../store/workspace";
 
 // ─── Design tokens ───────────────────────────────────────────────
 
@@ -84,6 +85,7 @@ type PillToggleToolbarProps = {
 };
 
 export const PillToggleToolbar = ({ componentName, nodeId, selected }: PillToggleToolbarProps) => {
+  const setCodeModalComponentName = useWorkspaceStore((s) => s.setCodeModalComponentName);
 
   return (
     <LayoutGroup id={nodeId}>
@@ -154,7 +156,7 @@ export const PillToggleToolbar = ({ componentName, nodeId, selected }: PillToggl
                       width: "max-content",
                     }}>
                     <Divider spacing={8} />
-                    <IconBtn icon={<Code size={14} />} label="See Code" size={26} />
+                    <IconBtn icon={<Code size={14} />} label="See Code" size={26} onClick={() => setCodeModalComponentName(componentName)} />
                     <Divider spacing={6} />
                     <IconBtn icon={<Copy size={14} />} size={26} />
                     <IconBtn icon={<RefreshCw size={14} />} size={26} />

@@ -14,5 +14,7 @@ export const queryKeys = {
   userComponents: {
     byWorkspace: (workspaceId: string, port: number) =>
       ["userComponents", workspaceId, port] as const,
+    source: (workspaceId: string, port: number, componentName: string) =>
+      ["userComponents", "source", workspaceId, port, componentName] as const,
   },
 } as const;

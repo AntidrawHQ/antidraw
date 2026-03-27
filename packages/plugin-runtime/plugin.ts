@@ -79,6 +79,34 @@ export const userComponents = Object.fromEntries(
             next(err)
           }
         })
+
+        server.middlewares.use("/__component-source", async (req, res, next) => {
+          try {
+            const url = new URL(req.url ?? "", "http://localhost")
+            const name = url.searchParams.get("name")
+
+            if (!name || !/^[a-zA-Z0-9_-]+$/.test(name)) {
+              res.statusCode = 400
+              res.setHeader("Content-Type", "application/json")
+              res.end(JSON.stringify({ error: "Invalid or missing component name" }))
+              return
+            }
+
+            const filePath = path.resolve(dir, `${name}.tsx`)
+            const source = await fs.readFile(filePath, "utf-8")
+
+            res.setHeader("Content-Type", "application/json")
+            res.end(JSON.stringify({ name, fileName: `${name}.tsx`, source }))
+          } catch (err: any) {
+            if (err.code === "ENOENT") {
+              res.statusCode = 404
+              res.setHeader("Content-Type", "application/json")
+              res.end(JSON.stringify({ error: "Component not found" }))
+            } else {
+              next(err)
+            }
+          }
+        })
       },
     },
     {

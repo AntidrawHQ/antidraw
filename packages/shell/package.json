@@ -32,6 +32,7 @@
     "@hono/zod-validator": "^0.7.6",
     "@libsql/client": "^0.15.15",
     "@microsoft/fetch-event-source": "^2.0.1",
+    "@pierre/diffs": "^1.1.6",
     "@radix-ui/react-avatar": "^1.1.11",
     "@radix-ui/react-collapsible": "^1.1.12",
     "@radix-ui/react-separator": "^1.1.8",

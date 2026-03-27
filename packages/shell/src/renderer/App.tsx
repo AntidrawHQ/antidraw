@@ -5,6 +5,7 @@ import { SidePanel } from "./SidePanel";
 import { WorkspaceSwitcher } from "./components/WorkspaceSwitcher";
 import { useAutoSelectWorkspace } from "@/renderer/lib/workspace-ops";
 import { TooltipProvider } from "./components/ui/tooltip";
+import { CodeModal } from "./components/CodeModal";
 
 const queryClient = new QueryClient();
 
@@ -37,6 +38,8 @@ const AppInner = () => {
         <SidePanel />
         <AppCanvas className="flex-1 border-l border-[#2d2d2d]" />
       </div>
+
+      <CodeModal />
     </div>
   );
 };
