@@ -6,6 +6,7 @@ import {
   type Node,
   type NodeTypes,
   type NodeProps,
+  type NodeChange,
   NodeResizer,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -13,6 +14,8 @@ import { memo, useMemo, useState, useCallback, useEffect, useRef } from "react";
 import { useUserComponents } from "./store/userComponents";
 import { useWorkspaceStore } from "./store/workspace";
 import { useDevServerStatus, useAutoStartDevServer } from "./lib/workspace-ops";
+import { useFrameLayouts } from "./lib/frame-layout-ops";
+import { saveFrameLayouts, type FrameLayoutData } from "./lib/api";
 import { cn } from "./lib/utils";
 import { Semaphore } from "./lib/semaphore";
 
@@ -166,32 +169,106 @@ const GridPattern = () => (
 );
 
 const CanvasContent = ({
+  workspaceId,
   userComponents,
   port,
+  savedLayouts,
   className,
 }: {
+  workspaceId: string;
   userComponents: UserComponent[];
   port: number;
+  savedLayouts: FrameLayoutData[] | undefined;
   className?: string;
 }) => {
-  // Create initial nodes once on mount (useNodesState uses useState internally, no lazy init support)
-  const initialNodes = useMemo<IframeReactFlowNode[]>(
-    () =>
-      userComponents.map((component, index) => ({
-        id: `${component.name}-1`,
-        type: "iframe" as const,
-        position: { x: 100 + index * 600, y: 100 },
-        style: { width: 400, height: 300 },
-        data: {
-          url: `https://localhost:${port}/preview?componentName=${component.name}`,
-          componentName: component.name,
-        },
-      })),
+  // Create initial nodes once on mount, merging saved layouts with defaults
+  const initialNodes = useMemo<IframeReactFlowNode[]>(() => {
+    const layoutMap = new Map(
+      (savedLayouts ?? []).map((l) => [l.componentName, l]),
+    );
+
+    const withLayout: IframeReactFlowNode[] = [];
+    const withoutLayout: UserComponent[] = [];
+
+    for (const component of userComponents) {
+      const saved = layoutMap.get(component.name);
+      if (saved) {
+        withLayout.push({
+          id: `${component.name}-1`,
+          type: "iframe" as const,
+          position: { x: saved.x, y: saved.y },
+          style: { width: saved.width, height: saved.height },
+          data: {
+            url: `https://localhost:${port}/preview?componentName=${component.name}`,
+            componentName: component.name,
+          },
+        });
+      } else {
+        withoutLayout.push(component);
+      }
+    }
+
+    // New components: append to the right of existing ones
+    const maxX =
+      withLayout.length > 0
+        ? Math.max(...withLayout.map((n) => n.position.x))
+        : -400;
+
+    const newNodes = withoutLayout.map((component, index) => ({
+      id: `${component.name}-1`,
+      type: "iframe" as const,
+      position: { x: maxX + 500 + index * 600, y: 100 },
+      style: { width: 400, height: 300 },
+      data: {
+        url: `https://localhost:${port}/preview?componentName=${component.name}`,
+        componentName: component.name,
+      },
+    }));
+
+    return [...withLayout, ...newNodes];
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    []
-  );
+  }, []);
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
+
+  // Ref to always hold latest nodes for debounced save
+  const nodesRef = useRef(nodes);
+  nodesRef.current = nodes;
+
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  const scheduleSave = useCallback(() => {
+    clearTimeout(saveTimeoutRef.current);
+    saveTimeoutRef.current = setTimeout(() => {
+      const layouts = nodesRef.current.map((n) => ({
+        componentName: n.data.componentName,
+        x: n.position.x,
+        y: n.position.y,
+        width: (n.style?.width as number) ?? 400,
+        height: (n.style?.height as number) ?? 300,
+      }));
+      saveFrameLayouts(workspaceId, layouts); // fire-and-forget
+    }, 500);
+  }, [workspaceId]);
+
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => clearTimeout(saveTimeoutRef.current);
+  }, []);
+
+  const handleNodesChange = useCallback(
+    (changes: NodeChange<IframeReactFlowNode>[]) => {
+      onNodesChange(changes);
+
+      const hasLayoutChange = changes.some(
+        (c) => c.type === "position" || c.type === "dimensions",
+      );
+      if (hasLayoutChange) {
+        scheduleSave();
+      }
+    },
+    [onNodesChange, scheduleSave],
+  );
 
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
@@ -204,12 +281,13 @@ const CanvasContent = ({
               : node
           )
         );
+        scheduleSave();
       }
     };
 
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
-  }, [setNodes]);
+  }, [setNodes, scheduleSave]);
 
   // Sync new components into nodes when userComponents changes
   useEffect(() => {
@@ -258,7 +336,7 @@ const CanvasContent = ({
       <GridPattern />
       <ReactFlow
         nodes={nodes}
-        onNodesChange={onNodesChange}
+        onNodesChange={handleNodesChange}
         nodeTypes={nodeTypes}
         fitView
         maxZoom={4}
@@ -310,6 +388,8 @@ export const AppCanvas = ({ className }: AppCanvasProps) => {
     isPending: isComponentsPending,
     isError,
   } = useUserComponents(activeWorkspaceId);
+  const { data: frameLayouts, isPending: isLayoutsPending } =
+    useFrameLayouts(activeWorkspaceId);
 
   if (!activeWorkspaceId) {
     return <CanvasPlaceholder subtitle="No workspace selected" className={className} />;
@@ -324,7 +404,7 @@ export const AppCanvas = ({ className }: AppCanvasProps) => {
     );
   }
 
-  if (isComponentsPending) {
+  if (isComponentsPending || isLayoutsPending) {
     return <CanvasPlaceholder subtitle="Loading components..." className={className} />;
   }
 
@@ -335,8 +415,10 @@ export const AppCanvas = ({ className }: AppCanvasProps) => {
   return (
     <ReactFlowProvider>
       <CanvasContent
+        workspaceId={activeWorkspaceId}
         userComponents={userComponents}
         port={devServer.port}
+        savedLayouts={frameLayouts}
         className={className}
       />
     </ReactFlowProvider>

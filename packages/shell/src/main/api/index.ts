@@ -32,11 +32,13 @@ import {
   cancelStream as cancelActiveStream,
 } from "@/main/lib/stream-manager";
 import { workspaceController } from "./controllers/workspace.controller";
+import { uiPreferenceController } from "./controllers/ui-preference.controller";
 import type { ImageAttachment } from "@/shared/utils/message";
 
 export const app = new Hono();
 
 app.route("/workspaces", workspaceController);
+app.route("/preferences", uiPreferenceController);
 
 const imageAttachmentSchema = z.object({
   data: z.string(),

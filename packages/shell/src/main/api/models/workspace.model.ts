@@ -2,6 +2,8 @@ import { sql } from "drizzle-orm";
 import { text, integer, sqliteTable } from "drizzle-orm/sqlite-core";
 import { relations } from "drizzle-orm";
 import { conversations } from "./chat.model";
+import { uiPreferences } from "./ui-preference.model";
+import { frameLayouts } from "./frame-layout.model";
 
 export const workspaces = sqliteTable("workspaces", {
   id: text("id").primaryKey(),
@@ -17,6 +19,8 @@ export const workspaces = sqliteTable("workspaces", {
 
 export const workspacesRelations = relations(workspaces, ({ many }) => ({
   conversations: many(conversations),
+  uiPreferences: many(uiPreferences),
+  frameLayouts: many(frameLayouts),
 }));
 
 // Type exports

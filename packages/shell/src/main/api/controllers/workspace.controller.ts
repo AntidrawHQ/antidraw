@@ -15,6 +15,10 @@ import {
   getDevServerStatus,
 } from "@/main/services/dev-server.service";
 import { listConversations } from "../services/chat.service";
+import {
+  getFrameLayouts,
+  saveFrameLayouts,
+} from "../services/frame-layout.service";
 
 export const workspaceController = new Hono();
 
@@ -153,4 +157,52 @@ workspaceController.get(
 
     return ctx.json(result.value);
   }
+);
+
+// Frame Layout endpoints
+
+const frameLayoutSchema = z.object({
+  layouts: z.array(
+    z.object({
+      componentName: z.string().min(1),
+      x: z.number(),
+      y: z.number(),
+      width: z.number().positive(),
+      height: z.number().positive(),
+    }),
+  ),
+});
+
+workspaceController.get(
+  "/:workspaceId/frame-layouts",
+  zValidator("param", workspaceIdParamSchema),
+  async (ctx) => {
+    const { workspaceId } = ctx.req.valid("param");
+    const result = await getFrameLayouts(workspaceId);
+
+    if (result.isErr()) {
+      const { status, code, message } = result.error;
+      return ctx.json({ error: { code, message } }, status);
+    }
+
+    return ctx.json(result.value);
+  },
+);
+
+workspaceController.put(
+  "/:workspaceId/frame-layouts",
+  zValidator("param", workspaceIdParamSchema),
+  zValidator("json", frameLayoutSchema),
+  async (ctx) => {
+    const { workspaceId } = ctx.req.valid("param");
+    const { layouts } = ctx.req.valid("json");
+    const result = await saveFrameLayouts(workspaceId, layouts);
+
+    if (result.isErr()) {
+      const { status, code, message } = result.error;
+      return ctx.json({ error: { code, message } }, status);
+    }
+
+    return ctx.json({ ok: true });
+  },
 );

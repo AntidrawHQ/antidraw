@@ -16,6 +16,8 @@ import {
   startDevServer,
   stopDevServer,
   getDevServerStatus,
+  getPreference,
+  setPreference,
 } from "./api";
 
 export const useWorkspaces = () => {
@@ -165,11 +167,27 @@ export const useAutoSelectWorkspace = () => {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const setActiveWorkspaceId = useWorkspaceStore((s) => s.setActiveWorkspaceId);
   const { data: workspaces } = useWorkspaces();
+  const restoredRef = useRef(false);
 
   useEffect(() => {
-    if (!activeWorkspaceId && workspaces?.length) {
-      setActiveWorkspaceId(workspaces[0].id);
-    }
+    if (activeWorkspaceId || !workspaces?.length || restoredRef.current) return;
+    restoredRef.current = true;
+
+    const restore = async () => {
+      const result = await getPreference("activeWorkspaceId");
+      const savedId = result.isOk() ? result.value : null;
+
+      // Use saved workspace if it still exists, otherwise fall back to first
+      const targetId =
+        savedId && workspaces.some((ws) => ws.id === savedId)
+          ? savedId
+          : workspaces[0].id;
+
+      setActiveWorkspaceId(targetId);
+      setPreference("activeWorkspaceId", targetId); // persist in case we fell back
+    };
+
+    restore();
   }, [activeWorkspaceId, workspaces, setActiveWorkspaceId]);
 };
 

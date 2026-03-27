@@ -15,4 +15,8 @@ export const queryKeys = {
     byWorkspace: (workspaceId: string, port: number) =>
       ["userComponents", workspaceId, port] as const,
   },
+  frameLayouts: {
+    byWorkspace: (workspaceId: string | null) =>
+      ["frameLayouts", workspaceId] as const,
+  },
 } as const;

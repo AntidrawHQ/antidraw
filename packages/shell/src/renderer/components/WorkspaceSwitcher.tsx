@@ -3,6 +3,7 @@ import { ChevronsUpDown, Check } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
 import { useWorkspaces, useStopDevServer } from "@/renderer/lib/workspace-ops";
+import { setPreference } from "@/renderer/lib/api";
 import { renderHighlighted } from "@/renderer/lib/search-utils";
 import {
   Popover,
@@ -100,6 +101,7 @@ export const WorkspaceSwitcher = () => {
 
     setActiveWorkspaceId(ws.id);
     setActiveConversationId(null);
+    setPreference("activeWorkspaceId", ws.id); // fire-and-forget
     close();
   };
 
