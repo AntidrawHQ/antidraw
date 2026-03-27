@@ -1,4 +1,4 @@
-import { app, BrowserWindow, protocol, session } from "electron";
+import { app, BrowserWindow, ipcMain, protocol, session } from "electron";
 import path from "path";
 
 import { app as HonoAPI } from "./api";
@@ -65,6 +65,20 @@ app.whenReady().then(() => {
   protocol.handle("antidraw", (req) => HonoAPI.fetch(req));
 
   createWindow();
+
+  ipcMain.handle("open-preview-window", (_event, url: string) => {
+    const previewWindow = new BrowserWindow({
+      width: 1200,
+      height: 800,
+      center: true,
+      backgroundColor: "#0a0a0a",
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    });
+    previewWindow.loadURL(url);
+  });
 
   // Cleanup any orphaned dev servers from previous crash (non-blocking)
   cleanupOrphanedProcesses().catch((err) => {

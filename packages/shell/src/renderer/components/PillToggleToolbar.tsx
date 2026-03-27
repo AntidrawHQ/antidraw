@@ -81,9 +81,10 @@ type PillToggleToolbarProps = {
   componentName: string;
   nodeId: string;
   selected: boolean;
+  previewUrl: string;
 };
 
-export const PillToggleToolbar = ({ componentName, nodeId, selected }: PillToggleToolbarProps) => {
+export const PillToggleToolbar = ({ componentName, nodeId, selected, previewUrl }: PillToggleToolbarProps) => {
 
   return (
     <LayoutGroup id={nodeId}>
@@ -158,7 +159,11 @@ export const PillToggleToolbar = ({ componentName, nodeId, selected }: PillToggl
                     <Divider spacing={6} />
                     <IconBtn icon={<Copy size={14} />} size={26} />
                     <IconBtn icon={<RefreshCw size={14} />} size={26} />
-                    <IconBtn icon={<Maximize2 size={14} />} size={26} />
+                    <IconBtn icon={<Maximize2 size={14} />} size={26} onClick={() => {
+                      const fullscreenUrl = new URL(previewUrl);
+                      fullscreenUrl.searchParams.set("fullscreen", "true");
+                      window.electronAPI.openPreviewWindow(fullscreenUrl.toString());
+                    }} />
                     </div>
                   </motion.div>
                 )}

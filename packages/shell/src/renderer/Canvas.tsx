@@ -147,7 +147,7 @@ const IframeNodeRenderer = ({
   return (
     <>
       <NodeToolbar position={Position.Top} align="start" isVisible={true} offset={8}>
-        <PillToggleToolbar componentName={data.componentName} nodeId={id} selected={selected} />
+        <PillToggleToolbar componentName={data.componentName} nodeId={id} selected={selected} previewUrl={data.url} />
       </NodeToolbar>
       <IframeNode url={url} selected={selected} onLoad={handleLoad} />
     </>
