@@ -126,13 +126,36 @@ export const SearchableList = <T,>({
 type SearchableListInputProps = {
   placeholder?: string;
   onClose?: () => void;
+  variant?: "default" | "flat";
 };
 
 export const SearchableListInput = ({
   placeholder = "Search...",
   onClose,
+  variant = "default",
 }: SearchableListInputProps) => {
   const { search, setSearch, searchInputRef } = useSearchableList();
+
+  if (variant === "flat") {
+    return (
+      <div className="flex items-center gap-2 px-3 pt-2.5 pb-3">
+        <Search
+          className={cn(
+            "w-3.5 h-3.5 shrink-0 transition-colors",
+            search ? "text-neutral-300" : "text-neutral-600"
+          )}
+        />
+        <input
+          ref={searchInputRef}
+          type="text"
+          placeholder={placeholder}
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="flex-1 min-w-0 bg-transparent border-none outline-none text-[13px] text-neutral-200 placeholder:text-neutral-600"
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="p-2">

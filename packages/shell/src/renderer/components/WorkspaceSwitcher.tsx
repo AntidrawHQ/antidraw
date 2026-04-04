@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { ChevronsUpDown, Check } from "lucide-react";
+import { ChevronUp, ChevronDown, Check, Plus } from "lucide-react";
+import { useRouter } from "@tanstack/react-router";
 import { cn } from "@/renderer/lib/utils";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
 import { useWorkspaces, useStopDevServer } from "@/renderer/lib/workspace-ops";
@@ -14,6 +15,7 @@ import {
   SearchableListInput,
   useSearchableList,
 } from "@/renderer/components/ui/searchable-list";
+import { AvatarIcon } from "@/renderer/components/AvatarIcon";
 
 type Workspace = {
   id: string;
@@ -46,6 +48,7 @@ const WorkspaceItems = ({ onSelect }: WorkspaceItemsProps) => {
                 : "bg-transparent hover:bg-white/[0.06]"
             )}
           >
+            <AvatarIcon name={item.data.name} size={18} />
             <span
               className={cn(
                 "flex-1 text-[13px] font-medium overflow-hidden text-ellipsis whitespace-nowrap",
@@ -74,6 +77,7 @@ export const WorkspaceSwitcher = () => {
   );
 
   const [isOpen, setIsOpen] = useState(false);
+  const router = useRouter();
 
   const { data: workspaces } = useWorkspaces();
   const activeWorkspace = workspaces?.find(
@@ -103,6 +107,11 @@ export const WorkspaceSwitcher = () => {
     close();
   };
 
+  const handleNewWorkspace = () => {
+    close();
+    router.navigate({ to: "/onboarding/create-workspace" });
+  };
+
   return (
     <Popover
       open={isOpen}
@@ -113,16 +122,21 @@ export const WorkspaceSwitcher = () => {
           className="flex items-center gap-1.5 py-1 px-2.5 bg-transparent border-none rounded-md cursor-pointer hover:bg-white/[0.06] min-w-0 max-w-[180px]"
           style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
         >
+          {activeWorkspace && <AvatarIcon name={activeWorkspace.name} size={16} />}
           <span className="text-[13px] font-medium text-neutral-200 overflow-hidden text-ellipsis whitespace-nowrap">
             {activeWorkspace?.name ?? "Select workspace"}
           </span>
-          <ChevronsUpDown className="w-3 h-3 text-[#71717a] shrink-0" />
+          {isOpen ? (
+            <ChevronUp className="w-3 h-3 text-[#71717a] shrink-0" />
+          ) : (
+            <ChevronDown className="w-3 h-3 text-[#71717a] shrink-0" />
+          )}
         </button>
       </PopoverTrigger>
 
       <PopoverContent
         align="end"
-        className="w-[240px] p-0 bg-neutral-800 border-[#2d2d2d] rounded-lg shadow-xl overflow-hidden"
+        className="w-[240px] p-0 bg-[#2c2c2c] border-[#2d2d2d] rounded-lg shadow-xl overflow-hidden"
         onOpenAutoFocus={(e) => e.preventDefault()}
       >
         <SearchableList
@@ -132,9 +146,19 @@ export const WorkspaceSwitcher = () => {
           onClose={close}
           autoFocus
         >
-          <SearchableListInput onClose={close} />
+          <SearchableListInput onClose={close} variant="flat" />
           <WorkspaceItems onSelect={handleSelect} />
         </SearchableList>
+
+        <div className="px-2 pt-1 pb-2">
+          <button
+            onClick={handleNewWorkspace}
+            className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-md cursor-pointer bg-transparent border border-[#383838] hover:bg-white/[0.06] transition-all"
+          >
+            <Plus className="w-3 h-3 text-neutral-400" />
+            <span className="text-[12px] font-medium text-neutral-400">New Workspace</span>
+          </button>
+        </div>
       </PopoverContent>
     </Popover>
   );
