@@ -11,6 +11,7 @@ export const router = createRouter({
   history: hashHistory,
   context: {
     queryClient,
+    claudeCodeAuth: undefined!,
   },
   defaultPreload: "intent",
 });

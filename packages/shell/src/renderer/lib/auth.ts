@@ -1,9 +1,18 @@
-// Stub auth — will be replaced with real Google OAuth later
+import { queryOptions } from "@tanstack/react-query";
+import { queryKeys } from "./query-keys";
+import { getClaudeAuthStatus } from "./api";
 
-let authenticated = false;
+export type { ClaudeAuthStatus } from "@/main/api";
 
-export const isAuthenticated = () => authenticated;
-
-export const setAuthenticated = (value: boolean) => {
-  authenticated = value;
-};
+export const claudeCodeAuthQueryOptions = queryOptions({
+  queryKey: queryKeys.claudeCode.authStatus,
+  queryFn: async () => {
+    const result = await getClaudeAuthStatus();
+    if (result.isErr()) {
+      throw new Error(result.error.message);
+    }
+    return result.value;
+  },
+  staleTime: 30_000,
+  retry: 2,
+});
