@@ -4,10 +4,7 @@ import { ChevronsUpDown, Plus } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
 import { useWorkspaceStore } from "./store/workspace";
 import type { SidePanel as SidePanelId } from "./store/workspace";
-import {
-  useWorkspaceConversations,
-  useCreateConversation,
-} from "./lib/claude-code-ops";
+import { useWorkspaceConversations } from "./lib/claude-code-ops";
 import type { Conversation } from "@/main/api";
 import { formatRelativeTime } from "./lib/time-utils";
 import { renderHighlighted } from "./lib/search-utils";
@@ -77,23 +74,23 @@ type ConversationListProps = {
 
 const ConversationList = ({ onClose }: ConversationListProps) => {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
+  const activeConversationId = useWorkspaceStore(
+    (s) => s.activeConversationId
+  );
   const setActiveConversationId = useWorkspaceStore(
     (s) => s.setActiveConversationId
   );
 
   const { data: conversations = [] } =
     useWorkspaceConversations(activeWorkspaceId);
-  const createConversation = useCreateConversation();
 
   const handleSelect = (conv: Conversation) => {
     setActiveConversationId(conv.id);
     onClose();
   };
 
-  const handleNewConversation = async () => {
-    if (!activeWorkspaceId) return;
-    const conv = await createConversation.mutateAsync(activeWorkspaceId);
-    setActiveConversationId(conv.id);
+  const handleNewConversation = () => {
+    setActiveConversationId(null);
     onClose();
   };
 
@@ -113,7 +110,7 @@ const ConversationList = ({ onClose }: ConversationListProps) => {
       <div className="p-2 border-t border-[#2d2d2d]">
         <button
           onClick={handleNewConversation}
-          disabled={createConversation.isPending}
+          disabled={!activeConversationId}
           className="w-full flex items-center justify-center gap-1.5 py-2 px-3 bg-neutral-700 border border-[#2d2d2d] rounded-md cursor-pointer text-xs text-neutral-400 hover:bg-white/[0.1] disabled:opacity-50"
         >
           <Plus className="w-3.5 h-3.5" />
@@ -141,16 +138,13 @@ const ConversationView = ({ onShowList }: ConversationViewProps) => {
 
   const { data: conversations = [] } =
     useWorkspaceConversations(activeWorkspaceId);
-  const createConversation = useCreateConversation();
 
   const activeConversation = conversations.find(
     (c) => c.id === activeConversationId
   );
 
-  const handleNewConversation = async () => {
-    if (!activeWorkspaceId) return;
-    const conv = await createConversation.mutateAsync(activeWorkspaceId);
-    setActiveConversationId(conv.id);
+  const handleNewConversation = () => {
+    setActiveConversationId(null);
   };
 
   return (
@@ -168,7 +162,7 @@ const ConversationView = ({ onShowList }: ConversationViewProps) => {
         </button>
         <button
           onClick={handleNewConversation}
-          disabled={createConversation.isPending}
+          disabled={!activeConversationId}
           className="p-1.5 rounded-md hover:bg-white/[0.06] text-[#71717a] hover:text-neutral-200 disabled:opacity-50 shrink-0"
           title="New conversation"
         >
@@ -188,9 +182,9 @@ const ChatPanel = () => {
   const activeConversationId = useWorkspaceStore(
     (s) => s.activeConversationId
   );
-  const [showList, setShowList] = useState(false);
+  const [showList, setShowList] = useState(!activeConversationId);
 
-  if (showList || !activeConversationId) {
+  if (showList) {
     return <ConversationList onClose={() => setShowList(false)} />;
   }
 

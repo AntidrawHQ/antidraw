@@ -29,6 +29,7 @@ import {
 } from "./lib/claude-code-ops";
 import { Tool } from "@/renderer/components/ui/tool";
 import { useWorkspaceStore } from "./store/workspace";
+import { ChatEmptyState } from "./components/ChatEmptyState";
 import {
   SUPPORTED_IMAGE_TYPES,
   type ImageAttachment,
@@ -171,7 +172,12 @@ export function AppChat({ className, ...props }: AppChatProps) {
       {...props}
     >
       <ChatContainerRoot className="flex-1">
-        <ChatContainerContent className="p-4">
+        <ChatContainerContent className={cn("p-4", messages.length === 0 && !isLoading && "min-h-full")}>
+          {messages.length === 0 && !isLoading && (
+            <div className="flex-1 flex items-end justify-start pl-3">
+              <ChatEmptyState />
+            </div>
+          )}
           {messages.map((msg) => {
             const sdkMessage = msg.sdkMessage;
             if (sdkMessage.type !== "user" && sdkMessage.type !== "assistant") {

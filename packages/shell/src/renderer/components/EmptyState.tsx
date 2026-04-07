@@ -31,8 +31,8 @@ export const EmptyState = ({ className }: { className?: string }) => {
       >
         <h1
           style={{
-            fontSize: 18,
-            fontWeight: 600,
+            fontSize: 14,
+            fontWeight: 500,
             color: c.textPrimary,
             margin: 0,
             letterSpacing: "-0.02em",
@@ -42,7 +42,7 @@ export const EmptyState = ({ className }: { className?: string }) => {
         </h1>
         <p
           style={{
-            fontSize: 13,
+            fontSize: 12,
             color: c.textSecondary,
             margin: "6px 0 0",
             lineHeight: 1.5,
