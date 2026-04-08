@@ -14,5 +14,5 @@ export const claudeCodeAuthQueryOptions = queryOptions({
     return result.value;
   },
   staleTime: 30_000,
-  retry: 2,
+  retry: false,
 });
