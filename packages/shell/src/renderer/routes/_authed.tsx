@@ -1,11 +1,14 @@
 import { createFileRoute, Outlet, redirect } from "@tanstack/react-router";
-import { isAuthenticated } from "@/renderer/lib/auth";
+
+const AuthedLayout = () => <Outlet />;
 
 export const Route = createFileRoute("/_authed")({
-  beforeLoad: () => {
-    if (!isAuthenticated()) {
-      throw redirect({ to: "/login" });
+  beforeLoad: ({ context }) => {
+    if (!context.claudeCodeAuth.authenticated) {
+      throw redirect({ to: "/onboarding/claude-code" });
     }
+    // TODO: PR #17 will add workspace existence check here:
+    // no workspaces → redirect to /onboarding/create-workspace
   },
-  component: () => <Outlet />,
+  component: AuthedLayout,
 });
