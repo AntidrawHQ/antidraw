@@ -5,7 +5,7 @@ import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import "./index.css";
 import { router, queryClient } from "./router";
 import { claudeCodeAuthQueryOptions } from "./lib/auth";
-import { Titlebar } from "./components/ui/titlebar";
+import { Titlebar } from "./components/titlebar";
 
 const AppShell = () => {
   const { data: claudeCodeAuth, isLoading } = useQuery(
