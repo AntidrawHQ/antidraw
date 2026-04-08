@@ -1,35 +1,25 @@
-import {
-  createRootRouteWithContext,
-  Outlet,
-  useRouteContext,
-} from "@tanstack/react-router";
-import { QueryClientProvider } from "@tanstack/react-query";
+import { createRootRouteWithContext, Outlet } from "@tanstack/react-router";
 import type { QueryClient } from "@tanstack/react-query";
+import type { ClaudeAuthStatus } from "@/renderer/lib/auth";
 import { TooltipProvider } from "@/renderer/components/ui/tooltip";
+import { Titlebar } from "@/renderer/components/titlebar";
 
 type RouterContext = {
   queryClient: QueryClient;
+  claudeCodeAuth: ClaudeAuthStatus;
 };
 
 const RootComponent = () => {
-  const { queryClient } = useRouteContext({ from: "__root__" });
-
   return (
-    <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <div className="flex h-screen w-full flex-col">
-          {/* Draggable titlebar */}
-          <div
-            className="h-[38px] w-full shrink-0 bg-neutral-800 border-b border-[#2d2d2d]"
-            style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
-          />
+    <TooltipProvider>
+      <div className="flex h-screen w-full flex-col">
+        <Titlebar />
 
-          <div className="flex-1 overflow-hidden">
-            <Outlet />
-          </div>
+        <div className="flex-1 overflow-hidden">
+          <Outlet />
         </div>
-      </TooltipProvider>
-    </QueryClientProvider>
+      </div>
+    </TooltipProvider>
   );
 };
 

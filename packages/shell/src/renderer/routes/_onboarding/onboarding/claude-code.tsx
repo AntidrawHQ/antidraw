@@ -78,6 +78,6 @@ const ClaudeCodePage = () => {
   );
 };
 
-export const Route = createFileRoute("/_authed/onboarding/claude-code")({
+export const Route = createFileRoute("/_onboarding/onboarding/claude-code")({
   component: ClaudeCodePage,
 });
