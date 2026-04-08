@@ -5,6 +5,7 @@ import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import "./index.css";
 import { router, queryClient } from "./router";
 import { claudeCodeAuthQueryOptions } from "./lib/auth";
+import { Titlebar } from "./components/titlebar";
 
 const AppShell = () => {
   const { data: claudeCodeAuth, isLoading } = useQuery(
@@ -14,10 +15,7 @@ const AppShell = () => {
   if (isLoading || !claudeCodeAuth) {
     return (
       <div className="flex h-screen w-full flex-col">
-        <div
-          className="h-[38px] w-full shrink-0 bg-neutral-800 border-b border-[#2d2d2d]"
-          style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
-        />
+        <Titlebar />
         <div className="flex-1" />
       </div>
     );
