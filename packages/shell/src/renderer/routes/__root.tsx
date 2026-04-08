@@ -2,6 +2,7 @@ import { createRootRouteWithContext, Outlet } from "@tanstack/react-router";
 import type { QueryClient } from "@tanstack/react-query";
 import type { ClaudeAuthStatus } from "@/renderer/lib/auth";
 import { TooltipProvider } from "@/renderer/components/ui/tooltip";
+import { Titlebar } from "@/renderer/components/titlebar";
 
 type RouterContext = {
   queryClient: QueryClient;
@@ -12,11 +13,7 @@ const RootComponent = () => {
   return (
     <TooltipProvider>
       <div className="flex h-screen w-full flex-col">
-        {/* Draggable titlebar */}
-        <div
-          className="h-[38px] w-full shrink-0 bg-neutral-800 border-b border-[#2d2d2d]"
-          style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
-        />
+        <Titlebar />
 
         <div className="flex-1 overflow-hidden">
           <Outlet />
