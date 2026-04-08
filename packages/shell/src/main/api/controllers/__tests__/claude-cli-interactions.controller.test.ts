@@ -16,9 +16,8 @@ vi.mock("child_process", () => ({
 //   { loggedIn: false, authMethod: "none", apiProvider: "none" }
 //   Note: email/orgId/orgName/subscriptionType absent when authMethod !== "claude.ai"
 //
-// CLI not installed:
-//   shell: true  → error.code = 127 (number), stdout = ""   [current behavior — bug]
-//   shell: false → error.code = "ENOENT", stdout = ""       [correct behavior post-fix]
+// CLI not installed (shell: false, the default):
+//   error.code = "ENOENT" (string), stdout = ""
 
 const mockExecFile = (stdout: string, error: Error | null = null) => {
   vi.mocked(execFile).mockImplementationOnce((...args: Parameters<typeof execFile>) => {

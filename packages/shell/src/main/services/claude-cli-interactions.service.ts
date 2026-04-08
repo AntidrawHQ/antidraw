@@ -28,7 +28,7 @@ export const checkClaudeAuthStatus = (): Promise<
     execFile(
       "claude",
       ["auth", "status"],
-      { timeout: 5_000, shell: true },
+      { timeout: 5_000 },
       (error, stdout) => {
         if (error) {
           // CLI not found
