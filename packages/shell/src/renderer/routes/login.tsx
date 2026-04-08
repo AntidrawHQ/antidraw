@@ -22,6 +22,41 @@ const GoogleLogo = () => (
   </svg>
 );
 
+const verticalLine = (
+  <svg
+    className="absolute pointer-events-none overflow-visible -left-[60px] -top-[40px] w-[60px] h-[calc(100%+80px)]"
+    viewBox="0 0 60 100"
+    preserveAspectRatio="none"
+    fill="none"
+  >
+    <path
+      d="M 38 0 C 35 15, 42 35, 38 50 S 34 70, 38 85 S 42 95, 38 100"
+      stroke="rgba(255,255,255,0.08)"
+      strokeWidth="2"
+      strokeLinecap="round"
+      fill="none"
+    />
+  </svg>
+);
+
+const horizontalLine = (
+  <svg
+    className="pointer-events-none my-2 -ml-[160px] w-[calc(100%+190px)]"
+    height="20"
+    viewBox="0 0 570 20"
+    preserveAspectRatio="none"
+    fill="none"
+  >
+    <path
+      d="M 0 12 C 40 9, 80 14, 140 10 S 240 7, 340 12 S 480 6, 570 11"
+      stroke="rgba(255,255,255,0.08)"
+      strokeWidth="2"
+      strokeLinecap="round"
+      fill="none"
+    />
+  </svg>
+);
+
 const LoginPage = () => {
   const router = useRouter();
 
@@ -31,24 +66,8 @@ const LoginPage = () => {
 
   return (
     <div className="flex h-full w-full items-center justify-center bg-neutral-800 relative overflow-hidden p-6 cursor-default antialiased">
-      {/* Content */}
       <div className="relative z-10 flex flex-col w-full max-w-[380px]">
-        {/* Vertical line — absolute, left of content, full height */}
-        <svg
-          className="absolute pointer-events-none overflow-visible"
-          style={{ left: -60, top: -40, width: 60, height: "calc(100% + 80px)" }}
-          viewBox="0 0 60 100"
-          preserveAspectRatio="none"
-          fill="none"
-        >
-          <path
-            d="M 38 0 C 35 15, 42 35, 38 50 S 34 70, 38 85 S 42 95, 38 100"
-            stroke="rgba(255,255,255,0.08)"
-            strokeWidth="2"
-            strokeLinecap="round"
-            fill="none"
-          />
-        </svg>
+        {verticalLine}
 
         <div className="mb-5">
           <img
@@ -67,23 +86,7 @@ const LoginPage = () => {
           Design interfaces through conversation.
         </p>
 
-        {/* Horizontal line — inline separator, extends past left edge to cross vertical */}
-        <svg
-          className="pointer-events-none my-2"
-          style={{ marginLeft: -160, width: "calc(100% + 190px)" }}
-          height="20"
-          viewBox="0 0 570 20"
-          preserveAspectRatio="none"
-          fill="none"
-        >
-          <path
-            d="M 0 12 C 40 9, 80 14, 140 10 S 240 7, 340 12 S 480 6, 570 11"
-            stroke="rgba(255,255,255,0.08)"
-            strokeWidth="2"
-            strokeLinecap="round"
-            fill="none"
-          />
-        </svg>
+        {horizontalLine}
 
         <button
           onClick={handleSignIn}
