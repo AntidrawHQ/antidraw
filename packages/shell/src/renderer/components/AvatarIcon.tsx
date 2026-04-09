@@ -1,6 +1,6 @@
 import BoringAvatar from "boring-avatars";
 
-const BORING_MONO = ["#1a1a1a", "#333333", "#555555", "#777777", "#999999"];
+const AVATAR_COLORS = ["#c084a0", "#84a0c0", "#a0c084", "#c0a084", "#84c0a0"];
 
 type AvatarIconProps = {
   name: string;
@@ -9,15 +9,15 @@ type AvatarIconProps = {
 
 export const AvatarIcon = ({ name, size }: AvatarIconProps) => (
   <div
-    className="rounded-full shrink-0 overflow-hidden flex items-center justify-center"
+    className="rounded-xl shrink-0 overflow-hidden flex items-center justify-center"
     style={{ width: size, height: size }}
   >
     <BoringAvatar
       size={size}
       name={name}
       variant="beam"
-      colors={BORING_MONO}
-      square={false}
+      colors={AVATAR_COLORS}
+      square
     />
   </div>
 );

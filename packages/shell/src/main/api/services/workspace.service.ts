@@ -1,8 +1,10 @@
 import { workspaces } from "@/main/api/models/workspace.model";
+import type { WorkspaceWithComponentCount } from "@/main/api/models/workspace.model";
 import { db } from "@/main/db";
 import { eq } from "drizzle-orm";
 import { ok, err } from "neverthrow";
 import fs from "node:fs/promises";
+import path from "node:path";
 import {
   getWorkspacePath,
   getWorkspaceSourcePath,
@@ -122,13 +124,35 @@ export const createWorkspace = async function* (
   }
 };
 
+const countUserComponents = async (workspaceId: string): Promise<number> => {
+  const componentDir = path.join(
+    getWorkspaceSourcePath(workspaceId),
+    "src",
+    "components",
+    "user-components"
+  );
+  try {
+    const files = await fs.readdir(componentDir);
+    return files.filter((f) => f.endsWith(".tsx") || f.endsWith(".ts")).length;
+  } catch {
+    return 0;
+  }
+};
+
 export const listWorkspaces = async () => {
   try {
     const result = await db.query.workspaces.findMany({
       orderBy: (workspaces, { desc }) => desc(workspaces.createdAt),
     });
 
-    return ok(result);
+    const enriched: WorkspaceWithComponentCount[] = await Promise.all(
+      result.map(async (ws) => ({
+        ...ws,
+        componentCount: await countUserComponents(ws.id),
+      }))
+    );
+
+    return ok(enriched);
   } catch (_e) {
     return err({
       status: 500 as const,

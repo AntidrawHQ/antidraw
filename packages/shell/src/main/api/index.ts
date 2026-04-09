@@ -6,7 +6,7 @@ export type {
   StreamStatus,
 } from "./models/chat.model";
 import type { Conversation, Message } from "./models/chat.model";
-export type { Workspace } from "./models/workspace.model";
+export type { Workspace, WorkspaceWithComponentCount } from "./models/workspace.model";
 export type { CreateWorkspaceResponse } from "./controllers/workspace.controller";
 export type { DevServerState } from "@/main/lib/runtime-store";
 export type { DevServerInfo } from "@/main/services/dev-server.service";
