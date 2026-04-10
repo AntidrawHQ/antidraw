@@ -109,7 +109,7 @@ export const WorkspaceSwitcher = () => {
 
       <PopoverContent
         align="end"
-        className="w-[240px] p-1 bg-[#2c2c2c] border border-[#2d2d2d] rounded-lg shadow-2xl overflow-hidden"
+        className="w-[240px] p-1 bg-[#2c2c2c] border border-[#2d2d2d] rounded-lg shadow-lg overflow-hidden"
         onOpenAutoFocus={(e) => e.preventDefault()}
       >
         <Command
@@ -154,7 +154,7 @@ export const WorkspaceSwitcher = () => {
           </CommandList>
         </Command>
 
-        <div className="mx-1.5 border-t border-white/[0.06]" />
+        <div className="-mx-1 border-t border-white/[0.06]" />
         <div className="pt-1">
           <button
             onClick={handleNewWorkspace}
