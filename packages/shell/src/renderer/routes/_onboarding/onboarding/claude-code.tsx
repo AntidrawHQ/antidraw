@@ -2,10 +2,7 @@ import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { ArrowRight } from "lucide-react";
 import antidrawLogo from "@/renderer/assets/antidraw-logo.png";
 import claudeLogo from "@/renderer/assets/claude-color.svg";
-import {
-  WavyVerticalLine,
-  WavyHorizontalLine,
-} from "@/renderer/components/onboarding/wavy-lines";
+import { WavyVerticalLine } from "@/renderer/components/onboarding/wavy-lines";
 
 const ClaudeCodePage = () => {
   const router = useRouter();
@@ -26,14 +23,12 @@ const ClaudeCodePage = () => {
         <h1 className="text-[30px] font-medium text-[#e0e0e0] m-0 tracking-[-0.04em]">
           Claude Code connected
         </h1>
-        <p className="text-sm text-[#9a9a9a] mt-2.5 leading-relaxed">
+        <p className="text-sm text-[#9a9a9a] mt-1.5 leading-relaxed">
           You're all set. Claude is ready to go.
         </p>
 
-        <WavyHorizontalLine />
-
         {/* Conversation */}
-        <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-3 mt-4">
           {/* Antidraw message */}
           <div className="flex items-start gap-2.5">
             <img
