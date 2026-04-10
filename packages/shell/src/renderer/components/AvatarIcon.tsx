@@ -9,7 +9,7 @@ type AvatarIconProps = {
 
 export const AvatarIcon = ({ name, size }: AvatarIconProps) => (
   <div
-    className="rounded-xl shrink-0 overflow-hidden flex items-center justify-center"
+    className="rounded-md shrink-0 overflow-hidden flex items-center justify-center"
     style={{ width: size, height: size }}
   >
     <BoringAvatar

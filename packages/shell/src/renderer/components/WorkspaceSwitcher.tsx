@@ -140,7 +140,7 @@ export const WorkspaceSwitcher = () => {
                 onSelect={() => handleSelect(ws.id)}
                 className="group w-full flex items-center gap-3 py-2.5 px-2.5 border-none text-left mb-0.5"
               >
-                <AvatarIcon name={ws.name} size={38} />
+                <AvatarIcon name={ws.name} size={30} />
                 <div className="flex-1 min-w-0">
                   <div className="text-[13px] font-medium truncate text-neutral-400 group-data-[selected=true]:text-neutral-200">
                     {ws.name}
@@ -157,27 +157,14 @@ export const WorkspaceSwitcher = () => {
           </CommandList>
         </Command>
 
-        <div className="mx-3 border-t border-[#2d2d2d]" />
-
-        <div className="p-2">
+        <div className="border-t border-white/[0.05]" />
+        <div className="px-2 py-1">
           <button
             onClick={handleNewWorkspace}
-            className="w-full flex items-center gap-3 py-2.5 px-2.5 rounded-xl cursor-pointer bg-transparent border-none hover:bg-white/[0.06] transition-colors"
+            className="w-full flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border-none bg-transparent hover:bg-white/[0.06] text-[12px] font-medium text-neutral-400 hover:text-neutral-200 cursor-pointer transition-colors duration-[120ms]"
           >
-            <div
-              className="rounded-xl shrink-0 flex items-center justify-center"
-              style={{ width: 38, height: 38, backgroundColor: "#383838" }}
-            >
-              <Plus className="w-4 h-4 text-neutral-400" />
-            </div>
-            <div className="flex-1 min-w-0 text-left">
-              <div className="text-[13px] font-medium text-neutral-300">
-                New Workspace
-              </div>
-              <div className="text-[11px] text-neutral-500 mt-0.5">
-                Start a fresh project
-              </div>
-            </div>
+            <Plus className="w-3 h-3" />
+            New Workspace
           </button>
         </div>
       </PopoverContent>
