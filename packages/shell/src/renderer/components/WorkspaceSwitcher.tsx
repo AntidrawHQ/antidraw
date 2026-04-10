@@ -91,11 +91,11 @@ export const WorkspaceSwitcher = () => {
           className="flex items-center gap-2 py-1 px-2.5 bg-white/[0.06] border-none rounded-lg cursor-pointer hover:bg-white/[0.10] min-w-0 max-w-[200px] transition-colors"
           style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
         >
-          {/* {activeWorkspace && (
+          {activeWorkspace && (
             <div className="rounded shrink-0 overflow-hidden" style={{ width: 18, height: 18 }}>
               <BoringAvatar size={18} name={activeWorkspace.name} variant="beam" colors={AVATAR_COLORS} square />
             </div>
-          )} */}
+          )}
           <span className="text-[13px] font-medium text-neutral-200 truncate flex-1">
             {activeWorkspace?.name ?? "Select workspace"}
           </span>
@@ -140,7 +140,7 @@ export const WorkspaceSwitcher = () => {
                 onSelect={() => handleSelect(ws.id)}
                 className="group w-full flex items-center gap-3 py-2.5 px-2.5 border-none text-left mb-0.5"
               >
-                {/* <AvatarIcon name={ws.name} size={38} /> */}
+                <AvatarIcon name={ws.name} size={38} />
                 <div className="flex-1 min-w-0">
                   <div className="text-[13px] font-medium truncate text-neutral-400 group-data-[selected=true]:text-neutral-200">
                     {ws.name}
