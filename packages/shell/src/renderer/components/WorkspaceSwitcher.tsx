@@ -46,7 +46,7 @@ const WorkspaceItems = ({ onSelect }: WorkspaceItemsProps) => {
                 : "bg-transparent hover:bg-white/[0.06]"
             )}
           >
-            <AvatarIcon name={item.data.name} size={38} />
+            {/* <AvatarIcon name={item.data.name} size={38} /> */}
             <div className="flex-1 min-w-0">
               <div
                 className={cn(
@@ -124,14 +124,14 @@ export const WorkspaceSwitcher = () => {
     >
       <PopoverTrigger asChild>
         <button
-          className="flex items-center gap-2 py-1.5 px-2.5 bg-transparent border-none rounded-lg cursor-pointer hover:bg-white/[0.06] min-w-0 max-w-[200px] transition-colors"
+          className="flex items-center gap-2 py-1.5 px-2.5 bg-white/[0.06] border-none rounded-lg cursor-pointer hover:bg-white/[0.10] min-w-0 max-w-[200px] transition-colors"
           style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
         >
-          {activeWorkspace && (
+          {/* {activeWorkspace && (
             <div className="rounded shrink-0 overflow-hidden" style={{ width: 18, height: 18 }}>
               <BoringAvatar size={18} name={activeWorkspace.name} variant="beam" colors={AVATAR_COLORS} square />
             </div>
-          )}
+          )} */}
           <span className="text-[13px] font-medium text-neutral-200 truncate flex-1">
             {activeWorkspace?.name ?? "Select workspace"}
           </span>
