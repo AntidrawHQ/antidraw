@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ComponentType } from "react";
-import { ChevronsUpDown, Plus } from "lucide-react";
+import { ChevronsUpDown, Plus, Search } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
 import { useWorkspaceStore } from "./store/workspace";
 import type { SidePanel as SidePanelId } from "./store/workspace";
@@ -10,66 +10,17 @@ import {
 } from "./lib/claude-code-ops";
 import type { Conversation } from "@/main/api";
 import { formatRelativeTime } from "./lib/time-utils";
-import { renderHighlighted } from "./lib/search-utils";
 import { AppChat } from "./Chat";
 import { ComponentPanel } from "./ComponentPanel";
 import {
-  SearchableList,
-  SearchableListInput,
-  useSearchableList,
-} from "./components/ui/searchable-list";
+  Command,
+  CommandInput,
+  CommandList,
+  CommandItem,
+} from "./components/ui/command";
 import { ResizablePanel } from "./components/ui/resizable-panel";
 
 // --- Conversation List (search + filtered list + new button) ---
-
-type ConversationItemsProps = {
-  onSelect: (conv: Conversation) => void;
-};
-
-const ConversationItems = ({ onSelect }: ConversationItemsProps) => {
-  const { filtered, selectedIndex } = useSearchableList<Conversation>();
-
-  return (
-    <div className="flex-1 overflow-y-auto px-2 pb-2">
-      {filtered.map((item, idx) => {
-        const conv = item.data;
-        return (
-          <button
-            key={conv.id}
-            onClick={() => onSelect(conv)}
-            className={cn(
-              "w-full flex flex-col items-start gap-0.5 py-2 px-2.5 border-none rounded-md cursor-pointer text-left mb-0.5",
-              idx === selectedIndex
-                ? "bg-white/[0.06]"
-                : "bg-transparent hover:bg-white/[0.06]"
-            )}
-          >
-            <div className="w-full flex items-center justify-between gap-2">
-              <span
-                className={cn(
-                  "flex-1 text-[13px] font-medium overflow-hidden text-ellipsis whitespace-nowrap",
-                  idx === selectedIndex
-                    ? "text-neutral-200"
-                    : "text-neutral-400"
-                )}
-              >
-                {renderHighlighted(item.label, item.indices)}
-              </span>
-              <span className="text-[10px] text-neutral-600 shrink-0">
-                {formatRelativeTime(new Date(conv.updatedAt))}
-              </span>
-            </div>
-            {conv.summary && (
-              <span className="text-[11px] text-[#71717a] overflow-hidden text-ellipsis whitespace-nowrap w-full">
-                {conv.summary}
-              </span>
-            )}
-          </button>
-        );
-      })}
-    </div>
-  );
-};
 
 type ConversationListProps = {
   onClose: () => void;
@@ -85,7 +36,16 @@ const ConversationList = ({ onClose }: ConversationListProps) => {
     useWorkspaceConversations(activeWorkspaceId);
   const createConversation = useCreateConversation();
 
-  const handleSelect = (conv: Conversation) => {
+  const [search, setSearch] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  const handleSelect = (convId: string) => {
+    const conv = conversations.find((c) => c.id === convId);
+    if (!conv) return;
     setActiveConversationId(conv.id);
     onClose();
   };
@@ -98,16 +58,58 @@ const ConversationList = ({ onClose }: ConversationListProps) => {
   };
 
   return (
-    <SearchableList
-      items={conversations}
-      getLabel={(c) => c.title ?? "Untitled Conversation"}
-      onSelect={handleSelect}
-      onClose={onClose}
-      autoFocus
+    <Command
       className="flex-1 flex flex-col overflow-hidden"
+      onKeyDown={(e) => { if (e.key === "Escape") onClose(); }}
     >
-      <SearchableListInput onClose={onClose} />
-      <ConversationItems onSelect={handleSelect} />
+      <div className="p-2">
+        <div className="flex items-center gap-2 bg-neutral-700 rounded-lg px-2.5 py-2 border border-[#2d2d2d]">
+          <Search
+            className={cn(
+              "w-3.5 h-3.5 shrink-0",
+              search ? "text-neutral-200" : "text-[#71717a]"
+            )}
+          />
+          <CommandInput
+            ref={inputRef}
+            placeholder="Search..."
+            value={search}
+            onValueChange={setSearch}
+          />
+          <button
+            onClick={onClose}
+            className="px-1.5 py-0.5 bg-[#2d2d2d] border-none rounded text-[10px] text-neutral-400 cursor-pointer hover:bg-neutral-600"
+          >
+            ESC
+          </button>
+        </div>
+      </div>
+
+      <CommandList className="flex-1 px-2 pb-2">
+        {conversations.map((conv) => (
+          <CommandItem
+            key={conv.id}
+            value={conv.id}
+            keywords={[conv.title ?? "Untitled Conversation"]}
+            onSelect={() => handleSelect(conv.id)}
+            className="group w-full flex flex-col items-start gap-0.5 py-2 px-2.5 border-none rounded-md text-left mb-0.5"
+          >
+            <div className="w-full flex items-center justify-between gap-2">
+              <span className="flex-1 text-[13px] font-medium overflow-hidden text-ellipsis whitespace-nowrap text-neutral-400 group-data-[selected=true]:text-neutral-200">
+                {conv.title ?? "Untitled Conversation"}
+              </span>
+              <span className="text-[10px] text-neutral-600 shrink-0">
+                {formatRelativeTime(new Date(conv.updatedAt))}
+              </span>
+            </div>
+            {conv.summary && (
+              <span className="text-[11px] text-[#71717a] overflow-hidden text-ellipsis whitespace-nowrap w-full">
+                {conv.summary}
+              </span>
+            )}
+          </CommandItem>
+        ))}
+      </CommandList>
 
       {/* New Conversation */}
       <div className="p-2 border-t border-[#2d2d2d]">
@@ -120,7 +122,7 @@ const ConversationList = ({ onClose }: ConversationListProps) => {
           New Conversation
         </button>
       </div>
-    </SearchableList>
+    </Command>
   );
 };
 

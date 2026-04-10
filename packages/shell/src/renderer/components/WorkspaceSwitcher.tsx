@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { ChevronUp, ChevronDown, Check, Plus } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { ChevronUp, ChevronDown, Check, Plus, Search } from "lucide-react";
 import { useRouter } from "@tanstack/react-router";
 import { cn } from "@/renderer/lib/utils";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
@@ -10,67 +10,17 @@ import {
   PopoverContent,
 } from "@/renderer/components/ui/popover";
 import {
-  SearchableList,
-  SearchableListInput,
-  useSearchableList,
-} from "@/renderer/components/ui/searchable-list";
+  Command,
+  CommandInput,
+  CommandList,
+  CommandItem,
+  CommandEmpty,
+} from "@/renderer/components/ui/command";
 import { AvatarIcon } from "@/renderer/components/AvatarIcon";
 import BoringAvatar from "boring-avatars";
 import type { WorkspaceWithComponentCount } from "@/main/api";
 
 const AVATAR_COLORS = ["#c084a0", "#84a0c0", "#a0c084", "#c0a084", "#84c0a0"];
-
-type WorkspaceItemsProps = {
-  onSelect: (ws: WorkspaceWithComponentCount) => void;
-};
-
-const WorkspaceItems = ({ onSelect }: WorkspaceItemsProps) => {
-  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
-  const { filtered, selectedIndex } = useSearchableList<WorkspaceWithComponentCount>();
-
-  return (
-    <div className="max-h-[280px] overflow-y-auto px-2 pb-2">
-      {filtered.length === 0 ? (
-        <div className="py-6 text-center text-[12px] text-neutral-500">
-          No workspaces found
-        </div>
-      ) : (
-        filtered.map((item, idx) => (
-          <button
-            key={item.data.id}
-            onClick={() => onSelect(item.data)}
-            className={cn(
-              "w-full flex items-center gap-3 py-2.5 px-2.5 border-none rounded-xl cursor-pointer text-left mb-0.5 transition-colors",
-              idx === selectedIndex
-                ? "bg-white/[0.06]"
-                : "bg-transparent hover:bg-white/[0.06]"
-            )}
-          >
-            {/* <AvatarIcon name={item.data.name} size={38} /> */}
-            <div className="flex-1 min-w-0">
-              <div
-                className={cn(
-                  "text-[13px] font-medium truncate",
-                  item.data.id === activeWorkspaceId
-                    ? "text-neutral-100"
-                    : "text-neutral-300"
-                )}
-              >
-                {item.data.name}
-              </div>
-              <div className="text-[11px] text-neutral-500 truncate mt-0.5">
-                {item.data.componentCount} {item.data.componentCount === 1 ? "component" : "components"}
-              </div>
-            </div>
-            {item.data.id === activeWorkspaceId && (
-              <Check className="w-3.5 h-3.5 text-neutral-300 shrink-0" />
-            )}
-          </button>
-        ))
-      )}
-    </div>
-  );
-};
 
 export const WorkspaceSwitcher = () => {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
@@ -82,6 +32,8 @@ export const WorkspaceSwitcher = () => {
   );
 
   const [isOpen, setIsOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
 
   const { data: workspaces } = useWorkspaces();
@@ -90,9 +42,21 @@ export const WorkspaceSwitcher = () => {
   );
   const stopDevServer = useStopDevServer();
 
+  // Auto-focus search input when popover opens
+  useEffect(() => {
+    if (isOpen) {
+      requestAnimationFrame(() => inputRef.current?.focus());
+    } else {
+      setSearch("");
+    }
+  }, [isOpen]);
+
   const close = () => setIsOpen(false);
 
-  const handleSelect = (ws: WorkspaceWithComponentCount) => {
+  const handleSelect = (wsId: string) => {
+    const ws = workspaces?.find((w) => w.id === wsId);
+    if (!ws) return;
+
     if (ws.id === activeWorkspaceId) {
       close();
       return;
@@ -148,16 +112,57 @@ export const WorkspaceSwitcher = () => {
         className="w-[280px] p-0 bg-[#2c2c2c] border border-[#2d2d2d] shadow-2xl overflow-hidden"
         onOpenAutoFocus={(e) => e.preventDefault()}
       >
-        <SearchableList
-          items={workspaces ?? []}
-          getLabel={(ws) => ws.name}
-          onSelect={handleSelect}
-          onClose={close}
-          autoFocus
+        <Command
+          onKeyDown={(e) => { if (e.key === "Escape") close(); }}
         >
-          <SearchableListInput onClose={close} variant="flat" />
-          <WorkspaceItems onSelect={handleSelect} />
-        </SearchableList>
+          <div className="flex items-center gap-2 px-3 pt-2.5 pb-3">
+            <Search
+              className={cn(
+                "w-3.5 h-3.5 shrink-0 transition-colors",
+                search ? "text-neutral-300" : "text-neutral-600"
+              )}
+            />
+            <CommandInput
+              ref={inputRef}
+              placeholder="Search..."
+              value={search}
+              onValueChange={setSearch}
+              className="placeholder:text-neutral-600"
+            />
+          </div>
+          <CommandList className="max-h-[280px] px-2 pb-2">
+            <CommandEmpty>No workspaces found</CommandEmpty>
+            {(workspaces ?? []).map((ws) => (
+              <CommandItem
+                key={ws.id}
+                value={ws.id}
+                keywords={[ws.name]}
+                onSelect={() => handleSelect(ws.id)}
+                className="w-full flex items-center gap-3 py-2.5 px-2.5 border-none text-left mb-0.5"
+              >
+                {/* <AvatarIcon name={ws.name} size={38} /> */}
+                <div className="flex-1 min-w-0">
+                  <div
+                    className={cn(
+                      "text-[13px] font-medium truncate",
+                      ws.id === activeWorkspaceId
+                        ? "text-neutral-100"
+                        : "text-neutral-300"
+                    )}
+                  >
+                    {ws.name}
+                  </div>
+                  <div className="text-[11px] text-neutral-500 truncate mt-0.5">
+                    {ws.componentCount} {ws.componentCount === 1 ? "component" : "components"}
+                  </div>
+                </div>
+                {ws.id === activeWorkspaceId && (
+                  <Check className="w-3.5 h-3.5 text-neutral-300 shrink-0" />
+                )}
+              </CommandItem>
+            ))}
+          </CommandList>
+        </Command>
 
         <div className="mx-3 border-t border-[#2d2d2d]" />
 
