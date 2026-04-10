@@ -62,27 +62,29 @@ const ConversationList = ({ onClose }: ConversationListProps) => {
       className="flex-1 flex flex-col overflow-hidden"
       onKeyDown={(e) => { if (e.key === "Escape") onClose(); }}
     >
-      <div className="p-2">
-        <div className="flex items-center gap-2 bg-neutral-700 rounded-lg px-2.5 py-2 border border-[#2d2d2d]">
-          <Search
-            className={cn(
-              "w-3.5 h-3.5 shrink-0",
-              search ? "text-neutral-200" : "text-[#71717a]"
-            )}
-          />
-          <CommandInput
-            ref={inputRef}
-            placeholder="Search..."
-            value={search}
-            onValueChange={setSearch}
-          />
-          <button
-            onClick={onClose}
-            className="px-1.5 py-0.5 bg-[#2d2d2d] border-none rounded text-[10px] text-neutral-400 cursor-pointer hover:bg-neutral-600"
-          >
-            ESC
-          </button>
-        </div>
+      <div className="flex items-center gap-2 px-3 pt-2.5 pb-3">
+        <Search
+          className={cn(
+            "w-3.5 h-3.5 shrink-0 transition-colors",
+            search ? "text-neutral-300" : "text-neutral-600"
+          )}
+        />
+        <CommandInput
+          ref={inputRef}
+          placeholder="Search..."
+          value={search}
+          onValueChange={setSearch}
+          className="placeholder:text-neutral-600"
+        />
+        <button
+          onClick={handleNewConversation}
+          disabled={createConversation.isPending}
+          className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-white/[0.06] text-[12px] text-neutral-500 hover:text-neutral-200 disabled:opacity-50 shrink-0"
+          title="New conversation"
+        >
+          <Plus className="w-3 h-3" />
+          New
+        </button>
       </div>
 
       <CommandList className="flex-1 px-2 pb-2">
@@ -111,17 +113,6 @@ const ConversationList = ({ onClose }: ConversationListProps) => {
         ))}
       </CommandList>
 
-      {/* New Conversation */}
-      <div className="p-2 border-t border-[#2d2d2d]">
-        <button
-          onClick={handleNewConversation}
-          disabled={createConversation.isPending}
-          className="w-full flex items-center justify-center gap-1.5 py-2 px-3 bg-neutral-700 border border-[#2d2d2d] rounded-md cursor-pointer text-xs text-neutral-400 hover:bg-white/[0.1] disabled:opacity-50"
-        >
-          <Plus className="w-3.5 h-3.5" />
-          New Conversation
-        </button>
-      </div>
     </Command>
   );
 };

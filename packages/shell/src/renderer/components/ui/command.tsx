@@ -66,7 +66,7 @@ function CommandItem({
     <CommandPrimitive.Item
       data-slot="command-item"
       className={cn(
-        "cursor-pointer rounded-xl transition-colors bg-transparent hover:bg-white/[0.06] data-[selected=true]:bg-white/[0.06]",
+        "cursor-pointer rounded-xl bg-transparent hover:bg-white/[0.06] data-[selected=true]:bg-white/[0.06]",
         className
       )}
       {...props}

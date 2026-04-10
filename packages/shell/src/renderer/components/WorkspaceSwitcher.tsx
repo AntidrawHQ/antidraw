@@ -88,7 +88,7 @@ export const WorkspaceSwitcher = () => {
     >
       <PopoverTrigger asChild>
         <button
-          className="flex items-center gap-2 py-1.5 px-2.5 bg-white/[0.06] border-none rounded-lg cursor-pointer hover:bg-white/[0.10] min-w-0 max-w-[200px] transition-colors"
+          className="flex items-center gap-2 py-1 px-2.5 bg-white/[0.06] border-none rounded-lg cursor-pointer hover:bg-white/[0.10] min-w-0 max-w-[200px] transition-colors"
           style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
         >
           {/* {activeWorkspace && (
@@ -138,21 +138,14 @@ export const WorkspaceSwitcher = () => {
                 value={ws.id}
                 keywords={[ws.name]}
                 onSelect={() => handleSelect(ws.id)}
-                className="w-full flex items-center gap-3 py-2.5 px-2.5 border-none text-left mb-0.5"
+                className="group w-full flex items-center gap-3 py-2.5 px-2.5 border-none text-left mb-0.5"
               >
                 {/* <AvatarIcon name={ws.name} size={38} /> */}
                 <div className="flex-1 min-w-0">
-                  <div
-                    className={cn(
-                      "text-[13px] font-medium truncate",
-                      ws.id === activeWorkspaceId
-                        ? "text-neutral-100"
-                        : "text-neutral-300"
-                    )}
-                  >
+                  <div className="text-[13px] font-medium truncate text-neutral-400 group-data-[selected=true]:text-neutral-200">
                     {ws.name}
                   </div>
-                  <div className="text-[11px] text-neutral-500 truncate mt-0.5">
+                  <div className="text-[11px] text-[#71717a] truncate mt-0.5">
                     {ws.componentCount} {ws.componentCount === 1 ? "component" : "components"}
                   </div>
                 </div>
