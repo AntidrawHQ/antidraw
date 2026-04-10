@@ -109,16 +109,16 @@ export const WorkspaceSwitcher = () => {
 
       <PopoverContent
         align="end"
-        className="w-[280px] p-0 bg-[#2c2c2c] border border-[#2d2d2d] shadow-2xl overflow-hidden"
+        className="w-[240px] p-1 bg-[#2c2c2c] border border-[#2d2d2d] rounded-lg shadow-2xl overflow-hidden"
         onOpenAutoFocus={(e) => e.preventDefault()}
       >
         <Command
           onKeyDown={(e) => { if (e.key === "Escape") close(); }}
         >
-          <div className="flex items-center gap-2 px-3 pt-2.5 pb-3">
+          <div className="flex items-center gap-2 py-1.5 px-2">
             <Search
               className={cn(
-                "w-3.5 h-3.5 shrink-0 transition-colors",
+                "w-3 h-3 shrink-0 transition-colors",
                 search ? "text-neutral-300" : "text-neutral-600"
               )}
             />
@@ -127,10 +127,10 @@ export const WorkspaceSwitcher = () => {
               placeholder="Search..."
               value={search}
               onValueChange={setSearch}
-              className="placeholder:text-neutral-600"
+              className="text-[13px] placeholder:text-neutral-600"
             />
           </div>
-          <CommandList className="max-h-[280px] px-2 pb-2">
+          <CommandList className="max-h-[240px] px-1 pb-1">
             <CommandEmpty>No workspaces found</CommandEmpty>
             {(workspaces ?? []).map((ws) => (
               <CommandItem
@@ -138,30 +138,27 @@ export const WorkspaceSwitcher = () => {
                 value={ws.id}
                 keywords={[ws.name]}
                 onSelect={() => handleSelect(ws.id)}
-                className="group w-full flex items-center gap-3 py-2.5 px-2.5 border-none text-left mb-0.5"
+                className="group w-full flex items-center gap-2 py-1.5 px-2 border-none rounded-md text-left"
               >
-                <AvatarIcon name={ws.name} size={30} />
-                <div className="flex-1 min-w-0">
-                  <div className="text-[13px] font-medium truncate text-neutral-400 group-data-[selected=true]:text-neutral-200">
-                    {ws.name}
-                  </div>
-                  <div className="text-[11px] text-[#71717a] truncate mt-0.5">
-                    {ws.componentCount} {ws.componentCount === 1 ? "component" : "components"}
-                  </div>
+                <div className="rounded shrink-0 overflow-hidden" style={{ width: 18, height: 18 }}>
+                  <BoringAvatar size={18} name={ws.name} variant="beam" colors={AVATAR_COLORS} square />
                 </div>
+                <span className="text-[13px] font-medium truncate flex-1 text-neutral-400 group-data-[selected=true]:text-neutral-200">
+                  {ws.name}
+                </span>
                 {ws.id === activeWorkspaceId && (
-                  <Check className="w-3.5 h-3.5 text-neutral-300 shrink-0" />
+                  <Check className="w-3 h-3 text-neutral-500 shrink-0" />
                 )}
               </CommandItem>
             ))}
           </CommandList>
         </Command>
 
-        <div className="border-t border-white/[0.05]" />
-        <div className="px-2 py-1">
+        <div className="mx-1.5 border-t border-white/[0.06]" />
+        <div className="pt-1">
           <button
             onClick={handleNewWorkspace}
-            className="w-full flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border-none bg-transparent hover:bg-white/[0.06] text-[12px] font-medium text-neutral-400 hover:text-neutral-200 cursor-pointer transition-colors duration-[120ms]"
+            className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md border-none bg-transparent hover:bg-white/[0.06] text-[13px] font-medium text-neutral-500 hover:text-neutral-200 cursor-pointer transition-colors duration-[120ms]"
           >
             <Plus className="w-3 h-3" />
             New Workspace
