@@ -1,4 +1,5 @@
 import type {
+  ClaudeAuthStatus,
   Conversation,
   ConversationWithMessages,
   CreateWorkspaceResponse,
@@ -12,6 +13,60 @@ import { fetchEventSource } from "@microsoft/fetch-event-source";
 import { ok, err } from "neverthrow";
 
 export type { StreamEvent } from "@/main/api";
+
+// ============================================================================
+// Claude CLI API
+// ============================================================================
+
+export const getClaudeAuthStatus = async () => {
+  try {
+    const response = await fetch("antidraw://_internal/claude-cli/auth/status");
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      return err({
+        status: response.status as 500,
+        code: (errorBody?.error?.code as string) ?? "FETCH_ERROR",
+        message: (errorBody?.error?.message as string) ?? response.statusText,
+      });
+    }
+
+    const data: ClaudeAuthStatus = await response.json();
+    return ok(data);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "NETWORK_ERROR",
+      message: "Failed to check Claude auth status",
+    });
+  }
+};
+
+export const triggerClaudeLogin = async () => {
+  try {
+    const response = await fetch("antidraw://_internal/claude-cli/auth/login", {
+      method: "POST",
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      return err({
+        status: response.status as 500,
+        code: (errorBody?.error?.code as string) ?? "FETCH_ERROR",
+        message: (errorBody?.error?.message as string) ?? response.statusText,
+      });
+    }
+
+    const data: { triggered: boolean } = await response.json();
+    return ok(data);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "NETWORK_ERROR",
+      message: "Failed to trigger Claude login",
+    });
+  }
+};
 
 // ============================================================================
 // Workspace API

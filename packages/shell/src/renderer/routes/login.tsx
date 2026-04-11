@@ -1,5 +1,4 @@
 import { createFileRoute, useRouter } from "@tanstack/react-router";
-import { setAuthenticated } from "@/renderer/lib/auth";
 import antidrawLogo from "@/renderer/assets/antidraw-logo.png";
 import {
   WavyVerticalLine,
@@ -31,8 +30,7 @@ const LoginPage = () => {
   const router = useRouter();
 
   const handleSignIn = () => {
-    setAuthenticated(true);
-    router.navigate({ to: "/onboarding/claude-code" });
+    router.navigate({ to: "/onboarding/create-workspace" });
   };
 
   return (

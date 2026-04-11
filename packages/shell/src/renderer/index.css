@@ -124,6 +124,12 @@
   --color-sidebar-ring: var(--sidebar-ring);
 }
 
+@layer utilities {
+  .drag-region {
+    -webkit-app-region: drag;
+  }
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;

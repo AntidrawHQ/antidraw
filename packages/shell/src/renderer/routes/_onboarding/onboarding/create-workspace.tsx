@@ -274,6 +274,6 @@ const CreateWorkspacePage = () => {
   );
 };
 
-export const Route = createFileRoute("/_authed/onboarding/create-workspace")({
+export const Route = createFileRoute("/_onboarding/onboarding/create-workspace")({
   component: CreateWorkspacePage,
 });
