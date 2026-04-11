@@ -17,6 +17,7 @@ import {
 } from "@/renderer/components/ui/prompt-input";
 import { Button } from "@/renderer/components/ui/button";
 import { cn } from "@/renderer/lib/utils";
+import { triggerClaudeLogin } from "@/renderer/lib/api";
 import { ArrowUp, ImageIcon, Paperclip, Square, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -28,6 +29,7 @@ import {
   useToolMap,
 } from "./lib/claude-code-ops";
 import { Tool } from "@/renderer/components/ui/tool";
+import { AuthError } from "@/renderer/components/auth-error";
 import { useWorkspaceStore } from "./store/workspace";
 import {
   SUPPORTED_IMAGE_TYPES,
@@ -162,6 +164,21 @@ export function AppChat({ className, ...props }: AppChatProps) {
     }
   };
 
+  const handleSignIn = () => {
+    triggerClaudeLogin();
+  };
+
+  const handleRetry = async () => {
+    if (!activeWorkspaceId || !activeConversationId || isLoading) return;
+
+    await sendMessage.mutateAsync({
+      message: "Logged in, continue.",
+      workspaceId: activeWorkspaceId,
+      conversationId: activeConversationId,
+      userMessageId: crypto.randomUUID(),
+    });
+  };
+
   return (
     <div
       className={cn(
@@ -176,6 +193,21 @@ export function AppChat({ className, ...props }: AppChatProps) {
             const sdkMessage = msg.sdkMessage;
             if (sdkMessage.type !== "user" && sdkMessage.type !== "assistant") {
               return null;
+            }
+
+            // Render AuthError for authentication failures
+            if (
+              sdkMessage.type === "assistant" &&
+              "error" in sdkMessage &&
+              sdkMessage.error === "authentication_failed"
+            ) {
+              return (
+                <AuthError
+                  key={msg.id}
+                  onSignIn={handleSignIn}
+                  onRetry={handleRetry}
+                />
+              );
             }
 
             const isAssistant = sdkMessage.type === "assistant";

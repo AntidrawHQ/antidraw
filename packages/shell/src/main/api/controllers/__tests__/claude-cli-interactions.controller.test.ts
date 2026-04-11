@@ -55,7 +55,6 @@ describe("GET /auth/status", () => {
     expect(await res.json()).toMatchInlineSnapshot(`
       {
         "authenticated": true,
-        "cliInstalled": true,
         "email": "user@example.com",
         "orgName": "Test Org",
       }
@@ -78,7 +77,6 @@ describe("GET /auth/status", () => {
     expect(await res.json()).toMatchInlineSnapshot(`
       {
         "authenticated": true,
-        "cliInstalled": true,
         "email": null,
         "orgName": null,
       }
@@ -97,7 +95,6 @@ describe("GET /auth/status", () => {
     expect(await res.json()).toMatchInlineSnapshot(`
       {
         "authenticated": false,
-        "cliInstalled": false,
         "email": null,
         "orgName": null,
       }
@@ -123,7 +120,6 @@ describe("GET /auth/status", () => {
     expect(await res.json()).toMatchInlineSnapshot(`
       {
         "authenticated": false,
-        "cliInstalled": true,
         "email": null,
         "orgName": null,
       }
@@ -142,7 +138,6 @@ describe("GET /auth/status", () => {
     expect(await res.json()).toMatchInlineSnapshot(`
       {
         "authenticated": false,
-        "cliInstalled": true,
         "email": null,
         "orgName": null,
       }
