@@ -1,12 +1,10 @@
 import { createRootRouteWithContext, Outlet } from "@tanstack/react-router";
 import type { QueryClient } from "@tanstack/react-query";
-import type { ClaudeAuthStatus } from "@/renderer/lib/auth";
 import { TooltipProvider } from "@/renderer/components/ui/tooltip";
 import { Titlebar } from "@/renderer/components/titlebar";
 
 type RouterContext = {
   queryClient: QueryClient;
-  claudeCodeAuth: ClaudeAuthStatus;
 };
 
 const RootComponent = () => {
