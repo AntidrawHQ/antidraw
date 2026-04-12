@@ -10,25 +10,16 @@ import { useWorkspaceStore } from "@/renderer/store/workspace";
 import { queryKeys } from "./query-keys";
 import {
   createWorkspace,
-  listWorkspaces,
   getWorkspace,
   deleteWorkspace,
   startDevServer,
   stopDevServer,
   getDevServerStatus,
 } from "./api";
+import { workspacesQueryOptions } from "./workspace-queries";
 
 export const useWorkspaces = () => {
-  return useQuery({
-    queryKey: queryKeys.workspaces.all,
-    queryFn: async () => {
-      const result = await listWorkspaces();
-      if (result.isErr()) {
-        throw new Error(result.error.message);
-      }
-      return result.value;
-    },
-  });
+  return useQuery(workspacesQueryOptions);
 };
 
 // workspaceId is string | null to allow unconditional hook calls (React rules of hooks).
