@@ -262,7 +262,7 @@ const CreateWorkspacePage = () => {
               </button>
             </div>
 
-            {/* Grid — tight next to steps */}
+            {/* Grid — tight next to steps
             <div
               style={{
                 flexShrink: 0,
@@ -272,6 +272,7 @@ const CreateWorkspacePage = () => {
             >
               <MagneticGrid />
             </div>
+            */}
           </div>
         )}
       </div>
