@@ -9,7 +9,7 @@ export const Route = createFileRoute("/_authed")({
       workspacesQueryOptions,
     );
     if (workspaces.length === 0) {
-      throw redirect({ to: "/onboarding/create-workspace" });
+      throw redirect({ to: "/login" });
     }
   },
   component: AuthedLayout,
