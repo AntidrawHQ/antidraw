@@ -97,12 +97,13 @@ const CreateWorkspacePage = () => {
         minHeight: "100vh",
         width: "100%",
         display: "flex",
-        alignItems: "center",
+        alignItems: "flex-start",
         justifyContent: "center",
         background: c.bg,
         fontFamily: c.fontSans,
         WebkitFontSmoothing: "antialiased",
         padding: 24,
+        paddingTop: 64,
         cursor: "default",
       }}
     >
@@ -140,7 +141,11 @@ const CreateWorkspacePage = () => {
           }}
         >
           {status === "done" ? (
-            "Your workspace has been set up and is ready to use."
+            <>
+              Your workspace has been set up
+              <br />
+              and is ready to use.
+            </>
           ) : (
             <>
               Everything is real code in Antidraw.
@@ -226,35 +231,35 @@ const CreateWorkspacePage = () => {
                 );
               })}
 
-              {status === "done" && (
-                <button
-                  onClick={handleOpenWorkspace}
-                  onMouseEnter={() => setContinueHovered(true)}
-                  onMouseLeave={() => setContinueHovered(false)}
-                  style={{
-                    marginTop: 16,
-                    width: "100%",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    gap: 8,
-                    padding: "12px 20px",
-                    borderRadius: 10,
-                    border: `1px solid ${continueHovered ? c.btnBorderHover : c.btnBorder}`,
-                    background: continueHovered
-                      ? c.btnPrimaryBgHover
-                      : c.btnPrimaryBg,
-                    color: c.btnText,
-                    fontSize: 14,
-                    fontWeight: 500,
-                    cursor: "pointer",
-                    transition: "all 0.2s",
-                    fontFamily: c.fontSans,
-                  }}
-                >
-                  Open workspace <ArrowRightIcon />
-                </button>
-              )}
+              <button
+                onClick={handleOpenWorkspace}
+                onMouseEnter={() => setContinueHovered(true)}
+                onMouseLeave={() => setContinueHovered(false)}
+                disabled={status !== "done"}
+                style={{
+                  marginTop: 24,
+                  width: "fit-content",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 8,
+                  padding: "8px 16px",
+                  borderRadius: 10,
+                  border: `1px solid ${continueHovered && status === "done" ? c.btnBorderHover : c.btnBorder}`,
+                  background: continueHovered && status === "done"
+                    ? c.btnPrimaryBgHover
+                    : c.btnPrimaryBg,
+                  color: c.btnText,
+                  fontSize: 14,
+                  fontWeight: 500,
+                  cursor: status === "done" ? "pointer" : "default",
+                  transition: "all 0.2s",
+                  fontFamily: c.fontSans,
+                  opacity: status === "done" ? 1 : 0,
+                }}
+              >
+                Open workspace <ArrowRightIcon />
+              </button>
             </div>
 
             {/* Grid — tight next to steps */}

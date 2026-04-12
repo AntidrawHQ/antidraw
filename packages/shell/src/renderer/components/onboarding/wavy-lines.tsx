@@ -1,7 +1,7 @@
 export const WavyVerticalLine = () => (
   <svg
     className="absolute pointer-events-none overflow-visible"
-    style={{ left: -60, top: -40, width: 60, height: "calc(100% + 80px)" }}
+    style={{ left: -60, top: -20, width: 60, height: "calc(100% + 40px)" }}
     viewBox="0 0 60 100"
     preserveAspectRatio="none"
     fill="none"
