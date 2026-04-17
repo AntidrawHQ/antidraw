@@ -5,16 +5,10 @@ import {
   IconCircleHalf2,
 } from "@tabler/icons-react";
 import { cn } from "@/renderer/lib/utils";
+import type { CreateWorkspaceStatusCode } from "@/main/api";
 import { useCreateWorkspace } from "@/renderer/lib/workspace-ops";
 
-type Status =
-  | "idle"
-  | "CREATING_DIRECTORY"
-  | "SCAFFOLDING_PROJECT"
-  | "INSTALLING_DEPENDENCIES"
-  | "SAVING_WORKSPACE"
-  | "done"
-  | "error";
+type Status = "idle" | CreateWorkspaceStatusCode | "done" | "error";
 
 const STEPS = [
   { key: "CREATING_DIRECTORY", label: "Creating directory" },
