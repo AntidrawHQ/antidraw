@@ -8,6 +8,7 @@ export type {
 import type { Conversation, Message } from "./models/chat.model";
 export type { Workspace } from "./models/workspace.model";
 export type { CreateWorkspaceResponse } from "./controllers/workspace.controller";
+export type { CreateWorkspaceStatusCode } from "./services/workspace.service";
 export type { DevServerState } from "@/main/lib/runtime-store";
 export type { DevServerInfo } from "@/main/services/dev-server.service";
 export type { ClaudeAuthStatus } from "@/main/services/claude-cli-interactions.service";
