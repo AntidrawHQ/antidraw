@@ -95,6 +95,10 @@ export async function* createWorkspace(
           controller.error(error);
           throw error;
         },
+        onclose: () => {
+          controller.close();
+          throw new Error("Connection closed");
+        },
       });
     },
     cancel() {
