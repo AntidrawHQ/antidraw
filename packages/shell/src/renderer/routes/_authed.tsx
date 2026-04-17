@@ -1,9 +1,16 @@
-import { createFileRoute, Outlet } from "@tanstack/react-router";
+import { createFileRoute, Outlet, redirect } from "@tanstack/react-router";
+import { workspacesQueryOptions } from "@/renderer/lib/workspace-queries";
 
 const AuthedLayout = () => <Outlet />;
 
 export const Route = createFileRoute("/_authed")({
-  // TODO: PR #17 will add workspace existence check here:
-  // no workspaces → redirect to /onboarding/create-workspace
+  beforeLoad: async ({ context }) => {
+    const workspaces = await context.queryClient.ensureQueryData(
+      workspacesQueryOptions,
+    );
+    if (workspaces.length === 0) {
+      throw redirect({ to: "/login" });
+    }
+  },
   component: AuthedLayout,
 });
