@@ -1,10 +1,10 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { createFileRoute, useRouter } from "@tanstack/react-router";
 import {
   IconCircleCheckFilled,
   IconCircleHalf2,
 } from "@tabler/icons-react";
-import { MagneticGrid } from "@/renderer/components/onboarding/magnetic-grid";
+import { useCreateWorkspace } from "@/renderer/lib/workspace-ops";
 
 const c = {
   bg: "#262626",
@@ -61,31 +61,32 @@ const ICON_SIZE = 18;
 const CreateWorkspacePage = () => {
   const router = useRouter();
   const [status, setStatus] = useState<Status>("idle");
-  const [continueHovered, setContinueHovered] = useState(false);
   const isCreating = status !== "idle" && status !== "done" && status !== "error";
   const current = stepIndex(status);
+  const { mutate: createWorkspace } = useCreateWorkspace();
+  const startedRef = useRef(false);
 
-  // TODO: Replace setTimeout demo with actual workspace creation progress
   useEffect(() => {
-    const steps: Status[] = [
-      "CREATING_DIRECTORY",
-      "SCAFFOLDING_PROJECT",
-      "INSTALLING_DEPENDENCIES",
-      "SAVING_WORKSPACE",
-      "done",
-    ];
-    let timeout: ReturnType<typeof setTimeout>;
-    let i = 0;
-    const advance = () => {
-      setStatus(steps[i]);
-      i++;
-      if (i < steps.length) {
-        timeout = setTimeout(advance, 1200 + Math.random() * 800);
-      }
-    };
-    advance();
-    return () => clearTimeout(timeout);
-  }, []);
+    if (startedRef.current) return;
+    startedRef.current = true;
+
+    createWorkspace(
+      {
+        name: "Default Workspace",
+        onProgress: (event) => {
+          if (event.type === "status") {
+            setStatus(event.status);
+          }
+          if (event.type === "done") {
+            setStatus("done");
+          }
+          if (event.type === "error") {
+            setStatus("error");
+          }
+        },
+      },
+    );
+  }, [createWorkspace]);
 
   const handleOpenWorkspace = () => {
     router.navigate({ to: "/" });
@@ -233,30 +234,8 @@ const CreateWorkspacePage = () => {
 
               <button
                 onClick={handleOpenWorkspace}
-                onMouseEnter={() => setContinueHovered(true)}
-                onMouseLeave={() => setContinueHovered(false)}
                 disabled={status !== "done"}
-                style={{
-                  marginTop: 24,
-                  width: "fit-content",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 8,
-                  padding: "8px 16px",
-                  borderRadius: 10,
-                  border: `1px solid ${continueHovered && status === "done" ? c.btnBorderHover : c.btnBorder}`,
-                  background: continueHovered && status === "done"
-                    ? c.btnPrimaryBgHover
-                    : c.btnPrimaryBg,
-                  color: c.btnText,
-                  fontSize: 14,
-                  fontWeight: 500,
-                  cursor: status === "done" ? "pointer" : "default",
-                  transition: "all 0.2s",
-                  fontFamily: c.fontSans,
-                  opacity: status === "done" ? 1 : 0,
-                }}
+                className="mt-6 w-fit flex items-center justify-center gap-2 px-4 py-2 rounded-[10px] border border-white/[0.12] hover:border-white/[0.24] bg-white/[0.08] hover:bg-white/[0.12] text-[#ccc] text-sm font-medium cursor-pointer disabled:cursor-default disabled:pointer-events-none transition-all duration-200 opacity-100 disabled:opacity-0"
               >
                 Open workspace <ArrowRightIcon />
               </button>

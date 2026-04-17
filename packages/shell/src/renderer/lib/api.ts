@@ -75,6 +75,7 @@ export const triggerClaudeLogin = async () => {
 export async function* createWorkspace(
   name: string,
 ): AsyncGenerator<CreateWorkspaceResponse> {
+  const abort = new AbortController();
   const stream = new ReadableStream<CreateWorkspaceResponse>({
     start(controller) {
       fetchEventSource("antidraw://_internal/workspaces", {
@@ -83,13 +84,21 @@ export async function* createWorkspace(
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ name }),
+        signal: abort.signal,
+        openWhenHidden: true,
 
         onmessage: (ev) => {
-          controller.enqueue(JSON.parse(ev.data) as CreateWorkspaceResponse);
+          const event = JSON.parse(ev.data) as CreateWorkspaceResponse;
+          controller.enqueue(event);
         },
-        onerror: (error) => controller.error(error),
-        onclose: () => controller.close(),
+        onerror: (error) => {
+          controller.error(error);
+          throw error;
+        },
       });
+    },
+    cancel() {
+      abort.abort();
     },
   });
 

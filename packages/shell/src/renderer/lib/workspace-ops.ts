@@ -61,6 +61,7 @@ export const useCreateWorkspace = () => {
 
         if (event.type === "done") {
           workspace = event.workspace;
+          break;
         }
       }
 

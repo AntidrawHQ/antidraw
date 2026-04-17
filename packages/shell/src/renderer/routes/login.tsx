@@ -23,7 +23,7 @@ const LoginPage = () => {
         </p>
         <button
           onClick={handleSignIn}
-          className="mt-12 w-fit flex items-center justify-center gap-2 py-2 px-4 rounded-[10px] border border-white/12 bg-[rgba(255,255,255,0.08)] text-[#ccc] text-sm font-medium cursor-pointer transition-all duration-200 ease-out hover:bg-[rgba(255,255,255,0.12)] hover:border-white/24"
+          className="mt-8 w-fit flex items-center justify-center gap-2 py-2 px-4 rounded-[10px] border border-white/12 bg-[rgba(255,255,255,0.08)] text-[#ccc] text-sm font-medium cursor-pointer transition-all duration-200 ease-out hover:bg-[rgba(255,255,255,0.12)] hover:border-white/24"
         >
           Create your first workspace!
           <ArrowRight size={16} />
