@@ -124,6 +124,11 @@
   --color-sidebar-ring: var(--sidebar-ring);
 }
 
+@keyframes onb-fadein {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 @layer utilities {
   .drag-region {
     -webkit-app-region: drag;
