@@ -4,24 +4,8 @@ import {
   IconCircleCheckFilled,
   IconCircleHalf2,
 } from "@tabler/icons-react";
+import { cn } from "@/renderer/lib/utils";
 import { useCreateWorkspace } from "@/renderer/lib/workspace-ops";
-
-const c = {
-  bg: "#262626",
-  textPrimary: "#e0e0e0",
-  textSecondary: "#9a9a9a",
-  textMuted: "#666",
-  btnBorder: "rgba(255,255,255,0.12)",
-  btnBorderHover: "rgba(255,255,255,0.24)",
-  btnText: "#ccc",
-  btnPrimaryBg: "rgba(255,255,255,0.08)",
-  btnPrimaryBgHover: "rgba(255,255,255,0.12)",
-  active: "#e8a040",
-  success: "#7c6cd6",
-  pending: "#6b6b6b",
-  fontSans:
-    '"Geist Sans", "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-};
 
 type Status =
   | "idle"
@@ -58,6 +42,55 @@ const ArrowRightIcon = () => (
 
 const ICON_SIZE = 18;
 
+const StepItem = ({
+  step,
+  isDone,
+  isActive,
+}: {
+  step: (typeof STEPS)[number];
+  isDone: boolean;
+  isActive: boolean;
+}) => (
+  <div
+    className={cn(
+      "flex items-center gap-2.5 py-2.5 transition-opacity duration-300",
+      isDone || isActive ? "opacity-100" : "opacity-35",
+    )}
+  >
+    <div className="flex shrink-0">
+      {isDone ? (
+        <IconCircleCheckFilled
+          size={ICON_SIZE}
+          strokeWidth={1.75}
+          color="#7c6cd6"
+        />
+      ) : isActive ? (
+        <IconCircleHalf2
+          size={ICON_SIZE}
+          strokeWidth={1.75}
+          color="#e8a040"
+          className="animate-spin"
+        />
+      ) : (
+        <IconCircleHalf2
+          size={ICON_SIZE}
+          strokeWidth={1.75}
+          color="#6b6b6b"
+        />
+      )}
+    </div>
+    <span
+      className={cn(
+        "text-[13px]",
+        isDone || isActive ? "text-[#e0e0e0]" : "text-[#666]",
+        isActive ? "font-medium" : "font-normal",
+      )}
+    >
+      {step.label}
+    </span>
+  </div>
+);
+
 const CreateWorkspacePage = () => {
   const router = useRouter();
   const [status, setStatus] = useState<Status>("idle");
@@ -93,54 +126,14 @@ const CreateWorkspacePage = () => {
   };
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        width: "100%",
-        display: "flex",
-        alignItems: "flex-start",
-        justifyContent: "center",
-        background: c.bg,
-        fontFamily: c.fontSans,
-        WebkitFontSmoothing: "antialiased",
-        padding: 24,
-        paddingTop: 64,
-        cursor: "default",
-      }}
-    >
-      <style>{`
-        @keyframes onb-spin { to { transform: rotate(360deg) } }
-        @keyframes onb-fadein { from { opacity: 0; transform: translateY(6px) } to { opacity: 1; transform: translateY(0) } }
-      `}</style>
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          maxWidth: 540,
-          width: "100%",
-        }}
-      >
-        <h1
-          style={{
-            fontSize: 28,
-            fontWeight: 500,
-            color: c.textPrimary,
-            margin: 0,
-            letterSpacing: "-0.04em",
-          }}
-        >
+    <div className="min-h-screen w-full flex items-start justify-center bg-neutral-800 font-sans antialiased p-6 pt-16 cursor-default">
+      <div className="flex flex-col max-w-[540px] w-full">
+        <h1 className="text-[28px] font-medium text-[#e0e0e0] m-0 tracking-[-0.04em]">
           {status === "done"
             ? "Workspace ready"
             : "Setting up your first workspace"}
         </h1>
-        <p
-          style={{
-            fontSize: 14,
-            color: c.textSecondary,
-            margin: "10px 0 0",
-            lineHeight: 1.6,
-          }}
-        >
+        <p className="text-sm text-[#9a9a9a] mt-2.5 leading-[1.6]">
           {status === "done" ? (
             <>
               Your workspace has been set up
@@ -157,80 +150,16 @@ const CreateWorkspacePage = () => {
         </p>
 
         {(isCreating || status === "done") && (
-          <div
-            style={{
-              display: "flex",
-              alignItems: "flex-end",
-              gap: 16,
-              marginTop: 24,
-              animation: "onb-fadein 0.3s ease",
-            }}
-          >
-            {/* Steps */}
-            <div
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                gap: 0,
-                flex: 1,
-                minWidth: 0,
-              }}
-            >
-              {STEPS.map((step, i) => {
-                const isDone = status === "done" || current > i;
-                const isActive = status !== "done" && current === i;
-                return (
-                  <div
-                    key={step.key}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 10,
-                      padding: "10px 0",
-                      opacity: isDone || isActive ? 1 : 0.35,
-                      transition: "opacity 0.3s",
-                    }}
-                  >
-                    <div style={{ display: "flex", flexShrink: 0 }}>
-                      {isDone ? (
-                        <IconCircleCheckFilled
-                          size={ICON_SIZE}
-                          strokeWidth={1.75}
-                          color={c.success}
-                        />
-                      ) : isActive ? (
-                        <IconCircleHalf2
-                          size={ICON_SIZE}
-                          strokeWidth={1.75}
-                          color={c.active}
-                          style={{
-                            animation: "onb-spin 1s linear infinite",
-                          }}
-                        />
-                      ) : (
-                        <IconCircleHalf2
-                          size={ICON_SIZE}
-                          strokeWidth={1.75}
-                          color={c.pending}
-                        />
-                      )}
-                    </div>
-                    <span
-                      style={{
-                        fontSize: 13,
-                        color: isDone
-                          ? c.textPrimary
-                          : isActive
-                            ? c.textPrimary
-                            : c.textMuted,
-                        fontWeight: isActive ? 500 : 400,
-                      }}
-                    >
-                      {step.label}
-                    </span>
-                  </div>
-                );
-              })}
+          <div className="flex items-end gap-4 mt-6 animate-[onb-fadein_0.3s_ease]">
+            <div className="flex flex-col flex-1 min-w-0">
+              {STEPS.map((step, i) => (
+                <StepItem
+                  key={step.key}
+                  step={step}
+                  isDone={status === "done" || current > i}
+                  isActive={status !== "done" && current === i}
+                />
+              ))}
 
               <button
                 onClick={handleOpenWorkspace}
@@ -240,18 +169,6 @@ const CreateWorkspacePage = () => {
                 Open workspace <ArrowRightIcon />
               </button>
             </div>
-
-            {/* Grid — tight next to steps
-            <div
-              style={{
-                flexShrink: 0,
-                opacity: status === "done" ? 0 : 0.7,
-                transition: "opacity 0.6s ease",
-              }}
-            >
-              <MagneticGrid />
-            </div>
-            */}
           </div>
         )}
       </div>
