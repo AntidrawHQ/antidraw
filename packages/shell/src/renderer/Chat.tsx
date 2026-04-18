@@ -17,6 +17,7 @@ import {
 } from "@/renderer/components/ui/prompt-input";
 import { Button } from "@/renderer/components/ui/button";
 import { cn } from "@/renderer/lib/utils";
+import { triggerClaudeLogin } from "@/renderer/lib/api";
 import { ArrowUp, ImageIcon, Paperclip, Square, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -28,12 +29,33 @@ import {
   useToolMap,
 } from "./lib/claude-code-ops";
 import { Tool } from "@/renderer/components/ui/tool";
+import type { ToolPart } from "@/renderer/components/ui/tool";
+import { AuthError } from "@/renderer/components/auth-error";
 import { useWorkspaceStore } from "./store/workspace";
 import {
   SUPPORTED_IMAGE_TYPES,
   type ImageAttachment,
   type SupportedImageMediaType,
 } from "@/shared/utils/message";
+
+const getToolTitle = (toolPart: ToolPart): string => {
+  const { type, input } = toolPart;
+
+  if (typeof input?.description === "string" && input.description) return input.description;
+
+  if (typeof input?.file_path === "string" && input.file_path) {
+    const name = input.file_path.split("/").pop() ?? input.file_path;
+    if (input.file_path.includes("/user-components/")) {
+      const verb = type === "Write" ? "Crafting" : type === "Edit" ? "Refining" : type;
+      return `${verb} ${name.replace(/\.\w+$/, "")}`;
+    }
+    return `${type} ${name}`;
+  }
+
+  if (typeof input?.pattern === "string" && input.pattern) return `${type} ${input.pattern}`;
+
+  return type;
+};
 
 type AppChatProps = React.ComponentProps<"div">;
 
@@ -162,6 +184,21 @@ export function AppChat({ className, ...props }: AppChatProps) {
     }
   };
 
+  const handleSignIn = () => {
+    triggerClaudeLogin();
+  };
+
+  const handleRetry = async () => {
+    if (!activeWorkspaceId || !activeConversationId || isLoading) return;
+
+    await sendMessage.mutateAsync({
+      message: "Logged in, continue.",
+      workspaceId: activeWorkspaceId,
+      conversationId: activeConversationId,
+      userMessageId: crypto.randomUUID(),
+    });
+  };
+
   return (
     <div
       className={cn(
@@ -178,6 +215,21 @@ export function AppChat({ className, ...props }: AppChatProps) {
               return null;
             }
 
+            // Render AuthError for authentication failures
+            if (
+              sdkMessage.type === "assistant" &&
+              "error" in sdkMessage &&
+              sdkMessage.error === "authentication_failed"
+            ) {
+              return (
+                <AuthError
+                  key={msg.id}
+                  onSignIn={handleSignIn}
+                  onRetry={handleRetry}
+                />
+              );
+            }
+
             const isAssistant = sdkMessage.type === "assistant";
             const content = sdkMessage.message.content;
             const blocks = Array.isArray(content)
@@ -191,7 +243,7 @@ export function AppChat({ className, ...props }: AppChatProps) {
                 key={msg.id}
                 className={isAssistant ? "justify-start" : "justify-end"}
               >
-                <div className="overflow-auto space-y-2 w-full">
+                <div className="flex flex-col gap-1 overflow-auto w-full">
                   {(() => {
                     type Base64ImageBlock = {
                       type: "image";
@@ -232,7 +284,7 @@ export function AppChat({ className, ...props }: AppChatProps) {
                       return isAssistant ? (
                         <div
                           key={idx}
-                          className="bg-secondary text-foreground prose prose-sm prose-invert rounded-lg p-2"
+                          className="bg-secondary text-foreground prose prose-sm prose-invert rounded-lg"
                         >
                           <Markdown>{block.text}</Markdown>
                         </div>
@@ -253,7 +305,8 @@ export function AppChat({ className, ...props }: AppChatProps) {
                           <Tool
                             key={idx}
                             toolPart={toolPart}
-                            className="w-full"
+                            title={getToolTitle(toolPart)}
+                            className="mt-1 w-full"
                           />
                         );
                       }
