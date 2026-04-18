@@ -28,6 +28,7 @@ export type ToolPart = {
 
 export type ToolProps = {
   toolPart: ToolPart;
+  title?: string;
   defaultOpen?: boolean;
   className?: string;
 };
@@ -41,32 +42,6 @@ const stateConfig = {
   "output-error": { icon: IconCircleXFilled, color: "#f06060" },
 } satisfies Record<string, { icon: typeof IconCircleHalf2; color: string }>;
 
-/* ── Title logic ───────────────────────────────────────────────────────── */
-
-const componentVerbMap = { Write: "Crafting", Edit: "Refining" } satisfies Record<string, string>;
-
-const getToolTitle = (toolPart: ToolPart): string => {
-  const { type, input } = toolPart;
-
-  const desc = input?.description;
-  if (typeof desc === "string" && desc) return desc;
-
-  const fp = input?.file_path;
-  if (typeof fp === "string" && fp) {
-    const name = fp.split("/").pop() ?? fp;
-    if (fp.includes("/user-components/")) {
-      const comp = name.replace(/\.\w+$/, "");
-      return `${componentVerbMap[type as keyof typeof componentVerbMap] ?? type} ${comp}`;
-    }
-    return `${type} ${name}`;
-  }
-
-  const pat = input?.pattern;
-  if (typeof pat === "string" && pat) return `${type} ${pat}`;
-
-  return type;
-};
-
 /* ── Helpers ────────────────────────────────────────────────────────────── */
 
 const formatValue = (value: unknown): string => {
@@ -79,7 +54,7 @@ const formatValue = (value: unknown): string => {
 
 /* ── Component ─────────────────────────────────────────────────────────── */
 
-export const Tool = ({ toolPart, defaultOpen = false, className }: ToolProps) => {
+export const Tool = ({ toolPart, title, defaultOpen = false, className }: ToolProps) => {
   const [isOpen, setIsOpen] = useState(defaultOpen);
   const cfg = stateConfig[toolPart.state];
   const StateIcon = cfg.icon;
@@ -108,7 +83,7 @@ export const Tool = ({ toolPart, defaultOpen = false, className }: ToolProps) =>
               <StateIcon size={18} strokeWidth={1.75} color={cfg.color} />
             </div>
             <p className="m-0 min-w-0 flex-1 truncate text-left text-[13px] font-medium text-neutral-200">
-              {getToolTitle(toolPart)}
+              {title ?? toolPart.type}
             </p>
             <ChevronDown
               className={cn(
@@ -124,7 +99,7 @@ export const Tool = ({ toolPart, defaultOpen = false, className }: ToolProps) =>
               Object.entries(input).map(([key, value]) => (
                 <div key={key}>
                   <span className="text-neutral-500">{key}:</span>{" "}
-                  <span className="text-neutral-200">
+                  <span className="whitespace-pre-wrap break-all text-neutral-200">
                     {formatValue(value)}
                   </span>
                 </div>
@@ -134,7 +109,7 @@ export const Tool = ({ toolPart, defaultOpen = false, className }: ToolProps) =>
               Object.entries(output).map(([key, value]) => (
                 <div key={key}>
                   <span className="text-neutral-500">{key}:</span>{" "}
-                  <span className="text-neutral-200">
+                  <span className="whitespace-pre-wrap break-all text-neutral-200">
                     {formatValue(value)}
                   </span>
                 </div>

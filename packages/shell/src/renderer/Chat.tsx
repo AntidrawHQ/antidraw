@@ -29,6 +29,7 @@ import {
   useToolMap,
 } from "./lib/claude-code-ops";
 import { Tool } from "@/renderer/components/ui/tool";
+import type { ToolPart } from "@/renderer/components/ui/tool";
 import { AuthError } from "@/renderer/components/auth-error";
 import { useWorkspaceStore } from "./store/workspace";
 import {
@@ -36,6 +37,25 @@ import {
   type ImageAttachment,
   type SupportedImageMediaType,
 } from "@/shared/utils/message";
+
+const getToolTitle = (toolPart: ToolPart): string => {
+  const { type, input } = toolPart;
+
+  if (typeof input?.description === "string" && input.description) return input.description;
+
+  if (typeof input?.file_path === "string" && input.file_path) {
+    const name = input.file_path.split("/").pop() ?? input.file_path;
+    if (input.file_path.includes("/user-components/")) {
+      const verb = type === "Write" ? "Crafting" : type === "Edit" ? "Refining" : type;
+      return `${verb} ${name.replace(/\.\w+$/, "")}`;
+    }
+    return `${type} ${name}`;
+  }
+
+  if (typeof input?.pattern === "string" && input.pattern) return `${type} ${input.pattern}`;
+
+  return type;
+};
 
 type AppChatProps = React.ComponentProps<"div">;
 
@@ -285,6 +305,7 @@ export function AppChat({ className, ...props }: AppChatProps) {
                           <Tool
                             key={idx}
                             toolPart={toolPart}
+                            title={getToolTitle(toolPart)}
                             className="mt-1 w-full"
                           />
                         );
