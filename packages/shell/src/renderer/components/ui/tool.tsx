@@ -77,7 +77,7 @@ export const Tool = ({ toolPart, title, defaultOpen = false, className }: ToolPr
             <div
               className={cn(
                 "flex shrink-0 items-center",
-                toolPart.state === "input-streaming" && "animate-spin"
+                (toolPart.state === "input-streaming" || toolPart.state === "input-available") && "animate-spin"
               )}
             >
               <StateIcon size={18} strokeWidth={1.75} color={cfg.color} />
