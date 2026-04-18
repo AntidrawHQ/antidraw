@@ -67,18 +67,14 @@ const getToolTitle = (toolPart: ToolPart): string => {
   return type;
 };
 
-/* ── Colors ────────────────────────────────────────────────────────────── */
+/* ── Helpers ────────────────────────────────────────────────────────────── */
 
-const C = {
-  toolBg: "#333333",
-  toolBorder: "#444444",
-  toolHover: "#3d3d3d",
-  toolText: "#e5e5e5",
-  contentBg: "#262626",
-  keyColor: "#737373",
-  valueColor: "#e5e5e5",
-  errorColor: "#f06060",
-  chevronColor: "#888",
+const formatValue = (value: unknown): string => {
+  if (value === null) return "null";
+  if (value === undefined) return "undefined";
+  if (typeof value === "string") return value;
+  if (typeof value === "object") return JSON.stringify(value, null, 2);
+  return String(value);
 };
 
 /* ── Component ─────────────────────────────────────────────────────────── */
@@ -90,27 +86,18 @@ export const Tool = ({ toolPart, defaultOpen = false, className }: ToolProps) =>
 
   const { input, output, state } = toolPart;
 
-  const formatValue = (value: unknown): string => {
-    if (value === null) return "null";
-    if (value === undefined) return "undefined";
-    if (typeof value === "string") return value;
-    if (typeof value === "object") return JSON.stringify(value, null, 2);
-    return String(value);
-  };
-
   return (
     <div
-      className={cn("overflow-hidden rounded-lg", className)}
-      style={{ backgroundColor: C.toolBg, border: `1px solid ${C.toolBorder}` }}
+      className={cn(
+        "overflow-hidden rounded-lg border border-[#444] bg-[#333]",
+        className
+      )}
     >
       <Collapsible open={isOpen} onOpenChange={setIsOpen}>
         <CollapsibleTrigger asChild>
           <button
             type="button"
-            className="flex w-full cursor-pointer items-center gap-[6px] transition-colors"
-            style={{ paddingLeft: 10, paddingRight: 10, paddingTop: 8, paddingBottom: 8 }}
-            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = C.toolHover)}
-            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+            className="flex w-full cursor-pointer items-center gap-[6px] px-2.5 py-2 transition-colors hover:bg-[#3d3d3d]"
           >
             <div
               className={cn(
@@ -120,34 +107,24 @@ export const Tool = ({ toolPart, defaultOpen = false, className }: ToolProps) =>
             >
               <StateIcon size={18} strokeWidth={1.75} color={cfg.color} />
             </div>
-            <p
-              className="m-0 min-w-0 flex-1 truncate text-left text-[13px] font-medium"
-              style={{ color: C.toolText }}
-            >
+            <p className="m-0 min-w-0 flex-1 truncate text-left text-[13px] font-medium text-neutral-200">
               {getToolTitle(toolPart)}
             </p>
             <ChevronDown
               className={cn(
-                "size-3.5 shrink-0 transition-transform",
+                "size-3.5 shrink-0 text-[#888] transition-transform",
                 isOpen && "rotate-180"
               )}
-              style={{ color: C.chevronColor }}
             />
           </button>
         </CollapsibleTrigger>
-        <CollapsibleContent
-          className="data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down overflow-hidden"
-          style={{ borderTop: `1px solid ${C.toolBorder}` }}
-        >
-          <div
-            className="p-2.5 font-mono text-[11px]"
-            style={{ backgroundColor: C.contentBg }}
-          >
+        <CollapsibleContent className="data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down overflow-hidden border-t border-[#444]">
+          <div className="bg-neutral-800 p-2.5 font-mono text-[11px]">
             {input &&
               Object.entries(input).map(([key, value]) => (
                 <div key={key}>
-                  <span style={{ color: C.keyColor }}>{key}:</span>{" "}
-                  <span style={{ color: C.valueColor }}>
+                  <span className="text-neutral-500">{key}:</span>{" "}
+                  <span className="text-neutral-200">
                     {formatValue(value)}
                   </span>
                 </div>
@@ -156,8 +133,8 @@ export const Tool = ({ toolPart, defaultOpen = false, className }: ToolProps) =>
             {output &&
               Object.entries(output).map(([key, value]) => (
                 <div key={key}>
-                  <span style={{ color: C.keyColor }}>{key}:</span>{" "}
-                  <span style={{ color: C.valueColor }}>
+                  <span className="text-neutral-500">{key}:</span>{" "}
+                  <span className="text-neutral-200">
                     {formatValue(value)}
                   </span>
                 </div>
@@ -165,8 +142,8 @@ export const Tool = ({ toolPart, defaultOpen = false, className }: ToolProps) =>
 
             {state === "output-error" && toolPart.errorText && (
               <div>
-                <span style={{ color: C.keyColor }}>error:</span>{" "}
-                <span style={{ color: C.errorColor }}>
+                <span className="text-neutral-500">error:</span>{" "}
+                <span className="text-[#f06060]">
                   {toolPart.errorText}
                 </span>
               </div>
