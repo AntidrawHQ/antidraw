@@ -4,9 +4,6 @@ import path from "path";
 import { app as HonoAPI } from "./api";
 import { devServerStore } from "./lib/runtime-store";
 
-let mainWindow: BrowserWindow | null = null;
-const previewWindows = new Set<BrowserWindow>();
-
 // Increase file descriptor limit for POSIX systems (macOS/Linux)
 // Each network connection uses a file descriptor - with many iframes
 // making concurrent requests, the default limit (often 256-1024) can be exhausted
@@ -36,7 +33,7 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 const createWindow = () => {
-  mainWindow = new BrowserWindow({
+  const mainWindow = new BrowserWindow({
     width: 900,
     height: 670,
     titleBarStyle: "hidden",
@@ -47,16 +44,6 @@ const createWindow = () => {
       contextIsolation: true,
       nodeIntegration: false,
     },
-  });
-
-  mainWindow.on("closed", () => {
-    for (const pw of previewWindows) {
-      if (!pw.isDestroyed()) {
-        pw.close();
-      }
-    }
-    previewWindows.clear();
-    mainWindow = null;
   });
 
   if (process.env.NODE_ENV === "development") {
@@ -118,11 +105,6 @@ app.whenReady().then(() => {
         contextIsolation: true,
         nodeIntegration: false,
       },
-    });
-
-    previewWindows.add(previewWindow);
-    previewWindow.on("closed", () => {
-      previewWindows.delete(previewWindow);
     });
 
     previewWindow.loadURL(url);
