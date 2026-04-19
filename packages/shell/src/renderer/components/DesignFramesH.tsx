@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback } from "react";
+import { useEffect, useCallback } from "react";
 import {
   motion,
   useMotionValue,
@@ -7,19 +7,6 @@ import {
   useReducedMotion,
   type MotionValue,
 } from "motion/react";
-
-const col = {
-  bg: "#262626",
-  frame: "#303030",
-  frameBorder: "rgba(255,255,255,0.08)",
-  handle: "rgba(255,255,255,0.16)",
-  handleBorder: "rgba(255,255,255,0.1)",
-  dimensionText: "rgba(255,255,255,0.14)",
-  frameName: "rgba(255,255,255,0.2)",
-  ghost: "rgba(255,255,255,0.04)",
-  guideLine: "rgba(255,255,255,0.04)",
-  label: "rgba(255,255,255,0.22)",
-};
 
 type FrameConfig = {
   w: number;
@@ -43,8 +30,6 @@ const frames: FrameConfig[] = [
 const HANDLE_SIZE = 5;
 const springConfig = { stiffness: 55, damping: 18, mass: 0.8 };
 
-/* ── Corner Handle ─────────────────────────────────────────────── */
-
 const Handle = ({
   top,
   left,
@@ -55,27 +40,12 @@ const Handle = ({
   left?: number;
   right?: number;
   bottom?: number;
-}) => {
-  return (
-    <div
-      style={{
-        position: "absolute",
-        width: HANDLE_SIZE,
-        height: HANDLE_SIZE,
-        borderRadius: 1,
-        background: col.handle,
-        border: `0.5px solid ${col.handleBorder}`,
-        top,
-        left,
-        right,
-        bottom,
-        transform: "translate(-50%, -50%)",
-      }}
-    />
-  );
-};
-
-/* ── Single Artboard ───────────────────────────────────────────── */
+}) => (
+  <div
+    className="absolute w-[5px] h-[5px] rounded-[1px] bg-white/16 border-[0.5px] border-white/10 -translate-x-1/2 -translate-y-1/2"
+    style={{ top, left, right, bottom }}
+  />
+);
 
 const FloatingArtboard = ({
   config,
@@ -117,8 +87,8 @@ const FloatingArtboard = ({
 
   return (
     <motion.div
+      className="absolute"
       style={{
-        position: "absolute",
         translateX: springX,
         translateY: springY,
         translateZ: config.z,
@@ -126,106 +96,33 @@ const FloatingArtboard = ({
         opacity,
       }}
     >
-      {/* Frame name label (above) */}
-      <div
-        style={{
-          position: "absolute",
-          top: -16,
-          left: 0,
-          fontSize: 8,
-          fontFamily: "ui-monospace, 'SF Mono', monospace",
-          color: col.frameName,
-          whiteSpace: "nowrap",
-          letterSpacing: "0.02em",
-        }}
-      >
+      <div className="absolute -top-4 left-0 text-[8px] font-mono text-white/20 whitespace-nowrap tracking-[0.02em]">
         {config.name}
       </div>
 
-      {/* Width dimension (top) */}
-      <div
-        style={{
-          position: "absolute",
-          top: -8,
-          left: "50%",
-          transform: "translateX(-50%)",
-          fontSize: 7,
-          fontFamily: "ui-monospace, 'SF Mono', monospace",
-          color: col.dimensionText,
-        }}
-      >
+      <div className="absolute -top-2 left-1/2 -translate-x-1/2 text-[7px] font-mono text-white/[0.14]">
         {config.w}
       </div>
 
-      {/* Height dimension (right) */}
-      <div
-        style={{
-          position: "absolute",
-          right: -20,
-          top: "50%",
-          transform: "translateY(-50%)",
-          fontSize: 7,
-          fontFamily: "ui-monospace, 'SF Mono', monospace",
-          color: col.dimensionText,
-        }}
-      >
+      <div className="absolute -right-5 top-1/2 -translate-y-1/2 text-[7px] font-mono text-white/[0.14]">
         {config.h}
       </div>
 
-      {/* The artboard itself */}
       <div
-        style={{
-          width: config.w,
-          height: config.h,
-          background: col.frame,
-          border: `1px solid ${col.frameBorder}`,
-          borderRadius: 2,
-          position: "relative",
-          overflow: "hidden",
-          boxShadow: "0 2px 8px rgba(0,0,0,0.25), 0 0 1px rgba(0,0,0,0.3)",
-        }}
+        className="relative overflow-hidden rounded-[2px] border border-white/[0.08] bg-[#303030] shadow-[0_2px_8px_rgba(0,0,0,0.25),0_0_1px_rgba(0,0,0,0.3)]"
+        style={{ width: config.w, height: config.h }}
       >
-        {/* Center crosshair guides */}
-        <div
-          style={{
-            position: "absolute",
-            top: "50%",
-            left: 0,
-            right: 0,
-            height: 0.5,
-            background: col.guideLine,
-          }}
-        />
-        <div
-          style={{
-            position: "absolute",
-            left: "50%",
-            top: 0,
-            bottom: 0,
-            width: 0.5,
-            background: col.guideLine,
-          }}
-        />
+        <div className="absolute top-1/2 left-0 right-0 h-[0.5px] bg-white/[0.04]" />
+        <div className="absolute left-1/2 top-0 bottom-0 w-[0.5px] bg-white/[0.04]" />
 
-        {/* Ghost layout content (static) */}
         {showGhost && (
-          <div
-            style={{
-              position: "absolute",
-              inset: 12,
-              display: "flex",
-              flexDirection: "column",
-              gap: 6,
-              opacity: 0.5,
-            }}
-          >
-            <div style={{ height: 6, width: "45%", borderRadius: 2, background: col.ghost }} />
-            <div style={{ height: 4, width: "70%", borderRadius: 2, background: col.ghost }} />
-            <div style={{ flex: 1, borderRadius: 3, background: col.ghost, marginTop: 4 }} />
+          <div className="absolute inset-3 flex flex-col gap-1.5 opacity-50">
+            <div className="h-1.5 w-[45%] rounded-[2px] bg-white/[0.04]" />
+            <div className="h-1 w-[70%] rounded-[2px] bg-white/[0.04]" />
+            <div className="flex-1 rounded-[3px] bg-white/[0.04] mt-1" />
           </div>
         )}
 
-        {/* Corner handles */}
         <Handle top={0} left={0} />
         <Handle top={0} right={-HANDLE_SIZE} />
         <Handle bottom={-HANDLE_SIZE} left={0} />
@@ -235,10 +132,7 @@ const FloatingArtboard = ({
   );
 };
 
-/* ── Main Component ────────────────────────────────────────────── */
-
 export const DesignFramesH = () => {
-  const isHovering = useRef(false);
   const reducedMotion = useReducedMotion();
 
   const mouseX = useMotionValue(0);
@@ -258,7 +152,6 @@ export const DesignFramesH = () => {
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent) => {
-      isHovering.current = true;
       const rect = e.currentTarget.getBoundingClientRect();
       mouseX.set(((e.clientX - rect.left) / rect.width) * 2 - 1);
       mouseY.set(((e.clientY - rect.top) / rect.height) * 2 - 1);
@@ -267,7 +160,6 @@ export const DesignFramesH = () => {
   );
 
   const handleMouseLeave = useCallback(() => {
-    isHovering.current = false;
     mouseX.set(0);
     mouseY.set(0);
   }, [mouseX, mouseY]);
@@ -276,19 +168,9 @@ export const DesignFramesH = () => {
     <div
       onMouseMove={handleMouseMove}
       onMouseLeave={handleMouseLeave}
-      style={{
-        width: 300,
-        height: 210,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        cursor: "default",
-        perspective: 800,
-        overflow: "hidden",
-        position: "relative",
-      }}
+      className="w-[300px] h-[210px] flex items-center justify-center cursor-default [perspective:800px] overflow-hidden relative"
     >
-      <div style={{ transformStyle: "preserve-3d", position: "relative", width: 0, height: 0 }}>
+      <div className="[transform-style:preserve-3d] relative w-0 h-0">
         {frames.map((config, i) => (
           <FloatingArtboard
             key={i}

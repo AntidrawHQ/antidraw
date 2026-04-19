@@ -1,43 +1,12 @@
-const c = {
-  textPrimary: "#b0b0b0",
-  textSecondary: "#787878",
-  fontSans:
-    '"Geist Sans", "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-};
+import { cn } from "@/renderer/lib/utils";
 
 export const ChatEmptyState = ({ className }: { className?: string }) => {
   return (
-    <div
-      className={className}
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "flex-start",
-        fontFamily: c.fontSans,
-        WebkitFontSmoothing: "antialiased",
-      }}
-    >
-      <h1
-        style={{
-          fontSize: 14,
-          fontWeight: 500,
-          color: c.textPrimary,
-          margin: 0,
-          letterSpacing: "-0.02em",
-        }}
-      >
+    <div className={cn("flex flex-col items-start", className)}>
+      <h1 className="text-sm font-medium text-[#b0b0b0] tracking-[-0.02em]">
         Chat to create designs.
       </h1>
-      <p
-        style={{
-          fontSize: 12,
-          color: c.textSecondary,
-          margin: "6px 0 0",
-          lineHeight: 1.5,
-          textAlign: "left",
-          maxWidth: 280,
-        }}
-      >
+      <p className="text-xs text-[#787878] mt-1.5 leading-normal text-left max-w-[280px]">
         Describe a component, screen, or interaction. Ask for multiple
         versions to see different directions.
       </p>
