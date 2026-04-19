@@ -2,7 +2,6 @@ import { app, BrowserWindow, ipcMain, protocol, session } from "electron";
 import path from "path";
 
 import { app as HonoAPI } from "./api";
-import { devServerStore } from "./lib/runtime-store";
 
 // Increase file descriptor limit for POSIX systems (macOS/Linux)
 // Each network connection uses a file descriptor - with many iframes
@@ -75,25 +74,8 @@ app.whenReady().then(() => {
       throw new Error("Invalid URL");
     }
 
-    if (parsed.protocol !== "https:" || parsed.hostname !== "localhost") {
-      throw new Error("URL must be https://localhost");
-    }
-
-    const port = parseInt(parsed.port, 10);
-    const isKnownPort = devServerStore.getAll().some((s) => s.port === port);
-    if (!isKnownPort) {
-      throw new Error("URL port does not match any active dev server");
-    }
-
-    if (parsed.pathname !== "/preview") {
-      throw new Error("URL path must be /preview");
-    }
-
-    const allowedParams = new Set(["componentName", "fullscreen", "_r"]);
-    for (const key of parsed.searchParams.keys()) {
-      if (!allowedParams.has(key)) {
-        throw new Error(`Unexpected query parameter: ${key}`);
-      }
+    if (parsed.protocol !== "https:" || parsed.hostname !== "localhost" || parsed.pathname !== "/preview") {
+      throw new Error("URL must be an https://localhost/preview URL");
     }
 
     const previewWindow = new BrowserWindow({
