@@ -1,7 +1,5 @@
 import { cn } from "@/renderer/lib/utils"
 import {
-  Children,
-  cloneElement,
   createContext,
   useCallback,
   useContext,
@@ -9,6 +7,7 @@ import {
   useRef,
   useState,
 } from "react"
+import { Slot } from "@radix-ui/react-slot"
 import { createPortal } from "react-dom"
 
 type FileUploadContextValue = {
@@ -126,36 +125,27 @@ function FileUploadTrigger({
   asChild = false,
   className,
   children,
+  onClick,
   ...props
 }: FileUploadTriggerProps) {
   const context = useContext(FileUploadContext)
-  const handleClick = () => context?.inputRef.current?.click()
-
-  if (asChild) {
-    const child = Children.only(children) as React.ReactElement<
-      React.HTMLAttributes<HTMLElement>
-    >
-    return cloneElement(child, {
-      ...props,
-      role: "button",
-      className: cn(className, child.props.className),
-      onClick: (e: React.MouseEvent) => {
-        e.stopPropagation()
-        handleClick()
-        child.props.onClick?.(e as React.MouseEvent<HTMLElement>)
-      },
-    })
+  const handleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.stopPropagation()
+    context?.inputRef.current?.click()
+    onClick?.(e)
   }
 
+  const Comp = asChild ? Slot : "button"
+
   return (
-    <button
+    <Comp
       type="button"
       className={className}
       onClick={handleClick}
       {...props}
     >
       {children}
-    </button>
+    </Comp>
   )
 }
 
