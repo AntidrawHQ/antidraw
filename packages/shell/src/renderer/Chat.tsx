@@ -61,43 +61,39 @@ const MessageList = memo(({ conversationId }: MessageListProps) => {
             ? [{ type: "text" as const, text: content }]
             : [];
 
+        type Base64ImageBlock = {
+          type: "image";
+          source: {
+            type: "base64";
+            media_type: SupportedImageMediaType;
+            data: string;
+          };
+        };
+        const imageBlocks = blocks.filter(
+          (b): b is Base64ImageBlock =>
+            b.type === "image" &&
+            "source" in b &&
+            b.source?.type === "base64"
+        );
+
         return (
           <Message
             key={msg.id}
             className={isAssistant ? "justify-start" : "justify-end"}
           >
             <div className="overflow-auto space-y-2 w-full">
-              {(() => {
-                type Base64ImageBlock = {
-                  type: "image";
-                  source: {
-                    type: "base64";
-                    media_type: SupportedImageMediaType;
-                    data: string;
-                  };
-                };
-                const imageBlocks = blocks.filter(
-                  (b): b is Base64ImageBlock =>
-                    b.type === "image" &&
-                    "source" in b &&
-                    b.source?.type === "base64"
-                );
-                if (imageBlocks.length > 0) {
-                  return (
-                    <div className="flex flex-wrap gap-1">
-                      {imageBlocks.map((block, idx) => (
-                        <img
-                          key={`img-${idx}`}
-                          src={`data:${block.source.media_type};base64,${block.source.data}`}
-                          alt="Attached image"
-                          className="h-10 w-10 rounded object-cover border border-neutral-600"
-                        />
-                      ))}
-                    </div>
-                  );
-                }
-                return null;
-              })()}
+              {imageBlocks.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {imageBlocks.map((block, idx) => (
+                    <img
+                      key={`img-${idx}`}
+                      src={`data:${block.source.media_type};base64,${block.source.data}`}
+                      alt="Attached image"
+                      className="h-10 w-10 rounded object-cover border border-neutral-600"
+                    />
+                  ))}
+                </div>
+              )}
               {blocks.map((block, idx) => {
                 if (block.type === "image") {
                   return null;
