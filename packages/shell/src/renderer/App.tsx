@@ -2,7 +2,7 @@ import { AppCanvas } from "./Canvas";
 import { IconStrip } from "./IconStrip";
 import { SidePanel } from "./SidePanel";
 import { useAutoSelectWorkspace } from "@/renderer/lib/workspace-ops";
-import { CodeModal } from "./components/CodeModal";
+import { CodeSidePanel } from "./components/CodeSidePanel";
 
 const App = () => {
   useAutoSelectWorkspace();
@@ -12,7 +12,7 @@ const App = () => {
       <IconStrip />
       <SidePanel />
       <AppCanvas className="flex-1 border-l border-[#2d2d2d]" />
-      <CodeModal />
+      <CodeSidePanel />
     </div>
   );
 };

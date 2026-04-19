@@ -1,4 +1,4 @@
-import { useQuery, skipToken } from "@tanstack/react-query";
+import { useQuery, skipToken, keepPreviousData } from "@tanstack/react-query";
 import { useDevServerStatus } from "@/renderer/lib/workspace-ops";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
 import { queryKeys } from "@/renderer/lib/query-keys";
@@ -39,6 +39,7 @@ export const useComponentSource = (componentName: string | null) => {
 
   return useQuery({
     queryKey: queryKeys.userComponents.source(workspaceId!, port!, componentName!),
+    placeholderData: keepPreviousData,
     queryFn:
       workspaceId && port && componentName
         ? async () => {
@@ -54,6 +55,7 @@ export const useComponentSource = (componentName: string | null) => {
             return (await response.json()) as {
               name: string;
               fileName: string;
+              filePath: string;
               source: string;
             };
           }

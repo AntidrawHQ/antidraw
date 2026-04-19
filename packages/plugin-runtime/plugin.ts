@@ -96,7 +96,7 @@ export const userComponents = Object.fromEntries(
             const source = await fs.readFile(filePath, "utf-8")
 
             res.setHeader("Content-Type", "application/json")
-            res.end(JSON.stringify({ name, fileName: `${name}.tsx`, source }))
+            res.end(JSON.stringify({ name, fileName: `${name}.tsx`, filePath, source }))
           } catch (err: any) {
             if (err.code === "ENOENT") {
               res.statusCode = 404
