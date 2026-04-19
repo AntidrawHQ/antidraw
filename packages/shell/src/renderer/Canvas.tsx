@@ -18,6 +18,7 @@ import { useDevServerStatus, useAutoStartDevServer } from "./lib/workspace-ops";
 import { cn } from "./lib/utils";
 import { Semaphore } from "./lib/semaphore";
 import { PillToggleToolbar } from "./components/PillToggleToolbar";
+import { EmptyState } from "./components/EmptyState";
 
 type IframeNodeProps = {
   url: string | undefined;
@@ -354,6 +355,15 @@ export const AppCanvas = ({ className }: AppCanvasProps) => {
 
   if (isError || !userComponents) {
     return <CanvasPlaceholder subtitle="Error loading components" className={className} />;
+  }
+
+  if (userComponents.length === 0) {
+    return (
+      <div className={cn("flex-1 flex items-center justify-center bg-neutral-800 relative", className)}>
+        <GridPattern />
+        <EmptyState className="z-10" />
+      </div>
+    );
   }
 
   return (
