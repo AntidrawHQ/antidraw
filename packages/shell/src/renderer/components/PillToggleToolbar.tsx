@@ -44,7 +44,7 @@ const Divider = ({ className }: { className?: string }) => (
 type PillToggleToolbarProps = {
   componentName: string;
   nodeId: string;
-  selected: boolean;
+  selected?: boolean;
   onRefresh?: () => void;
 };
 
