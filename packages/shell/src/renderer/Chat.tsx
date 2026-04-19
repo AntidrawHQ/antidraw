@@ -33,6 +33,7 @@ import { Tool } from "@/renderer/components/ui/tool";
 import type { ToolPart } from "@/renderer/components/ui/tool";
 import { AuthError } from "@/renderer/components/auth-error";
 import { useWorkspaceStore } from "./store/workspace";
+import { ChatEmptyState } from "./components/ChatEmptyState";
 import {
   SUPPORTED_IMAGE_TYPES,
   type ImageAttachment,
@@ -335,7 +336,12 @@ export function AppChat({ className, ...props }: AppChatProps) {
       {...props}
     >
       <ChatContainerRoot className="flex-1">
-        <ChatContainerContent className="p-4">
+        <ChatContainerContent className={cn("p-4", !activeConversationId && !isLoading && "min-h-full")}>
+          {!activeConversationId && !isLoading && (
+            <div className="flex-1 flex items-end justify-start pl-3">
+              <ChatEmptyState />
+            </div>
+          )}
           <MessageList
             conversationId={activeConversationId}
             onSignIn={handleSignIn}
