@@ -8,6 +8,7 @@ export const frameLayouts = sqliteTable(
     workspaceId: text("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
+    // TODO: switch to component path if we add nested folder support
     componentName: text("component_name").notNull(),
     x: real("x").notNull(),
     y: real("y").notNull(),
