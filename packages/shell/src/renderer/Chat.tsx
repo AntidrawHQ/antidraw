@@ -36,6 +36,15 @@ import {
   type SupportedImageMediaType,
 } from "@/shared/utils/message";
 
+type Base64ImageBlock = {
+  type: "image";
+  source: {
+    type: "base64";
+    media_type: SupportedImageMediaType;
+    data: string;
+  };
+};
+
 type MessageListProps = {
   conversationId: string | null;
 };
@@ -61,14 +70,6 @@ const MessageList = memo(({ conversationId }: MessageListProps) => {
             ? [{ type: "text" as const, text: content }]
             : [];
 
-        type Base64ImageBlock = {
-          type: "image";
-          source: {
-            type: "base64";
-            media_type: SupportedImageMediaType;
-            data: string;
-          };
-        };
         const imageBlocks = blocks.filter(
           (b): b is Base64ImageBlock =>
             b.type === "image" &&
