@@ -152,8 +152,9 @@ const IframeNodeRenderer = ({
   const iframeUrl = useMemo(() => {
     if (!url) return undefined;
     if (refreshCounter === 0) return url;
-    const sep = url.includes("?") ? "&" : "?";
-    return `${url}${sep}_r=${refreshCounter}`;
+    const parsed = new URL(url);
+    parsed.searchParams.set("_r", String(refreshCounter));
+    return parsed.toString();
   }, [url, refreshCounter]);
 
   return (
