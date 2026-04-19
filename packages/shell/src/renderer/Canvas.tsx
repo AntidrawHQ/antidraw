@@ -118,6 +118,7 @@ const IframeNodeRenderer = ({
   selected,
 }: NodeProps<IframeReactFlowNode>) => {
   const [url, setUrl] = useState<string | undefined>(undefined);
+  const [refreshCounter, setRefreshCounter] = useState(0);
   const releaseRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
@@ -144,12 +145,23 @@ const IframeNodeRenderer = ({
     releaseRef.current = null;
   }, []);
 
+  const handleRefresh = useCallback(() => {
+    setRefreshCounter((c) => c + 1);
+  }, []);
+
+  const iframeUrl = useMemo(() => {
+    if (!url) return undefined;
+    if (refreshCounter === 0) return url;
+    const sep = url.includes("?") ? "&" : "?";
+    return `${url}${sep}_r=${refreshCounter}`;
+  }, [url, refreshCounter]);
+
   return (
     <>
       <NodeToolbar position={Position.Top} align="start" isVisible={true} offset={8}>
-        <PillToggleToolbar componentName={data.componentName} nodeId={id} selected={selected} />
+        <PillToggleToolbar componentName={data.componentName} nodeId={id} selected={selected} onRefresh={handleRefresh} />
       </NodeToolbar>
-      <IframeNode url={url} selected={selected} onLoad={handleLoad} />
+      <IframeNode url={iframeUrl} selected={selected} onLoad={handleLoad} />
     </>
   );
 };

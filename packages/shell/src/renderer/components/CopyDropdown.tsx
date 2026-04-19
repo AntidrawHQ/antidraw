@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { Bot, Code, ChevronDown, ChevronUp } from "lucide-react";
 import { IconCircleCheckFilled } from "@tabler/icons-react";
 import {
@@ -17,6 +17,7 @@ export const CopyDropdown = ({ code, filePath }: CopyDropdownProps) => {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(timerRef.current), []);
 
   const doCopy = useCallback(
     (text: string, label: string) => {

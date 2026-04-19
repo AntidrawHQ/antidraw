@@ -11,8 +11,8 @@ type WorkspaceStore = {
   setActiveSidePanel: (panel: SidePanel) => void;
   focusComponentName: string | null;
   setFocusComponentName: (name: string | null) => void;
-  codeModalComponentName: string | null;
-  setCodeModalComponentName: (name: string | null) => void;
+  codePanelComponentName: string | null;
+  setCodePanelComponentName: (name: string | null) => void;
 };
 
 export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
@@ -24,6 +24,6 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
   setActiveSidePanel: (panel) => set({ activeSidePanel: panel }),
   focusComponentName: null,
   setFocusComponentName: (name) => set({ focusComponentName: name }),
-  codeModalComponentName: null,
-  setCodeModalComponentName: (name) => set({ codeModalComponentName: name }),
+  codePanelComponentName: null,
+  setCodePanelComponentName: (name) => set({ codePanelComponentName: name }),
 }));

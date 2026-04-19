@@ -1,11 +1,10 @@
 import { useCallback, useEffect } from "react";
 import { X } from "lucide-react";
 import { File as DiffsFile } from "@pierre/diffs/react";
+import { cn } from "@/renderer/lib/utils";
 import { useWorkspaceStore } from "../store/workspace";
 import { useComponentSource } from "../store/userComponents";
 import { CopyDropdown } from "./CopyDropdown";
-
-const PANEL_WIDTH = 420;
 
 const DIFFS_OPTIONS = {
   theme: "houston" as const,
@@ -46,47 +45,18 @@ const Sidebar = ({
 
   return (
     <div
-      style={{
-        position: "fixed",
-        top: 38,
-        right: 0,
-        bottom: 0,
-        width: PANEL_WIDTH,
-        display: "flex",
-        flexDirection: "column",
-        background: "#262626",
-        borderLeft: "1px solid #2d2d2d",
-        zIndex: 100,
-        transform: isOpen ? "translateX(0)" : "translateX(100%)",
-        transition: "transform 320ms cubic-bezier(0.16, 1, 0.3, 1)",
-        pointerEvents: isOpen ? "auto" : "none",
-      }}
+      className={cn(
+        "fixed top-[38px] right-0 bottom-0 w-[420px] flex flex-col bg-[#262626] border-l border-[#2d2d2d] z-[100] transition-transform duration-[320ms] ease-[cubic-bezier(0.16,1,0.3,1)]",
+        isOpen
+          ? "translate-x-0 pointer-events-auto"
+          : "translate-x-full pointer-events-none"
+      )}
     >
-      {/* Header */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 12,
-          padding: "12px 12px 12px 16px",
-          flexShrink: 0,
-        }}
-      >
-        <span
-          style={{
-            fontSize: 12,
-            fontWeight: 500,
-            color: "rgba(255,255,255,0.88)",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-            minWidth: 0,
-          }}
-        >
+      <div className="flex items-center justify-between gap-3 p-3 pl-4 shrink-0">
+        <span className="text-xs font-medium text-white/[0.88] overflow-hidden text-ellipsis whitespace-nowrap min-w-0">
           {fileName}
         </span>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <div className="flex items-center gap-1.5">
           <CopyDropdown code={code} filePath={filePath} />
           <button
             onClick={onClose}
@@ -97,17 +67,9 @@ const Sidebar = ({
         </div>
       </div>
 
-      {/* Separator */}
-      <div
-        style={{
-          height: 1,
-          background: "rgba(255,255,255,0.06)",
-          flexShrink: 0,
-        }}
-      />
+      <div className="h-px bg-white/[0.06] shrink-0" />
 
-      {/* Code body */}
-      <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
+      <div className="flex-1 min-h-0 overflow-hidden">
         <DiffsFile
           file={{ name: fileName, contents: code }}
           options={DIFFS_OPTIONS}
@@ -119,9 +81,9 @@ const Sidebar = ({
 };
 
 export const CodeSidePanel = () => {
-  const componentName = useWorkspaceStore((s) => s.codeModalComponentName);
+  const componentName = useWorkspaceStore((s) => s.codePanelComponentName);
   const setComponentName = useWorkspaceStore(
-    (s) => s.setCodeModalComponentName
+    (s) => s.setCodePanelComponentName
   );
   const { data: sourceData } = useComponentSource(componentName);
 
