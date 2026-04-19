@@ -63,8 +63,12 @@ for (const pkgJsonPath of workspacePackageJsons) {
   );
 
   console.log(`  Running npm install...`);
-  execSync("npm install", { cwd: sourceDir, stdio: "inherit" });
-  console.log(`  Done.\n`);
+  try {
+    execSync("npm install", { cwd: sourceDir, stdio: "inherit" });
+    console.log(`  Done.\n`);
+  } catch {
+    console.warn(`  ⚠ npm install failed for ${workspaceName}, skipping.\n`);
+  }
 }
 
 console.log("All workspaces updated to use local runtime.");
