@@ -9,6 +9,12 @@ export const Preview = () => {
   const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
+    if (fullscreen && componentName) {
+      document.title = componentName
+    }
+  }, [fullscreen, componentName])
+
+  useEffect(() => {
     if (containerRef.current && componentName && !fullscreen) {
       window.parent.postMessage(
         {
