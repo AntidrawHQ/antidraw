@@ -3,6 +3,8 @@ import {
   ReactFlowProvider,
   useNodesState,
   useReactFlow,
+  NodeToolbar,
+  Position,
   type Node,
   type NodeTypes,
   type NodeProps,
@@ -18,6 +20,8 @@ import { useFrameLayouts } from "./lib/frame-layout-ops";
 import { saveFrameLayouts, type FrameLayoutData } from "./lib/api";
 import { cn } from "./lib/utils";
 import { Semaphore } from "./lib/semaphore";
+import { PillToggleToolbar } from "./components/PillToggleToolbar";
+import { EmptyState } from "./components/EmptyState";
 
 type IframeNodeProps = {
   url: string | undefined;
@@ -113,10 +117,12 @@ const iframeSemaphore = new Semaphore(10);
 
 // Wrapper component that React Flow renders - defined OUTSIDE component to prevent recreation
 const IframeNodeRenderer = ({
+  id,
   data,
   selected,
 }: NodeProps<IframeReactFlowNode>) => {
   const [url, setUrl] = useState<string | undefined>(undefined);
+  const [refreshCounter, setRefreshCounter] = useState(0);
   const releaseRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
@@ -143,7 +149,38 @@ const IframeNodeRenderer = ({
     releaseRef.current = null;
   }, []);
 
-  return <IframeNode url={url} selected={selected} onLoad={handleLoad} />;
+  const handleRefresh = useCallback(() => {
+    setRefreshCounter((c) => c + 1);
+  }, []);
+
+  const handleFullscreen = useCallback(() => {
+    const fullscreenUrl = new URL(data.url);
+    fullscreenUrl.searchParams.set("fullscreen", "true");
+    window.electronAPI.openPreviewWindow(fullscreenUrl.toString());
+  }, [data.url]);
+
+  const iframeUrl = useMemo(() => {
+    if (!url) return undefined;
+    if (refreshCounter === 0) return url;
+    const parsed = new URL(url);
+    parsed.searchParams.set("_r", String(refreshCounter));
+    return parsed.toString();
+  }, [url, refreshCounter]);
+
+  return (
+    <>
+      <NodeToolbar position={Position.Top} align="start" isVisible={true} offset={8}>
+        <PillToggleToolbar
+          componentName={data.componentName}
+          nodeId={id}
+          selected={selected}
+          onRefresh={handleRefresh}
+          onFullscreen={handleFullscreen}
+        />
+      </NodeToolbar>
+      <IframeNode url={iframeUrl} selected={selected} onLoad={handleLoad} />
+    </>
+  );
 };
 
 // Define nodeTypes at module level - this is critical for React Flow performance
@@ -395,7 +432,7 @@ export const AppCanvas = ({ className }: AppCanvasProps) => {
     return <CanvasPlaceholder subtitle="No workspace selected" className={className} />;
   }
 
-  if (!devServer) {
+  if (!devServer?.running) {
     return (
       <CanvasPlaceholder
         subtitle={isDevServerPending ? "Checking dev server..." : "Dev server not running"}
@@ -410,6 +447,15 @@ export const AppCanvas = ({ className }: AppCanvasProps) => {
 
   if (isError || !userComponents) {
     return <CanvasPlaceholder subtitle="Error loading components" className={className} />;
+  }
+
+  if (userComponents.length === 0) {
+    return (
+      <div className={cn("flex-1 flex items-center justify-center bg-neutral-800 relative", className)}>
+        <GridPattern />
+        <EmptyState className="z-10" />
+      </div>
+    );
   }
 
   return (

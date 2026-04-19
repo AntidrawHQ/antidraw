@@ -1,31 +1,41 @@
-import { useQuery, skipToken } from "@tanstack/react-query";
-import { useDevServerStatus } from "@/renderer/lib/workspace-ops";
+import { useQuery, skipToken, keepPreviousData } from "@tanstack/react-query";
+import { useWorkspaceStore } from "@/renderer/store/workspace";
 import { queryKeys } from "@/renderer/lib/query-keys";
+import { listComponents, getComponentSource } from "@/renderer/lib/api";
 
 export const useUserComponents = (workspaceId: string | null) => {
-  const { data: devServer } = useDevServerStatus(workspaceId);
-  const port = devServer?.port ?? null;
+  return useQuery({
+    queryKey: queryKeys.userComponents.byWorkspace(workspaceId!),
+    queryFn: workspaceId
+      ? async () => {
+          const result = await listComponents(workspaceId);
+
+          if (result.isErr()) {
+            throw new Error(result.error.message);
+          }
+
+          return result.value;
+        }
+      : skipToken,
+  });
+};
+
+export const useComponentSource = (componentName: string | null) => {
+  const workspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
 
   return useQuery({
-    queryKey: queryKeys.userComponents.byWorkspace(workspaceId!, port!),
+    queryKey: queryKeys.userComponents.source(workspaceId!, componentName!),
+    placeholderData: keepPreviousData,
     queryFn:
-      workspaceId && port
+      workspaceId && componentName
         ? async () => {
-            const viteDevServerUrl = `https://localhost:${port}`;
+            const result = await getComponentSource(workspaceId, componentName);
 
-            const response = await fetch(`${viteDevServerUrl}/__components`);
-
-            if (!response.ok) {
-              throw new Error("Failed to fetch user components");
+            if (result.isErr()) {
+              throw new Error(result.error.message);
             }
 
-            const components = (await response.json()) as {
-              components: Array<{
-                name: string;
-              }>;
-            };
-
-            return components.components;
+            return result.value;
           }
         : skipToken,
   });

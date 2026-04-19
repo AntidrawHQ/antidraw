@@ -5,11 +5,17 @@ import { userComponents } from "@antidrawapp/user-components"
 type ComponentMap = Record<string, React.ComponentType>
 
 export const Preview = () => {
-  const { componentName } = useSearch({ strict: false }) as { componentName?: string }
+  const { componentName, fullscreen } = useSearch({ strict: false }) as { componentName?: string; fullscreen?: boolean }
   const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    if (containerRef.current && componentName) {
+    if (fullscreen && componentName) {
+      document.title = componentName
+    }
+  }, [fullscreen, componentName])
+
+  useEffect(() => {
+    if (containerRef.current && componentName && !fullscreen) {
       window.parent.postMessage(
         {
           type: "component-size",
@@ -20,7 +26,7 @@ export const Preview = () => {
         "*"
       )
     }
-  }, [componentName])
+  }, [componentName, fullscreen])
 
   if (!componentName) {
     return (
@@ -43,7 +49,10 @@ export const Preview = () => {
   const Component = components[componentName]
 
   return (
-    <div ref={containerRef} style={{ display: "inline-block" }}>
+    <div
+      ref={containerRef}
+      className={fullscreen ? "w-screen h-screen flex items-center justify-center" : "inline-block"}
+    >
       {createElement(Component)}
     </div>
   )
