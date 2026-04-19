@@ -46,9 +46,10 @@ type PillToggleToolbarProps = {
   nodeId: string;
   selected?: boolean;
   onRefresh?: () => void;
+  onFullscreen?: () => void;
 };
 
-export const PillToggleToolbar = ({ componentName, nodeId, selected, onRefresh }: PillToggleToolbarProps) => {
+export const PillToggleToolbar = ({ componentName, nodeId, selected, onRefresh, onFullscreen }: PillToggleToolbarProps) => {
   const setCodePanelComponentName = useWorkspaceStore((s) => s.setCodePanelComponentName);
 
   return (
@@ -99,7 +100,7 @@ export const PillToggleToolbar = ({ componentName, nodeId, selected, onRefresh }
                       <IconBtn icon={<Code size={14} />} label="See Code" size={26} onClick={() => setCodePanelComponentName(componentName)} />
                       <Divider className="mx-1.5" />
                       <IconBtn icon={<RefreshCw size={14} />} size={26} onClick={onRefresh} />
-                      <IconBtn icon={<Maximize2 size={14} />} size={26} />
+                      <IconBtn icon={<Maximize2 size={14} />} size={26} onClick={onFullscreen} />
                     </div>
                   </motion.div>
                 )}

@@ -1,8 +1,5 @@
-import { contextBridge } from "electron";
-
-// Preload script for secure context bridge
-// Currently using HTTP/SSE via custom protocol instead of IPC
+import { contextBridge, ipcRenderer } from "electron";
 
 contextBridge.exposeInMainWorld("electronAPI", {
-  // Add IPC methods here as needed
+  openPreviewWindow: (url: string) => ipcRenderer.invoke("open-preview-window", url),
 });

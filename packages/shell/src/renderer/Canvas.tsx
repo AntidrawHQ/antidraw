@@ -150,6 +150,12 @@ const IframeNodeRenderer = ({
     setRefreshCounter((c) => c + 1);
   }, []);
 
+  const handleFullscreen = useCallback(() => {
+    const fullscreenUrl = new URL(data.url);
+    fullscreenUrl.searchParams.set("fullscreen", "true");
+    window.electronAPI.openPreviewWindow(fullscreenUrl.toString());
+  }, [data.url]);
+
   const iframeUrl = useMemo(() => {
     if (!url) return undefined;
     if (refreshCounter === 0) return url;
@@ -161,7 +167,13 @@ const IframeNodeRenderer = ({
   return (
     <>
       <NodeToolbar position={Position.Top} align="start" isVisible={true} offset={8}>
-        <PillToggleToolbar componentName={data.componentName} nodeId={id} selected={selected} onRefresh={handleRefresh} />
+        <PillToggleToolbar
+          componentName={data.componentName}
+          nodeId={id}
+          selected={selected}
+          onRefresh={handleRefresh}
+          onFullscreen={handleFullscreen}
+        />
       </NodeToolbar>
       <IframeNode url={iframeUrl} selected={selected} onLoad={handleLoad} />
     </>
