@@ -8,8 +8,14 @@ export type {
 import type { Conversation, Message } from "./models/chat.model";
 export type { Workspace } from "./models/workspace.model";
 export type { CreateWorkspaceResponse } from "./controllers/workspace.controller";
+export type { CreateWorkspaceStatusCode } from "./services/workspace.service";
 export type { DevServerState } from "@/main/lib/runtime-store";
 export type { DevServerInfo } from "@/main/services/dev-server.service";
+export type { ClaudeAuthStatus } from "@/main/services/claude-cli-interactions.service";
+export type {
+  ComponentListItem,
+  ComponentSource,
+} from "./services/component.service";
 import { zValidator } from "@hono/zod-validator";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
@@ -32,11 +38,13 @@ import {
   cancelStream as cancelActiveStream,
 } from "@/main/lib/stream-manager";
 import { workspaceController } from "./controllers/workspace.controller";
+import { claudeCliInteractionsController } from "./controllers/claude-cli-interactions.controller";
 import type { ImageAttachment } from "@/shared/utils/message";
 
 export const app = new Hono();
 
 app.route("/workspaces", workspaceController);
+app.route("/claude-cli", claudeCliInteractionsController);
 
 const imageAttachmentSchema = z.object({
   data: z.string(),

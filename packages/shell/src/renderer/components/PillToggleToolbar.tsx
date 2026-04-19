@@ -1,28 +1,10 @@
-import { useState } from "react";
 import { motion, AnimatePresence, LayoutGroup } from "motion/react";
-import { Code, Copy, RefreshCw, Maximize2 } from "lucide-react";
-
-// ─── Design tokens ───────────────────────────────────────────────
-
-const c = {
-  bg: "#1a1a1a",
-  bgSurface: "#262626",
-  bgInset: "#0d0d0d",
-  border: "#2d2d2d",
-  borderSubtle: "rgba(255,255,255,0.06)",
-  text: "rgba(255,255,255,0.88)",
-  textMuted: "rgba(255,255,255,0.5)",
-  textDim: "rgba(255,255,255,0.3)",
-  accent: "#6366f1",
-  accentSubtle: "rgba(99,102,241,0.15)",
-  red: "#ef4444",
-  redSubtle: "rgba(239,68,68,0.12)",
-};
+import { Code, RefreshCw, Maximize2 } from "lucide-react";
+import { cn } from "@/renderer/lib/utils";
+import { useWorkspaceStore } from "../store/workspace";
 
 const spring = { type: "spring" as const, stiffness: 800, damping: 40, mass: 0.4 };
 const springGentle = { type: "spring" as const, stiffness: 700, damping: 35, mass: 0.35 };
-
-// ─── Primitives ──────────────────────────────────────────────────
 
 const IconBtn = ({
   icon,
@@ -38,102 +20,69 @@ const IconBtn = ({
   accent?: boolean;
   onClick?: () => void;
   size?: number;
-}) => {
-  const [hovered, setHovered] = useState(false);
-  const [pressed, setPressed] = useState(false);
-  let color = c.textMuted;
-  let bg = "transparent";
-  if (danger && hovered) { color = c.red; bg = c.redSubtle; }
-  else if (accent && hovered) { color = c.accent; bg = c.accentSubtle; }
-  else if (hovered) { color = "rgba(255,255,255,0.7)"; bg = "rgba(255,255,255,0.06)"; }
-
-  return (
-    <button
-      onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => { setHovered(false); setPressed(false); }}
-      onMouseDown={() => setPressed(true)}
-      onMouseUp={() => setPressed(false)}
-      style={{
-        display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
-        width: label ? "auto" : size, height: size,
-        padding: label ? "0 8px" : 0,
-        border: "none", background: bg, color, cursor: "pointer",
-        borderRadius: 6,
-        transition: "all 150ms cubic-bezier(0.25, 0.1, 0.25, 1)",
-        transform: pressed ? "scale(0.92)" : "scale(1)",
-        fontSize: 12, fontWeight: 500, fontFamily: "inherit",
-      }}
-    >
-      {icon}
-      {label && <span>{label}</span>}
-    </button>
-  );
-};
-
-const Divider = ({ spacing = 2 }: { spacing?: number }) => (
-  <div style={{ width: 1, height: 16, background: c.borderSubtle, margin: `0 ${spacing}px`, flexShrink: 0 }} />
+}) => (
+  <button
+    onClick={onClick}
+    className={cn(
+      "flex items-center justify-center gap-[5px] border-none bg-transparent cursor-pointer rounded-md text-xs font-medium font-[inherit] transition-all duration-150 ease-[cubic-bezier(0.25,0.1,0.25,1)] active:scale-[0.92]",
+      label && "w-auto px-2",
+      danger && "text-white/50 hover:text-red-500 hover:bg-red-500/[0.12]",
+      accent && "text-white/50 hover:text-indigo-500 hover:bg-indigo-500/15",
+      !danger && !accent && "text-white/50 hover:text-white/70 hover:bg-white/[0.06]",
+    )}
+    style={{ width: label ? undefined : size, height: size }}
+  >
+    {icon}
+    {label && <span>{label}</span>}
+  </button>
 );
 
-// ─── Pill Toggle Toolbar ─────────────────────────────────────────
+const Divider = ({ className }: { className?: string }) => (
+  <div className={cn("w-px h-4 bg-white/[0.06] shrink-0", className)} />
+);
 
 type PillToggleToolbarProps = {
   componentName: string;
   nodeId: string;
-  selected: boolean;
-  previewUrl: string;
+  selected?: boolean;
+  onRefresh?: () => void;
+  previewUrl?: string;
 };
 
-export const PillToggleToolbar = ({ componentName, nodeId, selected, previewUrl }: PillToggleToolbarProps) => {
+export const PillToggleToolbar = ({ componentName, nodeId, selected, onRefresh, previewUrl }: PillToggleToolbarProps) => {
+  const setCodePanelComponentName = useWorkspaceStore((s) => s.setCodePanelComponentName);
 
   return (
     <LayoutGroup id={nodeId}>
       <div>
-        <div style={{ position: "relative", height: 36, zIndex: 1 }}>
-          <div style={{ position: "absolute", top: 0, left: 0 }}>
+        <div className="relative h-9 z-[1]">
+          <div className="absolute top-0 left-0">
             <motion.div
               transition={spring}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                cursor: "pointer",
-                overflow: "visible",
-                transformOrigin: "left center",
-                height: 36,
-                position: "relative",
-              }}
+              className="flex items-center cursor-pointer overflow-visible origin-left h-9 relative"
               initial={false}
               animate={{
                 paddingTop: 5,
                 paddingBottom: 5,
                 paddingLeft: selected ? 12 : 0,
                 paddingRight: 12,
-                background: selected ? c.bgSurface : "rgba(0,0,0,0)",
+                background: selected ? "#262626" : "rgba(0,0,0,0)",
                 borderRadius: selected ? 20 : 9,
               }}
             >
-              {/* Shadow layer — crossfade via opacity instead of animating boxShadow */}
               <motion.div
-                style={{
-                  position: "absolute",
-                  inset: 0,
-                  borderRadius: "inherit",
-                  boxShadow: "0 4px 16px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.06)",
-                  pointerEvents: "none",
-                }}
+                className="absolute inset-0 rounded-[inherit] shadow-[0_4px_16px_rgba(0,0,0,0.4),0_0_0_1px_rgba(255,255,255,0.06)] pointer-events-none"
                 animate={{ opacity: selected ? 1 : 0 }}
                 transition={{ duration: 0.15, ease: "easeOut" }}
               />
-              {/* Component name — always visible, left side. Click to toggle. */}
               <motion.span
-                style={{ fontSize: 12, fontWeight: 500, fontFamily: "inherit", whiteSpace: "nowrap" }}
-                animate={{ color: selected ? c.textMuted : c.textDim }}
+                className="text-xs font-medium font-[inherit] whitespace-nowrap"
+                animate={{ color: selected ? "rgba(255,255,255,0.5)" : "rgba(255,255,255,0.3)" }}
                 transition={springGentle}
               >
                 {componentName}
               </motion.span>
 
-              {/* Divider + action icons — morphs in on select */}
               <AnimatePresence>
                 {selected && (
                   <motion.div
@@ -144,26 +93,20 @@ export const PillToggleToolbar = ({ componentName, nodeId, selected, previewUrl 
                       ...spring,
                       opacity: { type: "spring", stiffness: 800, damping: 30, mass: 0.3 },
                     }}
-                    style={{
-                      overflow: "hidden",
-                      transformOrigin: "left center",
-                    }}
+                    className="overflow-hidden origin-left"
                   >
-                    <div style={{
-                      display: "flex", alignItems: "center",
-                      whiteSpace: "nowrap",
-                      width: "max-content",
-                    }}>
-                    <Divider spacing={8} />
-                    <IconBtn icon={<Code size={14} />} label="See Code" size={26} />
-                    <Divider spacing={6} />
-                    <IconBtn icon={<Copy size={14} />} size={26} />
-                    <IconBtn icon={<RefreshCw size={14} />} size={26} />
-                    <IconBtn icon={<Maximize2 size={14} />} size={26} onClick={() => {
-                      const fullscreenUrl = new URL(previewUrl);
-                      fullscreenUrl.searchParams.set("fullscreen", "true");
-                      window.electronAPI.openPreviewWindow(fullscreenUrl.toString());
-                    }} />
+                    <div className="flex items-center whitespace-nowrap w-max">
+                      <Divider className="mx-2" />
+                      <IconBtn icon={<Code size={14} />} label="See Code" size={26} onClick={() => setCodePanelComponentName(componentName)} />
+                      <Divider className="mx-1.5" />
+                      <IconBtn icon={<RefreshCw size={14} />} size={26} onClick={onRefresh} />
+                      <IconBtn icon={<Maximize2 size={14} />} size={26} onClick={() => {
+                        if (previewUrl) {
+                          const fullscreenUrl = new URL(previewUrl);
+                          fullscreenUrl.searchParams.set("fullscreen", "true");
+                          window.electronAPI.openPreviewWindow(fullscreenUrl.toString());
+                        }
+                      }} />
                     </div>
                   </motion.div>
                 )}

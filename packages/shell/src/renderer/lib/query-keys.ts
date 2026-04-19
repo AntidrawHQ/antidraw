@@ -1,4 +1,7 @@
 export const queryKeys = {
+  claudeCode: {
+    authStatus: ["claudeCode", "authStatus"] as const,
+  },
   workspaces: {
     all: ["workspaces"] as const,
     detail: (id: string | null) => ["workspace", id] as const,
@@ -12,7 +15,9 @@ export const queryKeys = {
       ["workspace-conversations", workspaceId] as const,
   },
   userComponents: {
-    byWorkspace: (workspaceId: string, port: number) =>
-      ["userComponents", workspaceId, port] as const,
+    byWorkspace: (workspaceId: string) =>
+      ["userComponents", workspaceId] as const,
+    source: (workspaceId: string, componentName: string) =>
+      ["userComponents", "source", workspaceId, componentName] as const,
   },
 } as const;

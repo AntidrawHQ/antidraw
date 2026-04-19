@@ -74,6 +74,7 @@ export const useToolMap = (conversationId: string | null) => {
   return useQuery({
     ...conversationQueryOpts(conversationId),
     select: selectToolMap,
+    structuralSharing: false,
   });
 };
 

@@ -17,10 +17,12 @@ import {
 } from "@/renderer/components/ui/prompt-input";
 import { Button } from "@/renderer/components/ui/button";
 import { cn } from "@/renderer/lib/utils";
+import { triggerClaudeLogin } from "@/renderer/lib/api";
 import { ArrowUp, ImageIcon, Paperclip, Square, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import {
   useCancelStream,
+  useConversationMessages,
   useConversationWithStream,
   useCreateConversation,
   useGenerateTitle,
@@ -28,12 +30,162 @@ import {
   useToolMap,
 } from "./lib/claude-code-ops";
 import { Tool } from "@/renderer/components/ui/tool";
+import type { ToolPart } from "@/renderer/components/ui/tool";
+import { AuthError } from "@/renderer/components/auth-error";
 import { useWorkspaceStore } from "./store/workspace";
+import { ChatEmptyState } from "./components/ChatEmptyState";
 import {
   SUPPORTED_IMAGE_TYPES,
   type ImageAttachment,
   type SupportedImageMediaType,
 } from "@/shared/utils/message";
+
+type Base64ImageBlock = {
+  type: "image";
+  source: {
+    type: "base64";
+    media_type: SupportedImageMediaType;
+    data: string;
+  };
+};
+
+const getToolTitle = (toolPart: ToolPart): string => {
+  const { type, input } = toolPart;
+
+  if (typeof input?.description === "string" && input.description) return input.description;
+
+  if (typeof input?.file_path === "string" && input.file_path) {
+    const name = input.file_path.split("/").pop() ?? input.file_path;
+    if (input.file_path.includes("/user-components/")) {
+      const verb = type === "Write" ? "Crafting" : type === "Edit" ? "Refining" : type;
+      return `${verb} ${name.replace(/\.\w+$/, "")}`;
+    }
+    return `${type} ${name}`;
+  }
+
+  if (typeof input?.pattern === "string" && input.pattern) return `${type} ${input.pattern}`;
+
+  return type;
+};
+
+type MessageListProps = {
+  conversationId: string | null;
+  onSignIn: () => void;
+  onRetry: () => void;
+};
+
+const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProps) => {
+  const { data: conversation } = useConversationMessages(conversationId);
+  const { data: toolMap } = useToolMap(conversationId);
+  const messages = conversation?.messages ?? [];
+
+  return (
+    <>
+      {messages.map((msg) => {
+        const sdkMessage = msg.sdkMessage;
+        if (sdkMessage.type !== "user" && sdkMessage.type !== "assistant") {
+          return null;
+        }
+
+        if (
+          sdkMessage.type === "assistant" &&
+          "error" in sdkMessage &&
+          sdkMessage.error === "authentication_failed"
+        ) {
+          return (
+            <AuthError
+              key={msg.id}
+              onSignIn={onSignIn}
+              onRetry={onRetry}
+            />
+          );
+        }
+
+        const isAssistant = sdkMessage.type === "assistant";
+        const content = sdkMessage.message.content;
+        const blocks = Array.isArray(content)
+          ? content
+          : typeof content === "string"
+            ? [{ type: "text" as const, text: content }]
+            : [];
+
+        const imageBlocks = blocks.filter(
+          (b): b is Base64ImageBlock =>
+            b.type === "image" &&
+            "source" in b &&
+            b.source?.type === "base64"
+        );
+
+        return (
+          <Message
+            key={msg.id}
+            className={isAssistant ? "justify-start" : "justify-end"}
+          >
+            <div className="flex flex-col gap-1 overflow-auto w-full">
+              {imageBlocks.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {imageBlocks.map((block, idx) => (
+                    <img
+                      key={`img-${idx}`}
+                      src={`data:${block.source.media_type};base64,${block.source.data}`}
+                      alt="Attached image"
+                      className="h-10 w-10 rounded object-cover border border-neutral-600"
+                    />
+                  ))}
+                </div>
+              )}
+              {blocks.map((block, idx) => {
+                if (block.type === "image") {
+                  return null;
+                }
+
+                if (block.type === "text") {
+                  return isAssistant ? (
+                    <div
+                      key={idx}
+                      className="bg-secondary text-foreground prose prose-sm prose-invert rounded-lg"
+                    >
+                      <Markdown>{block.text}</Markdown>
+                    </div>
+                  ) : (
+                    <MessageContent
+                      key={idx}
+                      className="bg-neutral-700 text-neutral-200 prose prose-sm prose-invert"
+                    >
+                      {block.text}
+                    </MessageContent>
+                  );
+                }
+
+                if (block.type === "tool_use") {
+                  const toolPart = toolMap?.get(block.id);
+                  if (toolPart) {
+                    return (
+                      <Tool
+                        key={idx}
+                        toolPart={toolPart}
+                        title={getToolTitle(toolPart)}
+                        className="mt-1 w-full"
+                      />
+                    );
+                  }
+                  return null;
+                }
+
+                if (block.type === "tool_result") {
+                  return null;
+                }
+
+                return null;
+              })}
+            </div>
+          </Message>
+        );
+      })}
+    </>
+  );
+});
+MessageList.displayName = "MessageList";
 
 type AppChatProps = React.ComponentProps<"div">;
 
@@ -83,9 +235,7 @@ export function AppChat({ className, ...props }: AppChatProps) {
   const generateTitle = useGenerateTitle();
   const cancelStream = useCancelStream();
   const { data: conversation } = useConversationWithStream(activeConversationId);
-  const { data: toolMap } = useToolMap(activeConversationId);
 
-  const messages = conversation?.messages ?? [];
   const isStreaming = conversation?.streamStatus === "streaming";
 
   const isLoading = createConversation.isPending || sendMessage.isPending || isStreaming;
@@ -162,6 +312,21 @@ export function AppChat({ className, ...props }: AppChatProps) {
     }
   };
 
+  const handleSignIn = () => {
+    triggerClaudeLogin();
+  };
+
+  const handleRetry = async () => {
+    if (!activeWorkspaceId || !activeConversationId || isLoading) return;
+
+    await sendMessage.mutateAsync({
+      message: "Logged in, continue.",
+      workspaceId: activeWorkspaceId,
+      conversationId: activeConversationId,
+      userMessageId: crypto.randomUUID(),
+    });
+  };
+
   return (
     <div
       className={cn(
@@ -171,106 +336,17 @@ export function AppChat({ className, ...props }: AppChatProps) {
       {...props}
     >
       <ChatContainerRoot className="flex-1">
-        <ChatContainerContent className="p-4">
-          {messages.map((msg) => {
-            const sdkMessage = msg.sdkMessage;
-            if (sdkMessage.type !== "user" && sdkMessage.type !== "assistant") {
-              return null;
-            }
-
-            const isAssistant = sdkMessage.type === "assistant";
-            const content = sdkMessage.message.content;
-            const blocks = Array.isArray(content)
-              ? content
-              : typeof content === "string"
-                ? [{ type: "text" as const, text: content }]
-                : [];
-
-            return (
-              <Message
-                key={msg.id}
-                className={isAssistant ? "justify-start" : "justify-end"}
-              >
-                <div className="overflow-auto space-y-2 w-full">
-                  {(() => {
-                    type Base64ImageBlock = {
-                      type: "image";
-                      source: {
-                        type: "base64";
-                        media_type: SupportedImageMediaType;
-                        data: string;
-                      };
-                    };
-                    const imageBlocks = blocks.filter(
-                      (b): b is Base64ImageBlock =>
-                        b.type === "image" &&
-                        "source" in b &&
-                        b.source?.type === "base64"
-                    );
-                    if (imageBlocks.length > 0) {
-                      return (
-                        <div className="flex flex-wrap gap-1">
-                          {imageBlocks.map((block, idx) => (
-                            <img
-                              key={`img-${idx}`}
-                              src={`data:${block.source.media_type};base64,${block.source.data}`}
-                              alt="Attached image"
-                              className="h-10 w-10 rounded object-cover border border-neutral-600"
-                            />
-                          ))}
-                        </div>
-                      );
-                    }
-                    return null;
-                  })()}
-                  {blocks.map((block, idx) => {
-                    if (block.type === "image") {
-                      return null;
-                    }
-
-                    if (block.type === "text") {
-                      return isAssistant ? (
-                        <div
-                          key={idx}
-                          className="bg-secondary text-foreground prose prose-sm prose-invert rounded-lg p-2"
-                        >
-                          <Markdown>{block.text}</Markdown>
-                        </div>
-                      ) : (
-                        <MessageContent
-                          key={idx}
-                          className="bg-neutral-700 text-neutral-200 prose prose-sm prose-invert"
-                        >
-                          {block.text}
-                        </MessageContent>
-                      );
-                    }
-
-                    if (block.type === "tool_use") {
-                      const toolPart = toolMap?.get(block.id);
-                      if (toolPart) {
-                        return (
-                          <Tool
-                            key={idx}
-                            toolPart={toolPart}
-                            className="w-full"
-                          />
-                        );
-                      }
-                      return null;
-                    }
-
-                    // Skip tool_result - handled by Tool component above
-                    if (block.type === "tool_result") {
-                      return null;
-                    }
-
-                    return null;
-                  })}
-                </div>
-              </Message>
-            );
-          })}
+        <ChatContainerContent className={cn("p-4", !activeConversationId && !isLoading && "min-h-full")}>
+          {!activeConversationId && !isLoading && (
+            <div className="flex-1 flex items-end justify-start pl-3">
+              <ChatEmptyState />
+            </div>
+          )}
+          <MessageList
+            conversationId={activeConversationId}
+            onSignIn={handleSignIn}
+            onRetry={handleRetry}
+          />
         </ChatContainerContent>
       </ChatContainerRoot>
 

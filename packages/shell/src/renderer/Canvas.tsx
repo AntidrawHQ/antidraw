@@ -18,6 +18,7 @@ import { useDevServerStatus, useAutoStartDevServer } from "./lib/workspace-ops";
 import { cn } from "./lib/utils";
 import { Semaphore } from "./lib/semaphore";
 import { PillToggleToolbar } from "./components/PillToggleToolbar";
+import { EmptyState } from "./components/EmptyState";
 
 type IframeNodeProps = {
   url: string | undefined;
@@ -118,6 +119,7 @@ const IframeNodeRenderer = ({
   selected,
 }: NodeProps<IframeReactFlowNode>) => {
   const [url, setUrl] = useState<string | undefined>(undefined);
+  const [refreshCounter, setRefreshCounter] = useState(0);
   const releaseRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
@@ -144,12 +146,30 @@ const IframeNodeRenderer = ({
     releaseRef.current = null;
   }, []);
 
+  const handleRefresh = useCallback(() => {
+    setRefreshCounter((c) => c + 1);
+  }, []);
+
+  const iframeUrl = useMemo(() => {
+    if (!url) return undefined;
+    if (refreshCounter === 0) return url;
+    const parsed = new URL(url);
+    parsed.searchParams.set("_r", String(refreshCounter));
+    return parsed.toString();
+  }, [url, refreshCounter]);
+
   return (
     <>
       <NodeToolbar position={Position.Top} align="start" isVisible={true} offset={8}>
-        <PillToggleToolbar componentName={data.componentName} nodeId={id} selected={selected} previewUrl={data.url} />
+        <PillToggleToolbar
+          componentName={data.componentName}
+          nodeId={id}
+          selected={selected}
+          onRefresh={handleRefresh}
+          previewUrl={data.url}
+        />
       </NodeToolbar>
-      <IframeNode url={url} selected={selected} onLoad={handleLoad} />
+      <IframeNode url={iframeUrl} selected={selected} onLoad={handleLoad} />
     </>
   );
 };
@@ -326,7 +346,7 @@ export const AppCanvas = ({ className }: AppCanvasProps) => {
     return <CanvasPlaceholder subtitle="No workspace selected" className={className} />;
   }
 
-  if (!devServer) {
+  if (!devServer?.running) {
     return (
       <CanvasPlaceholder
         subtitle={isDevServerPending ? "Checking dev server..." : "Dev server not running"}
@@ -341,6 +361,15 @@ export const AppCanvas = ({ className }: AppCanvasProps) => {
 
   if (isError || !userComponents) {
     return <CanvasPlaceholder subtitle="Error loading components" className={className} />;
+  }
+
+  if (userComponents.length === 0) {
+    return (
+      <div className={cn("flex-1 flex items-center justify-center bg-neutral-800 relative", className)}>
+        <GridPattern />
+        <EmptyState className="z-10" />
+      </div>
+    );
   }
 
   return (
