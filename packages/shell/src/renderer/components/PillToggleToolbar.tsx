@@ -46,10 +46,10 @@ type PillToggleToolbarProps = {
   nodeId: string;
   selected?: boolean;
   onRefresh?: () => void;
-  previewUrl?: string;
+  onFullscreen?: () => void;
 };
 
-export const PillToggleToolbar = ({ componentName, nodeId, selected, onRefresh, previewUrl }: PillToggleToolbarProps) => {
+export const PillToggleToolbar = ({ componentName, nodeId, selected, onRefresh, onFullscreen }: PillToggleToolbarProps) => {
   const setCodePanelComponentName = useWorkspaceStore((s) => s.setCodePanelComponentName);
 
   return (
@@ -100,13 +100,7 @@ export const PillToggleToolbar = ({ componentName, nodeId, selected, onRefresh, 
                       <IconBtn icon={<Code size={14} />} label="See Code" size={26} onClick={() => setCodePanelComponentName(componentName)} />
                       <Divider className="mx-1.5" />
                       <IconBtn icon={<RefreshCw size={14} />} size={26} onClick={onRefresh} />
-                      <IconBtn icon={<Maximize2 size={14} />} size={26} onClick={() => {
-                        if (previewUrl) {
-                          const fullscreenUrl = new URL(previewUrl);
-                          fullscreenUrl.searchParams.set("fullscreen", "true");
-                          window.electronAPI.openPreviewWindow(fullscreenUrl.toString());
-                        }
-                      }} />
+                      <IconBtn icon={<Maximize2 size={14} />} size={26} onClick={onFullscreen} />
                     </div>
                   </motion.div>
                 )}

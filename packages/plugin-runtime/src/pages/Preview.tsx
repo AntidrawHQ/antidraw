@@ -51,8 +51,7 @@ export const Preview = () => {
   return (
     <div
       ref={containerRef}
-      className={fullscreen ? "w-screen h-screen flex items-center justify-center" : ""}
-      style={fullscreen ? undefined : { display: "inline-block" }}
+      className={fullscreen ? "w-screen h-screen flex items-center justify-center" : "inline-block"}
     >
       {createElement(Component)}
     </div>

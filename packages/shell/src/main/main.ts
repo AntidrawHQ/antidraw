@@ -2,6 +2,10 @@ import { app, BrowserWindow, ipcMain, protocol, session } from "electron";
 import path from "path";
 
 import { app as HonoAPI } from "./api";
+import { devServerStore } from "./lib/runtime-store";
+
+let mainWindow: BrowserWindow | null = null;
+const previewWindows = new Set<BrowserWindow>();
 
 // Increase file descriptor limit for POSIX systems (macOS/Linux)
 // Each network connection uses a file descriptor - with many iframes
@@ -32,17 +36,27 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 const createWindow = () => {
-  const mainWindow = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 900,
     height: 670,
     titleBarStyle: "hidden",
     trafficLightPosition: { x: 12, y: 13 },
-    backgroundColor: "#0a0a0a", // Matches dark mode background - prevents white flash on resize
+    backgroundColor: "#0a0a0a",
     webPreferences: {
       preload: path.join(__dirname, "../preload/preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
     },
+  });
+
+  mainWindow.on("closed", () => {
+    for (const pw of previewWindows) {
+      if (!pw.isDestroyed()) {
+        pw.close();
+      }
+    }
+    previewWindows.clear();
+    mainWindow = null;
   });
 
   if (process.env.NODE_ENV === "development") {
@@ -67,6 +81,34 @@ app.whenReady().then(() => {
   createWindow();
 
   ipcMain.handle("open-preview-window", (_event, url: string) => {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new Error("Invalid URL");
+    }
+
+    if (parsed.protocol !== "https:" || parsed.hostname !== "localhost") {
+      throw new Error("URL must be https://localhost");
+    }
+
+    const port = parseInt(parsed.port, 10);
+    const isKnownPort = devServerStore.getAll().some((s) => s.port === port);
+    if (!isKnownPort) {
+      throw new Error("URL port does not match any active dev server");
+    }
+
+    if (parsed.pathname !== "/preview") {
+      throw new Error("URL path must be /preview");
+    }
+
+    const allowedParams = new Set(["componentName", "fullscreen", "_r"]);
+    for (const key of parsed.searchParams.keys()) {
+      if (!allowedParams.has(key)) {
+        throw new Error(`Unexpected query parameter: ${key}`);
+      }
+    }
+
     const previewWindow = new BrowserWindow({
       width: 1200,
       height: 800,
@@ -77,6 +119,12 @@ app.whenReady().then(() => {
         nodeIntegration: false,
       },
     });
+
+    previewWindows.add(previewWindow);
+    previewWindow.on("closed", () => {
+      previewWindows.delete(previewWindow);
+    });
+
     previewWindow.loadURL(url);
   });
 

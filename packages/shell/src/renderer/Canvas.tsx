@@ -150,6 +150,12 @@ const IframeNodeRenderer = ({
     setRefreshCounter((c) => c + 1);
   }, []);
 
+  const handleFullscreen = useCallback(() => {
+    const fullscreenUrl = new URL(data.url);
+    fullscreenUrl.searchParams.set("fullscreen", "true");
+    window.electronAPI.openPreviewWindow(fullscreenUrl.toString());
+  }, [data.url]);
+
   const iframeUrl = useMemo(() => {
     if (!url) return undefined;
     if (refreshCounter === 0) return url;
@@ -166,7 +172,7 @@ const IframeNodeRenderer = ({
           nodeId={id}
           selected={selected}
           onRefresh={handleRefresh}
-          previewUrl={data.url}
+          onFullscreen={handleFullscreen}
         />
       </NodeToolbar>
       <IframeNode url={iframeUrl} selected={selected} onLoad={handleLoad} />

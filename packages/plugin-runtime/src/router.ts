@@ -20,7 +20,7 @@ const previewRoute = createRoute({
   component: Preview,
   validateSearch: (search: Record<string, unknown>) => ({
     componentName: (search.componentName) || undefined,
-    fullscreen: search.fullscreen === "true",
+    fullscreen: search.fullscreen === "true" || search.fullscreen === true,
   }),
 })
 
