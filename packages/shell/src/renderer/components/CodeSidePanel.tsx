@@ -68,6 +68,7 @@ const Sidebar = ({
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
+          gap: 12,
           padding: "12px 12px 12px 16px",
           flexShrink: 0,
         }}
@@ -77,6 +78,10 @@ const Sidebar = ({
             fontSize: 12,
             fontWeight: 500,
             color: "rgba(255,255,255,0.88)",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            minWidth: 0,
           }}
         >
           {fileName}
