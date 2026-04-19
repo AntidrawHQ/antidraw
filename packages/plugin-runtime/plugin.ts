@@ -9,7 +9,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const runtimeSrc = path.resolve(__dirname, "../src")
 const certsDir = path.resolve(__dirname, "../certs")
 
-const USER_COMPONENTS_DIR = "./src/components/user-components"
 const VIRTUAL_USER_COMPONENTS = "@antidrawapp/user-components"
 const RESOLVED_VIRTUAL_USER_COMPONENTS = "\0@antidrawapp/user-components"
 
@@ -57,56 +56,6 @@ export const userComponents = Object.fromEntries(
 )
 `
         }
-      },
-    },
-    {
-      name: "antidraw:component-api",
-      configureServer: async (server) => {
-        const fs = await import("fs/promises")
-        const dir = path.resolve(process.cwd(), USER_COMPONENTS_DIR)
-
-        server.middlewares.use("/__components", async (_, res, next) => {
-          try {
-            const files = await fs.readdir(dir).catch(() => [])
-
-            const components = files
-              .filter((f: string) => f.endsWith(".tsx"))
-              .map((f: string) => ({ name: f.replace(".tsx", "") }))
-
-            res.setHeader("Content-Type", "application/json")
-            res.end(JSON.stringify({ components }))
-          } catch (err) {
-            next(err)
-          }
-        })
-
-        server.middlewares.use("/__component-source", async (req, res, next) => {
-          try {
-            const url = new URL(req.url ?? "", "http://localhost")
-            const name = url.searchParams.get("name")
-
-            if (!name || !/^[a-zA-Z0-9_-]+$/.test(name)) {
-              res.statusCode = 400
-              res.setHeader("Content-Type", "application/json")
-              res.end(JSON.stringify({ error: "Invalid or missing component name" }))
-              return
-            }
-
-            const filePath = path.resolve(dir, `${name}.tsx`)
-            const source = await fs.readFile(filePath, "utf-8")
-
-            res.setHeader("Content-Type", "application/json")
-            res.end(JSON.stringify({ name, fileName: `${name}.tsx`, filePath, source }))
-          } catch (err: any) {
-            if (err.code === "ENOENT") {
-              res.statusCode = 404
-              res.setHeader("Content-Type", "application/json")
-              res.end(JSON.stringify({ error: "Component not found" }))
-            } else {
-              next(err)
-            }
-          }
-        })
       },
     },
     {

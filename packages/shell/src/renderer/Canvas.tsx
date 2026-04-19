@@ -338,7 +338,7 @@ export const AppCanvas = ({ className }: AppCanvasProps) => {
     return <CanvasPlaceholder subtitle="No workspace selected" className={className} />;
   }
 
-  if (!devServer) {
+  if (!devServer?.running) {
     return (
       <CanvasPlaceholder
         subtitle={isDevServerPending ? "Checking dev server..." : "Dev server not running"}

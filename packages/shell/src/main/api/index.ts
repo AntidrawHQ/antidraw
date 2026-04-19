@@ -12,6 +12,10 @@ export type { CreateWorkspaceStatusCode } from "./services/workspace.service";
 export type { DevServerState } from "@/main/lib/runtime-store";
 export type { DevServerInfo } from "@/main/services/dev-server.service";
 export type { ClaudeAuthStatus } from "@/main/services/claude-cli-interactions.service";
+export type {
+  ComponentListItem,
+  ComponentSource,
+} from "./services/component.service";
 import { zValidator } from "@hono/zod-validator";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";

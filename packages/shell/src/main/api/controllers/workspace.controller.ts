@@ -15,6 +15,10 @@ import {
   getDevServerStatus,
 } from "@/main/services/dev-server.service";
 import { listConversations } from "../services/chat.service";
+import {
+  listComponents,
+  getComponentSource,
+} from "../services/component.service";
 
 export const workspaceController = new Hono();
 
@@ -24,6 +28,11 @@ const createWorkspaceSchema = z.object({
 
 const workspaceIdParamSchema = z.object({
   workspaceId: z.uuid(),
+});
+
+const componentNameParamSchema = z.object({
+  workspaceId: z.uuid(),
+  componentName: z.string().regex(/^[a-zA-Z0-9_-]+$/),
 });
 
 export type { CreateWorkspaceEvent as CreateWorkspaceResponse };
@@ -145,6 +154,40 @@ workspaceController.get(
   async (ctx) => {
     const { workspaceId } = ctx.req.valid("param");
     const result = getDevServerStatus(workspaceId);
+
+    if (result.isErr()) {
+      const { status, code, message } = result.error;
+      return ctx.json({ error: { code, message } }, status);
+    }
+
+    return ctx.json(result.value);
+  }
+);
+
+// Component endpoints
+
+workspaceController.get(
+  "/:workspaceId/components",
+  zValidator("param", workspaceIdParamSchema),
+  async (ctx) => {
+    const { workspaceId } = ctx.req.valid("param");
+    const result = await listComponents(workspaceId);
+
+    if (result.isErr()) {
+      const { status, code, message } = result.error;
+      return ctx.json({ error: { code, message } }, status);
+    }
+
+    return ctx.json(result.value);
+  }
+);
+
+workspaceController.get(
+  "/:workspaceId/components/:componentName/source",
+  zValidator("param", componentNameParamSchema),
+  async (ctx) => {
+    const { workspaceId, componentName } = ctx.req.valid("param");
+    const result = await getComponentSource(workspaceId, componentName);
 
     if (result.isErr()) {
       const { status, code, message } = result.error;
