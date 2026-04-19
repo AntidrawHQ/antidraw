@@ -47,7 +47,7 @@ const INITIAL_COMPONENTS: Partial<Components> = {
     const language = extractLanguage(className);
 
     return (
-      <CodeBlock className={cn(className, "border-[#444] bg-transparent")}>
+      <CodeBlock className={cn(className, "border-[#333] bg-transparent")}>
         <CodeBlockCode
           code={children as string}
           language={language}
