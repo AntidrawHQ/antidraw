@@ -22,6 +22,7 @@ import { cn } from "./lib/utils";
 import { Semaphore } from "./lib/semaphore";
 import { PillToggleToolbar } from "./components/PillToggleToolbar";
 import { EmptyState } from "./components/EmptyState";
+import { useMountEffect } from "./hooks/use-mount-effect";
 
 type IframeNodeProps = {
   url: string | undefined;
@@ -310,28 +311,30 @@ const CanvasContent = ({
     [onNodesChange, scheduleSave],
   );
 
-  useEffect(() => {
+  const handleNodesChangeRef = useRef(handleNodesChange);
+  handleNodesChangeRef.current = handleNodesChange;
+
+  useMountEffect(() => {
     const handleMessage = (event: MessageEvent) => {
-      if (event.data?.type === "component-size") {
-        const { componentName, width, height } = event.data;
-        const node = nodesRef.current.find(
-          (n) => n.data.componentName === componentName,
-        );
-        if (!node) return;
-        handleNodesChange([
-          {
-            id: node.id,
-            type: "dimensions",
-            dimensions: { width, height },
-            setAttributes: true,
-          },
-        ]);
-      }
+      if (event.data?.type !== "component-size") return;
+      const { componentName, width, height } = event.data;
+      const node = nodesRef.current.find(
+        (n) => n.data.componentName === componentName,
+      );
+      if (!node) return;
+      handleNodesChangeRef.current([
+        {
+          id: node.id,
+          type: "dimensions",
+          dimensions: { width, height },
+          setAttributes: true,
+        },
+      ]);
     };
 
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
-  }, [handleNodesChange]);
+  });
 
   // Sync new components into nodes when userComponents changes
   useEffect(() => {
