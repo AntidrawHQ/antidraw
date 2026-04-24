@@ -38,12 +38,14 @@ import {
   cancelStream as cancelActiveStream,
 } from "@/main/lib/stream-manager";
 import { workspaceController } from "./controllers/workspace.controller";
+import { preferenceController } from "./controllers/preference.controller";
 import { claudeCliInteractionsController } from "./controllers/claude-cli-interactions.controller";
 import type { ImageAttachment } from "@/shared/utils/message";
 
 export const app = new Hono();
 
 app.route("/workspaces", workspaceController);
+app.route("/preferences", preferenceController);
 app.route("/claude-cli", claudeCliInteractionsController);
 
 const imageAttachmentSchema = z.object({

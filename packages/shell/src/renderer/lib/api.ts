@@ -17,6 +17,61 @@ import { ok, err } from "neverthrow";
 export type { StreamEvent } from "@/main/api";
 
 // ============================================================================
+// UI Preferences API
+// ============================================================================
+
+export const getPreference = async (key: string) => {
+  try {
+    const response = await fetch(`antidraw://_internal/preferences/${key}`);
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      return err({
+        status: response.status as 500,
+        code: errorBody?.error?.code ?? "FETCH_ERROR",
+        message: errorBody?.error?.message ?? response.statusText,
+      });
+    }
+
+    const data: { value: string | null } = await response.json();
+    return ok(data.value);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "NETWORK_ERROR",
+      message: "Failed to get preference",
+    });
+  }
+};
+
+export const setPreference = async (key: string, value: string) => {
+  try {
+    const response = await fetch(`antidraw://_internal/preferences/${key}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value }),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      return err({
+        status: response.status as 500,
+        code: errorBody?.error?.code ?? "FETCH_ERROR",
+        message: errorBody?.error?.message ?? response.statusText,
+      });
+    }
+
+    return ok(true);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "NETWORK_ERROR",
+      message: "Failed to set preference",
+    });
+  }
+};
+
+// ============================================================================
 // Claude CLI API
 // ============================================================================
 
@@ -558,6 +613,84 @@ export const generateConversationTitle = async (
       status: 500 as const,
       code: "NETWORK_ERROR",
       message: "Failed to generate title",
+    });
+  }
+};
+
+// ============================================================================
+// Frame Layout API
+// ============================================================================
+
+export type FrameLayoutData = {
+  workspaceId: string;
+  componentName: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export const getFrameLayouts = async (workspaceId: string) => {
+  try {
+    const response = await fetch(
+      `antidraw://_internal/workspaces/${workspaceId}/frame-layouts`,
+    );
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      return err({
+        status: response.status as 500,
+        code: errorBody?.error?.code ?? "FETCH_ERROR",
+        message: errorBody?.error?.message ?? response.statusText,
+      });
+    }
+
+    const data: FrameLayoutData[] = await response.json();
+    return ok(data);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "NETWORK_ERROR",
+      message: "Failed to get frame layouts",
+    });
+  }
+};
+
+export const saveFrameLayouts = async (
+  workspaceId: string,
+  layouts: {
+    componentName: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }[],
+) => {
+  try {
+    const response = await fetch(
+      `antidraw://_internal/workspaces/${workspaceId}/frame-layouts`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ layouts }),
+      },
+    );
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      return err({
+        status: response.status as 500,
+        code: errorBody?.error?.code ?? "FETCH_ERROR",
+        message: errorBody?.error?.message ?? response.statusText,
+      });
+    }
+
+    return ok(true);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "NETWORK_ERROR",
+      message: "Failed to save frame layouts",
     });
   }
 };

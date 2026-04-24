@@ -20,4 +20,8 @@ export const queryKeys = {
     source: (workspaceId: string, componentName: string) =>
       ["userComponents", "source", workspaceId, componentName] as const,
   },
+  frameLayouts: {
+    byWorkspace: (workspaceId: string | null) =>
+      ["frameLayouts", workspaceId] as const,
+  },
 } as const;
