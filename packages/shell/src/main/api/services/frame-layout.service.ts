@@ -1,4 +1,4 @@
-import { frameLayouts } from "@/main/api/models/frame-layout.model";
+import { frameLayouts, type NewFrameLayout } from "@/main/api/models/frame-layout.model";
 import { db } from "@/main/db";
 import { eq } from "drizzle-orm";
 import { ok, err } from "neverthrow";
@@ -20,13 +20,7 @@ export const getFrameLayouts = async (workspaceId: string) => {
   }
 };
 
-type FrameLayoutInput = {
-  componentName: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-};
+type FrameLayoutInput = Omit<NewFrameLayout, "workspaceId">;
 
 export const saveFrameLayouts = async (
   workspaceId: string,

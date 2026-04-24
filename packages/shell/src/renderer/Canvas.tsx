@@ -245,16 +245,19 @@ const CanvasContent = ({
       }
     }
 
-    // New components: append to the right of existing ones
-    const maxX =
-      withLayout.length > 0
-        ? Math.max(...withLayout.map((n) => n.position.x))
-        : -400;
+    // New components: append to the right of the rightmost existing node,
+    // matching its y so they continue the same row.
+    const rightmost = withLayout.reduce<IframeReactFlowNode | null>(
+      (acc, n) => (!acc || n.position.x > acc.position.x ? n : acc),
+      null,
+    );
+    const baseX = rightmost ? rightmost.position.x : -400;
+    const baseY = rightmost ? rightmost.position.y : 100;
 
     const newNodes = withoutLayout.map((component, index) => ({
       id: `${component.name}-1`,
       type: "iframe" as const,
-      position: { x: maxX + 500 + index * 600, y: 100 },
+      position: { x: baseX + 500 + index * 600, y: baseY },
       style: { width: 400, height: 300 },
       data: {
         url: `https://localhost:${port}/preview?componentName=${component.name}`,
@@ -281,8 +284,8 @@ const CanvasContent = ({
         componentName: n.data.componentName,
         x: n.position.x,
         y: n.position.y,
-        width: (n.style?.width as number) ?? 400,
-        height: (n.style?.height as number) ?? 300,
+        width: typeof n.style?.width === "number" ? n.style.width : 400,
+        height: typeof n.style?.height === "number" ? n.style.height : 300,
       }));
       saveFrameLayouts(workspaceId, layouts); // fire-and-forget
     }, 500);
@@ -311,20 +314,24 @@ const CanvasContent = ({
     const handleMessage = (event: MessageEvent) => {
       if (event.data?.type === "component-size") {
         const { componentName, width, height } = event.data;
-        setNodes((nds) =>
-          nds.map((node) =>
-            node.data.componentName === componentName
-              ? { ...node, style: { ...node.style, width, height } }
-              : node
-          )
+        const node = nodesRef.current.find(
+          (n) => n.data.componentName === componentName,
         );
-        scheduleSave();
+        if (!node) return;
+        handleNodesChange([
+          {
+            id: node.id,
+            type: "dimensions",
+            dimensions: { width, height },
+            setAttributes: true,
+          },
+        ]);
       }
     };
 
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
-  }, [setNodes, scheduleSave]);
+  }, [handleNodesChange]);
 
   // Sync new components into nodes when userComponents changes
   useEffect(() => {
