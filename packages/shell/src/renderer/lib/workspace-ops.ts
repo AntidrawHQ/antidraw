@@ -15,10 +15,10 @@ import {
   startDevServer,
   stopDevServer,
   getDevServerStatus,
-  getPreference,
   setPreference,
 } from "./api";
 import { workspacesQueryOptions } from "./workspace-queries";
+import { usePreference } from "./preference-ops";
 
 export const useWorkspaces = () => {
   return useQuery(workspacesQueryOptions);
@@ -159,28 +159,24 @@ export const useAutoSelectWorkspace = () => {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const setActiveWorkspaceId = useWorkspaceStore((s) => s.setActiveWorkspaceId);
   const { data: workspaces } = useWorkspaces();
-  const restoredRef = useRef(false);
+  const { data: savedId, isPending: isPrefPending } =
+    usePreference("activeWorkspaceId");
 
   useEffect(() => {
-    if (activeWorkspaceId || !workspaces?.length || restoredRef.current) return;
-    restoredRef.current = true;
+    if (activeWorkspaceId || !workspaces?.length || isPrefPending) return;
 
-    const restore = async () => {
-      const result = await getPreference("activeWorkspaceId");
-      const savedId = result.isOk() ? result.value : null;
+    const exists = !!savedId && workspaces.some((ws) => ws.id === savedId);
+    const targetId = exists ? savedId! : workspaces[0].id;
 
-      // Use saved workspace if it still exists, otherwise fall back to first
-      const targetId =
-        savedId && workspaces.some((ws) => ws.id === savedId)
-          ? savedId
-          : workspaces[0].id;
-
-      setActiveWorkspaceId(targetId);
-      setPreference("activeWorkspaceId", targetId); // persist in case we fell back
-    };
-
-    restore();
-  }, [activeWorkspaceId, workspaces, setActiveWorkspaceId]);
+    setActiveWorkspaceId(targetId);
+    if (!exists) setPreference("activeWorkspaceId", targetId);
+  }, [
+    activeWorkspaceId,
+    workspaces,
+    savedId,
+    isPrefPending,
+    setActiveWorkspaceId,
+  ]);
 };
 
 export const useAutoStartDevServer = (workspaceId: string | null) => {
