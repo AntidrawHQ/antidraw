@@ -1,69 +1,25 @@
-import { useState } from "react";
-import { ChevronsUpDown, Check } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { ChevronUp, ChevronDown, Check, Plus, Search } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
 import { useWorkspaces, useStopDevServer } from "@/renderer/lib/workspace-ops";
-import { setPreference } from "@/renderer/lib/api";
-import { renderHighlighted } from "@/renderer/lib/search-utils";
 import {
   Popover,
   PopoverTrigger,
   PopoverContent,
 } from "@/renderer/components/ui/popover";
 import {
-  SearchableList,
-  SearchableListInput,
-  useSearchableList,
-} from "@/renderer/components/ui/searchable-list";
+  Command,
+  CommandInput,
+  CommandList,
+  CommandItem,
+  CommandEmpty,
+} from "@/renderer/components/ui/command";
+import { AvatarIcon } from "@/renderer/components/AvatarIcon";
+import BoringAvatar from "boring-avatars";
+import type { WorkspaceWithComponentCount } from "@/main/api";
 
-type Workspace = {
-  id: string;
-  name: string;
-};
-
-type WorkspaceItemsProps = {
-  onSelect: (ws: Workspace) => void;
-};
-
-const WorkspaceItems = ({ onSelect }: WorkspaceItemsProps) => {
-  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
-  const { filtered, selectedIndex } = useSearchableList<Workspace>();
-
-  return (
-    <div className="max-h-[240px] overflow-y-auto px-2 pb-2">
-      {filtered.length === 0 ? (
-        <div className="py-4 text-center text-[12px] text-neutral-500">
-          No workspaces found
-        </div>
-      ) : (
-        filtered.map((item, idx) => (
-          <button
-            key={item.data.id}
-            onClick={() => onSelect(item.data)}
-            className={cn(
-              "w-full flex items-center gap-2 py-2 px-2.5 border-none rounded-md cursor-pointer text-left mb-0.5",
-              idx === selectedIndex
-                ? "bg-white/[0.06]"
-                : "bg-transparent hover:bg-white/[0.06]"
-            )}
-          >
-            <span
-              className={cn(
-                "flex-1 text-[13px] font-medium overflow-hidden text-ellipsis whitespace-nowrap",
-                idx === selectedIndex ? "text-neutral-200" : "text-neutral-400"
-              )}
-            >
-              {renderHighlighted(item.label, item.indices)}
-            </span>
-            {item.data.id === activeWorkspaceId && (
-              <Check className="w-3.5 h-3.5 text-neutral-200 shrink-0" />
-            )}
-          </button>
-        ))
-      )}
-    </div>
-  );
-};
+const AVATAR_COLORS = ["#c084a0", "#84a0c0", "#a0c084", "#c0a084", "#84c0a0"];
 
 export const WorkspaceSwitcher = () => {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
@@ -75,6 +31,8 @@ export const WorkspaceSwitcher = () => {
   );
 
   const [isOpen, setIsOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const { data: workspaces } = useWorkspaces();
   const activeWorkspace = workspaces?.find(
@@ -82,9 +40,21 @@ export const WorkspaceSwitcher = () => {
   );
   const stopDevServer = useStopDevServer();
 
+  // Auto-focus search input when popover opens
+  useEffect(() => {
+    if (isOpen) {
+      requestAnimationFrame(() => inputRef.current?.focus());
+    } else {
+      setSearch("");
+    }
+  }, [isOpen]);
+
   const close = () => setIsOpen(false);
 
-  const handleSelect = (ws: Workspace) => {
+  const handleSelect = (wsId: string) => {
+    const ws = workspaces?.find((w) => w.id === wsId);
+    if (!ws) return;
+
     if (ws.id === activeWorkspaceId) {
       close();
       return;
@@ -101,8 +71,12 @@ export const WorkspaceSwitcher = () => {
 
     setActiveWorkspaceId(ws.id);
     setActiveConversationId(null);
-    setPreference("activeWorkspaceId", ws.id); // fire-and-forget
     close();
+  };
+
+  const handleNewWorkspace = () => {
+    close();
+    // TODO: wire up to onboarding create-workspace flow once that PR lands
   };
 
   return (
@@ -112,31 +86,82 @@ export const WorkspaceSwitcher = () => {
     >
       <PopoverTrigger asChild>
         <button
-          className="flex items-center gap-1.5 py-1 px-2.5 bg-transparent border-none rounded-md cursor-pointer hover:bg-white/[0.06] min-w-0 max-w-[180px]"
+          className="flex items-center gap-2 py-1 px-2.5 bg-white/[0.06] border-none rounded-lg cursor-pointer hover:bg-white/[0.10] min-w-0 max-w-[200px] transition-colors"
           style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
         >
-          <span className="text-[13px] font-medium text-neutral-200 overflow-hidden text-ellipsis whitespace-nowrap">
+          {activeWorkspace && (
+            <div className="rounded shrink-0 overflow-hidden" style={{ width: 18, height: 18 }}>
+              <BoringAvatar size={18} name={activeWorkspace.name} variant="beam" colors={AVATAR_COLORS} square />
+            </div>
+          )}
+          <span className="text-[13px] font-medium text-neutral-200 truncate flex-1">
             {activeWorkspace?.name ?? "Select workspace"}
           </span>
-          <ChevronsUpDown className="w-3 h-3 text-[#71717a] shrink-0" />
+          {isOpen ? (
+            <ChevronUp className="w-3 h-3 text-neutral-500 shrink-0" />
+          ) : (
+            <ChevronDown className="w-3 h-3 text-neutral-500 shrink-0" />
+          )}
         </button>
       </PopoverTrigger>
 
       <PopoverContent
         align="end"
-        className="w-[240px] p-0 bg-neutral-800 border-[#2d2d2d] rounded-lg shadow-xl overflow-hidden"
+        className="w-[240px] p-1 bg-[#2c2c2c] border border-[#2d2d2d] rounded-lg shadow-lg overflow-hidden"
         onOpenAutoFocus={(e) => e.preventDefault()}
       >
-        <SearchableList
-          items={workspaces ?? []}
-          getLabel={(ws) => ws.name}
-          onSelect={handleSelect}
-          onClose={close}
-          autoFocus
+        <Command
+          onKeyDown={(e) => { if (e.key === "Escape") close(); }}
         >
-          <SearchableListInput onClose={close} />
-          <WorkspaceItems onSelect={handleSelect} />
-        </SearchableList>
+          <div className="flex items-center gap-2 py-1.5 px-2">
+            <Search
+              className={cn(
+                "w-3 h-3 shrink-0 transition-colors",
+                search ? "text-neutral-300" : "text-neutral-600"
+              )}
+            />
+            <CommandInput
+              ref={inputRef}
+              placeholder="Search..."
+              value={search}
+              onValueChange={setSearch}
+              className="text-[13px] placeholder:text-neutral-600"
+            />
+          </div>
+          <CommandList className="max-h-[240px] px-1 pb-1">
+            <CommandEmpty>No workspaces found</CommandEmpty>
+            {(workspaces ?? []).map((ws) => (
+              <CommandItem
+                key={ws.id}
+                value={ws.id}
+                keywords={[ws.name]}
+                onSelect={() => handleSelect(ws.id)}
+                className="group w-full flex items-center gap-2 py-1.5 px-2 border-none rounded-md text-left"
+              >
+                <div className="rounded shrink-0 overflow-hidden" style={{ width: 18, height: 18 }}>
+                  <BoringAvatar size={18} name={ws.name} variant="beam" colors={AVATAR_COLORS} square />
+                </div>
+                <span className="text-[13px] font-medium truncate flex-1 text-neutral-400 group-data-[selected=true]:text-neutral-200">
+                  {ws.name}
+                </span>
+                {ws.id === activeWorkspaceId && (
+                  <Check className="w-3 h-3 text-neutral-500 shrink-0" />
+                )}
+              </CommandItem>
+            ))}
+          </CommandList>
+        </Command>
+
+        <div className="-mx-1 border-t border-white/[0.06]" />
+        <div className="pt-1">
+          <button
+            onClick={handleNewWorkspace}
+            className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md border-none bg-transparent hover:bg-white/[0.06] text-[13px] font-medium text-neutral-500 hover:text-neutral-200 cursor-pointer transition-colors duration-[120ms]"
+          >
+            <Plus className="w-3 h-3" />
+            New Workspace
+          </button>
+        </div>
       </PopoverContent>
     </Popover>
   );

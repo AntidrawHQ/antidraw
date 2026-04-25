@@ -9,6 +9,7 @@ import type {
   DevServerState,
   StreamEvent,
   Workspace,
+  WorkspaceWithComponentCount,
 } from "@/main/api";
 import type { ImageAttachment } from "@/shared/utils/message";
 import { fetchEventSource } from "@microsoft/fetch-event-source";
@@ -179,7 +180,7 @@ export const listWorkspaces = async () => {
       });
     }
 
-    const data: Workspace[] = await response.json();
+    const data: WorkspaceWithComponentCount[] = await response.json();
     return ok(data);
   } catch (_e) {
     return err({
