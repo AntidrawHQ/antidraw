@@ -16,10 +16,6 @@ import {
   CommandEmpty,
 } from "@/renderer/components/ui/command";
 import { AvatarIcon } from "@/renderer/components/AvatarIcon";
-import BoringAvatar from "boring-avatars";
-import type { WorkspaceWithComponentCount } from "@/main/api";
-
-const AVATAR_COLORS = ["#c084a0", "#84a0c0", "#a0c084", "#c0a084", "#84c0a0"];
 
 export const WorkspaceSwitcher = () => {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
@@ -90,9 +86,7 @@ export const WorkspaceSwitcher = () => {
           style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
         >
           {activeWorkspace && (
-            <div className="rounded shrink-0 overflow-hidden" style={{ width: 18, height: 18 }}>
-              <BoringAvatar size={18} name={activeWorkspace.name} variant="beam" colors={AVATAR_COLORS} square />
-            </div>
+            <AvatarIcon name={activeWorkspace.name} size={18} />
           )}
           <span className="text-[13px] font-medium text-neutral-200 truncate flex-1">
             {activeWorkspace?.name ?? "Select workspace"}
@@ -138,9 +132,7 @@ export const WorkspaceSwitcher = () => {
                 onSelect={() => handleSelect(ws.id)}
                 className="group w-full flex items-center gap-2 py-1.5 px-2 border-none rounded-md text-left"
               >
-                <div className="rounded shrink-0 overflow-hidden" style={{ width: 18, height: 18 }}>
-                  <BoringAvatar size={18} name={ws.name} variant="beam" colors={AVATAR_COLORS} square />
-                </div>
+                <AvatarIcon name={ws.name} size={18} />
                 <span className="text-[13px] font-medium truncate flex-1 text-neutral-400 group-data-[selected=true]:text-neutral-200">
                   {ws.name}
                 </span>

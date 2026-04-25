@@ -26,4 +26,3 @@ export const workspacesRelations = relations(workspaces, ({ many }) => ({
 // Type exports
 export type Workspace = typeof workspaces.$inferSelect;
 export type NewWorkspace = typeof workspaces.$inferInsert;
-export type WorkspaceWithComponentCount = Workspace & { componentCount: number };

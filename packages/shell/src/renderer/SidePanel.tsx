@@ -8,7 +8,6 @@ import {
   useWorkspaceConversations,
   useCreateConversation,
 } from "./lib/claude-code-ops";
-import type { Conversation } from "@/main/api";
 import { formatRelativeTime } from "./lib/time-utils";
 import { AppChat } from "./Chat";
 import { ComponentPanel } from "./ComponentPanel";
