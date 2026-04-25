@@ -1,0 +1,36 @@
+appId: com.antidraw.app
+productName: Antidraw
+directories:
+  buildResources: build
+  output: release/${version}
+files:
+  - dist/**
+  - package.json
+  - '!**/*.{ts,tsx,map}'
+  - '!**/{tsconfig*.json,vitest.config.*,electron.vite.config.*}'
+  - '!src/**'
+  - '!**/{.eslintrc*,.prettier*,.editorconfig,.gitignore,README.md,CHANGELOG.md}'
+asarUnpack:
+  - node_modules/@libsql/**
+  - node_modules/npm/**
+  - resources/**
+mac:
+  category: public.app-category.developer-tools
+  entitlementsInherit: build/entitlements.mac.plist
+  notarize: false
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+    - target: zip
+      arch:
+        - arm64
+        - x64
+dmg:
+  artifactName: ${name}-${version}-${arch}.${ext}
+publish:
+  provider: github
+  owner: AntidrawHQ
+  repo: antidraw
+  releaseType: release

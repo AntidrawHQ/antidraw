@@ -1,9 +1,10 @@
-import { spawn, exec, type ChildProcess, execSync } from "child_process";
+import { exec, type ChildProcess, execSync } from "child_process";
 import { access } from "fs/promises";
 import getPort from "get-port";
 import { ok, err, type Result } from "neverthrow";
 import { getWorkspaceSourcePath } from "@/main/api/init";
 import { devServerStore, type DevServerState } from "@/main/lib/runtime-store";
+import { spawnNpm } from "@/main/lib/package-manager";
 
 // In-memory map for ChildProcess handles (can't be serialized to electron-store)
 const runningProcesses = new Map<string, ChildProcess>();
@@ -94,12 +95,14 @@ export const startDevServer = async (
 
   const port = await getPort();
 
-  const proc = spawn("npm", ["run", "dev", "--", "--port", port.toString()], {
-    cwd: workspacePath,
-    shell: true,
-    detached: process.platform !== "win32",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const proc = spawnNpm(
+    ["run", "dev", "--", "--port", port.toString()],
+    workspacePath,
+    {
+      detached: process.platform !== "win32",
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
 
   if (!proc.pid) {
     return err({
@@ -135,12 +138,12 @@ export const startDevServer = async (
       // Vite outputs "ready in X ms" or "Local: https://localhost:PORT"
       if (output.includes("ready in") || output.includes(`localhost:${port}`)) {
         clearTimeout(timeout);
-        proc.stdout.off("data", onData);
+        proc.stdout!.off("data", onData);
         resolve(true);
       }
     };
 
-    proc.stdout.on("data", onData);
+    proc.stdout!.on("data", onData);
 
     proc.on("exit", (code) => {
       clearTimeout(timeout);
@@ -157,7 +160,7 @@ export const startDevServer = async (
     devServerStore.remove(workspaceId);
   });
 
-  proc.stderr.on("data", (data) => {
+  proc.stderr!.on("data", (data) => {
     console.error(`[${workspaceId}] ${data.toString().trim()}`);
   });
 

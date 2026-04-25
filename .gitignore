@@ -150,6 +150,7 @@ vite.config.ts.timestamp-*
 # Build artifacts
 dist-ssr
 *.local
+release/
 
 # OS files
 .DS_Store

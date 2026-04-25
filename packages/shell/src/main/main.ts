@@ -18,6 +18,7 @@ import {
   cleanupOrphanedProcesses,
   stopAllDevServers,
 } from "./services/dev-server.service";
+import { installNodeShim } from "./lib/node-shim";
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -53,6 +54,8 @@ const createWindow = () => {
 };
 
 app.whenReady().then(() => {
+  installNodeShim();
+
   // Trust self-signed certs for localhost (enables HTTPS dev servers without warnings)
   session.defaultSession.setCertificateVerifyProc((request, callback) => {
     if (request.hostname === "localhost" || request.hostname === "127.0.0.1") {
