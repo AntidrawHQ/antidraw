@@ -20,11 +20,8 @@ jobs:
           node-version: "20"
           cache: npm
 
-      - name: Install dependencies (host arm64 native deps)
+      - name: Install dependencies
         run: npm ci
-
-      - name: Install x64 darwin native deps alongside arm64
-        run: npm install --no-save --cpu=x64 --os=darwin --include=optional
 
       - name: Build and publish
         run: npm run release -w @antidraw/shell
