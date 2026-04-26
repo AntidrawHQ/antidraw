@@ -21,8 +21,14 @@ mac:
   entitlementsInherit: build/entitlements.mac.plist
   notarize: false
   target:
-    - dmg
-    - zip
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+    - target: zip
+      arch:
+        - arm64
+        - x64
 dmg:
   artifactName: ${productName}-${version}-${arch}.${ext}
 publish:
