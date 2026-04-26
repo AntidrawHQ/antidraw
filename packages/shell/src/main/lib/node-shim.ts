@@ -25,6 +25,15 @@ export const installNodeShim = () => {
   const shimPath = getShimNodePath();
   const desired = isWindows ? WINDOWS_SHIM : POSIX_SHIM;
 
+  // Make the shim resolvable to any child process spawned from this main
+  // process — including third-party libraries (e.g. the Claude Agent SDK)
+  // that look up `node` via PATH and don't go through getShimmedSpawnEnv.
+  const currentPath = process.env.PATH ?? "";
+  if (!currentPath.startsWith(shimDir + path.delimiter)) {
+    process.env.PATH = `${shimDir}${path.delimiter}${currentPath}`;
+  }
+  process.env.ELECTRON_PATH = process.execPath;
+
   let existing: string | null = null;
   try {
     existing = fs.readFileSync(shimPath, "utf8");
