@@ -1,6 +1,7 @@
 {
   "name": "@antidrawapp/runtime",
   "version": "0.3.4",
+  "license": "MIT",
   "type": "module",
   "exports": {
     ".": "./src/main.tsx",
