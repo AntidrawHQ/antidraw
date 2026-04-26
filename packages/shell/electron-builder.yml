@@ -15,6 +15,7 @@ asarUnpack:
   - node_modules/npm/**
   - node_modules/@anthropic-ai/claude-agent-sdk/**
   - resources/**
+afterSign: scripts/sign-deep.cjs
 mac:
   category: public.app-category.developer-tools
   entitlementsInherit: build/entitlements.mac.plist
