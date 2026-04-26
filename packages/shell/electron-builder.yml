@@ -35,4 +35,4 @@ publish:
   provider: github
   owner: AntidrawHQ
   repo: antidraw
-  releaseType: release
+  releaseType: draft
