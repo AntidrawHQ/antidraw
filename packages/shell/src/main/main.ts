@@ -19,6 +19,13 @@ import {
   stopAllDevServers,
 } from "./services/dev-server.service";
 
+// Keep the renderer responsive when the window is unfocused or occluded.
+// Without these, Chromium throttles rAF/timers/request scheduling in packaged
+// builds, which surfaces as SSE drops and canvas stutter.
+app.commandLine.appendSwitch("disable-renderer-backgrounding");
+app.commandLine.appendSwitch("disable-background-timer-throttling");
+app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+
 protocol.registerSchemesAsPrivileged([
   {
     scheme: "antidraw",
@@ -42,6 +49,7 @@ const createWindow = () => {
       preload: path.join(__dirname, "../preload/preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
+      backgroundThrottling: false,
     },
   });
 
@@ -86,6 +94,7 @@ app.whenReady().then(() => {
       webPreferences: {
         contextIsolation: true,
         nodeIntegration: false,
+        backgroundThrottling: false,
       },
     });
 
