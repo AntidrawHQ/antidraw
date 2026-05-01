@@ -28,7 +28,21 @@ mac:
       arch:
         - arm64
 dmg:
+  title: Antidraw
   artifactName: ${productName}-${version}-${arch}.${ext}
+  background: build/dmg-bg.png
+  window:
+    width: 540
+    height: 380
+  iconSize: 96
+  contents:
+    - x: 140
+      y: 200
+      type: file
+    - x: 400
+      y: 200
+      type: link
+      path: /Applications
 publish:
   provider: github
   owner: AntidrawHQ
