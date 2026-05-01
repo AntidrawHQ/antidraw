@@ -20,10 +20,21 @@ jobs:
           node-version: "20"
           cache: npm
 
-      - name: Install dependencies
+      - name: Install dependencies (host arm64 native deps)
         run: npm ci
 
-      - name: Build and publish
+      - name: Install x64 darwin native deps alongside arm64
+        run: npm install --no-save --cpu=x64 --os=darwin --include=optional
+
+      - name: Build, sign, notarize, publish
         run: npm run release -w @antidraw/shell
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Code signing
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          # Notarization (App Store Connect API key)
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}

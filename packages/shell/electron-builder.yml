@@ -15,18 +15,21 @@ asarUnpack:
   - node_modules/npm/**
   - node_modules/@anthropic-ai/claude-agent-sdk/**
   - resources/**
-afterSign: scripts/sign-deep.cjs
 mac:
   category: public.app-category.developer-tools
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
-  notarize: false
+  notarize: true
   target:
     - target: dmg
       arch:
         - arm64
+        - x64
     - target: zip
       arch:
         - arm64
+        - x64
 dmg:
   title: Antidraw
   artifactName: ${productName}-${version}-${arch}.${ext}
