@@ -108,6 +108,7 @@ export const createWorkspace = async function* (
     }
 
     // 5. Create database record
+    yield { type: "status", status: CreateWorkspaceStatus.SAVING_WORKSPACE };
 
     const [workspace] = await db
       .insert(workspaces)
