@@ -27,14 +27,21 @@ const parseArgs = (args: string[]): { destPath: string; options: Options } => {
   return { destPath, options };
 };
 
+// npm strips dotfiles like .gitignore from published packages, so the
+// template stores it as `_gitignore` and we rename on copy.
+const renameOnCopy: Record<string, string> = {
+  _gitignore: ".gitignore",
+};
+
 const copyDir = (src: string, dest: string): void => {
   fs.mkdirSync(dest, { recursive: true });
 
   const entries = fs.readdirSync(src, { withFileTypes: true });
 
   for (const entry of entries) {
+    const targetName = renameOnCopy[entry.name] ?? entry.name;
     const srcPath = path.join(src, entry.name);
-    const destPath = path.join(dest, entry.name);
+    const destPath = path.join(dest, targetName);
 
     if (entry.isDirectory()) {
       copyDir(srcPath, destPath);
