@@ -19,6 +19,21 @@ import {
   stopAllDevServers,
 } from "./services/dev-server.service";
 
+// Keep the renderer responsive when the window is unfocused or occluded.
+// Without these, Chromium throttles rAF/timers/request scheduling in packaged
+// builds, which surfaces as SSE drops and canvas stutter.
+app.commandLine.appendSwitch("disable-renderer-backgrounding");
+app.commandLine.appendSwitch("disable-background-timer-throttling");
+app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+// IntensiveWakeUpThrottling clamps timers to 1/min after a page is hidden for
+// 5 minutes regardless of the switches above. CalculateNativeWinOcclusion can
+// flag the window as occluded under normal multi-window use on Windows and
+// re-trigger throttling. Both must be disabled via --disable-features.
+app.commandLine.appendSwitch(
+  "disable-features",
+  "IntensiveWakeUpThrottling,CalculateNativeWinOcclusion",
+);
+
 protocol.registerSchemesAsPrivileged([
   {
     scheme: "antidraw",
@@ -42,6 +57,7 @@ const createWindow = () => {
       preload: path.join(__dirname, "../preload/preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
+      backgroundThrottling: false,
     },
   });
 
@@ -86,6 +102,7 @@ app.whenReady().then(() => {
       webPreferences: {
         contextIsolation: true,
         nodeIntegration: false,
+        backgroundThrottling: false,
       },
     });
 
