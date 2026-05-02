@@ -97,15 +97,12 @@ export const startDevServer = async (
   // Defensive re-link: keeps the .antidraw/runtime symlink fresh in case
   // its target moved (e.g. shell upgrade, dev shell restarted from a
   // different worktree path) or the link was disturbed externally.
-  try {
-    await ensureRuntimeSymlink(workspaceId);
-  } catch (e) {
+  const symlinkResult = await ensureRuntimeSymlink(workspaceId);
+  if (symlinkResult.isErr()) {
     return err({
       status: 500,
       code: DevServerErrorCode.RUNTIME_SYMLINK_FAILED,
-      message: `Failed to set up runtime symlink: ${
-        e instanceof Error ? e.message : String(e)
-      }`,
+      message: `Failed to set up runtime symlink: ${symlinkResult.error.message}`,
     } satisfies DevServerError);
   }
 

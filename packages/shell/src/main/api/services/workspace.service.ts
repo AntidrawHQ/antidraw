@@ -30,6 +30,7 @@ export type CreateWorkspaceStatusCode =
 export const CreateWorkspaceErrorCode = {
   NPM_CREATE_FAILED: "NPM_CREATE_FAILED",
   NPM_INSTALL_FAILED: "NPM_INSTALL_FAILED",
+  RUNTIME_SYMLINK_FAILED: "RUNTIME_SYMLINK_FAILED",
   WORKSPACE_CREATE_FAILED: "WORKSPACE_CREATE_FAILED",
 } as const;
 
@@ -85,7 +86,19 @@ export const createWorkspace = async function* (
     //    npm install can resolve the file: dep declared in package.json.
     //    Must happen before npm install — npm errors out on a missing
     //    file: target.
-    await ensureRuntimeSymlink(id);
+    const symlinkResult = await ensureRuntimeSymlink(id);
+    if (symlinkResult.isErr()) {
+      await fs.rm(workspacePath, { recursive: true, force: true });
+
+      yield {
+        type: "error",
+        error: {
+          code: CreateWorkspaceErrorCode.RUNTIME_SYMLINK_FAILED,
+          message: `Failed to set up runtime: ${symlinkResult.error.message}`,
+        },
+      };
+      return;
+    }
 
     // 4. Install dependencies
     yield { type: "status", status: CreateWorkspaceStatus.INSTALLING_DEPENDENCIES };
