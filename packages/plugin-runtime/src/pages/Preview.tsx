@@ -2,8 +2,6 @@ import { Component, Suspense, lazy, useEffect, useMemo, useRef } from "react"
 import type { ReactNode } from "react"
 import { useSearch } from "@tanstack/react-router"
 
-const componentNamePattern = /^[A-Za-z0-9_-]+$/
-
 class LoadErrorBoundary extends Component<
   { children: ReactNode; fallback: ReactNode },
   { hasError: boolean }
@@ -66,26 +64,18 @@ export const Preview = () => {
   }
 
   const LazyComponent = useMemo(() => {
-    if (!componentName || !componentNamePattern.test(componentName)) return null
+    if (!componentName) return null
     return lazy(() =>
       import(
         /* @vite-ignore */ `/src/components/user-components/${componentName}.tsx`
-      ).then((m) => ({ default: m.default })),
+      ),
     )
   }, [componentName])
 
-  if (!componentName) {
+  if (!componentName || !LazyComponent) {
     return (
       <div className="flex items-center justify-center h-screen text-neutral-400">
         <h1 className="text-xl">No component selected for preview</h1>
-      </div>
-    )
-  }
-
-  if (!LazyComponent) {
-    return (
-      <div className="flex items-center justify-center h-screen text-red-400">
-        <h1 className="text-xl">Invalid component name &quot;{componentName}&quot;</h1>
       </div>
     )
   }
