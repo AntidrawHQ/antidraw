@@ -50,11 +50,7 @@ const FullscreenFrame = ({
     document.title = componentName
   }, [componentName])
 
-  return (
-    <div className="w-screen h-screen flex items-center justify-center">
-      {children}
-    </div>
-  )
+  return <>{children}</>
 }
 
 const EmbeddedFrame = ({
@@ -79,11 +75,7 @@ const EmbeddedFrame = ({
     )
   }, [componentName])
 
-  return (
-    <div ref={containerRef} className="inline-block">
-      {children}
-    </div>
-  )
+  return <div ref={containerRef}>{children}</div>
 }
 
 export const Preview = () => {
