@@ -21,6 +21,23 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Publish runtime package
+        run: |
+          cd packages/plugin-runtime
+          LOCAL_VERSION=$(node -p "require('./package.json').version")
+          PACKAGE_NAME=$(node -p "require('./package.json').name")
+          NPM_VERSION=$(npm view "$PACKAGE_NAME" version 2>/dev/null || echo "0.0.0")
+
+          if [ "$(printf '%s\n' "$NPM_VERSION" "$LOCAL_VERSION" | sort -V | tail -n1)" = "$LOCAL_VERSION" ] && [ "$LOCAL_VERSION" != "$NPM_VERSION" ]; then
+            echo "Publishing $PACKAGE_NAME@$LOCAL_VERSION (npm has $NPM_VERSION)"
+            npm run build
+            npm publish --access public
+          else
+            echo "Skipping $PACKAGE_NAME - local ($LOCAL_VERSION) not newer than npm ($NPM_VERSION)"
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
       - name: Publish create-workspace package
         run: |
           cd packages/create-workspace
