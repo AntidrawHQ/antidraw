@@ -13,6 +13,7 @@ import {
   npmInstall,
   type NpmOutput,
 } from "@/main/lib/package-manager";
+import { ensureRuntimeSymlink } from "@/main/lib/runtime-symlink";
 
 // Status constants for createWorkspace - UI layer maps these to user-facing messages
 export const CreateWorkspaceStatus = {
@@ -80,7 +81,13 @@ export const createWorkspace = async function* (
       }
     }
 
-    // 3. Install dependencies
+    // 3. Symlink the runtime into <workspace>/source/.antidraw/runtime so
+    //    npm install can resolve the file: dep declared in package.json.
+    //    Must happen before npm install — npm errors out on a missing
+    //    file: target.
+    await ensureRuntimeSymlink(id);
+
+    // 4. Install dependencies
     yield { type: "status", status: CreateWorkspaceStatus.INSTALLING_DEPENDENCIES };
 
     for await (const output of npmInstall(sourcePath)) {
@@ -100,8 +107,7 @@ export const createWorkspace = async function* (
       }
     }
 
-    // 4. Create database record
-    yield { type: "status", status: CreateWorkspaceStatus.SAVING_WORKSPACE };
+    // 5. Create database record
 
     const [workspace] = await db
       .insert(workspaces)

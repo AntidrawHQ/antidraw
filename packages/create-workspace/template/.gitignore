@@ -1,0 +1,6 @@
+node_modules
+.antidraw
+dist
+.vite
+*.log
+.DS_Store

@@ -4,6 +4,7 @@ import getPort from "get-port";
 import { ok, err, type Result } from "neverthrow";
 import { getWorkspaceSourcePath } from "@/main/api/init";
 import { devServerStore, type DevServerState } from "@/main/lib/runtime-store";
+import { ensureRuntimeSymlink } from "@/main/lib/runtime-symlink";
 
 // In-memory map for ChildProcess handles (can't be serialized to electron-store)
 const runningProcesses = new Map<string, ChildProcess>();
@@ -91,6 +92,11 @@ export const startDevServer = async (
       message: `Workspace source path not found: ${workspacePath}`,
     } satisfies DevServerError);
   }
+
+  // Defensive re-link: keeps the .antidraw/runtime symlink fresh in case
+  // its target moved (e.g. shell upgrade, dev shell restarted from a
+  // different worktree path) or the link was disturbed externally.
+  await ensureRuntimeSymlink(workspaceId);
 
   const port = await getPort();
 

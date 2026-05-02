@@ -28,6 +28,12 @@ export const antidraw = (): Plugin[] => {
             "@": path.resolve(process.cwd(), "./src"),
           },
           dedupe: ["react", "react-dom", "@tanstack/react-router"],
+          // Runtime is symlinked into the workspace's node_modules from the
+          // shell-managed location. preserveSymlinks: true makes peer-dep
+          // resolution (e.g. `react`) walk up from the symlink path so it
+          // lands on the workspace's installed copy, not anything reachable
+          // from the symlink target.
+          preserveSymlinks: true,
         },
         optimizeDeps: {
           // Scan runtime source to auto-discover CJS deps needing pre-bundling
