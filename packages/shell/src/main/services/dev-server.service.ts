@@ -17,6 +17,7 @@ export type DevServerInfo = DevServerState & {
 // Error codes for dev server operations
 export const DevServerErrorCode = {
   WORKSPACE_NOT_FOUND: "WORKSPACE_NOT_FOUND",
+  RUNTIME_SYMLINK_FAILED: "RUNTIME_SYMLINK_FAILED",
   SPAWN_FAILED: "SPAWN_FAILED",
   STARTUP_TIMEOUT: "STARTUP_TIMEOUT",
   NOT_RUNNING: "NOT_RUNNING",
@@ -96,7 +97,17 @@ export const startDevServer = async (
   // Defensive re-link: keeps the .antidraw/runtime symlink fresh in case
   // its target moved (e.g. shell upgrade, dev shell restarted from a
   // different worktree path) or the link was disturbed externally.
-  await ensureRuntimeSymlink(workspaceId);
+  try {
+    await ensureRuntimeSymlink(workspaceId);
+  } catch (e) {
+    return err({
+      status: 500,
+      code: DevServerErrorCode.RUNTIME_SYMLINK_FAILED,
+      message: `Failed to set up runtime symlink: ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    } satisfies DevServerError);
+  }
 
   const port = await getPort();
 
