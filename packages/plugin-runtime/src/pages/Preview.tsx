@@ -104,7 +104,7 @@ export const Preview = () => {
     )
       .then((m) => {
         if (cancelled) return
-        if (typeof m.default !== "function") {
+        if (m.default == null) {
           setLoadError(`No default export from ${componentName}.tsx`)
           return
         }
