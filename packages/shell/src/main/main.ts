@@ -25,6 +25,14 @@ import {
 app.commandLine.appendSwitch("disable-renderer-backgrounding");
 app.commandLine.appendSwitch("disable-background-timer-throttling");
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+// IntensiveWakeUpThrottling clamps timers to 1/min after a page is hidden for
+// 5 minutes regardless of the switches above. CalculateNativeWinOcclusion can
+// flag the window as occluded under normal multi-window use on Windows and
+// re-trigger throttling. Both must be disabled via --disable-features.
+app.commandLine.appendSwitch(
+  "disable-features",
+  "IntensiveWakeUpThrottling,CalculateNativeWinOcclusion",
+);
 
 protocol.registerSchemesAsPrivileged([
   {
