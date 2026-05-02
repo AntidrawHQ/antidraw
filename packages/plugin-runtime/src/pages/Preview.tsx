@@ -1,34 +1,78 @@
-import { createElement, useEffect, useRef } from "react"
+import { Component, Suspense, lazy, useEffect, useMemo, useRef } from "react"
+import type { ReactNode } from "react"
 import { useSearch } from "@tanstack/react-router"
-import { userComponents } from "@antidrawapp/user-components"
 
-type ComponentMap = Record<string, React.ComponentType>
+class LoadErrorBoundary extends Component<
+  { children: ReactNode; fallback: ReactNode },
+  { hasError: boolean }
+> {
+  state = { hasError: false }
+  static getDerivedStateFromError() {
+    return { hasError: true }
+  }
+  render() {
+    return this.state.hasError ? this.props.fallback : this.props.children
+  }
+}
 
-export const Preview = () => {
-  const { componentName, fullscreen } = useSearch({ strict: false }) as { componentName?: string; fullscreen?: boolean }
+const Frame = ({
+  componentName,
+  fullscreen,
+  children,
+}: {
+  componentName: string
+  fullscreen: boolean
+  children: ReactNode
+}) => {
   const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    if (fullscreen && componentName) {
+    if (fullscreen) {
       document.title = componentName
+      return
     }
-  }, [fullscreen, componentName])
-
-  useEffect(() => {
-    if (containerRef.current && componentName && !fullscreen) {
-      window.parent.postMessage(
-        {
-          type: "component-size",
-          componentName,
-          width: containerRef.current.scrollWidth,
-          height: containerRef.current.scrollHeight,
-        },
-        "*"
-      )
-    }
+    if (!containerRef.current) return
+    window.parent.postMessage(
+      {
+        type: "component-size",
+        componentName,
+        width: containerRef.current.scrollWidth,
+        height: containerRef.current.scrollHeight,
+      },
+      "*",
+    )
   }, [componentName, fullscreen])
 
-  if (!componentName) {
+  return (
+    <div
+      ref={containerRef}
+      className={
+        fullscreen
+          ? "w-screen h-screen flex items-center justify-center"
+          : "inline-block"
+      }
+    >
+      {children}
+    </div>
+  )
+}
+
+export const Preview = () => {
+  const { componentName, fullscreen } = useSearch({ strict: false }) as {
+    componentName?: string
+    fullscreen?: boolean
+  }
+
+  const LazyComponent = useMemo(() => {
+    if (!componentName) return null
+    return lazy(() =>
+      import(
+        /* @vite-ignore */ `/src/components/user-components/${componentName}.tsx`
+      ),
+    )
+  }, [componentName])
+
+  if (!componentName || !LazyComponent) {
     return (
       <div className="flex items-center justify-center h-screen text-neutral-400">
         <h1 className="text-xl">No component selected for preview</h1>
@@ -36,25 +80,20 @@ export const Preview = () => {
     )
   }
 
-  const components = userComponents as ComponentMap
-
-  if (!(componentName in components)) {
-    return (
-      <div className="flex items-center justify-center h-screen text-red-400">
-        <h1 className="text-xl">Component &quot;{componentName}&quot; not found</h1>
-      </div>
-    )
-  }
-
-  const Component = components[componentName]
+  const notFound = (
+    <div className="flex items-center justify-center h-screen text-red-400">
+      <h1 className="text-xl">Component &quot;{componentName}&quot; not found</h1>
+    </div>
+  )
 
   return (
-    <div
-      ref={containerRef}
-      className={fullscreen ? "w-screen h-screen flex items-center justify-center" : "inline-block"}
-    >
-      {createElement(Component)}
-    </div>
+    <LoadErrorBoundary key={componentName} fallback={notFound}>
+      <Suspense fallback={null}>
+        <Frame componentName={componentName} fullscreen={!!fullscreen}>
+          <LazyComponent />
+        </Frame>
+      </Suspense>
+    </LoadErrorBoundary>
   )
 }
 
