@@ -9,7 +9,8 @@
     "./theme.css": "./src/index.css",
     "./utils": "./src/lib/utils.ts",
     "./eslint": "./eslint.config.js",
-    "./tsconfig.json": "./tsconfig.base.json"
+    "./tsconfig.json": "./tsconfig.base.json",
+    "./package.json": "./package.json"
   },
   "files": [
     "src",
