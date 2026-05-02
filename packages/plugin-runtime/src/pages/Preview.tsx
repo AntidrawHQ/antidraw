@@ -39,22 +39,34 @@ const Message = ({
   </div>
 )
 
-const Frame = ({
+const FullscreenFrame = ({
   componentName,
-  fullscreen,
   children,
 }: {
   componentName: string
-  fullscreen: boolean
+  children: ReactNode
+}) => {
+  useEffect(() => {
+    document.title = componentName
+  }, [componentName])
+
+  return (
+    <div className="w-screen h-screen flex items-center justify-center">
+      {children}
+    </div>
+  )
+}
+
+const EmbeddedFrame = ({
+  componentName,
+  children,
+}: {
+  componentName: string
   children: ReactNode
 }) => {
   const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    if (fullscreen) {
-      document.title = componentName
-      return
-    }
     if (!containerRef.current) return
     window.parent.postMessage(
       {
@@ -65,27 +77,17 @@ const Frame = ({
       },
       "*",
     )
-  }, [componentName, fullscreen])
+  }, [componentName])
 
   return (
-    <div
-      ref={containerRef}
-      className={
-        fullscreen
-          ? "w-screen h-screen flex items-center justify-center"
-          : "inline-block"
-      }
-    >
+    <div ref={containerRef} className="inline-block">
       {children}
     </div>
   )
 }
 
 export const Preview = () => {
-  const { componentName, fullscreen } = useSearch({ strict: false }) as {
-    componentName?: string
-    fullscreen?: boolean
-  }
+  const { componentName, fullscreen } = useSearch({ from: "/preview" })
 
   const [LoadedComponent, setLoadedComponent] =
     useState<ComponentType | null>(null)
@@ -145,9 +147,15 @@ export const Preview = () => {
 
   return (
     <RenderErrorBoundary key={componentName} componentName={componentName}>
-      <Frame componentName={componentName} fullscreen={!!fullscreen}>
-        <LoadedComponent />
-      </Frame>
+      {fullscreen ? (
+        <FullscreenFrame componentName={componentName}>
+          <LoadedComponent />
+        </FullscreenFrame>
+      ) : (
+        <EmbeddedFrame componentName={componentName}>
+          <LoadedComponent />
+        </EmbeddedFrame>
+      )}
     </RenderErrorBoundary>
   )
 }
