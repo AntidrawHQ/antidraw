@@ -64,9 +64,15 @@ export const userComponents = Object.fromEntries(
       transform(code, id) {
         if (id.endsWith(".css") && code.includes('@import "tailwindcss"')) {
           const workspaceSrc = path.resolve(process.cwd(), "./src")
+          // source(...) sets compiler.root rather than adding a side glob,
+          // so @tailwindcss/vite's per-id compiler cache invalidates when
+          // new files appear under the workspace tree. A separate @source
+          // directive only registers watch-deps for files seen during the
+          // last generate(), so newly-created user components don't
+          // trigger CSS regeneration until the dev server restarts.
           return code.replace(
             '@import "tailwindcss";',
-            `@import "tailwindcss";\n@source "${workspaceSrc}";`
+            `@import "tailwindcss" source("${workspaceSrc}");`
           )
         }
       },
