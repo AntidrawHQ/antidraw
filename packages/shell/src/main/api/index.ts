@@ -42,11 +42,11 @@ import { preferenceController } from "./controllers/preference.controller";
 import { claudeCliInteractionsController } from "./controllers/claude-cli-interactions.controller";
 import type { ImageAttachment } from "@/shared/utils/message";
 
-export const app = new Hono();
+const api = new Hono();
 
-app.route("/workspaces", workspaceController);
-app.route("/preferences", preferenceController);
-app.route("/claude-cli", claudeCliInteractionsController);
+api.route("/workspaces", workspaceController);
+api.route("/preferences", preferenceController);
+api.route("/claude-cli", claudeCliInteractionsController);
 
 const imageAttachmentSchema = z.object({
   data: z.string(),
@@ -145,7 +145,7 @@ const processStream = async (
   }
 };
 
-app.post(
+api.post(
   "/chat/message",
   zValidator("json", chatMessageSchema),
   async (ctx) => {
@@ -199,7 +199,7 @@ app.post(
   },
 );
 
-app.get(
+api.get(
   "/chat/:conversationId",
   zValidator(
     "param",
@@ -224,7 +224,7 @@ app.get(
 );
 
 // SSE endpoint for subscribing to stream events
-app.get(
+api.get(
   "/chat/:conversationId/stream",
   zValidator("param", z.object({ conversationId: z.uuid() })),
   async (ctx) => {
@@ -279,7 +279,7 @@ app.get(
 );
 
 // Cancel an active stream
-app.delete(
+api.delete(
   "/chat/:conversationId/stream",
   zValidator("param", z.object({ conversationId: z.uuid() })),
   async (ctx) => {
@@ -298,7 +298,7 @@ const createConversationSchema = z.object({
   workspaceId: z.uuid(),
 });
 
-app.post(
+api.post(
   "/chat/conversation",
   zValidator("json", createConversationSchema),
   async (ctx) => {
@@ -318,7 +318,7 @@ const generateTitleSchema = z.object({
   firstMessage: z.string().min(1),
 });
 
-app.post(
+api.post(
   "/chat/:conversationId/generate-title",
   zValidator("param", z.object({ conversationId: z.uuid() })),
   zValidator("json", generateTitleSchema),
@@ -350,3 +350,9 @@ app.post(
     return ctx.json({ title, summary });
   },
 );
+
+// Mount the API under /api so the renderer can be served same-origin from
+// antidraw://app/ and reach the API at antidraw://app/api/*. Same origin
+// avoids CORS preflights and lets SSE/fetch behave like a normal web app.
+export const app = new Hono();
+app.route("/api", api);
