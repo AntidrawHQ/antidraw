@@ -2,6 +2,7 @@ import { execFile } from "child_process";
 import { resolve, dirname } from "path";
 import { createRequire } from "module";
 import { ok, err, type Result } from "neverthrow";
+import { getShimNodePath, getShimmedSpawnEnv } from "@/main/lib/node-shim";
 
 export type ClaudeAuthStatus = {
   authenticated: boolean;
@@ -36,7 +37,11 @@ export const triggerClaudeLogin = (): Promise<
   return new Promise((resolve) => {
     const cliPath = getBundledCliPath();
     const escapedCliPath = cliPath.replace(/"/g, '\\"');
-    const command = `node \\"${escapedCliPath}\\" auth login`;
+    const escapedShimNode = getShimNodePath().replace(/"/g, '\\"');
+    const escapedElectronPath = process.execPath.replace(/"/g, '\\"');
+    // The Terminal subshell doesn't inherit our env, so bake ELECTRON_PATH
+    // inline so the shim can re-exec the Electron binary as Node.
+    const command = `ELECTRON_PATH=\\"${escapedElectronPath}\\" \\"${escapedShimNode}\\" \\"${escapedCliPath}\\" auth login`;
 
     execFile(
       "osascript",
@@ -71,9 +76,9 @@ export const checkClaudeAuthStatus = (): Promise<
     const cliPath = getBundledCliPath();
 
     execFile(
-      "node",
+      process.execPath,
       [cliPath, "auth", "status", "--json"],
-      { timeout: 5_000 },
+      { timeout: 5_000, env: getShimmedSpawnEnv() },
       (error, stdout) => {
         if (error) {
           // Non-zero exit — try parsing stdout in case it's structured JSON

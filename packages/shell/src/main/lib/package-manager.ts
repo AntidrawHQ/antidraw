@@ -1,6 +1,7 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { getShimmedSpawnEnv } from "@/main/lib/node-shim";
 
 export type NpmOutput =
   | { type: "stdout"; data: string }
@@ -12,18 +13,23 @@ const require_ = createRequire(import.meta.url);
 const npmDir = dirname(require_.resolve("npm/package.json"));
 const npmCli = join(npmDir, "bin", "npm-cli.js");
 
+export const spawnNpm = (
+  args: string[],
+  cwd: string,
+  options: Omit<SpawnOptions, "cwd" | "env"> = {},
+): ChildProcess =>
+  spawn(process.execPath, [npmCli, ...args], {
+    ...options,
+    cwd,
+    env: getShimmedSpawnEnv(),
+  });
+
 export async function* runNpm(args: string[], cwd: string): AsyncGenerator<NpmOutput> {
   try {
 
     const stream = new ReadableStream<NpmOutput>({
       start(controller) {
-        const child = spawn(process.execPath, [npmCli, ...args], {
-          cwd,
-          env: {
-            ...process.env,
-            ELECTRON_RUN_AS_NODE: "1",
-          },
-        });
+        const child = spawnNpm(args, cwd);
 
         child.stdout?.on("data", (data: Buffer) => {
           controller.enqueue({ type: "stdout", data: data.toString() });

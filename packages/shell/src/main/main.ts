@@ -1,4 +1,5 @@
 import { app, BrowserWindow, ipcMain, net, protocol, session } from "electron";
+import { autoUpdater } from "electron-updater";
 import fs from "fs";
 import path from "path";
 import { pathToFileURL } from "url";
@@ -20,6 +21,7 @@ import {
   cleanupOrphanedProcesses,
   stopAllDevServers,
 } from "./services/dev-server.service";
+import { installNodeShim } from "./lib/node-shim";
 
 // Keep the renderer responsive when the window is unfocused or occluded.
 // Without these, Chromium throttles rAF/timers/request scheduling in packaged
@@ -102,6 +104,8 @@ const serveRendererAsset = async (pathname: string): Promise<Response> => {
 };
 
 app.whenReady().then(() => {
+  installNodeShim();
+
   // Trust self-signed certs for localhost (enables HTTPS dev servers without warnings)
   session.defaultSession.setCertificateVerifyProc((request, callback) => {
     if (request.hostname === "localhost" || request.hostname === "127.0.0.1") {
@@ -152,6 +156,15 @@ app.whenReady().then(() => {
   cleanupOrphanedProcesses().catch((err) => {
     console.error("Failed to cleanup orphaned processes:", err);
   });
+
+  // Auto-update — checks GitHub Releases for a newer signed build,
+  // downloads in the background, prompts the user to restart on next quit.
+  // No-op in development (electron-updater detects unpackaged apps).
+  if (app.isPackaged) {
+    autoUpdater.checkForUpdatesAndNotify().catch((err) => {
+      console.error("Auto-update check failed:", err);
+    });
+  }
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
