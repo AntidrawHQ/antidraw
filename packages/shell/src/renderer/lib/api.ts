@@ -22,7 +22,7 @@ export type { StreamEvent } from "@/main/api";
 
 export const getPreference = async (key: string) => {
   try {
-    const response = await fetch(`antidraw://_internal/preferences/${key}`);
+    const response = await fetch(`antidraw://app/api/preferences/${key}`);
 
     if (!response.ok) {
       const errorBody = await response.json().catch(() => ({}));
@@ -46,7 +46,7 @@ export const getPreference = async (key: string) => {
 
 export const setPreference = async (key: string, value: string) => {
   try {
-    const response = await fetch(`antidraw://_internal/preferences/${key}`, {
+    const response = await fetch(`antidraw://app/api/preferences/${key}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ value }),
@@ -77,7 +77,7 @@ export const setPreference = async (key: string, value: string) => {
 
 export const getClaudeAuthStatus = async () => {
   try {
-    const response = await fetch("antidraw://_internal/claude-cli/auth/status");
+    const response = await fetch("antidraw://app/api/claude-cli/auth/status");
 
     if (!response.ok) {
       const errorBody = await response.json().catch(() => ({}));
@@ -101,7 +101,7 @@ export const getClaudeAuthStatus = async () => {
 
 export const triggerClaudeLogin = async () => {
   try {
-    const response = await fetch("antidraw://_internal/claude-cli/auth/login", {
+    const response = await fetch("antidraw://app/api/claude-cli/auth/login", {
       method: "POST",
     });
 
@@ -135,7 +135,7 @@ export async function* createWorkspace(
   const abort = new AbortController();
   const stream = new ReadableStream<CreateWorkspaceResponse>({
     start(controller) {
-      fetchEventSource("antidraw://_internal/workspaces", {
+      fetchEventSource("antidraw://app/api/workspaces", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -168,7 +168,7 @@ export async function* createWorkspace(
 
 export const listWorkspaces = async () => {
   try {
-    const response = await fetch("antidraw://_internal/workspaces");
+    const response = await fetch("antidraw://app/api/workspaces");
 
     if (!response.ok) {
       const errorBody = await response.json().catch(() => ({}));
@@ -192,7 +192,7 @@ export const listWorkspaces = async () => {
 
 export const getWorkspace = async (id: string) => {
   try {
-    const response = await fetch(`antidraw://_internal/workspaces/${id}`);
+    const response = await fetch(`antidraw://app/api/workspaces/${id}`);
 
     if (!response.ok) {
       const errorBody = await response.json().catch(() => ({}));
@@ -216,7 +216,7 @@ export const getWorkspace = async (id: string) => {
 
 export const deleteWorkspace = async (id: string) => {
   try {
-    const response = await fetch(`antidraw://_internal/workspaces/${id}`, {
+    const response = await fetch(`antidraw://app/api/workspaces/${id}`, {
       method: "DELETE",
     });
 
@@ -250,7 +250,7 @@ export type { DevServerState, DevServerInfo } from "@/main/api";
 export const startDevServer = async (workspaceId: string) => {
   try {
     const response = await fetch(
-      `antidraw://_internal/workspaces/${workspaceId}/dev-server`,
+      `antidraw://app/api/workspaces/${workspaceId}/dev-server`,
       { method: "POST" },
     );
 
@@ -277,7 +277,7 @@ export const startDevServer = async (workspaceId: string) => {
 export const stopDevServer = async (workspaceId: string) => {
   try {
     const response = await fetch(
-      `antidraw://_internal/workspaces/${workspaceId}/dev-server`,
+      `antidraw://app/api/workspaces/${workspaceId}/dev-server`,
       { method: "DELETE" },
     );
 
@@ -304,7 +304,7 @@ export const stopDevServer = async (workspaceId: string) => {
 export const getDevServerStatus = async (workspaceId: string) => {
   try {
     const response = await fetch(
-      `antidraw://_internal/workspaces/${workspaceId}/dev-server`,
+      `antidraw://app/api/workspaces/${workspaceId}/dev-server`,
     );
 
     if (!response.ok) {
@@ -346,7 +346,7 @@ export const getDevServerStatus = async (workspaceId: string) => {
 export const listComponents = async (workspaceId: string) => {
   try {
     const response = await fetch(
-      `antidraw://_internal/workspaces/${workspaceId}/components`,
+      `antidraw://app/api/workspaces/${workspaceId}/components`,
     );
 
     if (!response.ok) {
@@ -375,7 +375,7 @@ export const getComponentSource = async (
 ) => {
   try {
     const response = await fetch(
-      `antidraw://_internal/workspaces/${workspaceId}/components/${encodeURIComponent(componentName)}/source`,
+      `antidraw://app/api/workspaces/${workspaceId}/components/${encodeURIComponent(componentName)}/source`,
     );
 
     if (!response.ok) {
@@ -405,7 +405,7 @@ export const getComponentSource = async (
 export const listWorkspaceConversations = async (workspaceId: string) => {
   try {
     const response = await fetch(
-      `antidraw://_internal/workspaces/${workspaceId}/conversations`,
+      `antidraw://app/api/workspaces/${workspaceId}/conversations`,
     );
 
     if (!response.ok) {
@@ -437,7 +437,7 @@ export const sendMessage = async (params: {
   images?: ImageAttachment[];
 }) => {
   try {
-    const response = await fetch("antidraw://_internal/chat/message", {
+    const response = await fetch("antidraw://app/api/chat/message", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(params),
@@ -469,7 +469,7 @@ export const subscribeToConversation = async function* (
 ): AsyncGenerator<StreamEvent> {
   const stream = new ReadableStream<StreamEvent>({
     start(controller) {
-      fetchEventSource(`antidraw://_internal/chat/${conversationId}/stream`, {
+      fetchEventSource(`antidraw://app/api/chat/${conversationId}/stream`, {
         onopen: async (response) => {
           if (!response.ok) {
             const errorBody = await response.json().catch(() => ({}));
@@ -503,7 +503,7 @@ export const subscribeToConversation = async function* (
 export const cancelConversationStream = async (conversationId: string) => {
   try {
     const response = await fetch(
-      `antidraw://_internal/chat/${conversationId}/stream`,
+      `antidraw://app/api/chat/${conversationId}/stream`,
       { method: "DELETE" },
     );
 
@@ -529,7 +529,7 @@ export const cancelConversationStream = async (conversationId: string) => {
 
 export const getConversationWithMessages = async (conversationId: string) => {
   try {
-    const response = await fetch(`antidraw://_internal/chat/${conversationId}`);
+    const response = await fetch(`antidraw://app/api/chat/${conversationId}`);
 
     if (!response.ok) {
       const errorBody = await response.json().catch(() => ({}));
@@ -553,7 +553,7 @@ export const getConversationWithMessages = async (conversationId: string) => {
 
 export const createConversation = async (workspaceId: string) => {
   try {
-    const response = await fetch("antidraw://_internal/chat/conversation", {
+    const response = await fetch("antidraw://app/api/chat/conversation", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -589,7 +589,7 @@ export const generateConversationTitle = async (
 ) => {
   try {
     const response = await fetch(
-      `antidraw://_internal/chat/${conversationId}/generate-title`,
+      `antidraw://app/api/chat/${conversationId}/generate-title`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -633,7 +633,7 @@ export type FrameLayoutData = {
 export const getFrameLayouts = async (workspaceId: string) => {
   try {
     const response = await fetch(
-      `antidraw://_internal/workspaces/${workspaceId}/frame-layouts`,
+      `antidraw://app/api/workspaces/${workspaceId}/frame-layouts`,
     );
 
     if (!response.ok) {
@@ -668,7 +668,7 @@ export const saveFrameLayouts = async (
 ) => {
   try {
     const response = await fetch(
-      `antidraw://_internal/workspaces/${workspaceId}/frame-layouts`,
+      `antidraw://app/api/workspaces/${workspaceId}/frame-layouts`,
       {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
