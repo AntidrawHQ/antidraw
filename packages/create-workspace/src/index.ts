@@ -27,6 +27,13 @@ const parseArgs = (args: string[]): { destPath: string; options: Options } => {
   return { destPath, options };
 };
 
+// npm strips `.gitignore` from published tarballs, so we ship the file
+// as `_gitignore` in the template and rename on copy. Same trick used by
+// create-vite, create-next-app, etc.
+const renameOnCopy: Record<string, string> = {
+  _gitignore: ".gitignore",
+};
+
 const copyDir = (src: string, dest: string): void => {
   fs.mkdirSync(dest, { recursive: true });
 
@@ -34,7 +41,8 @@ const copyDir = (src: string, dest: string): void => {
 
   for (const entry of entries) {
     const srcPath = path.join(src, entry.name);
-    const destPath = path.join(dest, entry.name);
+    const destName = renameOnCopy[entry.name] ?? entry.name;
+    const destPath = path.join(dest, destName);
 
     if (entry.isDirectory()) {
       copyDir(srcPath, destPath);
