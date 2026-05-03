@@ -12,19 +12,13 @@ Antidraw is a vibe-designing tool that runs on your machine instead of somewhere
 
 ## Status
 
-`v0.0.1-alpha` — early. macOS Apple Silicon only. Not signed yet, so first launch needs the workaround below.
+Early alpha. macOS only — Apple Silicon (`arm64`) and Intel (`x64`) builds are signed and notarized.
 
 ## Install
 
-Download the latest `.dmg` from [Releases](https://github.com/AntidrawHQ/antidraw/releases) and drag Antidraw to `/Applications`.
+Download the matching `.dmg` for your Mac from [Releases](https://github.com/AntidrawHQ/antidraw/releases) and drag Antidraw to `/Applications`. The app is signed and notarized, so first launch works without any Gatekeeper workarounds.
 
-Because the build is unsigned, macOS Gatekeeper will refuse to launch it on first try. Run this once in Terminal to clear the quarantine flag:
-
-```sh
-xattr -cr /Applications/Antidraw.app
-```
-
-Code signing + notarization is on the roadmap; this step goes away once we sign.
+Updates are delivered automatically via `electron-updater` from the GitHub Releases feed.
 
 ## Development
 
@@ -40,9 +34,11 @@ npm run dev:shell
 That launches the Electron shell in dev mode with HMR. To produce an installable build:
 
 ```sh
-npm run build:unpack -w @antidraw/shell    # unpacked .app at packages/shell/release/<version>/mac-arm64/
-npm run build:mac    -w @antidraw/shell    # full DMG
+npm run build:unpack -w @antidraw/shell    # unpacked .app at packages/shell/release/<version>/mac-<arch>/
+npm run build:mac    -w @antidraw/shell    # full DMG (host arch)
 ```
+
+Releases are cut by pushing a `v*.*.*` tag — the workflow in `.github/workflows/release.yml` builds, signs, and notarizes both arches, then uploads a draft release. Promote the draft to "published" when ready; `electron-updater` only picks up published releases.
 
 ## Project layout
 
@@ -57,6 +53,4 @@ The shell is the actual app. `create-workspace` and `plugin-runtime` are the npm
 
 ## License
 
-The Antidraw application (everything under `packages/shell`) is licensed under [AGPL-3.0-or-later](LICENSE). If you fork it or run a modified version as a network service, you have to share your changes under the same license.
-
-The packages users embed into their own projects — `@antidrawapp/create-workspace` and `@antidrawapp/runtime` — are MIT-licensed so they don't infect user code.
+[MIT](LICENSE).
