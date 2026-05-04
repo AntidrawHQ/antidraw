@@ -1,5 +1,7 @@
 import { app, BrowserWindow, ipcMain, net, protocol, session } from "electron";
-import { autoUpdater } from "electron-updater";
+import electronUpdater from "electron-updater";
+
+const { autoUpdater } = electronUpdater;
 import fs from "fs";
 import path from "path";
 import { pathToFileURL } from "url";
