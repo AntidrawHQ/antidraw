@@ -8,5 +8,10 @@
     <true/>
     <key>com.apple.security.cs.allow-dyld-environment-variables</key>
     <true/>
+    <!-- Workspaces install third-party npm packages with native .node bindings
+         (rollup, esbuild, libsql, etc.) signed by other developers. Hardened
+         Runtime's library validation refuses to dlopen those without this. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
   </dict>
 </plist>
