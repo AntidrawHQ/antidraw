@@ -1,3 +1,5 @@
+import { createRequire } from "node:module";
+import path from "node:path";
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { ok, err } from "neverthrow";
@@ -6,6 +8,39 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 import { getWorkspaceSourcePath } from "@/main/api/init";
 import type { ImageAttachment } from "@/shared/utils/message";
 import { createUserSDKMessage } from "@/shared/utils/message";
+
+// The SDK auto-resolves the bundled `claude` binary via require.resolve, which
+// in a packaged Electron app returns a path traversing `app.asar`. asar is a
+// regular file on disk; child_process.spawn is a raw syscall that doesn't go
+// through Electron's asar layer, so the kernel returns ENOTDIR. Resolve once
+// and rewrite to the .unpacked sibling directory where the binary actually
+// lives. In dev (no asar in the path), the replace is a no-op.
+const claudeCodeExecutablePath = ((): string | undefined => {
+  const requireFromHere = createRequire(import.meta.url);
+  const { platform, arch } = process;
+  const ext = platform === "win32" ? ".exe" : "";
+  const candidates =
+    platform === "linux"
+      ? [
+          `@anthropic-ai/claude-agent-sdk-linux-${arch}-musl/claude${ext}`,
+          `@anthropic-ai/claude-agent-sdk-linux-${arch}/claude${ext}`,
+        ]
+      : [`@anthropic-ai/claude-agent-sdk-${platform}-${arch}/claude${ext}`];
+
+  const sep = path.sep;
+  for (const spec of candidates) {
+    try {
+      const resolved = requireFromHere.resolve(spec);
+      return resolved.replace(
+        `${sep}app.asar${sep}`,
+        `${sep}app.asar.unpacked${sep}`,
+      );
+    } catch {
+      // try next candidate
+    }
+  }
+  return undefined;
+})();
 
 const buildPrompt = (
   message: string,
@@ -48,6 +83,7 @@ User's first message:
     const stream = query({
       prompt,
       options: {
+        pathToClaudeCodeExecutable: claudeCodeExecutablePath,
         persistSession: false,
         permissionMode: "bypassPermissions",
         outputFormat: {
@@ -91,6 +127,7 @@ export const sendMessage = (params: {
     const res = query({
       prompt: buildPrompt(message, images),
       options: {
+        pathToClaudeCodeExecutable: claudeCodeExecutablePath,
         cwd: workspacePath,
         resume: claudeCodeSessionID,
         systemPrompt: {
