@@ -24,6 +24,7 @@ import {
   stopAllDevServers,
 } from "./services/dev-server.service";
 import { installNodeShim } from "./lib/node-shim";
+import { runMigrations } from "./db/migrate";
 
 // Keep the renderer responsive when the window is unfocused or occluded.
 // Without these, Chromium throttles rAF/timers/request scheduling in packaged
@@ -105,8 +106,19 @@ const serveRendererAsset = async (pathname: string): Promise<Response> => {
   return net.fetch(INDEX_FILE_URL);
 };
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   installNodeShim();
+
+  // Apply pending schema migrations before anything queries the DB. If this
+  // fails the app is unusable, so surface the error and exit instead of
+  // limping along with a half-initialized DB.
+  try {
+    await runMigrations();
+  } catch (err) {
+    console.error("Database migration failed:", err);
+    app.quit();
+    return;
+  }
 
   // Trust self-signed certs for localhost (enables HTTPS dev servers without warnings)
   session.defaultSession.setCertificateVerifyProc((request, callback) => {
