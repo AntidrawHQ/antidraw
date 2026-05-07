@@ -22,6 +22,8 @@ import {
 import {
   listComponents,
   getComponentSource,
+  componentEvents,
+  type ComponentStreamEvent,
 } from "../services/component.service";
 
 export const workspaceController = new Hono();
@@ -231,6 +233,31 @@ workspaceController.get(
     }
 
     return ctx.json(result.value);
+  }
+);
+
+workspaceController.get(
+  "/:workspaceId/components/stream",
+  zValidator("param", workspaceIdParamSchema),
+  async (ctx) => {
+    const { workspaceId } = ctx.req.valid("param");
+
+    return streamSSE(ctx, async (stream) => {
+      const onChanged = (changedWorkspaceId: string) => {
+        if (changedWorkspaceId !== workspaceId) return;
+        stream.writeSSE({
+          data: JSON.stringify({ type: "changed" } satisfies ComponentStreamEvent),
+        });
+      };
+
+      componentEvents.on("changed", onChanged);
+
+      ctx.req.raw.signal.addEventListener("abort", () => {
+        componentEvents.off("changed", onChanged);
+      });
+
+      await new Promise(() => {});
+    });
   }
 );
 

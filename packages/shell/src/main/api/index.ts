@@ -15,6 +15,7 @@ export type { ClaudeAuthStatus } from "@/main/services/claude-cli-interactions.s
 export type {
   ComponentListItem,
   ComponentSource,
+  ComponentStreamEvent,
 } from "./services/component.service";
 import { zValidator } from "@hono/zod-validator";
 import { streamSSE } from "hono/streaming";
