@@ -27,7 +27,6 @@ type ComponentEvents = {
 class ComponentEventEmitter extends EventEmitter<ComponentEvents> {}
 
 export const componentEvents = new ComponentEventEmitter();
-componentEvents.setMaxListeners(0);
 
 const componentWatchers = new Map<string, FSWatcher>();
 
