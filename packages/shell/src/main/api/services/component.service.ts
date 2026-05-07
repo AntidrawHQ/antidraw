@@ -1,5 +1,7 @@
 import path from "node:path";
 import fs from "node:fs/promises";
+import { EventEmitter } from "node:events";
+import chokidar, { type FSWatcher } from "chokidar";
 import { ok, err } from "neverthrow";
 import { getWorkspaceSourcePath } from "@/main/api/init";
 
@@ -15,6 +17,18 @@ export type ComponentSource = {
   filePath: string;
   source: string;
 };
+
+export type ComponentStreamEvent = { type: "changed" };
+
+type ComponentEvents = {
+  changed: [workspaceId: string];
+};
+
+class ComponentEventEmitter extends EventEmitter<ComponentEvents> {}
+
+export const componentEvents = new ComponentEventEmitter();
+
+const componentWatchers = new Map<string, FSWatcher>();
 
 const getComponentsDir = (workspaceId: string) =>
   path.join(getWorkspaceSourcePath(workspaceId), USER_COMPONENTS_DIR);
@@ -68,4 +82,39 @@ export const getComponentSource = async (
       message: "Failed to read component source",
     });
   }
+};
+
+export const startComponentWatcher = async (workspaceId: string) => {
+  if (componentWatchers.has(workspaceId)) {
+    return;
+  }
+
+  const dir = getComponentsDir(workspaceId);
+
+  const watcher = chokidar.watch(dir, {
+    ignoreInitial: true,
+    depth: 0,
+    awaitWriteFinish: { stabilityThreshold: 100, pollInterval: 50 },
+  });
+
+  const onChange = (filePath: string) => {
+    if (!filePath.endsWith(".tsx")) return;
+    componentEvents.emit("changed", workspaceId);
+  };
+
+  watcher.on("add", onChange);
+  watcher.on("unlink", onChange);
+  watcher.on("error", (error) => {
+    console.error(`[component-watcher:${workspaceId}]`, error);
+  });
+
+  componentWatchers.set(workspaceId, watcher);
+};
+
+export const stopComponentWatcher = async (workspaceId: string) => {
+  const watcher = componentWatchers.get(workspaceId);
+  if (!watcher) return;
+
+  componentWatchers.delete(workspaceId);
+  await watcher.close();
 };

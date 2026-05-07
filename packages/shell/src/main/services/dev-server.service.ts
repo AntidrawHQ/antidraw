@@ -5,6 +5,10 @@ import { ok, err, type Result } from "neverthrow";
 import { getWorkspaceSourcePath } from "@/main/api/init";
 import { devServerStore, type DevServerState } from "@/main/lib/runtime-store";
 import { spawnNpm } from "@/main/lib/package-manager";
+import {
+  startComponentWatcher,
+  stopComponentWatcher,
+} from "@/main/api/services/component.service";
 
 // In-memory map for ChildProcess handles (can't be serialized to electron-store)
 const runningProcesses = new Map<string, ChildProcess>();
@@ -158,6 +162,9 @@ export const startDevServer = async (
     console.log(`Dev server for ${workspaceId} exited with code ${code}`);
     runningProcesses.delete(workspaceId);
     devServerStore.remove(workspaceId);
+    stopComponentWatcher(workspaceId).catch((error) => {
+      console.error(`Failed to stop component watcher for ${workspaceId}:`, error);
+    });
   });
 
   proc.stderr!.on("data", (data) => {
@@ -177,6 +184,10 @@ export const startDevServer = async (
       message: "Dev server failed to start within timeout",
     } satisfies DevServerError);
   }
+
+  startComponentWatcher(workspaceId).catch((error) => {
+    console.error(`Failed to start component watcher for ${workspaceId}:`, error);
+  });
 
   return ok(state);
 };
@@ -203,6 +214,10 @@ export const stopDevServer = (
   }
 
   devServerStore.remove(workspaceId);
+
+  stopComponentWatcher(workspaceId).catch((error) => {
+    console.error(`Failed to stop component watcher for ${workspaceId}:`, error);
+  });
 
   return ok({ stopped: true });
 };
@@ -234,6 +249,9 @@ export const stopAllDevServers = (): void => {
       killProcessTree(proc.pid);
     }
     runningProcesses.delete(workspaceId);
+    stopComponentWatcher(workspaceId).catch((error) => {
+      console.error(`Failed to stop component watcher for ${workspaceId}:`, error);
+    });
   }
 
   devServerStore.clear();

@@ -13,7 +13,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { memo, useMemo, useState, useCallback, useEffect, useRef } from "react";
-import { useUserComponents } from "./store/userComponents";
+import { useUserComponents, useUserComponentsWatcher } from "./store/userComponents";
 import { useWorkspaceStore } from "./store/workspace";
 import { useDevServerStatus, useAutoStartDevServer } from "./lib/workspace-ops";
 import { useFrameLayouts } from "./lib/frame-layout-ops";
@@ -427,6 +427,9 @@ export const AppCanvas = ({ className }: AppCanvasProps) => {
 
   // Auto-start dev server when workspace is selected
   useAutoStartDevServer(activeWorkspaceId);
+
+  // Subscribe to component file changes and invalidate the list query
+  useUserComponentsWatcher(activeWorkspaceId);
 
   const { data: devServer, isPending: isDevServerPending } =
     useDevServerStatus(activeWorkspaceId);
