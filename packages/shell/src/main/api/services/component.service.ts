@@ -27,6 +27,7 @@ type ComponentEvents = {
 class ComponentEventEmitter extends EventEmitter<ComponentEvents> {}
 
 export const componentEvents = new ComponentEventEmitter();
+componentEvents.setMaxListeners(0);
 
 const componentWatchers = new Map<string, FSWatcher>();
 
@@ -90,7 +91,6 @@ export const startComponentWatcher = async (workspaceId: string) => {
   }
 
   const dir = getComponentsDir(workspaceId);
-  await fs.mkdir(dir, { recursive: true });
 
   const watcher = chokidar.watch(dir, {
     ignoreInitial: true,

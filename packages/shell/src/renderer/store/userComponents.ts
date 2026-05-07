@@ -51,7 +51,6 @@ export const useUserComponentsWatcher = (workspaceId: string | null) => {
         },
         onerror: (error) => {
           console.error("[useUserComponentsWatcher]", error);
-          throw error;
         },
       },
     ).catch(() => {
