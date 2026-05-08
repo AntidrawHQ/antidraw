@@ -2,8 +2,6 @@ import fs from "fs"
 import path from "path"
 import { fileURLToPath } from "url"
 import type { Plugin } from "vite"
-import react from "@vitejs/plugin-react"
-import tailwindcss from "@tailwindcss/vite"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const runtimeSrc = path.resolve(__dirname, "../src")
@@ -77,8 +75,6 @@ export const userComponents = Object.fromEntries(
         }
       },
     },
-    ...react(),
-    ...tailwindcss(),
   ]
 }
 

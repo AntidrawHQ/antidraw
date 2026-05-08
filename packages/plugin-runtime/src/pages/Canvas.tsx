@@ -1,3 +1,4 @@
+/// <reference path="../user-components.d.ts" />
 import { useMemo } from "react"
 import {
   ReactFlow,
@@ -7,6 +8,7 @@ import {
   type NodeTypes,
   type NodeProps,
 } from "@xyflow/react"
+import "@xyflow/react/dist/style.css"
 import { userComponents } from "@antidrawapp/user-components"
 
 type ComponentMap = Record<string, React.ComponentType>
