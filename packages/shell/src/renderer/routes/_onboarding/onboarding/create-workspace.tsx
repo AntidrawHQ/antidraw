@@ -1,26 +1,10 @@
 import { useState, useEffect, useRef } from "react";
 import { createFileRoute, useRouter } from "@tanstack/react-router";
-import {
-  IconCircleCheckFilled,
-  IconCircleHalf2,
-} from "@tabler/icons-react";
-import { cn } from "@/renderer/lib/utils";
-import type { CreateWorkspaceStatusCode } from "@/main/api";
 import { useCreateWorkspace } from "@/renderer/lib/workspace-ops";
-
-type Status = "idle" | CreateWorkspaceStatusCode | "done" | "error";
-
-const STEPS = [
-  { key: "CREATING_DIRECTORY", label: "Creating directory" },
-  { key: "SCAFFOLDING_PROJECT", label: "Scaffolding project" },
-  { key: "INSTALLING_DEPENDENCIES", label: "Installing dependencies" },
-  { key: "SAVING_WORKSPACE", label: "Saving workspace" },
-] as const;
-
-const stepIndex = (s: Status): number => {
-  const idx = STEPS.findIndex((st) => st.key === s);
-  return s === "done" ? STEPS.length : idx;
-};
+import {
+  CreateWorkspaceProgress,
+  type CreateWorkspaceStatus,
+} from "@/renderer/components/CreateWorkspaceProgress";
 
 const ArrowRightIcon = () => (
   <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
@@ -34,62 +18,10 @@ const ArrowRightIcon = () => (
   </svg>
 );
 
-const ICON_SIZE = 18;
-
-const StepItem = ({
-  step,
-  isDone,
-  isActive,
-}: {
-  step: (typeof STEPS)[number];
-  isDone: boolean;
-  isActive: boolean;
-}) => (
-  <div
-    className={cn(
-      "flex items-center gap-2.5 py-2.5 transition-opacity duration-300",
-      isDone || isActive ? "opacity-100" : "opacity-35",
-    )}
-  >
-    <div className="flex shrink-0">
-      {isDone ? (
-        <IconCircleCheckFilled
-          size={ICON_SIZE}
-          strokeWidth={1.75}
-          color="#7c6cd6"
-        />
-      ) : isActive ? (
-        <IconCircleHalf2
-          size={ICON_SIZE}
-          strokeWidth={1.75}
-          color="#e8a040"
-          className="animate-spin"
-        />
-      ) : (
-        <IconCircleHalf2
-          size={ICON_SIZE}
-          strokeWidth={1.75}
-          color="#6b6b6b"
-        />
-      )}
-    </div>
-    <span
-      className={cn(
-        "text-[13px]",
-        isDone || isActive ? "text-[#e0e0e0]" : "text-[#666]",
-        isActive ? "font-medium" : "font-normal",
-      )}
-    >
-      {step.label}
-    </span>
-  </div>
-);
-
 const CreateWorkspacePage = () => {
   const router = useRouter();
-  const [status, setStatus] = useState<Status>("idle");
+  const [status, setStatus] = useState<CreateWorkspaceStatus>("idle");
   const isCreating = status !== "idle" && status !== "done" && status !== "error";
-  const current = stepIndex(status);
   const { mutate: createWorkspace } = useCreateWorkspace();
   const startedRef = useRef(false);
 
@@ -146,14 +78,7 @@ const CreateWorkspacePage = () => {
         {(isCreating || status === "done") && (
           <div className="flex items-end gap-4 mt-6 animate-[onb-fadein_0.3s_ease]">
             <div className="flex flex-col flex-1 min-w-0">
-              {STEPS.map((step, i) => (
-                <StepItem
-                  key={step.key}
-                  step={step}
-                  isDone={status === "done" || current > i}
-                  isActive={status !== "done" && current === i}
-                />
-              ))}
+              <CreateWorkspaceProgress status={status} />
 
               <button
                 onClick={handleOpenWorkspace}

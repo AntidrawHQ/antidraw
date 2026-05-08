@@ -16,6 +16,7 @@ import {
   CommandEmpty,
 } from "@/renderer/components/ui/command";
 import { AvatarIcon } from "@/renderer/components/AvatarIcon";
+import { CreateWorkspaceDialog } from "@/renderer/components/CreateWorkspaceDialog";
 
 export const WorkspaceSwitcher = () => {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
@@ -27,6 +28,7 @@ export const WorkspaceSwitcher = () => {
   );
 
   const [isOpen, setIsOpen] = useState(false);
+  const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [search, setSearch] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -72,10 +74,11 @@ export const WorkspaceSwitcher = () => {
 
   const handleNewWorkspace = () => {
     close();
-    // TODO: wire up to onboarding create-workspace flow once that PR lands
+    setIsCreateOpen(true);
   };
 
   return (
+    <>
     <Popover
       open={isOpen}
       onOpenChange={(open) => setIsOpen(open)}
@@ -156,5 +159,10 @@ export const WorkspaceSwitcher = () => {
         </div>
       </PopoverContent>
     </Popover>
+    <CreateWorkspaceDialog
+      open={isCreateOpen}
+      onOpenChange={setIsCreateOpen}
+    />
+    </>
   );
 };
