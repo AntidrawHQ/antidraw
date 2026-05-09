@@ -12,7 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@antidrawapp/runtime": "^0.3.0",
+    "@antidrawapp/runtime": "^0.4.0",
     "@tailwindcss/vite": "^4.1.18",
     "@vitejs/plugin-react": "^5.1.1",
     "clsx": "^2.1.1",
