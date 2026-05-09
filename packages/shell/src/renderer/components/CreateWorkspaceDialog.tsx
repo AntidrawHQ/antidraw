@@ -9,14 +9,9 @@ import {
 } from "@/renderer/components/ui/dialog";
 import { ThemedInput } from "@/renderer/components/ui/themed-input";
 import { Button } from "@/renderer/components/ui/button";
-import {
-  useCreateWorkspace,
-  useSwitchWorkspace,
-} from "@/renderer/lib/workspace-ops";
-import {
-  CreateWorkspaceProgress,
-  type CreateWorkspaceStatus,
-} from "@/renderer/components/CreateWorkspaceProgress";
+import { useSwitchWorkspace } from "@/renderer/lib/workspace-ops";
+import { useCreateWorkspaceFlow } from "@/renderer/lib/use-create-workspace-flow";
+import { CreateWorkspaceProgress } from "@/renderer/components/CreateWorkspaceProgress";
 
 type CreateWorkspaceDialogProps = {
   open: boolean;
@@ -28,62 +23,38 @@ export const CreateWorkspaceDialog = ({
   onOpenChange,
 }: CreateWorkspaceDialogProps) => {
   const [name, setName] = useState("");
-  const [status, setStatus] = useState<CreateWorkspaceStatus>("idle");
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-
   const switchWorkspace = useSwitchWorkspace();
-  const { mutate: createWorkspace, isPending } = useCreateWorkspace();
 
-  const isCreating =
-    status !== "idle" && status !== "done" && status !== "error";
+  const { status, errorMessage, isCreating, isPending, start, reset } =
+    useCreateWorkspaceFlow({
+      onSuccess: (workspace) => {
+        switchWorkspace(workspace.id);
+        // Brief moment so user sees the final "done" state before close
+        setTimeout(() => {
+          onOpenChange(false);
+          setName("");
+          reset();
+        }, 600);
+      },
+    });
+
   const trimmedName = name.trim();
   const canSubmit = trimmedName.length > 0 && !isPending;
-
-  const reset = () => {
-    setName("");
-    setStatus("idle");
-    setErrorMessage(null);
-  };
 
   const handleOpenChange = (next: boolean) => {
     // Block close while creation is in flight
     if (!next && isCreating) return;
-    if (!next) reset();
+    if (!next) {
+      setName("");
+      reset();
+    }
     onOpenChange(next);
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!canSubmit) return;
-
-    setErrorMessage(null);
-    createWorkspace(
-      {
-        name: trimmedName,
-        onProgress: (event) => {
-          if (event.type === "status") setStatus(event.status);
-          if (event.type === "done") setStatus("done");
-          if (event.type === "error") {
-            setStatus("error");
-            setErrorMessage(event.error.message);
-          }
-        },
-      },
-      {
-        onSuccess: (workspace) => {
-          switchWorkspace(workspace.id);
-          // Brief moment so user sees the final "done" state before close
-          setTimeout(() => {
-            onOpenChange(false);
-            reset();
-          }, 600);
-        },
-        onError: (err) => {
-          setStatus("error");
-          setErrorMessage(err.message);
-        },
-      },
-    );
+    start(trimmedName);
   };
 
   return (

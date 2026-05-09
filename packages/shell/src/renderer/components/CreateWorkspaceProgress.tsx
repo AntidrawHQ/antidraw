@@ -3,13 +3,7 @@ import {
   IconCircleHalf2,
 } from "@tabler/icons-react";
 import { cn } from "@/renderer/lib/utils";
-import type { CreateWorkspaceStatusCode } from "@/main/api";
-
-export type CreateWorkspaceStatus =
-  | "idle"
-  | CreateWorkspaceStatusCode
-  | "done"
-  | "error";
+import type { CreateWorkspaceStatus } from "@/renderer/lib/use-create-workspace-flow";
 
 export const CREATE_WORKSPACE_STEPS = [
   { key: "CREATING_DIRECTORY", label: "Creating directory" },
