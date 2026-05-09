@@ -1,10 +1,7 @@
-import { useState, useEffect, useRef } from "react";
+import { useEffect, useRef } from "react";
 import { createFileRoute, useRouter } from "@tanstack/react-router";
-import { useCreateWorkspace } from "@/renderer/lib/workspace-ops";
-import {
-  CreateWorkspaceProgress,
-  type CreateWorkspaceStatus,
-} from "@/renderer/components/CreateWorkspaceProgress";
+import { useCreateWorkspaceFlow } from "@/renderer/lib/use-create-workspace-flow";
+import { CreateWorkspaceProgress } from "@/renderer/components/CreateWorkspaceProgress";
 
 const ArrowRightIcon = () => (
   <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
@@ -20,32 +17,14 @@ const ArrowRightIcon = () => (
 
 const CreateWorkspacePage = () => {
   const router = useRouter();
-  const [status, setStatus] = useState<CreateWorkspaceStatus>("idle");
-  const isCreating = status !== "idle" && status !== "done" && status !== "error";
-  const { mutate: createWorkspace } = useCreateWorkspace();
+  const { status, isCreating, start } = useCreateWorkspaceFlow();
   const startedRef = useRef(false);
 
   useEffect(() => {
     if (startedRef.current) return;
     startedRef.current = true;
-
-    createWorkspace(
-      {
-        name: "Default Workspace",
-        onProgress: (event) => {
-          if (event.type === "status") {
-            setStatus(event.status);
-          }
-          if (event.type === "done") {
-            setStatus("done");
-          }
-          if (event.type === "error") {
-            setStatus("error");
-          }
-        },
-      },
-    );
-  }, [createWorkspace]);
+    start("Default Workspace");
+  }, [start]);
 
   const handleOpenWorkspace = () => {
     router.navigate({ to: "/" });
