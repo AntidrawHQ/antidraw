@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ChevronUp, ChevronDown, Check, Plus, Search } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
-import { useWorkspaces, useStopDevServer } from "@/renderer/lib/workspace-ops";
+import { useWorkspaces, useSwitchWorkspace } from "@/renderer/lib/workspace-ops";
 import {
   Popover,
   PopoverTrigger,
@@ -16,17 +16,13 @@ import {
   CommandEmpty,
 } from "@/renderer/components/ui/command";
 import { AvatarIcon } from "@/renderer/components/AvatarIcon";
+import { CreateWorkspaceDialog } from "@/renderer/components/CreateWorkspaceDialog";
 
 export const WorkspaceSwitcher = () => {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
-  const setActiveWorkspaceId = useWorkspaceStore(
-    (s) => s.setActiveWorkspaceId
-  );
-  const setActiveConversationId = useWorkspaceStore(
-    (s) => s.setActiveConversationId
-  );
 
   const [isOpen, setIsOpen] = useState(false);
+  const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [search, setSearch] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -34,7 +30,7 @@ export const WorkspaceSwitcher = () => {
   const activeWorkspace = workspaces?.find(
     (ws) => ws.id === activeWorkspaceId
   );
-  const stopDevServer = useStopDevServer();
+  const switchWorkspace = useSwitchWorkspace();
 
   // Auto-focus search input when popover opens
   useEffect(() => {
@@ -51,31 +47,17 @@ export const WorkspaceSwitcher = () => {
     const ws = workspaces?.find((w) => w.id === wsId);
     if (!ws) return;
 
-    if (ws.id === activeWorkspaceId) {
-      close();
-      return;
-    }
-
-    // Stop previous workspace's dev server
-    if (activeWorkspaceId) {
-      stopDevServer.mutate(activeWorkspaceId, {
-        onError: (error) => {
-          console.error("Failed to stop dev server:", error);
-        },
-      });
-    }
-
-    setActiveWorkspaceId(ws.id);
-    setActiveConversationId(null);
+    switchWorkspace(ws.id);
     close();
   };
 
   const handleNewWorkspace = () => {
     close();
-    // TODO: wire up to onboarding create-workspace flow once that PR lands
+    setIsCreateOpen(true);
   };
 
   return (
+    <>
     <Popover
       open={isOpen}
       onOpenChange={(open) => setIsOpen(open)}
@@ -156,5 +138,10 @@ export const WorkspaceSwitcher = () => {
         </div>
       </PopoverContent>
     </Popover>
+    <CreateWorkspaceDialog
+      open={isCreateOpen}
+      onOpenChange={setIsCreateOpen}
+    />
+    </>
   );
 };
