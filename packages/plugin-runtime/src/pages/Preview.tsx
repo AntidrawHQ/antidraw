@@ -44,14 +44,7 @@ const Frame = ({
   }, [componentName, fullscreen])
 
   return (
-    <div
-      ref={containerRef}
-      className={
-        fullscreen
-          ? "w-screen h-screen flex items-center justify-center"
-          : "inline-block"
-      }
-    >
+    <div ref={containerRef}>
       {children}
     </div>
   )
