@@ -32,12 +32,12 @@ export const CreateWorkspaceDialog = ({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const switchWorkspace = useSwitchWorkspace();
-  const { mutate: createWorkspace } = useCreateWorkspace();
+  const { mutate: createWorkspace, isPending } = useCreateWorkspace();
 
   const isCreating =
     status !== "idle" && status !== "done" && status !== "error";
   const trimmedName = name.trim();
-  const canSubmit = trimmedName.length > 0 && status === "idle";
+  const canSubmit = trimmedName.length > 0 && !isPending;
 
   const reset = () => {
     setName("");
