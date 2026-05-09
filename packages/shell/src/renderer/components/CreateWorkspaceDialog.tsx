@@ -7,10 +7,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/renderer/components/ui/dialog";
-import { Input } from "@/renderer/components/ui/input";
+import { ThemedInput } from "@/renderer/components/ui/themed-input";
 import { Button } from "@/renderer/components/ui/button";
-import { useCreateWorkspace } from "@/renderer/lib/workspace-ops";
-import { useWorkspaceStore } from "@/renderer/store/workspace";
+import {
+  useCreateWorkspace,
+  useSwitchWorkspace,
+} from "@/renderer/lib/workspace-ops";
 import {
   CreateWorkspaceProgress,
   type CreateWorkspaceStatus,
@@ -29,13 +31,7 @@ export const CreateWorkspaceDialog = ({
   const [status, setStatus] = useState<CreateWorkspaceStatus>("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const setActiveWorkspaceId = useWorkspaceStore(
-    (s) => s.setActiveWorkspaceId,
-  );
-  const setActiveConversationId = useWorkspaceStore(
-    (s) => s.setActiveConversationId,
-  );
-
+  const switchWorkspace = useSwitchWorkspace();
   const { mutate: createWorkspace } = useCreateWorkspace();
 
   const isCreating =
@@ -75,8 +71,7 @@ export const CreateWorkspaceDialog = ({
       },
       {
         onSuccess: (workspace) => {
-          setActiveWorkspaceId(workspace.id);
-          setActiveConversationId(null);
+          switchWorkspace(workspace.id);
           // Brief moment so user sees the final "done" state before close
           setTimeout(() => {
             onOpenChange(false);
@@ -115,18 +110,17 @@ export const CreateWorkspaceDialog = ({
 
         {status === "idle" || status === "error" ? (
           <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-            <Input
+            <ThemedInput
               autoFocus
               placeholder="Workspace name"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="h-10 rounded-lg border-white/[0.10] bg-transparent px-3 text-[13px] text-[#e0e0e0] placeholder:text-neutral-500"
               disabled={isCreating}
             />
 
-            {errorMessage && (
+            {errorMessage ? (
               <p className="text-sm text-destructive">{errorMessage}</p>
-            )}
+            ) : null}
 
             <DialogFooter>
               <Button

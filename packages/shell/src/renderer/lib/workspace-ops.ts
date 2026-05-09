@@ -79,6 +79,30 @@ export const useCreateWorkspace = () => {
   });
 };
 
+export const useSwitchWorkspace = () => {
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
+  const setActiveWorkspaceId = useWorkspaceStore((s) => s.setActiveWorkspaceId);
+  const setActiveConversationId = useWorkspaceStore(
+    (s) => s.setActiveConversationId,
+  );
+  const stopDevServer = useStopDevServer();
+
+  return (nextWorkspaceId: string) => {
+    if (nextWorkspaceId === activeWorkspaceId) return;
+
+    if (activeWorkspaceId) {
+      stopDevServer.mutate(activeWorkspaceId, {
+        onError: (error) => {
+          console.error("Failed to stop dev server:", error);
+        },
+      });
+    }
+
+    setActiveWorkspaceId(nextWorkspaceId);
+    setActiveConversationId(null);
+  };
+};
+
 export const useDeleteWorkspace = () => {
   const queryClient = useQueryClient();
 
