@@ -10,12 +10,7 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "jsx": "react-jsx",
-    "types": ["node"],
-    "baseUrl": ".",
-    "paths": {
-      "@/*": ["./src/*"],
-      "@antidrawapp/user-components": ["./src/components/user-components/index.ts"]
-    }
+    "types": ["node"]
   },
   "include": ["src/**/*", "plugin.ts"],
   "exclude": ["node_modules", "dist"]

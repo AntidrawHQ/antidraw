@@ -2,15 +2,10 @@ import fs from "fs"
 import path from "path"
 import { fileURLToPath } from "url"
 import type { Plugin } from "vite"
-import react from "@vitejs/plugin-react"
-import tailwindcss from "@tailwindcss/vite"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const runtimeSrc = path.resolve(__dirname, "../src")
 const certsDir = path.resolve(__dirname, "../certs")
-
-const VIRTUAL_USER_COMPONENTS = "@antidrawapp/user-components"
-const RESOLVED_VIRTUAL_USER_COMPONENTS = "\0@antidrawapp/user-components"
 
 export const antidraw = (): Plugin[] => {
   return [
@@ -35,50 +30,6 @@ export const antidraw = (): Plugin[] => {
         },
       }),
     },
-    {
-      name: "antidraw:user-components",
-      resolveId(id) {
-        if (id === VIRTUAL_USER_COMPONENTS) {
-          return RESOLVED_VIRTUAL_USER_COMPONENTS
-        }
-      },
-      load(id) {
-        if (id === RESOLVED_VIRTUAL_USER_COMPONENTS) {
-          return `
-const modules = import.meta.glob("/src/components/user-components/*.tsx", { eager: true })
-
-export const userComponents = Object.fromEntries(
-  Object.entries(modules)
-    .map(([path, mod]) => [
-      path.replace("/src/components/user-components/", "").replace(".tsx", ""),
-      mod.default,
-    ])
-)
-`
-        }
-      },
-    },
-    {
-      name: "antidraw:tailwind-source",
-      enforce: "pre",
-      transform(code, id) {
-        if (id.endsWith(".css") && code.includes('@import "tailwindcss"')) {
-          const workspaceSrc = path.resolve(process.cwd(), "./src")
-          // source(...) sets compiler.root rather than adding a side glob,
-          // so @tailwindcss/vite's per-id compiler cache invalidates when
-          // new files appear under the workspace tree. A separate @source
-          // directive only registers watch-deps for files seen during the
-          // last generate(), so newly-created user components don't
-          // trigger CSS regeneration until the dev server restarts.
-          return code.replace(
-            '@import "tailwindcss";',
-            `@import "tailwindcss" source("${workspaceSrc}");`
-          )
-        }
-      },
-    },
-    ...react(),
-    ...tailwindcss(),
   ]
 }
 

@@ -3,16 +3,9 @@ import {
   createRootRoute,
   createRoute,
 } from "@tanstack/react-router"
-import { Canvas } from "./pages/Canvas"
 import { Preview } from "./pages/Preview"
 
 const rootRoute = createRootRoute()
-
-const indexRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/",
-  component: Canvas,
-})
 
 const previewRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -24,6 +17,6 @@ const previewRoute = createRoute({
   }),
 })
 
-const routeTree = rootRoute.addChildren([indexRoute, previewRoute])
+const routeTree = rootRoute.addChildren([previewRoute])
 
 export const router = createRouter({ routeTree })
