@@ -1,198 +1,197 @@
-import { useEffect, useRef, useState } from "react";
 import type { ComponentType } from "react";
-import { ChevronsUpDown, Plus, Search } from "lucide-react";
+import { ChevronsUpDown, Plus, X } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
 import { useWorkspaceStore } from "./store/workspace";
 import type { SidePanel as SidePanelId } from "./store/workspace";
-import {
-  useWorkspaceConversations,
-  useCreateConversation,
-} from "./lib/claude-code-ops";
-import { formatRelativeTime } from "./lib/time-utils";
-import { AppChat } from "./Chat";
+import { useTerminalStore } from "./store/terminals";
+import { Terminal } from "./Terminal";
 import { ComponentPanel } from "./ComponentPanel";
-import {
-  Command,
-  CommandInput,
-  CommandList,
-  CommandItem,
-} from "./components/ui/command";
 import { ResizablePanel } from "./components/ui/resizable-panel";
+import { useState } from "react";
 
-// --- Conversation List (search + filtered list + new button) ---
+// --- Terminal List (simple list + new button) ---
 
-type ConversationListProps = {
+type TerminalListProps = {
   onClose: () => void;
 };
 
-const ConversationList = ({ onClose }: ConversationListProps) => {
+const TerminalList = ({ onClose }: TerminalListProps) => {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
-  const setActiveConversationId = useWorkspaceStore(
-    (s) => s.setActiveConversationId
-  );
+  const allSessions = useTerminalStore((s) => s.sessions);
+  const setActiveSessionId = useTerminalStore((s) => s.setActiveSessionId);
+  const createSession = useTerminalStore((s) => s.createSession);
+  const closeSession = useTerminalStore((s) => s.closeSession);
 
-  const { data: conversations = [] } =
-    useWorkspaceConversations(activeWorkspaceId);
-  const createConversation = useCreateConversation();
+  const sessions = activeWorkspaceId
+    ? allSessions.filter((s) => s.workspaceId === activeWorkspaceId)
+    : [];
 
-  const [search, setSearch] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
-
-  const handleSelect = (convId: string) => {
-    const conv = conversations.find((c) => c.id === convId);
-    if (!conv) return;
-    setActiveConversationId(conv.id);
+  const handleSelect = (sessionId: string) => {
+    if (!activeWorkspaceId) return;
+    setActiveSessionId(activeWorkspaceId, sessionId);
     onClose();
   };
 
-  const handleNewConversation = async () => {
+  const handleNew = async () => {
     if (!activeWorkspaceId) return;
-    const conv = await createConversation.mutateAsync(activeWorkspaceId);
-    setActiveConversationId(conv.id);
+    await createSession(activeWorkspaceId);
     onClose();
   };
 
   return (
-    <Command
+    <div
       className="flex-1 flex flex-col overflow-hidden"
-      onKeyDown={(e) => { if (e.key === "Escape") onClose(); }}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") onClose();
+      }}
     >
-      <div className="flex items-center gap-2 px-3 pt-2.5 pb-3">
-        <Search
-          className={cn(
-            "w-3.5 h-3.5 shrink-0 transition-colors",
-            search ? "text-neutral-300" : "text-neutral-600"
-          )}
-        />
-        <CommandInput
-          ref={inputRef}
-          placeholder="Search..."
-          value={search}
-          onValueChange={setSearch}
-          className="placeholder:text-neutral-600"
-        />
+      <div className="flex items-center justify-between px-3 pt-2.5 pb-3">
+        <span className="text-[12px] text-neutral-500">Terminals</span>
         <button
-          onClick={handleNewConversation}
-          disabled={createConversation.isPending}
+          onClick={handleNew}
+          disabled={!activeWorkspaceId}
           className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-white/[0.06] text-[12px] text-neutral-500 hover:text-neutral-200 disabled:opacity-50 shrink-0"
-          title="New conversation"
+          title="New terminal"
         >
           <Plus className="w-3 h-3" />
           New
         </button>
       </div>
 
-      <CommandList className="flex-1 px-2 pb-2">
-        {conversations.map((conv) => (
-          <CommandItem
-            key={conv.id}
-            value={conv.id}
-            keywords={[conv.title ?? "Untitled Conversation"]}
-            onSelect={() => handleSelect(conv.id)}
-            className="group w-full flex flex-col items-start gap-0.5 py-2 px-2.5 border-none rounded-md text-left mb-0.5"
-          >
-            <div className="w-full flex items-center justify-between gap-2">
-              <span className="flex-1 text-[13px] font-medium overflow-hidden text-ellipsis whitespace-nowrap text-neutral-400 group-data-[selected=true]:text-neutral-200">
-                {conv.title ?? "Untitled Conversation"}
+      <div className="flex-1 px-2 pb-2 overflow-auto">
+        {sessions.length === 0 ? (
+          <div className="px-2.5 py-3 text-[12px] text-neutral-600">
+            No terminals. Click New to start one.
+          </div>
+        ) : (
+          sessions.map((s) => (
+            <div
+              key={s.sessionId}
+              role="button"
+              onClick={() => handleSelect(s.sessionId)}
+              className="group w-full flex items-center justify-between gap-2 py-2 px-2.5 rounded-md hover:bg-white/[0.06] cursor-pointer mb-0.5"
+            >
+              <span className="flex-1 text-[13px] font-medium overflow-hidden text-ellipsis whitespace-nowrap text-neutral-400 group-hover:text-neutral-200">
+                {s.title}
               </span>
-              <span className="text-[10px] text-neutral-600 shrink-0">
-                {formatRelativeTime(new Date(conv.updatedAt))}
-              </span>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void closeSession(s.sessionId);
+                }}
+                className="p-1 rounded-md hover:bg-white/[0.08] text-neutral-600 hover:text-neutral-200 opacity-0 group-hover:opacity-100 shrink-0"
+                title="Close terminal"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
             </div>
-            {conv.summary && (
-              <span className="text-[11px] text-[#71717a] overflow-hidden text-ellipsis whitespace-nowrap w-full">
-                {conv.summary}
-              </span>
-            )}
-          </CommandItem>
-        ))}
-      </CommandList>
-
-    </Command>
+          ))
+        )}
+      </div>
+    </div>
   );
 };
 
-// --- Conversation View (header + chat) ---
+// --- Terminal View (header + all-mounted terminals, one visible) ---
 
-type ConversationViewProps = {
+type TerminalViewProps = {
   onShowList: () => void;
 };
 
-const ConversationView = ({ onShowList }: ConversationViewProps) => {
+const TerminalView = ({ onShowList }: TerminalViewProps) => {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
-  const activeConversationId = useWorkspaceStore(
-    (s) => s.activeConversationId
+  const allSessions = useTerminalStore((s) => s.sessions);
+  const activeSessionId = useTerminalStore((s) =>
+    activeWorkspaceId ? (s.activeSessionIdByWorkspace[activeWorkspaceId] ?? null) : null,
   );
-  const setActiveConversationId = useWorkspaceStore(
-    (s) => s.setActiveConversationId
-  );
+  const createSession = useTerminalStore((s) => s.createSession);
+  const closeSession = useTerminalStore((s) => s.closeSession);
 
-  const { data: conversations = [] } =
-    useWorkspaceConversations(activeWorkspaceId);
-  const createConversation = useCreateConversation();
-
-  const activeConversation = conversations.find(
-    (c) => c.id === activeConversationId
+  const activeSession = allSessions.find(
+    (s) => s.workspaceId === activeWorkspaceId && s.sessionId === activeSessionId,
   );
 
-  const handleNewConversation = async () => {
+  const handleNew = async () => {
     if (!activeWorkspaceId) return;
-    const conv = await createConversation.mutateAsync(activeWorkspaceId);
-    setActiveConversationId(conv.id);
+    await createSession(activeWorkspaceId);
+  };
+
+  const handleClose = async () => {
+    if (!activeSessionId) return;
+    await closeSession(activeSessionId);
   };
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      {/* Conversation Selector Header */}
       <div className="p-2 border-b border-[#2d2d2d] flex items-center gap-1">
         <button
           onClick={onShowList}
           className="flex-1 flex items-center justify-between gap-1.5 py-1.5 px-2.5 bg-transparent border-none rounded-md cursor-pointer hover:bg-white/[0.06] min-w-0"
         >
           <span className="text-[13px] font-medium text-neutral-200 overflow-hidden text-ellipsis whitespace-nowrap">
-            {activeConversation?.title ?? "Untitled Conversation"}
+            {activeSession?.title ?? "Terminal"}
           </span>
           <ChevronsUpDown className="w-3.5 h-3.5 text-[#71717a] shrink-0" />
         </button>
         <button
-          onClick={handleNewConversation}
-          disabled={createConversation.isPending}
+          onClick={handleNew}
+          disabled={!activeWorkspaceId}
           className="p-1.5 rounded-md hover:bg-white/[0.06] text-[#71717a] hover:text-neutral-200 disabled:opacity-50 shrink-0"
-          title="New conversation"
+          title="New terminal"
         >
           <Plus className="w-4 h-4" />
         </button>
+        <button
+          onClick={handleClose}
+          disabled={!activeSessionId}
+          className="p-1.5 rounded-md hover:bg-white/[0.06] text-[#71717a] hover:text-neutral-200 disabled:opacity-50 shrink-0"
+          title="Close terminal"
+        >
+          <X className="w-4 h-4" />
+        </button>
       </div>
 
-      {/* Chat Content */}
-      <AppChat className="flex-1 min-h-0" />
+      {/* Only the active session renders an xterm. Switching sessions /
+          workspaces / panels just unmounts and remounts; the buffer in the
+          terminals store survives, and the new xterm replays it on attach. */}
+      <div className="flex-1 relative bg-neutral-800 min-h-0">
+        {activeSession && (
+          <Terminal key={activeSession.sessionId} sessionId={activeSession.sessionId} />
+        )}
+      </div>
     </div>
   );
 };
 
-// --- Chat Panel (thin wrapper picking the active variant) ---
+// --- Terminal Panel (thin wrapper picking the active variant) ---
 
-const ChatPanel = () => {
-  const activeConversationId = useWorkspaceStore(
-    (s) => s.activeConversationId
+const TerminalPanel = () => {
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
+  const allSessions = useTerminalStore((s) => s.sessions);
+  const activeSessionId = useTerminalStore((s) =>
+    activeWorkspaceId ? (s.activeSessionIdByWorkspace[activeWorkspaceId] ?? null) : null,
   );
   const [showList, setShowList] = useState(false);
 
-  if (showList || !activeConversationId) {
-    return <ConversationList onClose={() => setShowList(false)} />;
-  }
+  const hasSessionsInWorkspace = activeWorkspaceId
+    ? allSessions.some((s) => s.workspaceId === activeWorkspaceId)
+    : false;
 
-  return <ConversationView onShowList={() => setShowList(true)} />;
+  const showingList = showList || !activeSessionId || !hasSessionsInWorkspace;
+
+  // Buffers + IPC subscriptions live in the terminals store, so unmounting
+  // TerminalView when the list is shown is safe — the new xterm will replay
+  // history on the next mount.
+  if (showingList) {
+    return <TerminalList onClose={() => setShowList(false)} />;
+  }
+  return <TerminalView onShowList={() => setShowList(true)} />;
 };
 
 // --- Side Panel (resizable shell + panel map) ---
 
 const panelMap = {
-  chat: ChatPanel,
+  chat: TerminalPanel,
   components: ComponentPanel,
 } satisfies Record<SidePanelId, ComponentType>;
 

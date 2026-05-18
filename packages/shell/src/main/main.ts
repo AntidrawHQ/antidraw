@@ -25,6 +25,8 @@ import {
 } from "./services/dev-server.service";
 import { installNodeShim } from "./lib/node-shim";
 import { runMigrations } from "./db/migrate";
+import { registerTerminalIpc } from "./api/ipc/terminal.ipc";
+import { disposeAllTerminals } from "./api/services/terminal.service";
 
 // Keep the renderer responsive when the window is unfocused or occluded.
 // Without these, Chromium throttles rAF/timers/request scheduling in packaged
@@ -137,6 +139,8 @@ app.whenReady().then(async () => {
     return serveRendererAsset(url.pathname);
   });
 
+  registerTerminalIpc();
+
   createWindow();
 
   ipcMain.handle("open-preview-window", (_event, url: string) => {
@@ -196,4 +200,5 @@ app.on("window-all-closed", () => {
 // Graceful shutdown - stop all dev servers before quitting
 app.on("before-quit", () => {
   stopAllDevServers();
+  disposeAllTerminals();
 });

@@ -1,4 +1,4 @@
-import { MessageSquare, Blocks } from "lucide-react";
+import { TerminalSquare, Blocks } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
 import { useWorkspaceStore } from "./store/workspace";
 import {
@@ -8,7 +8,7 @@ import {
 } from "./components/ui/tooltip";
 
 const tabs = [
-  { id: "chat" as const, icon: MessageSquare, label: "Chat" },
+  { id: "chat" as const, icon: TerminalSquare, label: "Terminal" },
   { id: "components" as const, icon: Blocks, label: "Components" },
 ];
 
