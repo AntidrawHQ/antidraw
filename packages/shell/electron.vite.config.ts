@@ -57,6 +57,13 @@ export default defineConfig({
     build: {
       outDir: "dist/renderer",
     },
+    // ghostty-web ships a WASM asset and uses `new URL('../ghostty-vt.wasm',
+    // import.meta.url)` to resolve it. esbuild's pre-bundling rewrites the
+    // module location and that URL no longer points to the right place. Vite
+    // build handles the pattern correctly; only dev pre-bundling breaks it.
+    optimizeDeps: {
+      exclude: ["ghostty-web"],
+    },
     resolve: {
       alias: {
         "@": path.resolve(__dirname, "./src"),
