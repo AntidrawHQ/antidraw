@@ -1,7 +1,9 @@
 import { spawn, type IPty } from "@lydell/node-pty";
 import { EventEmitter } from "node:events";
 import os from "node:os";
+import path from "node:path";
 import { getWorkspaceSourcePath } from "@/main/api/init";
+import { createTitleScanner } from "./osc-title-scanner";
 
 export type TerminalSessionInfo = {
   sessionId: string;
@@ -42,15 +44,6 @@ const defaultShell = () => {
   return process.env.SHELL ?? "/bin/zsh";
 };
 
-// Derive a human-readable title from the shell's reported process name. node-pty
-// exposes pty.process which mirrors what `ps` would print for the foreground
-// job in the pty — switches between "zsh", "vim", "node", etc.
-const titleFromPty = (pty: IPty, fallback: string) => {
-  const proc = pty.process?.trim();
-  if (proc && proc.length > 0) return proc;
-  return fallback;
-};
-
 export const createTerminalSession = (opts: SpawnTerminalOptions): TerminalSessionInfo => {
   const sessionId = crypto.randomUUID();
   const shell = opts.shell ?? defaultShell();
@@ -75,18 +68,21 @@ export const createTerminalSession = (opts: SpawnTerminalOptions): TerminalSessi
     pid: pty.pid,
     shell,
     workspaceId: opts.workspaceId,
-    title: titleFromPty(pty, shell),
+    title: path.basename(shell),
   };
 
   sessions.set(sessionId, { info, pty });
 
+  // OSC titles (\e]0;<title>\a etc.) emitted by the shell or running programs
+  // are the actual window title. `pty.process` returns the foreground
+  // process's `process.title`, which CLIs often abuse for diagnostics (e.g.
+  // Claude Code puts its version there) and is wrong for our purpose.
+  const scanTitle = createTitleScanner();
   let lastTitle = info.title;
   pty.onData((data) => {
     terminalEvents.emit("output", sessionId, data);
-    // pty.process updates as the foreground program changes. Poll-on-output is
-    // cheap and avoids needing a separate timer or OSC parser.
-    const next = titleFromPty(pty, shell);
-    if (next !== lastTitle) {
+    const next = scanTitle(data);
+    if (next !== null && next !== lastTitle) {
       lastTitle = next;
       const session = sessions.get(sessionId);
       if (session) session.info.title = next;

@@ -1,10 +1,11 @@
 import { useEffect, useRef } from "react";
-import type { Terminal as XTermType, ITheme } from "@xterm/xterm";
+import type { Terminal as XTermType } from "@xterm/xterm";
 import type { FitAddon as FitAddonType } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import "@fontsource/geist-mono/400.css";
 import "@fontsource/geist-mono/700.css";
 import { getBuffer, subscribeLive } from "./store/terminals";
+import { activeTheme } from "./terminal-themes";
 
 // Bare terminal — no chrome, no header. Drop into a sidebar slot and let the
 // parent provide its own header / row management.
@@ -26,30 +27,6 @@ type TerminalProps = {
   sessionId: string;
   className?: string;
   autoFocus?: boolean;
-};
-
-const ANTIDRAW_THEME: ITheme = {
-  background: "#262626",
-  foreground: "#fafafa",
-  cursor: "#818cf8",
-  cursorAccent: "#262626",
-  selectionBackground: "#525252",
-  black: "#262626",
-  red: "#ef4444",
-  green: "#14b8a6",
-  yellow: "#eab308",
-  blue: "#6366f1",
-  magenta: "#a855f7",
-  cyan: "#06b6d4",
-  white: "#d4d4d4",
-  brightBlack: "#525252",
-  brightRed: "#f87171",
-  brightGreen: "#2dd4bf",
-  brightYellow: "#fbbf24",
-  brightBlue: "#818cf8",
-  brightMagenta: "#c084fc",
-  brightCyan: "#22d3ee",
-  brightWhite: "#fafafa",
 };
 
 const FONT_FAMILY =
@@ -99,7 +76,7 @@ export const Terminal = ({
           drawBoldTextInBrightColors: true,
           macOptionIsMeta: true,
           rightClickSelectsWord: true,
-          theme: ANTIDRAW_THEME,
+          theme: activeTheme.theme,
           allowProposedApi: true,
           allowTransparency: false,
         });
@@ -210,7 +187,7 @@ export const Terminal = ({
     <div
       ref={containerRef}
       className={className}
-      style={{ background: ANTIDRAW_THEME.background, padding: 10 }}
+      style={{ background: activeTheme.theme.background, padding: 10 }}
       onMouseDown={() => termRef.current?.focus()}
     />
   );
