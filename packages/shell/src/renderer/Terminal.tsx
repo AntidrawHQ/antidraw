@@ -1,5 +1,7 @@
 import { useEffect, useRef } from "react";
-import type { Terminal as GhosttyTerminal, ITheme, FitAddon as FitAddonType } from "ghostty-web";
+import type { Terminal as XTermType, ITheme } from "@xterm/xterm";
+import type { FitAddon as FitAddonType } from "@xterm/addon-fit";
+import "@xterm/xterm/css/xterm.css";
 import "@fontsource/geist-mono/400.css";
 import "@fontsource/geist-mono/700.css";
 import { getBuffer, subscribeLive } from "./store/terminals";
@@ -10,16 +12,15 @@ import { getBuffer, subscribeLive } from "./store/terminals";
 // State (PTY output buffer, live subscribers, title) lives in the terminals
 // store as plain module state and runs independently of React. This component
 // is a pure attach/detach view: on mount it replays the buffer and subscribes
-// to live updates; on unmount it disposes the terminal. PTY keeps running.
-//
-// Renderer: ghostty-web (Ghostty's VT parser compiled to WASM + a canvas
-// renderer). xterm.js-compatible surface for write/onData/onResize/dispose.
+// to live updates; on unmount it disposes xterm. PTY keeps running.
 //
 // Hardcoded:
 //   antidraw theme (matches packages/shell neutral-800 surface)
 //   Geist Mono 14px / 400 weight / 1.0 line-height
 //   block cursor, blink on
+//   WebGL renderer (DOM fallback on context loss)
 //   10k scrollback
+//   macOption-as-alt
 
 type TerminalProps = {
   sessionId: string;
@@ -60,7 +61,7 @@ export const Terminal = ({
   autoFocus = true,
 }: TerminalProps) => {
   const containerRef = useRef<HTMLDivElement>(null);
-  const termRef = useRef<GhosttyTerminal | null>(null);
+  const termRef = useRef<XTermType | null>(null);
   const fitRef = useRef<FitAddonType | null>(null);
 
   useEffect(() => {
@@ -68,7 +69,7 @@ export const Terminal = ({
     if (!container) return;
 
     let disposed = false;
-    let term: GhosttyTerminal | null = null;
+    let term: XTermType | null = null;
     let fit: FitAddonType | null = null;
     let ro: ResizeObserver | null = null;
     let onDataDispose: { dispose: () => void } | null = null;
@@ -77,19 +78,29 @@ export const Terminal = ({
 
     const setup = async () => {
       try {
-        const { init, Terminal: GTerm, FitAddon } = await import("ghostty-web");
-
-        // Idempotent — loads the WASM module on first call, no-op after.
-        await init();
+        const [{ Terminal: XTerm }, { FitAddon }, { WebLinksAddon }] = await Promise.all([
+          import("@xterm/xterm"),
+          import("@xterm/addon-fit"),
+          import("@xterm/addon-web-links"),
+        ]);
         if (disposed || !container) return;
 
-        term = new GTerm({
+        term = new XTerm({
           fontFamily: FONT_FAMILY,
           fontSize: 14,
+          fontWeight: 400,
+          fontWeightBold: 700,
+          lineHeight: 1,
+          letterSpacing: 0,
           cursorStyle: "block",
           cursorBlink: true,
+          cursorInactiveStyle: "outline",
           scrollback: 10000,
+          drawBoldTextInBrightColors: true,
+          macOptionIsMeta: true,
+          rightClickSelectsWord: true,
           theme: ANTIDRAW_THEME,
+          allowProposedApi: true,
           allowTransparency: false,
         });
         termRef.current = term;
@@ -97,7 +108,25 @@ export const Terminal = ({
         fit = new FitAddon();
         fitRef.current = fit;
         term.loadAddon(fit);
+        term.loadAddon(new WebLinksAddon());
         term.open(container);
+
+        // WebGL renderer — paints to a single canvas via glyph atlas. Falls
+        // back to xterm's DOM renderer silently if the context can't init.
+        try {
+          const { WebglAddon } = await import("@xterm/addon-webgl");
+          const webgl = new WebglAddon();
+          webgl.onContextLoss(() => {
+            try {
+              webgl.dispose();
+            } catch {
+              /* noop */
+            }
+          });
+          term.loadAddon(webgl);
+        } catch {
+          /* DOM renderer is the fallback, no action needed */
+        }
 
         try {
           fit.fit();
@@ -105,9 +134,8 @@ export const Terminal = ({
           /* not yet sized */
         }
 
-        // Replay everything the PTY emitted before we attached. The terminal
-        // parses these bytes synchronously to reconstruct the visible screen
-        // state (cursor pos, alt screen, colors, scroll region).
+        // Replay everything the PTY emitted before we attached. xterm parses
+        // these bytes synchronously to reconstruct the visible screen state.
         const history = getBuffer(sessionId);
         if (history) term.write(history);
 
