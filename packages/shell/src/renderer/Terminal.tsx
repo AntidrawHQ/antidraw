@@ -5,7 +5,8 @@ import "@xterm/xterm/css/xterm.css";
 import "@fontsource/geist-mono/400.css";
 import "@fontsource/geist-mono/700.css";
 import { getBuffer, subscribeLive } from "./store/terminals";
-import { activeTheme } from "./terminal-themes";
+import { resolveTheme } from "./terminal-themes";
+import { useTerminalSettings } from "./store/terminal-settings";
 
 // Bare terminal — no chrome, no header. Drop into a sidebar slot and let the
 // parent provide its own header / row management.
@@ -40,6 +41,8 @@ export const Terminal = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTermType | null>(null);
   const fitRef = useRef<FitAddonType | null>(null);
+  const activeThemeId = useTerminalSettings((s) => s.activeThemeId);
+  const theme = resolveTheme(activeThemeId).theme;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -76,7 +79,7 @@ export const Terminal = ({
           drawBoldTextInBrightColors: true,
           macOptionIsMeta: true,
           rightClickSelectsWord: true,
-          theme: activeTheme.theme,
+          theme,
           allowProposedApi: true,
           allowTransparency: false,
         });
@@ -183,11 +186,19 @@ export const Terminal = ({
     };
   }, [sessionId, autoFocus]);
 
+  // Apply theme changes to the live xterm instance without tearing it down.
+  // The setup effect above intentionally captures `theme` once at mount; any
+  // subsequent change flows through here.
+  useEffect(() => {
+    if (!termRef.current) return;
+    termRef.current.options.theme = theme;
+  }, [theme]);
+
   return (
     <div
       ref={containerRef}
       className={className}
-      style={{ background: activeTheme.theme.background, padding: 10 }}
+      style={{ background: theme.background, padding: 10 }}
       onMouseDown={() => termRef.current?.focus()}
     />
   );

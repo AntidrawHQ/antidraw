@@ -1,13 +1,62 @@
 import type { ComponentType } from "react";
-import { ChevronsUpDown, Plus, X } from "lucide-react";
+import { Check, ChevronsUpDown, Palette, Plus, X } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
 import { useWorkspaceStore } from "./store/workspace";
 import type { SidePanel as SidePanelId } from "./store/workspace";
 import { useTerminalStore } from "./store/terminals";
+import { useTerminalSettings } from "./store/terminal-settings";
+import { themes, type ThemeId } from "./terminal-themes";
 import { Terminal } from "./Terminal";
 import { ComponentPanel } from "./ComponentPanel";
 import { ResizablePanel } from "./components/ui/resizable-panel";
+import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover";
 import { useState } from "react";
+
+// --- Theme switcher ---------------------------------------------------------
+
+const ThemeSwitcher = () => {
+  const activeThemeId = useTerminalSettings((s) => s.activeThemeId);
+  const setActiveThemeId = useTerminalSettings((s) => s.setActiveThemeId);
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          className="p-1.5 rounded-md hover:bg-white/[0.06] text-[#71717a] hover:text-neutral-200 shrink-0"
+          title="Terminal theme"
+        >
+          <Palette className="w-4 h-4" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="end"
+        className="w-56 p-1 bg-neutral-800 border border-[#2d2d2d] text-neutral-200"
+      >
+        {(Object.entries(themes) as Array<[ThemeId, (typeof themes)[ThemeId]]>).map(
+          ([id, t]) => (
+            <button
+              key={id}
+              onClick={() => setActiveThemeId(id)}
+              className={cn(
+                "w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-[13px] hover:bg-white/[0.06]",
+                activeThemeId === id && "bg-white/[0.06]",
+              )}
+            >
+              <span
+                className="w-3 h-3 rounded-sm border border-white/10 shrink-0"
+                style={{ background: t.theme.background }}
+              />
+              <span className="flex-1 text-left truncate">{t.name}</span>
+              {activeThemeId === id && (
+                <Check className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+              )}
+            </button>
+          ),
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+};
 
 // --- Terminal List (simple list + new button) ---
 
@@ -133,6 +182,7 @@ const TerminalView = ({ onShowList }: TerminalViewProps) => {
           </span>
           <ChevronsUpDown className="w-3.5 h-3.5 text-[#71717a] shrink-0" />
         </button>
+        <ThemeSwitcher />
         <button
           onClick={handleNew}
           disabled={!activeWorkspaceId}
