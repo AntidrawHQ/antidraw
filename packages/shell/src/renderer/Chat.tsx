@@ -217,7 +217,7 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
           </div>
         </Message>
       )}
-      {isStreaming && !liveText && !liveTool && <MessageShimmer />}
+      {isStreaming && <MessageShimmer />}
     </>
   );
 });
