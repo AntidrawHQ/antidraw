@@ -1,9 +1,13 @@
 import { EventEmitter } from "events";
 import type { Message } from "@/main/api/models/chat.model";
-import type { Query } from "@anthropic-ai/claude-agent-sdk";
+import type {
+  Query,
+  SDKPartialAssistantMessage,
+} from "@anthropic-ai/claude-agent-sdk";
 
 type ConversationEvents = {
   message: [conversationId: string, message: Message];
+  partial: [conversationId: string, partial: SDKPartialAssistantMessage];
   complete: [conversationId: string];
   error: [conversationId: string, error: string];
 };

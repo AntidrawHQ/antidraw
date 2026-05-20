@@ -2,7 +2,8 @@ import type { Conversation, ConversationWithMessages, Message } from "@/main/api
 import type { ImageAttachment } from "@/shared/utils/message";
 import { createUserSDKMessage } from "@/shared/utils/message";
 import { queryOptions, useMutation, useQuery, useQueryClient, skipToken } from "@tanstack/react-query";
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
+import type { ToolPart } from "@/renderer/components/ui/tool";
 import { queryKeys } from "./query-keys";
 import {
   cancelConversationStream,
@@ -12,7 +13,7 @@ import {
   listWorkspaceConversations,
   sendMessage,
 } from "./api";
-import { subscribeToStream } from "./stream-subscription";
+import { subscribeToStream, type LivePartial } from "./stream-subscription";
 import { selectToolMap } from "./tool-utils";
 
 // Shared query options for conversation data
@@ -69,12 +70,29 @@ export const useWorkspaceConversations = (workspaceId: string | null) => {
   });
 };
 
-// Returns Map<string, ToolPart> for tool correlation
+// Returns Map<string, ToolPart> for tool correlation, including the in-flight tool_use
+// block (if any) merged with state: "input-streaming".
 export const useToolMap = (conversationId: string | null) => {
-  return useQuery({
-    ...conversationQueryOpts(conversationId),
-    select: selectToolMap,
-    structuralSharing: false,
+  const conversation = useQuery(conversationQueryOpts(conversationId));
+  const { data: live } = useLivePartial(conversationId);
+
+  const data = useMemo<Map<string, ToolPart>>(() => {
+    if (!conversation.data) return new Map();
+    return selectToolMap(conversation.data, live);
+  }, [conversation.data, live]);
+
+  return { data };
+};
+
+// Reads the live in-flight content block from the cache.
+// Populated imperatively by stream-subscription's reducer; queryFn is a noop.
+export const useLivePartial = (conversationId: string | null) => {
+  return useQuery<LivePartial>({
+    queryKey: queryKeys.conversations.livePartial(conversationId),
+    queryFn: () => null,
+    enabled: false,
+    initialData: null as LivePartial,
+    staleTime: Infinity,
   });
 };
 

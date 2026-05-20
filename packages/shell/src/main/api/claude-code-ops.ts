@@ -147,6 +147,7 @@ Current workspace directory: ${workspacePath}
 `,
         },
         permissionMode: "bypassPermissions",
+        includePartialMessages: true,
       },
     });
 

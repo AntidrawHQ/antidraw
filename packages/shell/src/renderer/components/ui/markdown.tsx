@@ -4,6 +4,7 @@ import { memo, useId, useMemo } from "react";
 import ReactMarkdown, { Components } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
+import remend from "remend";
 import { CodeBlock, CodeBlockCode } from "./code-block";
 
 export type MarkdownProps = {
@@ -94,7 +95,12 @@ function MarkdownComponent({
 }: MarkdownProps) {
   const generatedId = useId();
   const blockId = id ?? generatedId;
-  const blocks = useMemo(() => parseMarkdownIntoBlocks(children), [children]);
+  // remend self-heals mid-stream markdown (unclosed **bold, [link](, code fences).
+  // For finished messages it's a no-op since input is already valid.
+  const blocks = useMemo(
+    () => parseMarkdownIntoBlocks(remend(children)),
+    [children],
+  );
 
   return (
     <div className={className}>
