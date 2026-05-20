@@ -9,6 +9,7 @@ import {
 } from "@/renderer/components/ui/file-upload";
 import { Markdown } from "@/renderer/components/ui/markdown";
 import { Message, MessageContent } from "@/renderer/components/ui/message";
+import { MessageShimmer } from "@/renderer/components/ui/message-shimmer";
 import {
   PromptInput,
   PromptInputAction,
@@ -80,6 +81,7 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
   const { data: toolMap } = useToolMap(conversationId);
   const { data: live } = useLivePartial(conversationId);
   const messages = conversation?.messages ?? [];
+  const isStreaming = conversation?.streamStatus === "streaming";
 
   const liveText =
     live?.block.type === "text" && live.block.text.length > 0
@@ -215,6 +217,7 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
           </div>
         </Message>
       )}
+      {isStreaming && !liveText && !liveTool && <MessageShimmer />}
     </>
   );
 });
