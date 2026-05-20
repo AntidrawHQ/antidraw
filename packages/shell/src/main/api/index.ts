@@ -20,6 +20,7 @@ export type {
 import { zValidator } from "@hono/zod-validator";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
+import type { SDKPartialAssistantMessage } from "@anthropic-ai/claude-agent-sdk";
 import { sendMessage, generateTitle } from "@/main/api/claude-code-ops";
 import {
   createConversation,
@@ -67,6 +68,7 @@ export type ChatMessage = z.infer<typeof chatMessageSchema>;
 // Stream event types for SSE
 export type StreamEvent =
   | { type: "message"; message: Message }
+  | { type: "partial"; partial: SDKPartialAssistantMessage }
   | { type: "complete" }
   | { type: "error"; error: string };
 
@@ -108,6 +110,12 @@ const processStream = async (
     }
 
     for await (const sdkMessage of res.value) {
+
+      // Partials: relay to subscribers but do not persist.
+      if (sdkMessage.type === "stream_event") {
+        streamEvents.emit("partial", conversation.id, sdkMessage);
+        continue;
+      }
 
       // For NEW conversations: wait for init message to get session_id
       if (
@@ -249,6 +257,19 @@ api.get(
         });
       };
 
+      const onPartial = (
+        convId: string,
+        partial: SDKPartialAssistantMessage,
+      ) => {
+        if (convId !== conversationId) return;
+        stream.writeSSE({
+          data: JSON.stringify({
+            type: "partial",
+            partial,
+          } satisfies StreamEvent),
+        });
+      };
+
       const onComplete = (convId: string) => {
         if (convId !== conversationId) return;
         stream.writeSSE({
@@ -264,11 +285,13 @@ api.get(
       };
 
       streamEvents.on("message", onMessage);
+      streamEvents.on("partial", onPartial);
       streamEvents.on("complete", onComplete);
       streamEvents.on("error", onError);
 
       ctx.req.raw.signal.addEventListener("abort", () => {
         streamEvents.off("message", onMessage);
+        streamEvents.off("partial", onPartial);
         streamEvents.off("complete", onComplete);
         streamEvents.off("error", onError);
       });

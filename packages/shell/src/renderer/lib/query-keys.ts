@@ -13,6 +13,8 @@ export const queryKeys = {
     detail: (id: string | null) => ["conversation", id] as const,
     byWorkspace: (workspaceId: string | null) =>
       ["workspace-conversations", workspaceId] as const,
+    livePartial: (id: string | null) =>
+      ["conversation", id, "live-partial"] as const,
   },
   userComponents: {
     byWorkspace: (workspaceId: string) =>

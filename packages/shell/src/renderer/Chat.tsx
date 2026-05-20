@@ -26,6 +26,7 @@ import {
   useConversationWithStream,
   useCreateConversation,
   useGenerateTitle,
+  useLivePartial,
   useSendMessage,
   useToolMap,
 } from "./lib/claude-code-ops";
@@ -77,7 +78,19 @@ type MessageListProps = {
 const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProps) => {
   const { data: conversation } = useConversationMessages(conversationId);
   const { data: toolMap } = useToolMap(conversationId);
+  const { data: live } = useLivePartial(conversationId);
   const messages = conversation?.messages ?? [];
+
+  const liveText =
+    live?.block.type === "text" && live.block.text.length > 0
+      ? live.block.text
+      : null;
+
+  // For tool_use, MessageList's normal flow can't render the in-flight block —
+  // it only iterates persisted message content. Synthesize a Tool from the merged
+  // toolMap entry (state: "input-streaming") and render it after the messages list.
+  const liveTool =
+    live?.block.type === "tool_use" ? toolMap?.get(live.block.id) ?? null : null;
 
   return (
     <>
@@ -182,6 +195,26 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
           </Message>
         );
       })}
+      {liveText && (
+        <Message className="justify-start">
+          <div className="flex flex-col gap-1 overflow-auto w-full">
+            <div className="bg-secondary text-foreground prose prose-sm prose-invert rounded-lg">
+              <Markdown>{liveText}</Markdown>
+            </div>
+          </div>
+        </Message>
+      )}
+      {liveTool && (
+        <Message className="justify-start">
+          <div className="flex flex-col gap-1 overflow-auto w-full">
+            <Tool
+              toolPart={liveTool}
+              title={getToolTitle(liveTool)}
+              className="mt-1 w-full"
+            />
+          </div>
+        </Message>
+      )}
     </>
   );
 });

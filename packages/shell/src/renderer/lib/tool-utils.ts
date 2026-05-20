@@ -2,6 +2,7 @@ import type { ToolPart } from "@/renderer/components/ui/tool";
 import type { ConversationWithMessages } from "@/main/api";
 import type { BetaContentBlock } from "@anthropic-ai/sdk/resources/beta/messages";
 import type { ContentBlockParam } from "@anthropic-ai/sdk/resources/messages";
+import type { LivePartial } from "./stream-subscription";
 
 // Union of all content block types from the SDK
 type AnyContentBlock = BetaContentBlock | ContentBlockParam;
@@ -86,5 +87,20 @@ export function correlateTools(
   return toolMap;
 }
 
-export const selectToolMap = (data: ConversationWithMessages) =>
-  correlateTools(data.messages);
+export const selectToolMap = (
+  data: ConversationWithMessages,
+  live: LivePartial = null,
+): Map<string, ToolPart> => {
+  const map = correlateTools(data.messages);
+
+  // At most one in-flight block. Only merge it if it's a tool_use we don't yet have persisted.
+  if (live?.block.type === "tool_use" && !map.has(live.block.id)) {
+    map.set(live.block.id, {
+      type: live.block.name,
+      state: "input-streaming",
+      input: live.block.input as Record<string, unknown>,
+    });
+  }
+
+  return map;
+};
