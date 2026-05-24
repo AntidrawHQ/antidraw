@@ -21,7 +21,7 @@ import { zValidator } from "@hono/zod-validator";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import type { SDKPartialAssistantMessage } from "@anthropic-ai/claude-agent-sdk";
-import { sendMessage, generateTitle } from "@/main/api/claude-code-ops";
+import { sendMessage, generateTitle, buildPrompt } from "@/main/api/claude-code-ops";
 import {
   createConversation,
   resolveOrCreateConversation,
@@ -82,11 +82,31 @@ const processStream = async (
 ) => {
   try {
     const claudeCodeSessionID = conversation.claudeCodeSessionId ?? undefined;
+
+    const existingStream = activeStreams.get(conversation.id);
+
+    if (existingStream) {
+      // Push branch: stream is alive from a prior turn. Persist the user
+      // message with the frontend-assigned id so dedup works, then push.
+      // The original processStream's for-await loop will pick up the new
+      // turn's SDK messages and persist them.
+      const userMsg = convertUserPromptToSDKMessage(message, images);
+      await addMessage({
+        id: userMessageId,
+        conversationId: conversation.id,
+        messageType: "user_prompt",
+        sdkMessage: userMsg,
+      });
+      existingStream.promptStream.push(message, images);
+      return;
+    }
+
+    const promptStream = buildPrompt(message, images);
+
     const res = sendMessage({
-      message,
+      promptStream,
       workspaceId,
       claudeCodeSessionID,
-      images,
     });
 
     if (res.isErr()) {
@@ -94,13 +114,13 @@ const processStream = async (
     }
 
     // Register the query for cancellation via interrupt()
-    registerStream(conversation.id, res.value);
+    registerStream(conversation.id, res.value, promptStream);
 
     let sessionId = claudeCodeSessionID;
 
     // For RESUMED conversations: persist user message immediately with frontend's ID
     if (sessionId) {
-      const userMsg = convertUserPromptToSDKMessage(message, sessionId, images);
+      const userMsg = convertUserPromptToSDKMessage(message, images);
       await addMessage({
         id: userMessageId, // Use frontend-generated ID for dedup
         conversationId: conversation.id,
@@ -126,7 +146,7 @@ const processStream = async (
         sessionId = sdkMessage.session_id;
         await updateConversationSession(conversation.id, sessionId);
 
-        const userMsg = convertUserPromptToSDKMessage(message, sessionId, images);
+        const userMsg = convertUserPromptToSDKMessage(message, images);
         await addMessage({
           id: userMessageId, // Use frontend-generated ID for dedup
           conversationId: conversation.id,
@@ -141,9 +161,21 @@ const processStream = async (
         messageType: "sdk_message",
         sdkMessage,
       });
+
+      // End-of-turn: flip status back to idle so the next HTTP message
+      // isn't rejected by the streaming gate, and notify subscribers so
+      // the renderer clears its live partial / shimmer state. The
+      // for-await loop continues, waiting for the next pushed turn.
+      if (sdkMessage.type === "result") {
+        await updateConversationStatus(conversation.id, "idle");
+        streamEvents.emit("complete", conversation.id);
+      }
     }
 
-    await updateConversationStatus(conversation.id, "completed");
+    // Reached only if the input stream is closed (end()) or the SDK
+    // tears down. In the keep-alive model this is the absolute end of
+    // the conversation, not a per-turn signal.
+    await updateConversationStatus(conversation.id, "idle");
     streamEvents.emit("complete", conversation.id);
   } catch (e) {
     const errorMessage = e instanceof Error ? e.message : "Unknown error";
@@ -173,20 +205,11 @@ api.post(
 
     const conversation = conversationRes.value;
 
-    // Short circuit with in-memory check first (faster, handles race condition)
-    if (activeStreams.has(conversation.id)) {
-      return ctx.json(
-        {
-          error: {
-            code: "ALREADY_STREAMING",
-            message: "Wait for current response",
-          },
-        },
-        409,
-      );
-    }
-
-    // DB check as fallback (handles app restart edge case)
+    // Reject only when a turn is currently in flight. Stream liveness
+    // (activeStreams entry) is intentionally not a gate — follow-up turns
+    // push into the live stream via the existingStream branch in
+    // processStream. streamStatus tracks per-turn state: it flips to
+    // "streaming" here, back to "idle" when the SDK emits result.
     if (conversation.streamStatus === "streaming") {
       return ctx.json(
         {
