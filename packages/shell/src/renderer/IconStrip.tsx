@@ -17,7 +17,7 @@ export const IconStrip = () => {
   const setActiveSidePanel = useWorkspaceStore((s) => s.setActiveSidePanel);
 
   return (
-    <div className="w-12 shrink-0 bg-neutral-800 flex flex-col items-center pt-2 gap-1 border-r border-[#2d2d2d]">
+    <div className="w-12 shrink-0 bg-neutral-800 flex flex-col items-stretch border-r border-[#2d2d2d]">
       {tabs.map((tab) => {
         const isActive = activeSidePanel === tab.id;
         return (
@@ -26,7 +26,7 @@ export const IconStrip = () => {
               <button
                 onClick={() => setActiveSidePanel(tab.id)}
                 className={cn(
-                  "w-9 h-9 flex items-center justify-center rounded-md border-none cursor-pointer transition-colors",
+                  "h-12 flex items-center justify-center border-none cursor-pointer transition-colors",
                   isActive
                     ? "bg-white/[0.1] text-neutral-200"
                     : "bg-transparent text-neutral-500 hover:text-neutral-300 hover:bg-white/[0.06]"
