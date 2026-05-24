@@ -131,6 +131,16 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
             b.source?.type === "base64"
         );
 
+        const hasRenderableBlock = blocks.some(
+          (b) =>
+            b.type === "text" ||
+            b.type === "tool_use" ||
+            b.type === "image"
+        );
+        if (!hasRenderableBlock) {
+          return null;
+        }
+
         const kind = blocks.some((b) => b.type === "text")
           ? "text"
           : blocks.some(
