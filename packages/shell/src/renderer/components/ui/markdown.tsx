@@ -61,6 +61,42 @@ const INITIAL_COMPONENTS: Partial<Components> = {
   pre: function PreComponent({ children }) {
     return <>{children}</>;
   },
+  h1: ({ node, ...props }) => (
+    <h1
+      style={{ fontSize: "1.25rem", marginTop: "1.25rem", marginBottom: "0.5rem", fontWeight: 600, lineHeight: 1.35 }}
+      {...props}
+    />
+  ),
+  h2: ({ node, ...props }) => (
+    <h2
+      style={{ fontSize: "1.125rem", marginTop: "1.25rem", marginBottom: "0.5rem", fontWeight: 600, lineHeight: 1.35 }}
+      {...props}
+    />
+  ),
+  h3: ({ node, ...props }) => (
+    <h3
+      style={{ fontSize: "1rem", marginTop: "1rem", marginBottom: "0.375rem", fontWeight: 600, lineHeight: 1.4 }}
+      {...props}
+    />
+  ),
+  h4: ({ node, ...props }) => (
+    <h4
+      style={{ fontSize: "0.9375rem", marginTop: "1rem", marginBottom: "0.25rem", fontWeight: 600, lineHeight: 1.4 }}
+      {...props}
+    />
+  ),
+  h5: ({ node, ...props }) => (
+    <h5
+      style={{ fontSize: "0.875rem", marginTop: "0.75rem", marginBottom: "0.25rem", fontWeight: 600, lineHeight: 1.4 }}
+      {...props}
+    />
+  ),
+  h6: ({ node, ...props }) => (
+    <h6
+      style={{ fontSize: "0.8125rem", marginTop: "0.75rem", marginBottom: "0.25rem", fontWeight: 600, lineHeight: 1.4, textTransform: "uppercase", letterSpacing: "0.04em", color: "#a3a3a3" }}
+      {...props}
+    />
+  ),
   hr: ({ node, ...props }) => (
     <hr className="!my-3 border-t border-[#3a3a3a]" {...props} />
   ),
