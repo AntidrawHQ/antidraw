@@ -48,7 +48,7 @@ const INITIAL_COMPONENTS: Partial<Components> = {
     const language = extractLanguage(className);
 
     return (
-      <CodeBlock className={cn(className, "border-[#333] bg-transparent")}>
+      <CodeBlock className={cn(className, "my-3 border-[#3a3a3a] bg-transparent")}>
         <CodeBlockCode
           code={children as string}
           language={language}
@@ -61,6 +61,35 @@ const INITIAL_COMPONENTS: Partial<Components> = {
   pre: function PreComponent({ children }) {
     return <>{children}</>;
   },
+  hr: ({ node, ...props }) => (
+    <hr className="!my-3 border-t border-[#3a3a3a]" {...props} />
+  ),
+  blockquote: ({ node, ...props }) => (
+    <blockquote className="!border-[#3a3a3a]" {...props} />
+  ),
+  li: ({ node, ...props }) => (
+    <li className="marker:!text-[#3a3a3a]" {...props} />
+  ),
+  table: ({ node, ...props }) => (
+    <div className="not-prose my-4 overflow-x-auto rounded-sm border border-[#3a3a3a]">
+      <table
+        className="w-full border-collapse text-left text-sm"
+        {...props}
+      />
+    </div>
+  ),
+  thead: ({ node, ...props }) => (
+    <thead className="bg-white/5" {...props} />
+  ),
+  tbody: ({ node, ...props }) => (
+    <tbody className="[&>tr:nth-child(even)]:bg-white/[0.03]" {...props} />
+  ),
+  th: ({ node, ...props }) => (
+    <th className="px-4 py-2.5 font-semibold text-white" {...props} />
+  ),
+  td: ({ node, ...props }) => (
+    <td className="px-4 py-2.5 text-neutral-100" {...props} />
+  ),
 };
 
 const MemoizedMarkdownBlock = memo(
