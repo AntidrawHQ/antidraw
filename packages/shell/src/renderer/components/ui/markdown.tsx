@@ -48,7 +48,7 @@ const INITIAL_COMPONENTS: Partial<Components> = {
     const language = extractLanguage(className);
 
     return (
-      <CodeBlock className={cn(className, "border-[#333] bg-transparent")}>
+      <CodeBlock className={cn(className, "my-3 border-[#3a3a3a] bg-transparent")}>
         <CodeBlockCode
           code={children as string}
           language={language}
@@ -61,6 +61,71 @@ const INITIAL_COMPONENTS: Partial<Components> = {
   pre: function PreComponent({ children }) {
     return <>{children}</>;
   },
+  h1: ({ node, ...props }) => (
+    <h1
+      style={{ fontSize: "1.25rem", marginTop: "1.25rem", marginBottom: "0.5rem", fontWeight: 600, lineHeight: 1.35 }}
+      {...props}
+    />
+  ),
+  h2: ({ node, ...props }) => (
+    <h2
+      style={{ fontSize: "1.125rem", marginTop: "1.25rem", marginBottom: "0.5rem", fontWeight: 600, lineHeight: 1.35 }}
+      {...props}
+    />
+  ),
+  h3: ({ node, ...props }) => (
+    <h3
+      style={{ fontSize: "1rem", marginTop: "1rem", marginBottom: "0.375rem", fontWeight: 600, lineHeight: 1.4 }}
+      {...props}
+    />
+  ),
+  h4: ({ node, ...props }) => (
+    <h4
+      style={{ fontSize: "0.9375rem", marginTop: "1rem", marginBottom: "0.25rem", fontWeight: 600, lineHeight: 1.4 }}
+      {...props}
+    />
+  ),
+  h5: ({ node, ...props }) => (
+    <h5
+      style={{ fontSize: "0.875rem", marginTop: "0.75rem", marginBottom: "0.25rem", fontWeight: 600, lineHeight: 1.4 }}
+      {...props}
+    />
+  ),
+  h6: ({ node, ...props }) => (
+    <h6
+      style={{ fontSize: "0.8125rem", marginTop: "0.75rem", marginBottom: "0.25rem", fontWeight: 600, lineHeight: 1.4, textTransform: "uppercase", letterSpacing: "0.04em", color: "#a3a3a3" }}
+      {...props}
+    />
+  ),
+  hr: ({ node, ...props }) => (
+    <hr className="!my-3 border-t border-[#3a3a3a]" {...props} />
+  ),
+  blockquote: ({ node, ...props }) => (
+    <blockquote className="!border-[#3a3a3a]" {...props} />
+  ),
+  li: ({ node, ...props }) => (
+    <li className="marker:!text-[#3a3a3a]" {...props} />
+  ),
+  table: ({ node, ...props }) => (
+    <div className="not-prose my-4 overflow-x-auto rounded-sm border border-[#3a3a3a]">
+      <table
+        className="w-full border-collapse text-left text-sm"
+        {...props}
+      />
+    </div>
+  ),
+  thead: ({ node, ...props }) => (
+    <thead className="bg-white/5" {...props} />
+  ),
+  tbody: ({ node, ...props }) => (
+    <tbody className="[&>tr:nth-child(even)]:bg-white/[0.03]" {...props} />
+  ),
+  th: ({ node, ...props }) => (
+    <th className="px-4 py-2.5 font-semibold text-white" {...props} />
+  ),
+  td: ({ node, ...props }) => (
+    <td className="px-4 py-2.5 text-neutral-100" {...props} />
+  ),
 };
 
 const MemoizedMarkdownBlock = memo(

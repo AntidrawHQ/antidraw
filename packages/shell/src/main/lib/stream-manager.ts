@@ -4,6 +4,7 @@ import type {
   Query,
   SDKPartialAssistantMessage,
 } from "@anthropic-ai/claude-agent-sdk";
+import { PromptStream } from "../api/claude-code-ops";
 
 type ConversationEvents = {
   message: [conversationId: string, message: Message];
@@ -16,10 +17,13 @@ class ConversationEventEmitter extends EventEmitter<ConversationEvents> {}
 
 // Simple exports - no wrapper object
 export const streamEvents = new ConversationEventEmitter();
-export const activeStreams = new Map<string, Query>();
+export const activeStreams = new Map<string, {
+  query: Query;
+  promptStream: PromptStream;
+}>();
 
-export const registerStream = (conversationId: string, query: Query): void => {
-  activeStreams.set(conversationId, query);
+export const registerStream = (conversationId: string, query: Query, promptStream: PromptStream): void => {
+  activeStreams.set(conversationId, { query, promptStream });
 };
 
 export const unregisterStream = (conversationId: string): void => {
@@ -27,9 +31,9 @@ export const unregisterStream = (conversationId: string): void => {
 };
 
 export const cancelStream = async (conversationId: string): Promise<boolean> => {
-  const query = activeStreams.get(conversationId);
-  if (query) {
-    await query.interrupt();
+  const stream = activeStreams.get(conversationId);
+  if (stream) {
+    await stream.query.interrupt();
     activeStreams.delete(conversationId); // Clean up immediately after interrupt
     return true;
   }

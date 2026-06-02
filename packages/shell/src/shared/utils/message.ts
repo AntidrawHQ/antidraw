@@ -25,7 +25,6 @@ export type ImageAttachment = {
 
 export const createUserSDKMessage = (params: {
   text: string;
-  sessionId: string;
   uuid: UUID;
   images?: ImageAttachment[];
 }): SDKUserMessage => {
@@ -49,7 +48,6 @@ export const createUserSDKMessage = (params: {
       role: "user",
       content,
     },
-    session_id: params.sessionId,
     uuid: params.uuid,
     parent_tool_use_id: null,
   };

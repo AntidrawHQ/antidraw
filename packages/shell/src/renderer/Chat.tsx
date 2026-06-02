@@ -95,7 +95,7 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
     live?.block.type === "tool_use" ? toolMap?.get(live.block.id) ?? null : null;
 
   return (
-    <>
+    <div className="flex flex-col gap-2">
       {messages.map((msg) => {
         const sdkMessage = msg.sdkMessage;
         if (sdkMessage.type !== "user" && sdkMessage.type !== "assistant") {
@@ -131,12 +131,35 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
             b.source?.type === "base64"
         );
 
+        const hasRenderableBlock = blocks.some(
+          (b) =>
+            b.type === "text" ||
+            b.type === "tool_use" ||
+            b.type === "image"
+        );
+        if (!hasRenderableBlock) {
+          return null;
+        }
+
+        const kind = blocks.some((b) => b.type === "text")
+          ? "text"
+          : blocks.some(
+                (b) => b.type === "tool_use" || b.type === "tool_result"
+              )
+            ? "tool"
+            : "text";
+
         return (
           <Message
             key={msg.id}
-            className={isAssistant ? "justify-start" : "justify-end"}
+            data-role={isAssistant ? "assistant" : "user"}
+            data-kind={kind}
+            className={cn(
+              isAssistant ? "justify-start" : "justify-end",
+              "[[data-kind=tool]+&[data-kind=tool]]:-mt-2"
+            )}
           >
-            <div className="flex flex-col gap-1 overflow-auto w-full">
+            <div className="flex flex-col overflow-auto w-full">
               {imageBlocks.length > 0 && (
                 <div className="flex flex-wrap gap-1">
                   {imageBlocks.map((block, idx) => (
@@ -156,12 +179,12 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
 
                 if (block.type === "text") {
                   return isAssistant ? (
-                    <div
+                    <Markdown
                       key={idx}
                       className="bg-secondary text-foreground prose prose-sm prose-invert rounded-lg"
                     >
-                      <Markdown>{block.text}</Markdown>
-                    </div>
+                      {block.text}
+                    </Markdown>
                   ) : (
                     <MessageContent
                       key={idx}
@@ -198,17 +221,21 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
         );
       })}
       {liveText && (
-        <Message className="justify-start">
-          <div className="flex flex-col gap-1 overflow-auto w-full">
-            <div className="bg-secondary text-foreground prose prose-sm prose-invert rounded-lg">
-              <Markdown>{liveText}</Markdown>
-            </div>
+        <Message data-role="assistant" className="justify-start">
+          <div className="flex flex-col overflow-auto w-full">
+            <Markdown className="bg-secondary text-foreground prose prose-sm prose-invert rounded-lg">
+              {liveText}
+            </Markdown>
           </div>
         </Message>
       )}
       {liveTool && (
-        <Message className="justify-start">
-          <div className="flex flex-col gap-1 overflow-auto w-full">
+        <Message
+          data-role="assistant"
+          data-kind="tool"
+          className="justify-start [[data-kind=tool]+&[data-kind=tool]]:-mt-2"
+        >
+          <div className="flex flex-col overflow-auto w-full">
             <Tool
               toolPart={liveTool}
               title={getToolTitle(liveTool)}
@@ -218,7 +245,7 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
         </Message>
       )}
       {isStreaming && <MessageShimmer />}
-    </>
+    </div>
   );
 });
 MessageList.displayName = "MessageList";

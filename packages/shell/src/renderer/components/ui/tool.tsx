@@ -64,7 +64,7 @@ export const Tool = ({ toolPart, title, defaultOpen = false, className }: ToolPr
   return (
     <div
       className={cn(
-        "overflow-hidden rounded-lg border border-[#444] bg-[#333]",
+        "overflow-hidden rounded-sm border border-[#444] bg-[#333]",
         className
       )}
     >

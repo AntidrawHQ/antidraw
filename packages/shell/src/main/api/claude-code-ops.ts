@@ -42,24 +42,44 @@ const claudeCodeExecutablePath = ((): string | undefined => {
   return undefined;
 })();
 
-const buildPrompt = (
+export type PromptStream = {
+  prompt: AsyncIterable<SDKUserMessage>;
+  push: (message: string, images?: ImageAttachment[]) => void;
+  end: () => void;
+};
+
+export const buildPrompt = (
   message: string,
   images?: ImageAttachment[]
-): string | AsyncIterable<SDKUserMessage> => {
-  if (!images?.length) {
-    return message;
-  }
-
-  const userMessage = createUserSDKMessage({
-    text: message,
-    sessionId: "",
-    uuid: crypto.randomUUID(),
-    images,
+): PromptStream => {
+  let closed = false;
+  let controller!: ReadableStreamDefaultController<SDKUserMessage>;
+  const prompt = new ReadableStream<SDKUserMessage>({
+    start: (c) => (controller = c),
   });
 
-  return (async function* () {
-    yield userMessage;
-  })();
+  const push = (text: string, imgs?: ImageAttachment[]) => {
+    if (closed) return;
+    controller.enqueue(
+      createUserSDKMessage({
+        text,
+        uuid: crypto.randomUUID(),
+        images: imgs,
+      })
+    );
+  };
+
+  push(message, images);
+
+  return {
+    prompt,
+    push,
+    end: () => {
+      if (closed) return;
+      closed = true;
+      controller.close();
+    },
+  };
 };
 
 const titleGenerationSchema = z.object({
@@ -115,17 +135,17 @@ User's first message:
 };
 
 export const sendMessage = (params: {
-  message: string;
+  // message: string;
+  promptStream: PromptStream;
   workspaceId: string;
   claudeCodeSessionID?: string;
-  images?: ImageAttachment[];
 }) => {
   try {
-    const { message, workspaceId, claudeCodeSessionID, images } = params;
+    const { promptStream, workspaceId, claudeCodeSessionID } = params;
     const workspacePath = getWorkspaceSourcePath(workspaceId);
 
     const res = query({
-      prompt: buildPrompt(message, images),
+      prompt: promptStream.prompt,
       options: {
         pathToClaudeCodeExecutable: claudeCodeExecutablePath,
         cwd: workspacePath,

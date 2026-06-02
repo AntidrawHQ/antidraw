@@ -165,7 +165,6 @@ onMutate: async ({ message, conversationId, userMessageId, images }) => {
       // Optimistic user message with same ID backend will use
       const sdkMessage = createUserSDKMessage({
         text: message,
-        sessionId: previousChat.claudeCodeSessionId ?? "",
         uuid: userMessageId as `${string}-${string}-${string}-${string}-${string}`,
         images,
       });

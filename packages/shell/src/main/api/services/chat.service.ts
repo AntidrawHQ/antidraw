@@ -105,12 +105,10 @@ export const getConversation = async (
 
 export const convertUserPromptToSDKMessage = (
   prompt: string,
-  sessionId: string,
   images?: ImageAttachment[]
 ) => {
   return createUserSDKMessage({
     text: prompt,
-    sessionId,
     uuid: crypto.randomUUID(),
     images,
   });
@@ -174,6 +172,26 @@ export const updateConversationSession = async (
       status: 500 as const,
       code: "DB_ERROR",
       message: "Failed to update session",
+    });
+  }
+};
+
+// Any conversation left at "streaming" can only mean the previous app
+// session crashed mid-turn (in-memory activeStreams is gone on boot).
+// Reset to "idle" so the UI doesn't render a phantom shimmer for a
+// stream that no longer exists.
+export const resetStreamingConversations = async () => {
+  try {
+    await db
+      .update(conversations)
+      .set({ streamStatus: "idle" })
+      .where(eq(conversations.streamStatus, "streaming"));
+    return ok(undefined);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "DB_ERROR",
+      message: "Failed to reset streaming conversations",
     });
   }
 };
