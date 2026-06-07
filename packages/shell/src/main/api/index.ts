@@ -80,16 +80,15 @@ const processStream = async (
   userMessageId: string,
   images?: ImageAttachment[],
 ) => {
-  try {
-    const claudeCodeSessionID = conversation.claudeCodeSessionId ?? undefined;
-
-    const existingStream = activeStreams.get(conversation.id);
-
-    if (existingStream) {
-      // Push branch: stream is alive from a prior turn. Persist the user
-      // message with the frontend-assigned id so dedup works, then push.
-      // The original processStream's for-await loop will pick up the new
-      // turn's SDK messages and persist them.
+  // Push path: a stream from a prior turn is still alive. Persist the user
+  // message with the frontend-assigned id (dedup contract) then push into the
+  // live input stream. This invocation owns NO stream lifecycle, so it stays
+  // out of the try/finally below and never touches registerStream /
+  // unregisterStream — the owning loop (a separate processStream invocation)
+  // picks up the pushed turn's SDK messages and persists them.
+  const existingStream = activeStreams.get(conversation.id);
+  if (existingStream) {
+    try {
       const userMsg = convertUserPromptToSDKMessage(message, images);
       await addMessage({
         id: userMessageId,
@@ -98,9 +97,20 @@ const processStream = async (
         sdkMessage: userMsg,
       });
       existingStream.promptStream.push(message, images);
-      return;
+    } catch (e) {
+      // Don't tear down the live stream or emit a terminal "error" — the
+      // owning loop is still running. Just log; the failed push leaves the
+      // optimistic message unconfirmed, which a refetch reconciles.
+      console.error("Failed to push follow-up turn:", e);
     }
+    return;
+  }
 
+  // Cold-start path: spawn a fresh query and own its lifecycle. The
+  // try/finally below is scoped to THIS invocation's stream — the finally
+  // unregisters only because we registered above.
+  try {
+    const claudeCodeSessionID = conversation.claudeCodeSessionId ?? undefined;
     const promptStream = buildPrompt(message, images);
 
     const res = sendMessage({
