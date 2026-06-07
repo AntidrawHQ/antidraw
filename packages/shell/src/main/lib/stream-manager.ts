@@ -4,7 +4,7 @@ import type {
   Query,
   SDKPartialAssistantMessage,
 } from "@anthropic-ai/claude-agent-sdk";
-import { PromptStream } from "../api/claude-code-ops";
+import type { PromptStream } from "../api/claude-code-ops";
 
 type ConversationEvents = {
   message: [conversationId: string, message: Message];
