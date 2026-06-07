@@ -177,12 +177,21 @@ const ConversationView = ({ onShowList }: ConversationViewProps) => {
 // --- Chat Panel (thin wrapper picking the active variant) ---
 
 const ChatPanel = () => {
-  const activeConversationId = useWorkspaceStore(
-    (s) => s.activeConversationId
-  );
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
+  const activeConversationId = useWorkspaceStore((s) => s.activeConversationId);
+  const { data: conversations = [], isLoading } =
+    useWorkspaceConversations(activeWorkspaceId);
   const [showList, setShowList] = useState(false);
 
-  if (showList || !activeConversationId) {
+  // Wait for the conversation list before deciding which view to land on,
+  // otherwise we briefly flash the empty chat before flipping to the list.
+  if (isLoading) return null;
+
+  // Show the list when explicitly opened, or on entry when the workspace
+  // already has conversations but none is active yet (so the user can pick
+  // one). With no conversations, fall through to the conversation view — its
+  // empty state is the new-conversation entry point.
+  if (showList || (!activeConversationId && conversations.length > 0)) {
     return <ConversationList onClose={() => setShowList(false)} />;
   }
 

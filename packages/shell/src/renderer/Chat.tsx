@@ -297,11 +297,18 @@ export function AppChat({ className, ...props }: AppChatProps) {
   const sendMessage = useSendMessage();
   const generateTitle = useGenerateTitle();
   const cancelStream = useCancelStream();
-  const { data: conversation } = useConversationWithStream(activeConversationId);
+  const { data: conversation, isLoading: isConversationLoading } =
+    useConversationWithStream(activeConversationId);
 
   const isStreaming = conversation?.streamStatus === "streaming";
 
   const isLoading = createConversation.isPending || sendMessage.isPending || isStreaming;
+
+  // Show the chat empty state whenever the active conversation has no messages
+  // yet — not just when no conversation exists. Guard against the message fetch
+  // flash so it doesn't flicker while an existing conversation loads.
+  const hasMessages = (conversation?.messages?.length ?? 0) > 0;
+  const showEmptyState = !hasMessages && !isLoading && !isConversationLoading;
 
   const fileToBase64 = (
     file: File
@@ -399,8 +406,8 @@ export function AppChat({ className, ...props }: AppChatProps) {
       {...props}
     >
       <ChatContainerRoot className="flex-1">
-        <ChatContainerContent className={cn("p-4", !activeConversationId && !isLoading && "min-h-full")}>
-          {!activeConversationId && !isLoading && (
+        <ChatContainerContent className={cn("p-4", showEmptyState && "min-h-full")}>
+          {showEmptyState && (
             <div className="flex-1 flex items-end justify-start pl-3">
               <ChatEmptyState />
             </div>
