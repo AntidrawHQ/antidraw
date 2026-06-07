@@ -123,7 +123,7 @@ app.whenReady().then(async () => {
 
   // Crash recovery: any conversation persisted as "streaming" is stale
   // (in-memory streams don't survive a process exit). Reset before the
-  // renderer queries.
+  // renderer queries. (Legacy "completed" rows are migrated once via 0001.)
   await resetStreamingConversations();
 
   // Trust self-signed certs for localhost (enables HTTPS dev servers without warnings)
