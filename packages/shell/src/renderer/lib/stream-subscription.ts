@@ -136,7 +136,7 @@ const handleStreamEvent = (
     clearLive(conversationId, queryClient);
     queryClient.setQueryData<ConversationWithMessages>(
       queryKeys.conversations.detail(conversationId),
-      (old) => (old ? { ...old, streamStatus: "completed" } : old),
+      (old) => (old ? { ...old, streamStatus: "idle" } : old),
     );
     // TODO: Rearchitect to a single stream endpoint that sends initial state + live events,
     // eliminating the race condition between initial fetch and stream subscription.

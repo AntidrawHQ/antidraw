@@ -6,10 +6,12 @@ import { workspaces } from "./workspace.model";
 
 // Use text + TS type (not SQLite enum - simpler, no migration issues for new statuses)
 export type StreamStatus =
-  // @CLAUDE-CODE: what does idle do. what's the difference b/w completed and idle ? do we need completed ? when a stream ends it goes back to idel ?
+  // "idle" at rest, "streaming" while a turn is in flight, "error" if it failed.
+  // A finished turn returns to "idle"; the UI only distinguishes streaming vs not.
+  // ("completed" was dropped — the backend never persisted it and no reader
+  // branched on it. Legacy "completed" rows are normalized to "idle" on boot.)
   | "idle"
   | "streaming"
-  | "completed"
   | "error";
 
 export const conversations = sqliteTable("conversations", {

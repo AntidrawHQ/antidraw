@@ -176,10 +176,11 @@ export const updateConversationSession = async (
   }
 };
 
-// Any conversation left at "streaming" can only mean the previous app
-// session crashed mid-turn (in-memory activeStreams is gone on boot).
-// Reset to "idle" so the UI doesn't render a phantom shimmer for a
-// stream that no longer exists.
+// Crash recovery: any conversation left at "streaming" can only mean the
+// previous app session crashed mid-turn (in-memory activeStreams is gone on
+// boot). Reset to "idle" so the UI doesn't render a phantom shimmer for a
+// stream that no longer exists. (Legacy "completed" rows are handled once by
+// migration 0001_normalize_completed_stream_status, not here.)
 export const resetStreamingConversations = async () => {
   try {
     await db
