@@ -41,6 +41,9 @@ app.commandLine.appendSwitch(
   "disable-features",
   "IntensiveWakeUpThrottling,CalculateNativeWinOcclusion",
 );
+// HTML-in-canvas (layoutsubtree + drawElementImage and friends). Experimental
+// in Chromium 147+; remove the flag once the API ships unflagged.
+app.commandLine.appendSwitch("enable-blink-features", "CanvasDrawElement");
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -50,6 +53,11 @@ protocol.registerSchemesAsPrivileged([
       stream: true,
       secure: true,
       supportFetchAPI: true,
+      // Chromium 42+ rejects cross-origin fetches to custom schemes unless the
+      // scheme is CORS-eligible. In dev the renderer is served from
+      // http://localhost:5173 but the API lives at antidraw://app/api, so
+      // without this every API call is blocked. (Same-origin in prod.)
+      corsEnabled: true,
     },
   },
 ]);
