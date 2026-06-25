@@ -67,34 +67,49 @@ const resolveAccount = (query: Query): Promise<AccountInfo | null> => {
 const distinctIdFor = (account: AccountInfo | null): string =>
   account?.email ?? getAnonymousId();
 
+// Person properties so PostHog can segment users by who they are. Sent once
+// per process via identify, the first time we resolve the account.
+const identifyOnce = (account: AccountInfo | null) => {
+  if (!client || identified || !account) return;
+  identified = true;
+  client.identify({
+    distinctId: distinctIdFor(account),
+    properties: {
+      email: account.email,
+      organization: account.organization,
+      subscription_type: account.subscriptionType,
+      api_provider: account.apiProvider,
+      app_version: app.getVersion(),
+      platform: process.platform,
+    },
+  });
+};
+
 /**
- * Fire-and-forget identify of the signed-in user, pulled from the live Query
- * object via initializationResult().account. We ONLY identify who is using the
- * product (email + account info + app version) — we do NOT capture any events
- * and never read or send message content. Runs at most once per process.
+ * Fire-and-forget tracking of a sent message, called on every query. Identifies
+ * the signed-in user once, then captures a CONTENT-FREE `message_sent` event so
+ * we can see message volume per user. We never read, store, or send message
+ * content — only the fact that a message was sent, plus app/account context.
  *
  * Resilient by design: never throws into the caller's stream loop.
  */
-export const identifyUser = (params: { query: Query }): void => {
-  if (!client || identified) return;
+export const trackMessageSent = (params: { query: Query }): void => {
+  if (!client) return;
 
   void resolveAccount(params.query)
     .then((account) => {
-      if (!client || identified || !account) return;
-      identified = true;
-      client.identify({
+      if (!client) return;
+      identifyOnce(account);
+      client.capture({
         distinctId: distinctIdFor(account),
+        event: "message_sent",
         properties: {
-          email: account.email,
-          organization: account.organization,
-          subscription_type: account.subscriptionType,
-          api_provider: account.apiProvider,
           app_version: app.getVersion(),
           platform: process.platform,
         },
       });
     })
-    .catch((e) => console.error("[posthog] identifyUser failed:", e));
+    .catch((e) => console.error("[posthog] trackMessageSent failed:", e));
 };
 
 /** Flush any buffered events before the app exits. */
