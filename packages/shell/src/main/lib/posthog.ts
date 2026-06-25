@@ -1,7 +1,5 @@
-import { randomUUID } from "node:crypto";
 import { app } from "electron";
 import { PostHog } from "posthog-node";
-import Store from "electron-store";
 import type { AccountInfo, Query } from "@anthropic-ai/claude-agent-sdk";
 
 // PostHog project API key. This is the PUBLIC, write-only key (starts with
@@ -16,24 +14,6 @@ const POSTHOG_HOST = "https://us.i.posthog.com";
 // a real key is pasted in.
 const isConfigured = POSTHOG_KEY.startsWith("phc_") && POSTHOG_KEY.length > 10;
 
-// Stable per-install anonymous id, used as the PostHog distinct_id when no
-// signed-in email is available yet. Persisted so the same machine maps to the
-// same person across launches.
-type AnalyticsStoreSchema = { anonymousId: string };
-const analyticsStore = new Store<AnalyticsStoreSchema>({
-  name: "analytics",
-  defaults: { anonymousId: "" },
-});
-
-const getAnonymousId = (): string => {
-  let id = analyticsStore.get("anonymousId");
-  if (!id) {
-    id = randomUUID();
-    analyticsStore.set("anonymousId", id);
-  }
-  return id;
-};
-
 const client: PostHog | null = isConfigured
   ? new PostHog(POSTHOG_KEY, {
       host: POSTHOG_HOST,
@@ -42,9 +22,6 @@ const client: PostHog | null = isConfigured
       flushInterval: 10_000,
     })
   : null;
-
-const distinctIdFor = (account: AccountInfo | null): string =>
-  account?.email ?? getAnonymousId();
 
 /**
  * Fire-and-forget tracking of a sent message, called on every query. Reads the
@@ -71,13 +48,13 @@ export const trackMessageSent = (params: { query: Query }): void => {
       console.error("[posthog] failed to read account info:", e);
     }
 
-    // Bail if we couldn't read the account (e.g. init failed). Without it we'd
-    // emit a junk event under an anonymous id with an empty $set, polluting the
-    // data with a phantom person. Only track when we know who the user is.
-    if (!client || !account) return;
+    // Bail unless we have a signed-in email — it's the distinct_id and the
+    // only identifier we track. No email means we don't know who the user is,
+    // so we skip rather than emit a junk event.
+    if (!client || !account?.email) return;
 
     client.capture({
-      distinctId: distinctIdFor(account),
+      distinctId: account.email,
       event: "message_sent",
       properties: {
         app_version: app.getVersion(),
