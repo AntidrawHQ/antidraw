@@ -26,6 +26,7 @@ import {
 import { installNodeShim } from "./lib/node-shim";
 import { runMigrations } from "./db/migrate";
 import { resetStreamingConversations } from "./api/services/chat.service";
+import { shutdownPostHog } from "./lib/posthog";
 
 // Keep the renderer responsive when the window is unfocused or occluded.
 // Without these, Chromium throttles rAF/timers/request scheduling in packaged
@@ -199,7 +200,8 @@ app.on("window-all-closed", () => {
   }
 });
 
-// Graceful shutdown - stop all dev servers before quitting
+// Graceful shutdown - stop all dev servers and flush analytics before quitting
 app.on("before-quit", () => {
   stopAllDevServers();
+  void shutdownPostHog();
 });

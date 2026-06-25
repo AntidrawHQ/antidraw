@@ -43,6 +43,7 @@ import { workspaceController } from "./controllers/workspace.controller";
 import { preferenceController } from "./controllers/preference.controller";
 import { claudeCliInteractionsController } from "./controllers/claude-cli-interactions.controller";
 import type { ImageAttachment } from "@/shared/utils/message";
+import { trackMessageSent } from "@/main/lib/posthog";
 
 const api = new Hono();
 
@@ -97,6 +98,7 @@ const processStream = async (
         sdkMessage: userMsg,
       });
       existingStream.promptStream.push(message, images);
+      trackMessageSent({ query: existingStream.query });
     } catch (e) {
       // Don't tear down the live stream or emit a terminal "error" — the
       // owning loop is still running. Just log; the failed push leaves the
@@ -125,6 +127,8 @@ const processStream = async (
 
     // Register the query for cancellation via interrupt()
     registerStream(conversation.id, res.value, promptStream);
+
+    trackMessageSent({ query: res.value });
 
     let sessionId = claudeCodeSessionID;
 
