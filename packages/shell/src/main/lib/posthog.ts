@@ -62,7 +62,7 @@ const distinctIdFor = (account: AccountInfo | null): string =>
 export const trackMessageSent = (params: { query: Query }): void => {
   if (!client) return;
 
-  void (async () => {
+  (async () => {
     let account: AccountInfo | null = null;
     try {
       const init = await params.query.initializationResult();
@@ -71,7 +71,11 @@ export const trackMessageSent = (params: { query: Query }): void => {
       console.error("[posthog] failed to read account info:", e);
     }
 
-    if (!client) return;
+    // Bail if we couldn't read the account (e.g. init failed). Without it we'd
+    // emit a junk event under an anonymous id with an empty $set, polluting the
+    // data with a phantom person. Only track when we know who the user is.
+    if (!client || !account) return;
+
     client.capture({
       distinctId: distinctIdFor(account),
       event: "message_sent",
@@ -80,10 +84,10 @@ export const trackMessageSent = (params: { query: Query }): void => {
         platform: process.platform,
         // Refresh the person profile with the current account on every event.
         $set: {
-          email: account?.email,
-          organization: account?.organization,
-          subscription_type: account?.subscriptionType,
-          api_provider: account?.apiProvider,
+          email: account.email,
+          organization: account.organization,
+          subscription_type: account.subscriptionType,
+          api_provider: account.apiProvider,
           app_version: app.getVersion(),
           platform: process.platform,
         },
