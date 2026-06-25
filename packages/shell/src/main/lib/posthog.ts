@@ -43,73 +43,53 @@ const client: PostHog | null = isConfigured
     })
   : null;
 
-// Cached account lookup. The signed-in account is the same regardless of which
-// conversation triggered the call, so resolve it once per process and reuse.
-let accountPromise: Promise<AccountInfo | null> | null = null;
-let identified = false;
-
-const resolveAccount = (query: Query): Promise<AccountInfo | null> => {
-  if (!accountPromise) {
-    accountPromise = (async () => {
-      try {
-        const init = await query.initializationResult();
-        return init.account ?? null;
-      } catch (e) {
-        console.error("[posthog] failed to read account info:", e);
-        accountPromise = null; // allow a later retry
-        return null;
-      }
-    })();
-  }
-  return accountPromise;
-};
-
 const distinctIdFor = (account: AccountInfo | null): string =>
   account?.email ?? getAnonymousId();
 
-// Person properties so PostHog can segment users by who they are. Sent once
-// per process via identify, the first time we resolve the account.
-const identifyOnce = (account: AccountInfo | null) => {
-  if (!client || identified || !account) return;
-  identified = true;
-  client.identify({
-    distinctId: distinctIdFor(account),
-    properties: {
-      email: account.email,
-      organization: account.organization,
-      subscription_type: account.subscriptionType,
-      api_provider: account.apiProvider,
-      app_version: app.getVersion(),
-      platform: process.platform,
-    },
-  });
-};
-
 /**
- * Fire-and-forget tracking of a sent message, called on every query. Identifies
- * the signed-in user once, then captures a CONTENT-FREE `message_sent` event so
- * we can see message volume per user. We never read, store, or send message
- * content — only the fact that a message was sent, plus app/account context.
+ * Fire-and-forget tracking of a sent message, called on every query. Reads the
+ * signed-in account fresh from the Query each time (no caching) so the identity
+ * always reflects the *currently* logged-in Claude account — if the user logs
+ * out and into a different account, the next event reports the new one.
+ *
+ * Captures a CONTENT-FREE `message_sent` event (volume per user) and refreshes
+ * the person profile via `$set` in the same call — so no separate identify and
+ * no dedup are needed; PostHog upserts the person idempotently. We never read,
+ * store, or send message content.
  *
  * Resilient by design: never throws into the caller's stream loop.
  */
 export const trackMessageSent = (params: { query: Query }): void => {
   if (!client) return;
 
-  void resolveAccount(params.query)
-    .then((account) => {
-      if (!client) return;
-      identifyOnce(account);
-      client.capture({
-        distinctId: distinctIdFor(account),
-        event: "message_sent",
-        properties: {
+  void (async () => {
+    let account: AccountInfo | null = null;
+    try {
+      const init = await params.query.initializationResult();
+      account = init.account ?? null;
+    } catch (e) {
+      console.error("[posthog] failed to read account info:", e);
+    }
+
+    if (!client) return;
+    client.capture({
+      distinctId: distinctIdFor(account),
+      event: "message_sent",
+      properties: {
+        app_version: app.getVersion(),
+        platform: process.platform,
+        // Refresh the person profile with the current account on every event.
+        $set: {
+          email: account?.email,
+          organization: account?.organization,
+          subscription_type: account?.subscriptionType,
+          api_provider: account?.apiProvider,
           app_version: app.getVersion(),
           platform: process.platform,
         },
-      });
-    })
-    .catch((e) => console.error("[posthog] trackMessageSent failed:", e));
+      },
+    });
+  })().catch((e) => console.error("[posthog] trackMessageSent failed:", e));
 };
 
 /** Flush any buffered events before the app exits. */
