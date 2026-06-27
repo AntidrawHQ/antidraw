@@ -1,0 +1,21 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "antidraw-server",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-27",
+  // nodejs_compat is required by better-auth (node crypto) — added now so the
+  // auth wiring in the next step drops in without a config change.
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "antidraw",
+      // Replace after running:  npx wrangler d1 create antidraw
+      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      "migrations_dir": "src/db/migrations"
+    }
+  ]
+}
