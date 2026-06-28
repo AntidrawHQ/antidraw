@@ -1,6 +1,11 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
+/* Explicitly scan user components so newly-added files (and their utility
+   classes) are always picked up, even when created after the dev server
+   starts. Tailwind v4's automatic detection can miss these. */
+@source "./components/**/*.{ts,tsx}";
+
 @custom-variant dark (&:is(.dark *));
 
 @theme {
