@@ -80,6 +80,7 @@ export const useCreateWorkspace = () => {
 };
 
 export const useSwitchWorkspace = () => {
+  const queryClient = useQueryClient();
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const setActiveWorkspaceId = useWorkspaceStore((s) => s.setActiveWorkspaceId);
   const setActiveConversationId = useWorkspaceStore(
@@ -100,6 +101,13 @@ export const useSwitchWorkspace = () => {
 
     setActiveWorkspaceId(nextWorkspaceId);
     setActiveConversationId(null);
+
+    // usePreference caches with staleTime: Infinity, so keep the cache in sync
+    queryClient.setQueryData(
+      queryKeys.preferences.byKey("activeWorkspaceId"),
+      nextWorkspaceId,
+    );
+    void setPreference("activeWorkspaceId", nextWorkspaceId);
   };
 };
 
