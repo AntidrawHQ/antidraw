@@ -1,6 +1,6 @@
 {
   "name": "@antidraw/shell",
-  "version": "0.0.12-alpha",
+  "version": "0.0.13-alpha",
   "private": true,
   "license": "MIT",
   "description": "Electron shell for Antidraw",
