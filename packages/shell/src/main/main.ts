@@ -43,6 +43,12 @@ app.commandLine.appendSwitch(
   "IntensiveWakeUpThrottling,CalculateNativeWinOcclusion",
 );
 
+// Version of a fully downloaded, ready-to-install update. Renderers that
+// mount after "update-downloaded" fired pull this via update:get-status.
+let pendingUpdateVersion: string | null = null;
+
+const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
+
 protocol.registerSchemesAsPrivileged([
   {
     scheme: "antidraw",
@@ -178,13 +184,34 @@ app.whenReady().then(async () => {
     console.error("Failed to cleanup orphaned processes:", err);
   });
 
-  // Auto-update — checks GitHub Releases for a newer signed build,
-  // downloads in the background, prompts the user to restart on next quit.
-  // No-op in development (electron-updater detects unpackaged apps).
+  ipcMain.handle("update:get-status", () => ({
+    pendingVersion: pendingUpdateVersion,
+  }));
+
+  ipcMain.handle("update:install", () => {
+    autoUpdater.quitAndInstall();
+  });
+
+  // Auto-update — checks GitHub Releases for a newer signed build and
+  // downloads it in the background. Once ready, the renderer shows a
+  // "Restart to update" button; the update also installs on normal quit
+  // (autoInstallOnAppQuit). No-op in development (electron-updater
+  // detects unpackaged apps).
   if (app.isPackaged) {
-    autoUpdater.checkForUpdatesAndNotify().catch((err) => {
-      console.error("Auto-update check failed:", err);
+    autoUpdater.on("update-downloaded", (event) => {
+      pendingUpdateVersion = event.version;
+      for (const window of BrowserWindow.getAllWindows()) {
+        window.webContents.send("update:downloaded", event.version);
+      }
     });
+
+    const checkForUpdates = () => {
+      autoUpdater.checkForUpdates().catch((err) => {
+        console.error("Auto-update check failed:", err);
+      });
+    };
+    checkForUpdates();
+    setInterval(checkForUpdates, UPDATE_CHECK_INTERVAL_MS);
   }
 
   app.on("activate", () => {

@@ -1,3 +1,4 @@
+import { UpdateButton } from "@/renderer/components/UpdateButton";
 import { WorkspaceSwitcher } from "@/renderer/components/WorkspaceSwitcher";
 
 export const TITLEBAR_HEIGHT = 38;
@@ -10,7 +11,8 @@ export const Titlebar = () => (
     <span className="flex-1 text-center text-[13px] font-medium text-neutral-400">
       AntiDraw
     </span>
-    <div className="w-[180px] shrink-0 flex justify-end pr-2 relative">
+    <div className="min-w-[180px] shrink-0 flex items-center justify-end gap-2 pr-2 relative">
+      <UpdateButton />
       <WorkspaceSwitcher />
     </div>
   </div>
