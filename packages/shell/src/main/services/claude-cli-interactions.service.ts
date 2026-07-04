@@ -2,7 +2,11 @@ import { execFile } from "child_process";
 import { resolve, dirname } from "path";
 import { createRequire } from "module";
 import { ok, err, type Result } from "neverthrow";
-import { getShimNodePath, getShimmedSpawnEnv } from "@/main/lib/node-shim";
+import {
+  getNodeElectronPath,
+  getShimNodePath,
+  getShimmedSpawnEnv,
+} from "@/main/lib/node-shim";
 
 export type ClaudeAuthStatus = {
   authenticated: boolean;
@@ -38,7 +42,7 @@ export const triggerClaudeLogin = (): Promise<
     const cliPath = getBundledCliPath();
     const escapedCliPath = cliPath.replace(/"/g, '\\"');
     const escapedShimNode = getShimNodePath().replace(/"/g, '\\"');
-    const escapedElectronPath = process.execPath.replace(/"/g, '\\"');
+    const escapedElectronPath = getNodeElectronPath().replace(/"/g, '\\"');
     // The Terminal subshell doesn't inherit our env, so bake ELECTRON_PATH
     // inline so the shim can re-exec the Electron binary as Node.
     const command = `ELECTRON_PATH=\\"${escapedElectronPath}\\" \\"${escapedShimNode}\\" \\"${escapedCliPath}\\" auth login`;
@@ -76,7 +80,7 @@ export const checkClaudeAuthStatus = (): Promise<
     const cliPath = getBundledCliPath();
 
     execFile(
-      process.execPath,
+      getNodeElectronPath(),
       [cliPath, "auth", "status", "--json"],
       { timeout: 5_000, env: getShimmedSpawnEnv() },
       (error, stdout) => {

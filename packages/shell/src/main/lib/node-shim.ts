@@ -13,6 +13,31 @@ set ELECTRON_RUN_AS_NODE=1\r
 
 const isWindows = process.platform === "win32";
 
+// On macOS, node children must not run under the main app binary: its bundle
+// lacks LSUIElement, so if anything in the child activates AppKit (native
+// addons, Chromium bits Electron loads even as node), macOS gives it a Dock
+// tile. The bundled Helper (Plugin) app is the same Electron entry point but
+// ships LSUIElement=1, which pins children to accessory activation policy —
+// no Dock tile, ever.
+const resolveMacHelperBinary = (): string | null => {
+  if (process.platform !== "darwin") return null;
+  const contentsDir = path.dirname(path.dirname(process.execPath));
+  const appName = path.basename(process.execPath);
+  const helperName = `${appName} Helper (Plugin)`;
+  const helperBinary = path.join(
+    contentsDir,
+    "Frameworks",
+    `${helperName}.app`,
+    "Contents",
+    "MacOS",
+    helperName,
+  );
+  return fs.existsSync(helperBinary) ? helperBinary : null;
+};
+
+export const getNodeElectronPath = (): string =>
+  resolveMacHelperBinary() ?? process.execPath;
+
 export const getShimDir = () => path.join(getAntidrawRoot(), "bin");
 
 export const getShimNodePath = () =>
@@ -32,7 +57,7 @@ export const installNodeShim = () => {
   if (!currentPath.startsWith(shimDir + path.delimiter)) {
     process.env.PATH = `${shimDir}${path.delimiter}${currentPath}`;
   }
-  process.env.ELECTRON_PATH = process.execPath;
+  process.env.ELECTRON_PATH = getNodeElectronPath();
 
   let existing: string | null = null;
   try {
@@ -63,7 +88,7 @@ export const getShimmedSpawnEnv = (
     ...process.env,
     ...extra,
     PATH: prefixed,
-    ELECTRON_PATH: process.execPath,
+    ELECTRON_PATH: getNodeElectronPath(),
     ELECTRON_RUN_AS_NODE: "1",
   };
 };

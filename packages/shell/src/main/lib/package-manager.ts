@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { getShimmedSpawnEnv } from "@/main/lib/node-shim";
+import { getNodeElectronPath, getShimmedSpawnEnv } from "@/main/lib/node-shim";
 
 export type NpmOutput =
   | { type: "stdout"; data: string }
@@ -18,7 +18,7 @@ export const spawnNpm = (
   cwd: string,
   options: Omit<SpawnOptions, "cwd" | "env"> = {},
 ): ChildProcess =>
-  spawn(process.execPath, [npmCli, ...args], {
+  spawn(getNodeElectronPath(), [npmCli, ...args], {
     ...options,
     cwd,
     env: getShimmedSpawnEnv(),
