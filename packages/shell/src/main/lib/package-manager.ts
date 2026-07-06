@@ -59,13 +59,14 @@ export async function* runNpm(args: string[], cwd: string): AsyncGenerator<NpmOu
   }
 }
 
-// --loglevel http makes npm stream per-request fetch lines; without it,
-// npm install is silent until the final summary and the UI looks frozen
+// --loglevel info makes npm stream per-request fetch lines and lifecycle
+// events (extract, postinstall scripts); without it, npm install is silent
+// until the final summary and the UI looks frozen
 export const npmInstall = (cwd: string) =>
-  runNpm(["install", "--loglevel", "http"], cwd);
+  runNpm(["install", "--loglevel", "info"], cwd);
 
 export const npmCreate = (template: string, name: string, cwd: string) =>
-  runNpm(["create", `${template}@latest`, name, "--yes", "--loglevel", "http"], cwd);
+  runNpm(["create", `${template}@latest`, name, "--yes", "--loglevel", "info"], cwd);
 
 export const npmUpdate = (cwd: string, pkg?: string) =>
   runNpm(pkg ? ["update", pkg] : ["update"], cwd);
