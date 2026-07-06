@@ -72,7 +72,7 @@ export const createWorkspace = async function* (
           type: "error",
           error: {
             code: CreateWorkspaceErrorCode.NPM_CREATE_FAILED,
-            message: "Failed to scaffold project",
+            message: "Couldn't scaffold the project. Please try again.",
           },
         };
 
@@ -93,7 +93,7 @@ export const createWorkspace = async function* (
           type: "error",
           error: {
             code: CreateWorkspaceErrorCode.NPM_INSTALL_FAILED,
-            message: "Failed to install dependencies",
+            message: "Couldn't install dependencies. Please try again.",
           },
         };
         return;

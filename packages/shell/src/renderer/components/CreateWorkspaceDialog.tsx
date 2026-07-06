@@ -25,8 +25,16 @@ export const CreateWorkspaceDialog = ({
   const [name, setName] = useState("");
   const switchWorkspace = useSwitchWorkspace();
 
-  const { status, errorMessage, isCreating, isPending, start, reset } =
-    useCreateWorkspaceFlow({
+  const {
+    status,
+    errorMessage,
+    npmLines,
+    failedStep,
+    isCreating,
+    isPending,
+    start,
+    reset,
+  } = useCreateWorkspaceFlow({
       onSuccess: (workspace) => {
         switchWorkspace(workspace.id);
         // Brief moment so user sees the final "done" state before close
@@ -79,7 +87,7 @@ export const CreateWorkspaceDialog = ({
           </DialogDescription>
         </DialogHeader>
 
-        {status === "idle" || status === "error" ? (
+        {status === "idle" ? (
           <form onSubmit={handleSubmit} className="flex flex-col gap-4">
             <ThemedInput
               autoFocus
@@ -88,10 +96,6 @@ export const CreateWorkspaceDialog = ({
               onChange={(e) => setName(e.target.value)}
               disabled={isCreating}
             />
-
-            {errorMessage ? (
-              <p className="text-sm text-destructive">{errorMessage}</p>
-            ) : null}
 
             <DialogFooter>
               <Button
@@ -113,7 +117,13 @@ export const CreateWorkspaceDialog = ({
           </form>
         ) : (
           <div className="flex flex-col">
-            <CreateWorkspaceProgress status={status} />
+            <CreateWorkspaceProgress
+              status={status}
+              lines={npmLines}
+              failedStep={failedStep}
+              errorMessage={errorMessage}
+              onRetry={() => start(trimmedName)}
+            />
           </div>
         )}
       </DialogContent>
