@@ -1,3 +1,4 @@
+import type { UUID } from "crypto";
 import {
   conversations,
   messages,
@@ -105,11 +106,12 @@ export const getConversation = async (
 
 export const convertUserPromptToSDKMessage = (
   prompt: string,
+  userMessageId: UUID,
   images?: ImageAttachment[]
 ) => {
   return createUserSDKMessage({
     text: prompt,
-    uuid: crypto.randomUUID(),
+    uuid: userMessageId,
     images,
   });
 };

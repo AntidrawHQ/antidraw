@@ -9,21 +9,30 @@ import type { PromptStream } from "../api/claude-code-ops";
 type ConversationEvents = {
   message: [conversationId: string, message: Message];
   partial: [conversationId: string, partial: SDKPartialAssistantMessage];
+  accepted: [conversationId: string, userMessageId: string];
   complete: [conversationId: string];
   error: [conversationId: string, error: string];
 };
 
 class ConversationEventEmitter extends EventEmitter<ConversationEvents> {}
 
-// Simple exports - no wrapper object
-export const streamEvents = new ConversationEventEmitter();
-export const activeStreams = new Map<string, {
+export type ActiveStream = {
   query: Query;
   promptStream: PromptStream;
-}>();
+  // userMessageIds pushed to the CLI but not yet acked by a replay. Non-empty
+  // at result time means the CLI is about to start another turn for a message
+  // that landed after the current turn finalized — don't flip to idle.
+  pendingUserMessageIds: Set<string>;
+};
 
-export const registerStream = (conversationId: string, query: Query, promptStream: PromptStream): void => {
-  activeStreams.set(conversationId, { query, promptStream });
+// Simple exports - no wrapper object
+export const streamEvents = new ConversationEventEmitter();
+export const activeStreams = new Map<string, ActiveStream>();
+
+export const registerStream = (conversationId: string, query: Query, promptStream: PromptStream): ActiveStream => {
+  const stream: ActiveStream = { query, promptStream, pendingUserMessageIds: new Set() };
+  activeStreams.set(conversationId, stream);
+  return stream;
 };
 
 export const unregisterStream = (conversationId: string): void => {

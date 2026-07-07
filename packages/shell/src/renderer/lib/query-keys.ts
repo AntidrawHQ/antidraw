@@ -15,6 +15,8 @@ export const queryKeys = {
       ["workspace-conversations", workspaceId] as const,
     livePartial: (id: string | null) =>
       ["conversation", id, "live-partial"] as const,
+    queuedMessageIds: (id: string | null) =>
+      ["conversation", id, "queued-message-ids"] as const,
   },
   userComponents: {
     byWorkspace: (workspaceId: string) =>

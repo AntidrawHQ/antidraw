@@ -1,5 +1,6 @@
 import { createRequire } from "node:module";
 import path from "node:path";
+import type { UUID } from "crypto";
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { ok, err } from "neverthrow";
@@ -42,15 +43,22 @@ const claudeCodeExecutablePath = ((): string | undefined => {
   return undefined;
 })();
 
+export type PromptPushOptions = {
+  // Stamped onto the SDKUserMessage; the CLI echoes it back on the replay
+  // ack (--replay-user-messages), which is how acceptance is correlated.
+  uuid?: UUID;
+  images?: ImageAttachment[];
+};
+
 export type PromptStream = {
   prompt: AsyncIterable<SDKUserMessage>;
-  push: (message: string, images?: ImageAttachment[]) => void;
+  push: (message: string, options?: PromptPushOptions) => void;
   end: () => void;
 };
 
 export const buildPrompt = (
   message: string,
-  images?: ImageAttachment[]
+  options?: PromptPushOptions
 ): PromptStream => {
   let closed = false;
   let controller!: ReadableStreamDefaultController<SDKUserMessage>;
@@ -58,18 +66,18 @@ export const buildPrompt = (
     start: (c) => (controller = c),
   });
 
-  const push = (text: string, imgs?: ImageAttachment[]) => {
+  const push = (text: string, opts?: PromptPushOptions) => {
     if (closed) return;
     controller.enqueue(
       createUserSDKMessage({
         text,
-        uuid: crypto.randomUUID(),
-        images: imgs,
+        uuid: opts?.uuid ?? crypto.randomUUID(),
+        images: opts?.images,
       })
     );
   };
 
-  push(message, images);
+  push(message, options);
 
   return {
     prompt,
@@ -168,6 +176,10 @@ Current workspace directory: ${workspacePath}
         },
         permissionMode: "bypassPermissions",
         includePartialMessages: true,
+        // Ask the CLI to re-emit each user message once it's folded into a
+        // turn (isReplay: true, same uuid we stamped). Not exposed as a
+        // first-class SDK option, only as the --replay-user-messages flag.
+        extraArgs: { "replay-user-messages": null },
       },
     });
 

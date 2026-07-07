@@ -17,6 +17,7 @@ export type {
   ComponentSource,
   ComponentStreamEvent,
 } from "./services/component.service";
+import type { UUID } from "crypto";
 import { zValidator } from "@hono/zod-validator";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
@@ -70,6 +71,7 @@ export type ChatMessage = z.infer<typeof chatMessageSchema>;
 export type StreamEvent =
   | { type: "message"; message: Message }
   | { type: "partial"; partial: SDKPartialAssistantMessage }
+  | { type: "message_accepted"; userMessageId: string }
   | { type: "complete" }
   | { type: "error"; error: string };
 
@@ -90,14 +92,22 @@ const processStream = async (
   const existingStream = activeStreams.get(conversation.id);
   if (existingStream) {
     try {
-      const userMsg = convertUserPromptToSDKMessage(message, images);
+      const userMsg = convertUserPromptToSDKMessage(
+        message,
+        userMessageId as UUID,
+        images,
+      );
       await addMessage({
         id: userMessageId,
         conversationId: conversation.id,
         messageType: "user_prompt",
         sdkMessage: userMsg,
       });
-      existingStream.promptStream.push(message, images);
+      existingStream.promptStream.push(message, {
+        uuid: userMessageId as UUID,
+        images,
+      });
+      existingStream.pendingUserMessageIds.add(userMessageId);
       trackMessageSent({ query: existingStream.query });
     } catch (e) {
       // Don't tear down the live stream or emit a terminal "error" — the
@@ -113,7 +123,10 @@ const processStream = async (
   // unregisters only because we registered above.
   try {
     const claudeCodeSessionID = conversation.claudeCodeSessionId ?? undefined;
-    const promptStream = buildPrompt(message, images);
+    const promptStream = buildPrompt(message, {
+      uuid: userMessageId as UUID,
+      images,
+    });
 
     const res = sendMessage({
       promptStream,
@@ -126,7 +139,8 @@ const processStream = async (
     }
 
     // Register the query for cancellation via interrupt()
-    registerStream(conversation.id, res.value, promptStream);
+    const registeredStream = registerStream(conversation.id, res.value, promptStream);
+    registeredStream.pendingUserMessageIds.add(userMessageId);
 
     trackMessageSent({ query: res.value });
 
@@ -134,7 +148,11 @@ const processStream = async (
 
     // For RESUMED conversations: persist user message immediately with frontend's ID
     if (sessionId) {
-      const userMsg = convertUserPromptToSDKMessage(message, images);
+      const userMsg = convertUserPromptToSDKMessage(
+        message,
+        userMessageId as UUID,
+        images,
+      );
       await addMessage({
         id: userMessageId, // Use frontend-generated ID for dedup
         conversationId: conversation.id,
@@ -151,6 +169,20 @@ const processStream = async (
         continue;
       }
 
+      // Replay ack (--replay-user-messages): the CLI re-emits each user
+      // message once it's folded into a turn, carrying the uuid we stamped
+      // at push time. Relay acceptance and skip persistence — the
+      // user_prompt row written at send time is the only stored copy.
+      if (
+        sdkMessage.type === "user" &&
+        "isReplay" in sdkMessage &&
+        sdkMessage.isReplay
+      ) {
+        registeredStream.pendingUserMessageIds.delete(sdkMessage.uuid);
+        streamEvents.emit("accepted", conversation.id, sdkMessage.uuid);
+        continue;
+      }
+
       // For NEW conversations: wait for init message to get session_id
       if (
         !sessionId &&
@@ -160,7 +192,11 @@ const processStream = async (
         sessionId = sdkMessage.session_id;
         await updateConversationSession(conversation.id, sessionId);
 
-        const userMsg = convertUserPromptToSDKMessage(message, images);
+        const userMsg = convertUserPromptToSDKMessage(
+          message,
+          userMessageId as UUID,
+          images,
+        );
         await addMessage({
           id: userMessageId, // Use frontend-generated ID for dedup
           conversationId: conversation.id,
@@ -176,11 +212,17 @@ const processStream = async (
         sdkMessage,
       });
 
-      // End-of-turn: flip status back to idle so the next HTTP message
-      // isn't rejected by the streaming gate, and notify subscribers so
+      // End-of-turn: flip status back to idle and notify subscribers so
       // the renderer clears its live partial / shimmer state. The
       // for-await loop continues, waiting for the next pushed turn.
-      if (sdkMessage.type === "result") {
+      // Exception: an un-acked pushed message at result time means it
+      // arrived after this turn finalized and the CLI is about to start a
+      // new turn for it — stay "streaming" so the renderer keeps its
+      // subscription open.
+      if (
+        sdkMessage.type === "result" &&
+        registeredStream.pendingUserMessageIds.size === 0
+      ) {
         await updateConversationStatus(conversation.id, "idle");
         streamEvents.emit("complete", conversation.id);
       }
@@ -219,23 +261,11 @@ api.post(
 
     const conversation = conversationRes.value;
 
-    // Reject only when a turn is currently in flight. Stream liveness
-    // (activeStreams entry) is intentionally not a gate — follow-up turns
-    // push into the live stream via the existingStream branch in
-    // processStream. streamStatus tracks per-turn state: it flips to
-    // "streaming" here, back to "idle" when the SDK emits result.
-    if (conversation.streamStatus === "streaming") {
-      return ctx.json(
-        {
-          error: {
-            code: "ALREADY_STREAMING",
-            message: "Wait for current response",
-          },
-        },
-        409,
-      );
-    }
-
+    // Mid-turn sends are allowed: the CLI queues pushed messages and folds
+    // them into the current or next turn (verified with
+    // --replay-user-messages acks). streamStatus tracks per-turn state: it
+    // flips to "streaming" here, back to "idle" when the SDK emits result
+    // with no un-acked pushed messages outstanding.
     await updateConversationStatus(conversation.id, "streaming");
 
     // Fire and forget - inner try/catch handles errors, this prevents unhandled rejections
@@ -307,6 +337,16 @@ api.get(
         });
       };
 
+      const onAccepted = (convId: string, userMessageId: string) => {
+        if (convId !== conversationId) return;
+        stream.writeSSE({
+          data: JSON.stringify({
+            type: "message_accepted",
+            userMessageId,
+          } satisfies StreamEvent),
+        });
+      };
+
       const onComplete = (convId: string) => {
         if (convId !== conversationId) return;
         stream.writeSSE({
@@ -323,12 +363,14 @@ api.get(
 
       streamEvents.on("message", onMessage);
       streamEvents.on("partial", onPartial);
+      streamEvents.on("accepted", onAccepted);
       streamEvents.on("complete", onComplete);
       streamEvents.on("error", onError);
 
       ctx.req.raw.signal.addEventListener("abort", () => {
         streamEvents.off("message", onMessage);
         streamEvents.off("partial", onPartial);
+        streamEvents.off("accepted", onAccepted);
         streamEvents.off("complete", onComplete);
         streamEvents.off("error", onError);
       });

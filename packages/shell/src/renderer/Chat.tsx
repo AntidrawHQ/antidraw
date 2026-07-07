@@ -28,6 +28,7 @@ import {
   useCreateConversation,
   useGenerateTitle,
   useLivePartial,
+  useQueuedMessageIds,
   useSendMessage,
   useToolMap,
 } from "./lib/claude-code-ops";
@@ -80,6 +81,7 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
   const { data: conversation } = useConversationMessages(conversationId);
   const { data: toolMap } = useToolMap(conversationId);
   const { data: live } = useLivePartial(conversationId);
+  const { data: queuedMessageIds } = useQueuedMessageIds(conversationId);
   const messages = conversation?.messages ?? [];
   const isStreaming = conversation?.streamStatus === "streaming";
 
@@ -149,6 +151,8 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
             ? "tool"
             : "text";
 
+        const isQueued = !isAssistant && queuedMessageIds.includes(msg.id);
+
         return (
           <Message
             key={msg.id}
@@ -188,7 +192,10 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
                   ) : (
                     <MessageContent
                       key={idx}
-                      className="bg-neutral-700 text-neutral-200 prose prose-sm prose-invert"
+                      className={cn(
+                        "bg-neutral-700 text-neutral-200 prose prose-sm prose-invert",
+                        isQueued && "opacity-60"
+                      )}
                     >
                       {block.text}
                     </MessageContent>
@@ -216,6 +223,11 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
 
                 return null;
               })}
+              {isQueued && (
+                <span className="mt-0.5 self-end text-[10px] text-neutral-400">
+                  Queued
+                </span>
+              )}
             </div>
           </Message>
         );
@@ -302,7 +314,10 @@ export function AppChat({ className, ...props }: AppChatProps) {
 
   const isStreaming = conversation?.streamStatus === "streaming";
 
-  const isLoading = createConversation.isPending || sendMessage.isPending || isStreaming;
+  // Only in-flight HTTP sends block submitting — streaming doesn't, since
+  // mid-turn sends queue on the CLI side and are acked via message_accepted.
+  const isSendPending = createConversation.isPending || sendMessage.isPending;
+  const isLoading = isSendPending || isStreaming;
 
   // Show the chat empty state whenever the active conversation has no messages
   // yet — not just when no conversation exists. Guard against the message fetch
@@ -326,7 +341,7 @@ export function AppChat({ className, ...props }: AppChatProps) {
   };
 
   const handleSubmit = async () => {
-    if (!activeWorkspaceId || !input.trim() || isLoading) return;
+    if (!activeWorkspaceId || !input.trim() || isSendPending) return;
 
     const prompt = input.trim();
 
@@ -387,7 +402,7 @@ export function AppChat({ className, ...props }: AppChatProps) {
   };
 
   const handleRetry = async () => {
-    if (!activeWorkspaceId || !activeConversationId || isLoading) return;
+    if (!activeWorkspaceId || !activeConversationId || isSendPending) return;
 
     await sendMessage.mutateAsync({
       message: "Logged in, continue.",
@@ -466,10 +481,10 @@ export function AppChat({ className, ...props }: AppChatProps) {
                   </Button>
                 </FileUploadTrigger>
               </PromptInputAction>
-              {isStreaming ? (
+              {isStreaming && (
                 <PromptInputAction tooltip="Stop generation">
                   <Button
-                    variant="default"
+                    variant="secondary"
                     size="icon"
                     className="h-8 w-8 rounded-full"
                     onClick={handleStop}
@@ -478,19 +493,20 @@ export function AppChat({ className, ...props }: AppChatProps) {
                     <Square className="size-4 fill-current" />
                   </Button>
                 </PromptInputAction>
-              ) : (
-                <PromptInputAction tooltip="Send message">
-                  <Button
-                    variant="default"
-                    size="icon"
-                    className="h-8 w-8 rounded-full"
-                    onClick={handleSubmit}
-                    disabled={!input.trim() || isLoading}
-                  >
-                    <ArrowUp className="size-4" />
-                  </Button>
-                </PromptInputAction>
               )}
+              <PromptInputAction
+                tooltip={isStreaming ? "Queue message" : "Send message"}
+              >
+                <Button
+                  variant="default"
+                  size="icon"
+                  className="h-8 w-8 rounded-full"
+                  onClick={handleSubmit}
+                  disabled={!input.trim() || isSendPending}
+                >
+                  <ArrowUp className="size-4" />
+                </Button>
+              </PromptInputAction>
             </PromptInputActions>
           </PromptInput>
         </div>

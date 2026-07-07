@@ -96,6 +96,19 @@ export const useLivePartial = (conversationId: string | null) => {
   });
 };
 
+// userMessageIds sent while a turn was in flight and not yet acked by the
+// CLI's replay (message_accepted). Purely renderer state — populated by
+// useSendMessage, drained by stream-subscription's reducer.
+export const useQueuedMessageIds = (conversationId: string | null) => {
+  return useQuery<string[]>({
+    queryKey: queryKeys.conversations.queuedMessageIds(conversationId),
+    queryFn: () => [],
+    enabled: false,
+    initialData: [],
+    staleTime: Infinity,
+  });
+};
+
 export const useCreateConversation = () => {
   const queryClient = useQueryClient();
 
@@ -177,6 +190,14 @@ onMutate: async ({ message, conversationId, userMessageId, images }) => {
         createdAt: new Date(),
       };
 
+      // Sent mid-turn: mark queued until the CLI acks it (message_accepted)
+      if (previousChat.streamStatus === "streaming") {
+        queryClient.setQueryData<string[]>(
+          queryKeys.conversations.queuedMessageIds(conversationId),
+          (prev) => [...(prev ?? []), userMessageId],
+        );
+      }
+
       queryClient.setQueryData<ConversationWithMessages>(
         queryKeys.conversations.detail(conversationId),
         {
@@ -189,13 +210,17 @@ onMutate: async ({ message, conversationId, userMessageId, images }) => {
       return { previousChat };
     },
 
-    onError: (_err, { conversationId }, context) => {
+    onError: (_err, { conversationId, userMessageId }, context) => {
       if (context?.previousChat) {
         queryClient.setQueryData(
           queryKeys.conversations.detail(conversationId),
           context.previousChat,
         );
       }
+      queryClient.setQueryData<string[]>(
+        queryKeys.conversations.queuedMessageIds(conversationId),
+        (prev) => prev?.filter((id) => id !== userMessageId) ?? [],
+      );
     },
   });
 };
