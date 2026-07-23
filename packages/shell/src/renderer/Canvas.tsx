@@ -3,6 +3,7 @@ import {
   ReactFlowProvider,
   useNodesState,
   useReactFlow,
+  useStore,
   NodeToolbar,
   Position,
   type Node,
@@ -10,6 +11,7 @@ import {
   type NodeProps,
   type NodeChange,
   NodeResizer,
+  SelectionMode,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { memo, useMemo, useState, useCallback, useEffect, useRef } from "react";
@@ -125,6 +127,7 @@ const IframeNodeRenderer = ({
   const [url, setUrl] = useState<string | undefined>(undefined);
   const [refreshCounter, setRefreshCounter] = useState(0);
   const releaseRef = useRef<(() => void) | null>(null);
+  const multiSelected = useStore((s) => s.nodes.filter((n) => n.selected).length > 1);
 
   useEffect(() => {
     let cancelled = false;
@@ -174,7 +177,7 @@ const IframeNodeRenderer = ({
         <PillToggleToolbar
           componentName={data.componentName}
           nodeId={id}
-          selected={selected}
+          selected={selected && !multiSelected}
           onRefresh={handleRefresh}
           onFullscreen={handleFullscreen}
         />
@@ -206,6 +209,13 @@ const GridPattern = () => (
   />
 );
 
+// Zero-area nodes match every selection box (xyflow's containment check is
+// overlappingArea >= width * height, trivially true when the area is 0), so
+// dimensions must never collapse to 0. Matches NodeResizer's default minimum.
+const MIN_NODE_SIZE = 10;
+
+const clampNodeSize = (size: number) => Math.max(size, MIN_NODE_SIZE);
+
 const CanvasContent = ({
   workspaceId,
   userComponents,
@@ -235,7 +245,10 @@ const CanvasContent = ({
           id: `${component.name}-1`,
           type: "iframe" as const,
           position: { x: saved.x, y: saved.y },
-          style: { width: saved.width, height: saved.height },
+          style: {
+            width: clampNodeSize(saved.width),
+            height: clampNodeSize(saved.height),
+          },
           data: {
             url: `https://localhost:${port}/preview?componentName=${component.name}`,
             componentName: component.name,
@@ -326,7 +339,10 @@ const CanvasContent = ({
         {
           id: node.id,
           type: "dimensions",
-          dimensions: { width, height },
+          dimensions: {
+            width: clampNodeSize(width),
+            height: clampNodeSize(height),
+          },
           setAttributes: true,
         },
       ]);
@@ -392,8 +408,11 @@ const CanvasContent = ({
         nodesConnectable={false}
         elementsSelectable={true}
         selectNodesOnDrag={true}
+        selectionOnDrag={true}
+        selectionMode={SelectionMode.Partial}
         panOnScroll={true}
         panOnDrag={[1, 2]}
+        panActivationKeyCode="Space"
         onlyRenderVisibleElements={false}
         proOptions={{ hideAttribution: true }}
       >
