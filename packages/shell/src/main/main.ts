@@ -47,7 +47,7 @@ app.commandLine.appendSwitch(
 // mount after "update-downloaded" fired pull this via update:get-status.
 let pendingUpdateVersion: string | null = null;
 
-const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
+const UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000;
 
 protocol.registerSchemesAsPrivileged([
   {
