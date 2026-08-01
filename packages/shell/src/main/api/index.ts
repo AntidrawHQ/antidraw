@@ -107,48 +107,41 @@ const processStream = async (
   model?: string,
   effort?: EffortLevel,
 ) => {
-  // In-session switch: a changed selection is applied to the live query via
-  // control requests — no CLI respawn. Both are verified against the running
-  // CLI (the Stop-hook effort echo confirms the applied level): setModel()
-  // re-emits an init message with the new model, and applyFlagSettings
-  // accepts every effort level INCLUDING "max" at runtime — the SDK's
-  // Settings.effortLevel type omits it, hence the cast below. If a control
-  // request fails (e.g. an older CLI), fall back to ending the idle stream
-  // and cold-starting with `resume` + fresh options. The gate in the POST
-  // handler guarantees no turn is in flight during any of this.
+  // In-session switch: apply the requested options to the live query via
+  // control requests before every push — no CLI respawn, and no cached
+  // option state (the Query exposes no readback). Unconditional application
+  // is verified cheap and clean: no-op setModel/applyFlagSettings cost
+  // ~1-5ms, and the CLI re-emits init per TURN regardless, so this adds no
+  // stream noise. applyFlagSettings accepts every effort level INCLUDING
+  // "max" at runtime — the SDK's Settings.effortLevel type omits it, hence
+  // the cast. The gate in the POST handler guarantees no turn is in flight.
   let existingStream = activeStreams.get(conversation.id);
-  if (existingStream) {
-    const modelChanged = model !== undefined && model !== existingStream.model;
-    const effortChanged =
-      effort !== undefined && effort !== existingStream.effort;
-    if (modelChanged || effortChanged) {
-      try {
-        if (modelChanged) {
-          await existingStream.query.setModel(model);
-          existingStream.model = model;
-        }
-        if (effortChanged) {
-          await existingStream.query.applyFlagSettings({
-            effortLevel: effort as Exclude<EffortLevel, "max">,
-          });
-          existingStream.effort = effort;
-        }
-      } catch (e) {
-        // Restart, don't revert: a failed control request means a dead
-        // process (restart IS the recovery) or a CLI too old for the
-        // subtype (spawn-time options work everywhere). Reverting would
-        // run the user's message on options they just deselected, and
-        // setModel may have landed before applyFlagSettings failed —
-        // a fresh spawn applies the requested options atomically. The
-        // UI needs no revert signal either way: it renders from the
-        // init/assistant/Stop-hook echoes, not from the request.
-        console.error("In-session switch failed; restarting session:", e);
-        existingStream.promptStream.end();
-        // Drop the registry entry now so the superseded loop's guarded
-        // cleanup can't race the cold start below.
-        unregisterStream(conversation.id, existingStream.promptStream);
-        existingStream = undefined;
+  if (existingStream && (model !== undefined || effort !== undefined)) {
+    try {
+      // setModel(undefined) means "reset to default" — only call when set.
+      if (model !== undefined) {
+        await existingStream.query.setModel(model);
       }
+      if (effort !== undefined) {
+        await existingStream.query.applyFlagSettings({
+          effortLevel: effort as Exclude<EffortLevel, "max">,
+        });
+      }
+    } catch (e) {
+      // Restart, don't revert: a failed control request means a dead
+      // process (restart IS the recovery) or a CLI too old for the
+      // subtype (spawn-time options work everywhere). Reverting would
+      // run the user's message on options they just deselected, and
+      // setModel may have landed before applyFlagSettings failed —
+      // a fresh spawn applies the requested options atomically. The
+      // UI needs no revert signal either way: it renders from the
+      // init/assistant/Stop-hook echoes, not from the request.
+      console.error("In-session switch failed; restarting session:", e);
+      existingStream.promptStream.end();
+      // Drop the registry entry now so the superseded loop's guarded
+      // cleanup can't race the cold start below.
+      unregisterStream(conversation.id, existingStream.promptStream);
+      existingStream = undefined;
     }
   }
 
@@ -209,13 +202,10 @@ const processStream = async (
       throw new Error("Failed to init Claude Code");
     }
 
-    // Register the query for cancellation via interrupt() and record the
-    // options it was started with (the restart-on-switch diff above).
+    // Register the query for cancellation via interrupt()
     registerStream(conversation.id, {
       query: res.value,
       promptStream,
-      model,
-      effort,
     });
 
     trackMessageSent({ query: res.value });

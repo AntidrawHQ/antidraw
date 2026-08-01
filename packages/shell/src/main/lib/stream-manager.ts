@@ -5,7 +5,6 @@ import type {
   SDKPartialAssistantMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { PromptStream } from "../api/claude-code-ops";
-import type { EffortLevel } from "@/main/api/claude-code-ops";
 
 type ConversationEvents = {
   message: [conversationId: string, message: Message];
@@ -19,14 +18,13 @@ type ConversationEvents = {
 
 class ConversationEventEmitter extends EventEmitter<ConversationEvents> {}
 
+// No model/effort here on purpose: the Query exposes no readback and caching
+// them only saves a ~1-5ms no-op control request per send (verified — the CLI
+// re-emits init per turn regardless). processStream applies the requested
+// options unconditionally before each push instead.
 export type ActiveStream = {
   query: Query;
   promptStream: PromptStream;
-  // Options the query is currently running with. Updated in place when a
-  // follow-up send switches them via control requests (setModel /
-  // applyFlagSettings) — see the in-session switch in processStream.
-  model?: string;
-  effort?: EffortLevel;
 };
 
 // Simple exports - no wrapper object
