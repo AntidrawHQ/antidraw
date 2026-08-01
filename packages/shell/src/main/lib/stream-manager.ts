@@ -22,9 +22,9 @@ class ConversationEventEmitter extends EventEmitter<ConversationEvents> {}
 export type ActiveStream = {
   query: Query;
   promptStream: PromptStream;
-  // Options the stream was started with. A follow-up send with different
-  // values must end this stream and cold-start a new query (the SDK has no
-  // full-fidelity mid-session switch — see restart-on-switch in processStream).
+  // Options the query is currently running with. Updated in place when a
+  // follow-up send switches them via control requests (setModel /
+  // applyFlagSettings) — see the in-session switch in processStream.
   model?: string;
   effort?: EffortLevel;
 };

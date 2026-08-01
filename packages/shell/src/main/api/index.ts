@@ -106,23 +106,41 @@ const processStream = async (
   model?: string,
   effort?: EffortLevel,
 ) => {
-  // Restart-on-switch: the SDK has no full-fidelity way to change model or
-  // effort on a live query (setModel exists but effort has no setter, and
-  // Settings.effortLevel excludes "max"), so a changed selection ends the
-  // idle keep-alive stream and cold-starts a fresh query below with
-  // `resume` + new options — same approach t3code uses for its Claude
-  // provider. The gate in the POST handler guarantees no turn is in flight.
+  // In-session switch: a changed selection is applied to the live query via
+  // control requests — no CLI respawn. Both are verified against the running
+  // CLI (the Stop-hook effort echo confirms the applied level): setModel()
+  // re-emits an init message with the new model, and applyFlagSettings
+  // accepts every effort level INCLUDING "max" at runtime — the SDK's
+  // Settings.effortLevel type omits it, hence the cast below. If a control
+  // request fails (e.g. an older CLI), fall back to ending the idle stream
+  // and cold-starting with `resume` + fresh options. The gate in the POST
+  // handler guarantees no turn is in flight during any of this.
   let existingStream = activeStreams.get(conversation.id);
-  if (
-    existingStream &&
-    ((model !== undefined && model !== existingStream.model) ||
-      (effort !== undefined && effort !== existingStream.effort))
-  ) {
-    existingStream.promptStream.end();
-    // Drop the registry entry now so the superseded loop's guarded cleanup
-    // can't race the cold start below.
-    unregisterStream(conversation.id, existingStream.promptStream);
-    existingStream = undefined;
+  if (existingStream) {
+    const modelChanged = model !== undefined && model !== existingStream.model;
+    const effortChanged =
+      effort !== undefined && effort !== existingStream.effort;
+    if (modelChanged || effortChanged) {
+      try {
+        if (modelChanged) {
+          await existingStream.query.setModel(model);
+          existingStream.model = model;
+        }
+        if (effortChanged) {
+          await existingStream.query.applyFlagSettings({
+            effortLevel: effort as Exclude<EffortLevel, "max">,
+          });
+          existingStream.effort = effort;
+        }
+      } catch (e) {
+        console.error("In-session switch failed; restarting session:", e);
+        existingStream.promptStream.end();
+        // Drop the registry entry now so the superseded loop's guarded
+        // cleanup can't race the cold start below.
+        unregisterStream(conversation.id, existingStream.promptStream);
+        existingStream = undefined;
+      }
+    }
   }
 
   // Push path: a stream from a prior turn is still alive. Persist the user
