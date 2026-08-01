@@ -1,4 +1,9 @@
-import type { Conversation, ConversationWithMessages, Message } from "@/main/api";
+import type {
+  Conversation,
+  ConversationWithMessages,
+  EffortLevel,
+  Message,
+} from "@/main/api";
 import type { ImageAttachment } from "@/shared/utils/message";
 import { createUserSDKMessage } from "@/shared/utils/message";
 import { queryOptions, useMutation, useQuery, useQueryClient, skipToken } from "@tanstack/react-query";
@@ -96,6 +101,18 @@ export const useLivePartial = (conversationId: string | null) => {
   });
 };
 
+// Reads the CLI's authoritative effort echo for the conversation.
+// Populated imperatively by stream-subscription; queryFn is a noop.
+export const useActualEffort = (conversationId: string | null) => {
+  return useQuery<string | null>({
+    queryKey: queryKeys.conversations.actualEffort(conversationId),
+    queryFn: () => null,
+    enabled: false,
+    initialData: null,
+    staleTime: Infinity,
+  });
+};
+
 export const useCreateConversation = () => {
   const queryClient = useQueryClient();
 
@@ -135,6 +152,8 @@ export const useSendMessage = () => {
       conversationId: string;
       userMessageId: string; // Frontend generates this
       images?: ImageAttachment[];
+      model?: string;
+      effort?: EffortLevel;
     }) => {
       const result = await sendMessage(params);
 

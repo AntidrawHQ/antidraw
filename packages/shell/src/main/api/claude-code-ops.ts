@@ -1,7 +1,13 @@
 import { createRequire } from "node:module";
 import path from "node:path";
-import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type {
+  EffortLevel,
+  HookInput,
+  SDKUserMessage,
+} from "@anthropic-ai/claude-agent-sdk";
 import { query } from "@anthropic-ai/claude-agent-sdk";
+
+export type { EffortLevel };
 import { ok, err } from "neverthrow";
 import { z } from "zod/v3";
 import { zodToJsonSchema } from "zod-to-json-schema";
@@ -139,9 +145,32 @@ export const sendMessage = (params: {
   promptStream: PromptStream;
   workspaceId: string;
   claudeCodeSessionID?: string;
+  model?: string;
+  effort?: EffortLevel;
+  /**
+   * Pin the resume point to the last assistant message we persisted, so the
+   * model's memory always matches the transcript the user sees — a crashed
+   * turn's unseen tail in the session file becomes a dead branch instead of
+   * invisible model context. Only meaningful with `claudeCodeSessionID`.
+   */
+  resumeSessionAt?: string;
+  /**
+   * Echo of the ACTUAL effort the CLI ran the turn with (after any silent
+   * downgrade for the selected model). Fired from a Stop hook; main-thread
+   * turns only — subagent hook invocations are filtered out.
+   */
+  onEffortLevel?: (level: string) => void;
 }) => {
   try {
-    const { promptStream, workspaceId, claudeCodeSessionID } = params;
+    const {
+      promptStream,
+      workspaceId,
+      claudeCodeSessionID,
+      model,
+      effort,
+      resumeSessionAt,
+      onEffortLevel,
+    } = params;
     const workspacePath = getWorkspaceSourcePath(workspaceId);
 
     const res = query({
@@ -150,6 +179,33 @@ export const sendMessage = (params: {
         pathToClaudeCodeExecutable: claudeCodeExecutablePath,
         cwd: workspacePath,
         resume: claudeCodeSessionID,
+        ...(claudeCodeSessionID && resumeSessionAt ? { resumeSessionAt } : {}),
+        ...(model ? { model } : {}),
+        ...(effort ? { effort } : {}),
+        ...(onEffortLevel
+          ? {
+              hooks: {
+                Stop: [
+                  {
+                    hooks: [
+                      async (input: HookInput) => {
+                        // agent_id present = hook fired inside a subagent;
+                        // its effort must not be mirrored onto the main UI.
+                        if (
+                          input.hook_event_name === "Stop" &&
+                          !("agent_id" in input && input.agent_id) &&
+                          input.effort?.level
+                        ) {
+                          onEffortLevel(input.effort.level);
+                        }
+                        return {};
+                      },
+                    ],
+                  },
+                ],
+              },
+            }
+          : {}),
         systemPrompt: {
           preset: "claude_code",
           type: "preset",

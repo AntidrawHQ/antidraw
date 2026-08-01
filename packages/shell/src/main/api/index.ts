@@ -12,6 +12,7 @@ export type { CreateWorkspaceStatusCode } from "./services/workspace.service";
 export type { DevServerState } from "@/main/lib/runtime-store";
 export type { DevServerInfo } from "@/main/services/dev-server.service";
 export type { ClaudeAuthStatus } from "@/main/services/claude-cli-interactions.service";
+export type { EffortLevel } from "./claude-code-ops";
 export type {
   ComponentListItem,
   ComponentSource,
@@ -21,7 +22,12 @@ import { zValidator } from "@hono/zod-validator";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import type { SDKPartialAssistantMessage } from "@anthropic-ai/claude-agent-sdk";
-import { sendMessage, generateTitle, buildPrompt } from "@/main/api/claude-code-ops";
+import {
+  sendMessage,
+  generateTitle,
+  buildPrompt,
+  type EffortLevel,
+} from "@/main/api/claude-code-ops";
 import {
   createConversation,
   resolveOrCreateConversation,
@@ -31,12 +37,14 @@ import {
   updateConversationTitleAndSummary,
   convertUserPromptToSDKMessage,
   getConversation,
+  getLastMainAssistantUuid,
 } from "./services/chat.service";
 import {
   streamEvents,
   activeStreams,
   registerStream,
   unregisterStream,
+  isStreamOwner,
   cancelStream as cancelActiveStream,
 } from "@/main/lib/stream-manager";
 import { workspaceController } from "./controllers/workspace.controller";
@@ -56,12 +64,25 @@ const imageAttachmentSchema = z.object({
   mediaType: z.enum(["image/png", "image/jpeg", "image/gif", "image/webp"]),
 });
 
+export const effortLevelSchema = z.enum([
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+]);
+
 const chatMessageSchema = z.object({
   message: z.string().min(1),
   workspaceId: z.uuid(),
   conversationId: z.string().uuid().optional(),
   userMessageId: z.string().uuid(), // Frontend-generated, used for dedup
   images: z.array(imageAttachmentSchema).optional(),
+  // Requested model/effort for this turn. Optional: omitted = CLI defaults.
+  // The ACTUAL values the CLI runs with are echoed back through the stream
+  // (init/assistant messages for model, the "effort" stream event for effort).
+  model: z.string().min(1).optional(),
+  effort: effortLevelSchema.optional(),
 });
 
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
@@ -71,7 +92,9 @@ export type StreamEvent =
   | { type: "message"; message: Message }
   | { type: "partial"; partial: SDKPartialAssistantMessage }
   | { type: "complete" }
-  | { type: "error"; error: string };
+  | { type: "error"; error: string }
+  // CLI's authoritative per-turn effort (after any silent downgrade).
+  | { type: "effort"; level: string };
 
 // Background processor for streaming messages
 const processStream = async (
@@ -80,14 +103,34 @@ const processStream = async (
   workspaceId: string,
   userMessageId: string,
   images?: ImageAttachment[],
+  model?: string,
+  effort?: EffortLevel,
 ) => {
+  // Restart-on-switch: the SDK has no full-fidelity way to change model or
+  // effort on a live query (setModel exists but effort has no setter, and
+  // Settings.effortLevel excludes "max"), so a changed selection ends the
+  // idle keep-alive stream and cold-starts a fresh query below with
+  // `resume` + new options — same approach t3code uses for its Claude
+  // provider. The gate in the POST handler guarantees no turn is in flight.
+  let existingStream = activeStreams.get(conversation.id);
+  if (
+    existingStream &&
+    ((model !== undefined && model !== existingStream.model) ||
+      (effort !== undefined && effort !== existingStream.effort))
+  ) {
+    existingStream.promptStream.end();
+    // Drop the registry entry now so the superseded loop's guarded cleanup
+    // can't race the cold start below.
+    unregisterStream(conversation.id, existingStream.promptStream);
+    existingStream = undefined;
+  }
+
   // Push path: a stream from a prior turn is still alive. Persist the user
   // message with the frontend-assigned id (dedup contract) then push into the
   // live input stream. This invocation owns NO stream lifecycle, so it stays
   // out of the try/finally below and never touches registerStream /
   // unregisterStream — the owning loop (a separate processStream invocation)
   // picks up the pushed turn's SDK messages and persists them.
-  const existingStream = activeStreams.get(conversation.id);
   if (existingStream) {
     try {
       const userMsg = convertUserPromptToSDKMessage(message, images);
@@ -111,22 +154,42 @@ const processStream = async (
   // Cold-start path: spawn a fresh query and own its lifecycle. The
   // try/finally below is scoped to THIS invocation's stream — the finally
   // unregisters only because we registered above.
+  const promptStream = buildPrompt(message, images);
   try {
     const claudeCodeSessionID = conversation.claudeCodeSessionId ?? undefined;
-    const promptStream = buildPrompt(message, images);
+
+    // Pin resume to the newest assistant message in OUR transcript so the
+    // resumed model context matches exactly what the user sees (crash-orphaned
+    // session-file tails become dead branches instead of hidden memory).
+    let resumeSessionAt: string | undefined;
+    if (claudeCodeSessionID) {
+      const pin = await getLastMainAssistantUuid(conversation.id);
+      if (pin.isOk()) resumeSessionAt = pin.value;
+    }
 
     const res = sendMessage({
       promptStream,
       workspaceId,
       claudeCodeSessionID,
+      model,
+      effort,
+      resumeSessionAt,
+      onEffortLevel: (level) =>
+        streamEvents.emit("effort", conversation.id, level),
     });
 
     if (res.isErr()) {
       throw new Error("Failed to init Claude Code");
     }
 
-    // Register the query for cancellation via interrupt()
-    registerStream(conversation.id, res.value, promptStream);
+    // Register the query for cancellation via interrupt() and record the
+    // options it was started with (the restart-on-switch diff above).
+    registerStream(conversation.id, {
+      query: res.value,
+      promptStream,
+      model,
+      effort,
+    });
 
     trackMessageSent({ query: res.value });
 
@@ -188,15 +251,23 @@ const processStream = async (
 
     // Reached only if the input stream is closed (end()) or the SDK
     // tears down. In the keep-alive model this is the absolute end of
-    // the conversation, not a per-turn signal.
-    await updateConversationStatus(conversation.id, "idle");
-    streamEvents.emit("complete", conversation.id);
+    // the conversation, not a per-turn signal. A superseded stream
+    // (restart-on-switch replaced it) must stay silent: the replacement
+    // loop owns the conversation's status now.
+    if (isStreamOwner(conversation.id, promptStream)) {
+      await updateConversationStatus(conversation.id, "idle");
+      streamEvents.emit("complete", conversation.id);
+    }
   } catch (e) {
-    const errorMessage = e instanceof Error ? e.message : "Unknown error";
-    streamEvents.emit("error", conversation.id, errorMessage);
-    await updateConversationStatus(conversation.id, "error");
+    if (isStreamOwner(conversation.id, promptStream)) {
+      const errorMessage = e instanceof Error ? e.message : "Unknown error";
+      streamEvents.emit("error", conversation.id, errorMessage);
+      await updateConversationStatus(conversation.id, "error");
+    } else {
+      console.error("Superseded stream failed during teardown:", e);
+    }
   } finally {
-    unregisterStream(conversation.id);
+    unregisterStream(conversation.id, promptStream);
   }
 };
 
@@ -204,8 +275,15 @@ api.post(
   "/chat/message",
   zValidator("json", chatMessageSchema),
   async (ctx) => {
-    const { message, workspaceId, conversationId, userMessageId, images } =
-      ctx.req.valid("json");
+    const {
+      message,
+      workspaceId,
+      conversationId,
+      userMessageId,
+      images,
+      model,
+      effort,
+    } = ctx.req.valid("json");
 
     const conversationRes = await resolveOrCreateConversation(
       workspaceId,
@@ -239,7 +317,15 @@ api.post(
     await updateConversationStatus(conversation.id, "streaming");
 
     // Fire and forget - inner try/catch handles errors, this prevents unhandled rejections
-    processStream(conversation, message, workspaceId, userMessageId, images).catch(console.error);
+    processStream(
+      conversation,
+      message,
+      workspaceId,
+      userMessageId,
+      images,
+      model,
+      effort,
+    ).catch(console.error);
 
     return ctx.json({ conversationId: conversation.id }, 202);
   },
@@ -321,16 +407,25 @@ api.get(
         });
       };
 
+      const onEffort = (convId: string, level: string) => {
+        if (convId !== conversationId) return;
+        stream.writeSSE({
+          data: JSON.stringify({ type: "effort", level } satisfies StreamEvent),
+        });
+      };
+
       streamEvents.on("message", onMessage);
       streamEvents.on("partial", onPartial);
       streamEvents.on("complete", onComplete);
       streamEvents.on("error", onError);
+      streamEvents.on("effort", onEffort);
 
       ctx.req.raw.signal.addEventListener("abort", () => {
         streamEvents.off("message", onMessage);
         streamEvents.off("partial", onPartial);
         streamEvents.off("complete", onComplete);
         streamEvents.off("error", onError);
+        streamEvents.off("effort", onEffort);
       });
 
       // Keep alive until client disconnects

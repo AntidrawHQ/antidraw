@@ -7,6 +7,7 @@ import type {
   CreateWorkspaceResponse,
   DevServerInfo,
   DevServerState,
+  EffortLevel,
   StreamEvent,
   Workspace,
 } from "@/main/api";
@@ -14,7 +15,7 @@ import type { ImageAttachment } from "@/shared/utils/message";
 import { fetchEventSource } from "@microsoft/fetch-event-source";
 import { ok, err } from "neverthrow";
 
-export type { StreamEvent } from "@/main/api";
+export type { StreamEvent, EffortLevel } from "@/main/api";
 
 // ============================================================================
 // UI Preferences API
@@ -435,6 +436,8 @@ export const sendMessage = async (params: {
   conversationId?: string;
   userMessageId: string; // Frontend generates this for dedup
   images?: ImageAttachment[];
+  model?: string;
+  effort?: EffortLevel;
 }) => {
   try {
     const response = await fetch("antidraw://app/api/chat/message", {

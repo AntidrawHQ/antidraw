@@ -155,5 +155,15 @@ const handleStreamEvent = (
     queryClient.invalidateQueries({
       queryKey: queryKeys.conversations.detail(conversationId),
     });
+    return;
+  }
+
+  // The CLI's authoritative effort for the turn (post silent-downgrade).
+  // Stored in the query cache like livePartial; the composer mirrors it.
+  if (event.type === "effort") {
+    queryClient.setQueryData<string>(
+      queryKeys.conversations.actualEffort(conversationId),
+      event.level,
+    );
   }
 };
