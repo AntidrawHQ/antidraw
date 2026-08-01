@@ -133,6 +133,14 @@ const processStream = async (
           existingStream.effort = effort;
         }
       } catch (e) {
+        // Restart, don't revert: a failed control request means a dead
+        // process (restart IS the recovery) or a CLI too old for the
+        // subtype (spawn-time options work everywhere). Reverting would
+        // run the user's message on options they just deselected, and
+        // setModel may have landed before applyFlagSettings failed —
+        // a fresh spawn applies the requested options atomically. The
+        // UI needs no revert signal either way: it renders from the
+        // init/assistant/Stop-hook echoes, not from the request.
         console.error("In-session switch failed; restarting session:", e);
         existingStream.promptStream.end();
         // Drop the registry entry now so the superseded loop's guarded
