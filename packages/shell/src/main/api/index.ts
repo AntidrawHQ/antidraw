@@ -45,6 +45,7 @@ import {
   registerStream,
   unregisterStream,
   isStreamOwner,
+  isStreamActive,
   cancelStream as cancelActiveStream,
 } from "@/main/lib/stream-manager";
 import { workspaceController } from "./controllers/workspace.controller";
@@ -285,7 +286,14 @@ const processStream = async (
       streamEvents.emit("complete", conversation.id);
     }
   } catch (e) {
-    if (isStreamOwner(conversation.id, promptStream)) {
+    // Report unless a REPLACEMENT loop owns the conversation now. "No entry
+    // at all" must still report: a failure before registerStream (e.g.
+    // sendMessage errs) has no owner, and swallowing it would leave the
+    // conversation stuck on "streaming" until the next app boot.
+    if (
+      isStreamOwner(conversation.id, promptStream) ||
+      !isStreamActive(conversation.id)
+    ) {
       const errorMessage = e instanceof Error ? e.message : "Unknown error";
       streamEvents.emit("error", conversation.id, errorMessage);
       await updateConversationStatus(conversation.id, "error");
