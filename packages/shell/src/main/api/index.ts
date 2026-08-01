@@ -116,7 +116,7 @@ const processStream = async (
   // "max" at runtime — the SDK's Settings.effortLevel type omits it, hence
   // the cast. The gate in the POST handler guarantees no turn is in flight.
   let existingStream = activeStreams.get(conversation.id);
-  if (existingStream && (model !== undefined || effort !== undefined)) {
+  if (existingStream) {
     try {
       // setModel(undefined) means "reset to default" — only call when set.
       if (model !== undefined) {
