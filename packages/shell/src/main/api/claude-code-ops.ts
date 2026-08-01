@@ -21,7 +21,7 @@ import { createUserSDKMessage } from "@/shared/utils/message";
 // through Electron's asar layer, so the kernel returns ENOTDIR. Resolve once
 // and rewrite to the .unpacked sibling directory where the binary actually
 // lives. In dev (no asar in the path), the replace is a no-op.
-const claudeCodeExecutablePath = ((): string | undefined => {
+export const claudeCodeExecutablePath = ((): string | undefined => {
   const requireFromHere = createRequire(import.meta.url);
   const { platform, arch } = process;
   const ext = platform === "win32" ? ".exe" : "";
