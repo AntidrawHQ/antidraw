@@ -11,7 +11,6 @@ export type { CreateWorkspaceResponse } from "./controllers/workspace.controller
 export type { CreateWorkspaceStatusCode } from "./services/workspace.service";
 export type { DevServerState } from "@/main/lib/runtime-store";
 export type { DevServerInfo } from "@/main/services/dev-server.service";
-export type { ClaudeAuthStatus } from "@/main/services/claude-cli-interactions.service";
 export type { EffortLevel } from "./claude-code-ops";
 export type {
   ComponentListItem,
