@@ -51,7 +51,7 @@ const ConversationList = ({ onClose }: ConversationListProps) => {
 
   const handleNewConversation = async () => {
     if (!activeWorkspaceId) return;
-    const conv = await createConversation.mutateAsync(activeWorkspaceId);
+    const conv = await createConversation.mutateAsync({ workspaceId: activeWorkspaceId });
     setActiveConversationId(conv.id);
     onClose();
   };
@@ -141,7 +141,7 @@ const ConversationView = ({ onShowList }: ConversationViewProps) => {
 
   const handleNewConversation = async () => {
     if (!activeWorkspaceId) return;
-    const conv = await createConversation.mutateAsync(activeWorkspaceId);
+    const conv = await createConversation.mutateAsync({ workspaceId: activeWorkspaceId });
     setActiveConversationId(conv.id);
   };
 

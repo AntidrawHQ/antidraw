@@ -436,8 +436,6 @@ export const sendMessage = async (params: {
   conversationId?: string;
   userMessageId: string; // Frontend generates this for dedup
   images?: ImageAttachment[];
-  model?: string;
-  effort?: EffortLevel;
 }) => {
   try {
     const response = await fetch("antidraw://app/api/chat/message", {
@@ -599,14 +597,17 @@ export const getConversationWithMessages = async (conversationId: string) => {
   }
 };
 
-export const createConversation = async (workspaceId: string) => {
+export const createConversation = async (
+  workspaceId: string,
+  options?: { model?: string; effort?: EffortLevel },
+) => {
   try {
     const response = await fetch("antidraw://app/api/chat/conversation", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ workspaceId }),
+      body: JSON.stringify({ workspaceId, ...options }),
     });
 
     if (!response.ok) {
@@ -625,6 +626,41 @@ export const createConversation = async (workspaceId: string) => {
       status: 500 as const,
       code: "NETWORK_ERROR",
       message: "Failed to create conversation",
+    });
+  }
+};
+
+// Requested model/effort for a conversation. Persists on the row and applies
+// to the live CLI session immediately (latest-wins under message queueing).
+export const updateConversationOptions = async (
+  conversationId: string,
+  options: { model?: string; effort?: EffortLevel },
+) => {
+  try {
+    const response = await fetch(
+      `antidraw://app/api/chat/${conversationId}/options`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(options),
+      },
+    );
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      return err({
+        status: response.status as 500,
+        code: errorBody?.error?.code ?? "FETCH_ERROR",
+        message: errorBody?.error?.message ?? response.statusText,
+      });
+    }
+
+    return ok(true);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "NETWORK_ERROR",
+      message: "Failed to update conversation options",
     });
   }
 };

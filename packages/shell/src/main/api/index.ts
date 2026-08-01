@@ -38,6 +38,7 @@ import {
   convertUserPromptToSDKMessage,
   getConversation,
   getLastMainAssistantUuid,
+  updateConversationOptions,
 } from "./services/chat.service";
 import {
   streamEvents,
@@ -79,11 +80,6 @@ const chatMessageSchema = z.object({
   conversationId: z.string().uuid().optional(),
   userMessageId: z.string().uuid(), // Frontend-generated, used for dedup
   images: z.array(imageAttachmentSchema).optional(),
-  // Requested model/effort for this turn. Optional: omitted = CLI defaults.
-  // The ACTUAL values the CLI runs with are echoed back through the stream
-  // (init/assistant messages for model, the "effort" stream event for effort).
-  model: z.string().min(1).optional(),
-  effort: effortLevelSchema.optional(),
 });
 
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
@@ -104,46 +100,12 @@ const processStream = async (
   workspaceId: string,
   userMessageId: string,
   images?: ImageAttachment[],
-  model?: string,
-  effort?: EffortLevel,
 ) => {
-  // In-session switch: apply the requested options to the live query via
-  // control requests before every push — no CLI respawn, and no cached
-  // option state (the Query exposes no readback). Unconditional application
-  // is verified cheap and clean: no-op setModel/applyFlagSettings cost
-  // ~1-5ms, and the CLI re-emits init per TURN regardless, so this adds no
-  // stream noise. applyFlagSettings accepts every effort level INCLUDING
-  // "max" at runtime — the SDK's Settings.effortLevel type omits it, hence
-  // the cast. The gate in the POST handler guarantees no turn is in flight.
-  let existingStream = activeStreams.get(conversation.id);
-  if (existingStream) {
-    try {
-      // setModel(undefined) means "reset to default" — only call when set.
-      if (model !== undefined) {
-        await existingStream.query.setModel(model);
-      }
-      if (effort !== undefined) {
-        await existingStream.query.applyFlagSettings({
-          effortLevel: effort as Exclude<EffortLevel, "max">,
-        });
-      }
-    } catch (e) {
-      // Restart, don't revert: a failed control request means a dead
-      // process (restart IS the recovery) or a CLI too old for the
-      // subtype (spawn-time options work everywhere). Reverting would
-      // run the user's message on options they just deselected, and
-      // setModel may have landed before applyFlagSettings failed —
-      // a fresh spawn applies the requested options atomically. The
-      // UI needs no revert signal either way: it renders from the
-      // init/assistant/Stop-hook echoes, not from the request.
-      console.error("In-session switch failed; restarting session:", e);
-      existingStream.promptStream.end();
-      // Drop the registry entry now so the superseded loop's guarded
-      // cleanup can't race the cold start below.
-      unregisterStream(conversation.id, existingStream.promptStream);
-      existingStream = undefined;
-    }
-  }
+  // Model/effort no longer travel with messages: the options endpoint
+  // (PUT /chat/:conversationId/options) applies them to the live query at
+  // selection time and persists them on the conversation row, which the
+  // cold start below reads. Sends just send — under future message
+  // queueing this stays latest-wins by construction.
 
   // Push path: a stream from a prior turn is still alive. Persist the user
   // message with the frontend-assigned id (dedup contract) then push into the
@@ -151,6 +113,7 @@ const processStream = async (
   // out of the try/finally below and never touches registerStream /
   // unregisterStream — the owning loop (a separate processStream invocation)
   // picks up the pushed turn's SDK messages and persists them.
+  const existingStream = activeStreams.get(conversation.id);
   if (existingStream) {
     try {
       const userMsg = convertUserPromptToSDKMessage(message, images);
@@ -191,8 +154,8 @@ const processStream = async (
       promptStream,
       workspaceId,
       claudeCodeSessionID,
-      model,
-      effort,
+      model: conversation.selectedModel ?? undefined,
+      effort: conversation.selectedEffort ?? undefined,
       resumeSessionAt,
       onEffortLevel: (level) =>
         streamEvents.emit("effort", conversation.id, level),
@@ -299,15 +262,8 @@ api.post(
   "/chat/message",
   zValidator("json", chatMessageSchema),
   async (ctx) => {
-    const {
-      message,
-      workspaceId,
-      conversationId,
-      userMessageId,
-      images,
-      model,
-      effort,
-    } = ctx.req.valid("json");
+    const { message, workspaceId, conversationId, userMessageId, images } =
+      ctx.req.valid("json");
 
     const conversationRes = await resolveOrCreateConversation(
       workspaceId,
@@ -341,15 +297,7 @@ api.post(
     await updateConversationStatus(conversation.id, "streaming");
 
     // Fire and forget - inner try/catch handles errors, this prevents unhandled rejections
-    processStream(
-      conversation,
-      message,
-      workspaceId,
-      userMessageId,
-      images,
-      model,
-      effort,
-    ).catch(console.error);
+    processStream(conversation, message, workspaceId, userMessageId, images).catch(console.error);
 
     return ctx.json({ conversationId: conversation.id }, 202);
   },
@@ -458,6 +406,65 @@ api.get(
   },
 );
 
+const conversationOptionsSchema = z
+  .object({
+    model: z.string().min(1).optional(),
+    effort: effortLevelSchema.optional(),
+  })
+  .refine((v) => v.model !== undefined || v.effort !== undefined, {
+    message: "Provide model and/or effort",
+  });
+
+// Requested model/effort for a conversation. Decoupled from message sends so
+// selection changes apply at click time (latest-wins under future queueing):
+// persist on the row (cold starts read it), then apply to the live query via
+// control requests. applyFlagSettings accepts "max" at runtime — the SDK's
+// Settings.effortLevel type omits it, hence the cast.
+api.put(
+  "/chat/:conversationId/options",
+  zValidator("param", z.object({ conversationId: z.uuid() })),
+  zValidator("json", conversationOptionsSchema),
+  async (ctx) => {
+    const { conversationId } = ctx.req.valid("param");
+    const { model, effort } = ctx.req.valid("json");
+
+    const persisted = await updateConversationOptions(conversationId, {
+      selectedModel: model,
+      selectedEffort: effort,
+    });
+    if (persisted.isErr()) {
+      const { status, code, message } = persisted.error;
+      return ctx.json({ error: { code, message } }, status);
+    }
+
+    const stream = activeStreams.get(conversationId);
+    if (stream) {
+      try {
+        // setModel(undefined) means "reset to default" — only call when set.
+        if (model !== undefined) {
+          await stream.query.setModel(model);
+        }
+        if (effort !== undefined) {
+          await stream.query.applyFlagSettings({
+            effortLevel: effort as Exclude<EffortLevel, "max">,
+          });
+        }
+      } catch (e) {
+        // Dead process or a CLI too old for the control subtype. No restart
+        // here — no message is pending. Drop the stream so the NEXT send
+        // cold-starts from the row we just persisted (spawn-time options
+        // work on every CLI version). The UI needs no failure signal: it
+        // renders from the init/assistant/Stop-hook echoes either way.
+        console.error("Live option apply failed; dropping stream:", e);
+        stream.promptStream.end();
+        unregisterStream(conversationId, stream.promptStream);
+      }
+    }
+
+    return ctx.json({ ok: true });
+  },
+);
+
 // Cancel an active stream
 api.delete(
   "/chat/:conversationId/stream",
@@ -476,14 +483,21 @@ api.delete(
 
 const createConversationSchema = z.object({
   workspaceId: z.uuid(),
+  // Composer selection at creation time — becomes the conversation's
+  // requested model/effort from its first message on.
+  model: z.string().min(1).optional(),
+  effort: effortLevelSchema.optional(),
 });
 
 api.post(
   "/chat/conversation",
   zValidator("json", createConversationSchema),
   async (ctx) => {
-    const { workspaceId } = ctx.req.valid("json");
-    const result = await createConversation(workspaceId);
+    const { workspaceId, model, effort } = ctx.req.valid("json");
+    const result = await createConversation(workspaceId, {
+      selectedModel: model,
+      selectedEffort: effort,
+    });
 
     if (result.isErr()) {
       const { status, code, message } = result.error;

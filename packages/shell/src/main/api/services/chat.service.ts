@@ -3,6 +3,7 @@ import {
   messages,
   type StreamStatus,
 } from "@/main/api/models/chat.model";
+import type { EffortLevel } from "@anthropic-ai/claude-agent-sdk";
 import { db } from "@/main/db";
 import type { ImageAttachment } from "@/shared/utils/message";
 import { streamEvents } from "@/main/lib/stream-manager";
@@ -11,7 +12,16 @@ import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { eq, desc } from "drizzle-orm";
 import { ok, err } from "neverthrow";
 
-export const createConversation = async (workspaceId: string, title?: string) => {
+export const createConversation = async (
+  workspaceId: string,
+  options?: {
+    title?: string;
+    // Snapshot of the composer's selection at creation time — the
+    // conversation's requested model/effort from its first message on.
+    selectedModel?: string;
+    selectedEffort?: EffortLevel;
+  }
+) => {
   try {
     const id = crypto.randomUUID();
     const [conversation] = await db
@@ -19,7 +29,9 @@ export const createConversation = async (workspaceId: string, title?: string) =>
       .values({
         id,
         workspaceId,
-        title: title ?? null,
+        title: options?.title ?? null,
+        selectedModel: options?.selectedModel ?? null,
+        selectedEffort: options?.selectedEffort ?? null,
       })
       .returning();
 
@@ -29,6 +41,35 @@ export const createConversation = async (workspaceId: string, title?: string) =>
       status: 500 as const,
       code: "DB_ERROR",
       message: "Failed to create conversation",
+    });
+  }
+};
+
+// Requested options for the conversation. Only overwrites what the caller
+// sent — an effort-only change must not null out the model.
+export const updateConversationOptions = async (
+  conversationId: string,
+  options: { selectedModel?: string; selectedEffort?: EffortLevel }
+) => {
+  try {
+    await db
+      .update(conversations)
+      .set({
+        ...(options.selectedModel !== undefined
+          ? { selectedModel: options.selectedModel }
+          : {}),
+        ...(options.selectedEffort !== undefined
+          ? { selectedEffort: options.selectedEffort }
+          : {}),
+        updatedAt: new Date(),
+      })
+      .where(eq(conversations.id, conversationId));
+    return ok(undefined);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "DB_ERROR",
+      message: "Failed to update conversation options",
     });
   }
 };

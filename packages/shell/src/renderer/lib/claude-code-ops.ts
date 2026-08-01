@@ -117,8 +117,17 @@ export const useCreateConversation = () => {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (workspaceId: string) => {
-      const result = await createConversation(workspaceId);
+    mutationFn: async (params: {
+      workspaceId: string;
+      // Composer selection at creation time — becomes the conversation's
+      // requested model/effort.
+      model?: string;
+      effort?: EffortLevel;
+    }) => {
+      const result = await createConversation(params.workspaceId, {
+        model: params.model,
+        effort: params.effort,
+      });
 
       if (result.isErr()) {
         throw new Error(result.error.message);
@@ -152,8 +161,6 @@ export const useSendMessage = () => {
       conversationId: string;
       userMessageId: string; // Frontend generates this
       images?: ImageAttachment[];
-      model?: string;
-      effort?: EffortLevel;
     }) => {
       const result = await sendMessage(params);
 

@@ -357,7 +357,13 @@ export function AppChat({ className, ...props }: AppChatProps) {
     let conversationId = activeConversationId;
 
     if (!conversationId) {
-      const conv = await createConversation.mutateAsync(activeWorkspaceId);
+      // Snapshot the composer selection onto the new conversation — it's the
+      // row's requested model/effort from the first message on.
+      const conv = await createConversation.mutateAsync({
+        workspaceId: activeWorkspaceId,
+        model: composer.selectedModelId,
+        effort: composer.effort,
+      });
       setActiveConversationId(conv.id);
       conversationId = conv.id;
     }
@@ -368,8 +374,6 @@ export function AppChat({ className, ...props }: AppChatProps) {
       conversationId,
       userMessageId,
       images: imagesToSend,
-      model: composer.selectedModelId,
-      effort: composer.effort,
     });
 
     // Fire-and-forget title generation if conversation has no title/summary yet
@@ -401,8 +405,6 @@ export function AppChat({ className, ...props }: AppChatProps) {
       workspaceId: activeWorkspaceId,
       conversationId: activeConversationId,
       userMessageId: crypto.randomUUID(),
-      model: composer.selectedModelId,
-      effort: composer.effort,
     });
   };
 

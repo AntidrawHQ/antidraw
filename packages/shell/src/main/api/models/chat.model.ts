@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import { text, integer, sqliteTable, index } from "drizzle-orm/sqlite-core";
-import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { EffortLevel, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { relations } from "drizzle-orm";
 import { workspaces } from "./workspace.model";
 
@@ -22,6 +22,12 @@ export const conversations = sqliteTable("conversations", {
   claudeCodeSessionId: text("claude_code_session_id"),
   title: text("title"),
   summary: text("summary"),
+  // The user's REQUESTED model/effort for this conversation (null = CLI
+  // defaults). Written by the options endpoint / conversation create; read at
+  // cold start as query() options. Deliberately NOT updated from CLI echoes —
+  // actual state is derived from the transcript, requested state lives here.
+  selectedModel: text("selected_model"),
+  selectedEffort: text("selected_effort").$type<EffortLevel>(),
   streamStatus: text("stream_status").$type<StreamStatus>().default("idle"),
   createdAt: integer("created_at", { mode: "timestamp_ms" })
     .notNull()
