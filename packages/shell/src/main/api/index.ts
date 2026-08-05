@@ -450,14 +450,17 @@ api.put(
           });
         }
       } catch (e) {
-        // Dead process or a CLI too old for the control subtype. No restart
-        // here — no message is pending. Drop the stream so the NEXT send
-        // cold-starts from the row we just persisted (spawn-time options
-        // work on every CLI version). The UI needs no failure signal: it
-        // renders from the init/assistant/Stop-hook echoes either way.
-        console.error("Live option apply failed; dropping stream:", e);
-        stream.promptStream.end();
-        unregisterStream(conversationId, stream.promptStream);
+        // Best-effort. The selection is already persisted above, so a failed
+        // live apply just means it lands at the next cold start (spawn-time
+        // options work on every CLI version) instead of mid-session.
+        //
+        // Nothing to tear down here. The two reachable causes both resolve
+        // themselves: a dead process throws out of the iterator within ~10ms,
+        // so the loop exits and its finally unregisters; a CLI too old for the
+        // control subtype leaves a perfectly healthy stream that would be
+        // pointless to discard. The UI needs no failure signal either way —
+        // it renders from the init/assistant/Stop-hook echoes.
+        console.error("Live option apply failed; applies next cold start:", e);
       }
     }
 
