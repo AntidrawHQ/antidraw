@@ -179,33 +179,31 @@ export const sendMessage = (params: {
         pathToClaudeCodeExecutable: claudeCodeExecutablePath,
         cwd: workspacePath,
         resume: claudeCodeSessionID,
-        ...(claudeCodeSessionID && resumeSessionAt ? { resumeSessionAt } : {}),
-        ...(model ? { model } : {}),
-        ...(effort ? { effort } : {}),
-        ...(onEffortLevel
+        resumeSessionAt,
+        model,
+        effort,
+        hooks: onEffortLevel
           ? {
-              hooks: {
-                Stop: [
-                  {
-                    hooks: [
-                      async (input: HookInput) => {
-                        // agent_id present = hook fired inside a subagent;
-                        // its effort must not be mirrored onto the main UI.
-                        if (
-                          input.hook_event_name === "Stop" &&
-                          !("agent_id" in input && input.agent_id) &&
-                          input.effort?.level
-                        ) {
-                          onEffortLevel(input.effort.level);
-                        }
-                        return {};
-                      },
-                    ],
-                  },
-                ],
-              },
+              Stop: [
+                {
+                  hooks: [
+                    async (input: HookInput) => {
+                      // agent_id present = hook fired inside a subagent;
+                      // its effort must not be mirrored onto the main UI.
+                      if (
+                        input.hook_event_name === "Stop" &&
+                        !("agent_id" in input && input.agent_id) &&
+                        input.effort?.level
+                      ) {
+                        onEffortLevel(input.effort.level);
+                      }
+                      return {};
+                    },
+                  ],
+                },
+              ],
             }
-          : {}),
+          : undefined,
         systemPrompt: {
           preset: "claude_code",
           type: "preset",
