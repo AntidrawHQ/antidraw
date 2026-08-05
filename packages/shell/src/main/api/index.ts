@@ -43,10 +43,9 @@ import {
 import {
   streamEvents,
   activeStreams,
-  registerStream,
+  claimStream,
+  attachQuery,
   unregisterStream,
-  isStreamOwner,
-  isStreamActive,
   cancelStream as cancelActiveStream,
 } from "@/main/lib/stream-manager";
 import { workspaceController } from "./controllers/workspace.controller";
@@ -107,14 +106,21 @@ const processStream = async (
   // cold start below reads. Sends just send — under future message
   // queueing this stays latest-wins by construction.
 
-  // Push path: a stream from a prior turn is still alive. Persist the user
-  // message with the frontend-assigned id (dedup contract) then push into the
-  // live input stream. This invocation owns NO stream lifecycle, so it stays
-  // out of the try/finally below and never touches registerStream /
-  // unregisterStream — the owning loop (a separate processStream invocation)
-  // picks up the pushed turn's SDK messages and persists them.
-  const existingStream = activeStreams.get(conversation.id);
-  if (existingStream) {
+  // Claim the conversation's stream slot. This single synchronous call is the
+  // fork: win it and we cold-start and own the lifecycle below; lose it and a
+  // stream is already live (or spawning), so this turn is a follow-up push.
+  // Deciding both outcomes in one uninterruptible step is what stops two
+  // concurrent sends from each cold-starting and clobbering the other.
+  const promptStream = buildPrompt(message, images);
+  const owned = claimStream(conversation.id, promptStream);
+
+  // Push path. Persist the user message with the frontend-assigned id (dedup
+  // contract) then push into the owner's input stream. This invocation owns NO
+  // stream lifecycle, so it stays out of the try/finally below and never
+  // unregisters — the owning loop picks up the pushed turn's SDK messages and
+  // persists them.
+  if (!owned) {
+    const owner = activeStreams.get(conversation.id);
     try {
       const userMsg = convertUserPromptToSDKMessage(message, images);
       await addMessage({
@@ -123,8 +129,10 @@ const processStream = async (
         messageType: "user_prompt",
         sdkMessage: userMsg,
       });
-      existingStream.promptStream.push(message, images);
-      trackMessageSent({ query: existingStream.query });
+      // Enqueue is valid before the owner's CLI exists — the message waits in
+      // the ReadableStream and is consumed once the query attaches.
+      owner?.promptStream.push(message, images);
+      if (owner?.query) trackMessageSent({ query: owner.query });
     } catch (e) {
       // Don't tear down the live stream or emit a terminal "error" — the
       // owning loop is still running. Just log; the failed push leaves the
@@ -136,8 +144,7 @@ const processStream = async (
 
   // Cold-start path: spawn a fresh query and own its lifecycle. The
   // try/finally below is scoped to THIS invocation's stream — the finally
-  // unregisters only because we registered above.
-  const promptStream = buildPrompt(message, images);
+  // unregisters only because we claimed above.
   try {
     const claudeCodeSessionID = conversation.claudeCodeSessionId ?? undefined;
 
@@ -165,11 +172,9 @@ const processStream = async (
       throw new Error("Failed to init Claude Code");
     }
 
-    // Register the query for cancellation via interrupt()
-    registerStream(conversation.id, {
-      query: res.value,
-      promptStream,
-    });
+    // Slot is already ours; fill in the query so cancel/option-apply can
+    // reach it.
+    attachQuery(conversation.id, res.value);
 
     trackMessageSent({ query: res.value });
 
@@ -229,32 +234,19 @@ const processStream = async (
       }
     }
 
-    // Reached only if the input stream is closed (end()) or the SDK
-    // tears down. In the keep-alive model this is the absolute end of
-    // the conversation, not a per-turn signal. A superseded stream
-    // (restart-on-switch replaced it) must stay silent: the replacement
-    // loop owns the conversation's status now.
-    if (isStreamOwner(conversation.id, promptStream)) {
-      await updateConversationStatus(conversation.id, "idle");
-      streamEvents.emit("complete", conversation.id);
-    }
+    // Reached only if the input stream is closed (end()) or the SDK tears
+    // down. In the keep-alive model this is the absolute end of the
+    // conversation, not a per-turn signal. We hold the slot from the claim
+    // until the finally below, so this loop is unambiguously the owner and
+    // reports unconditionally.
+    await updateConversationStatus(conversation.id, "idle");
+    streamEvents.emit("complete", conversation.id);
   } catch (e) {
-    // Report unless a REPLACEMENT loop owns the conversation now. "No entry
-    // at all" must still report: a failure before registerStream (e.g.
-    // sendMessage errs) has no owner, and swallowing it would leave the
-    // conversation stuck on "streaming" until the next app boot.
-    if (
-      isStreamOwner(conversation.id, promptStream) ||
-      !isStreamActive(conversation.id)
-    ) {
-      const errorMessage = e instanceof Error ? e.message : "Unknown error";
-      streamEvents.emit("error", conversation.id, errorMessage);
-      await updateConversationStatus(conversation.id, "error");
-    } else {
-      console.error("Superseded stream failed during teardown:", e);
-    }
+    const errorMessage = e instanceof Error ? e.message : "Unknown error";
+    streamEvents.emit("error", conversation.id, errorMessage);
+    await updateConversationStatus(conversation.id, "error");
   } finally {
-    unregisterStream(conversation.id, promptStream);
+    unregisterStream(conversation.id);
   }
 };
 
@@ -437,15 +429,18 @@ api.put(
       return ctx.json({ error: { code, message } }, status);
     }
 
-    const stream = activeStreams.get(conversationId);
-    if (stream) {
+    // No query means the slot is claimed but the CLI is still spawning. Skip
+    // the live apply: that spawn reads the row we just persisted, so the
+    // selection lands at start-up anyway.
+    const query = activeStreams.get(conversationId)?.query;
+    if (query) {
       try {
         // setModel(undefined) means "reset to default" — only call when set.
         if (model !== undefined) {
-          await stream.query.setModel(model);
+          await query.setModel(model);
         }
         if (effort !== undefined) {
-          await stream.query.applyFlagSettings({
+          await query.applyFlagSettings({
             effortLevel: effort as Exclude<EffortLevel, "max">,
           });
         }
