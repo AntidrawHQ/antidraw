@@ -58,14 +58,22 @@ export const isStreamOwner = (
   promptStream: PromptStream
 ): boolean => activeStreams.get(conversationId)?.promptStream === promptStream;
 
+// Interrupt ONLY. interrupt() is a control request that aborts the in-flight
+// turn — the CLI process, the query and the input stream all survive it, so
+// the session stays usable for follow-up turns (verified: a turn pushed after
+// an interrupt is answered on the same session id).
+//
+// Deleting the entry here used to strand that survivor: nothing closes the
+// input stream, so the owning loop's `for await` never ends, its finally never
+// runs, and the process stays alive with no handle left to reach it — one
+// leaked CLI per stop click. Leaving the entry in place keeps the loop the
+// owner, lets the interrupt's `result` message flow through the normal
+// end-of-turn path, and lets the next send push into the live session.
 export const cancelStream = async (conversationId: string): Promise<boolean> => {
   const stream = activeStreams.get(conversationId);
-  if (stream) {
-    await stream.query.interrupt();
-    activeStreams.delete(conversationId); // Clean up immediately after interrupt
-    return true;
-  }
-  return false;
+  if (!stream) return false;
+  await stream.query.interrupt();
+  return true;
 };
 
 export const isStreamActive = (conversationId: string): boolean => {
