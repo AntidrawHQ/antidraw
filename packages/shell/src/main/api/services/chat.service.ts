@@ -198,40 +198,6 @@ export const addMessage = async (params: {
   }
 };
 
-// The resumeSessionAt pin: the uuid of the newest MAIN-THREAD assistant
-// message we actually persisted. Resuming pinned here keeps the model's
-// memory identical to the transcript the user sees, even if a crashed turn
-// left extra content in the CLI's session file. Subagent-attributed messages
-// (parent_tool_use_id set) are not valid resume targets.
-export const getLastMainAssistantUuid = async (conversationId: string) => {
-  try {
-    const recent = await db
-      .select({ sdkMessage: messages.sdkMessage })
-      .from(messages)
-      .where(eq(messages.conversationId, conversationId))
-      .orderBy(desc(messages.createdAt))
-      .limit(100);
-
-    for (const row of recent) {
-      const sdk = row.sdkMessage;
-      if (
-        sdk.type === "assistant" &&
-        sdk.parent_tool_use_id === null &&
-        typeof sdk.uuid === "string"
-      ) {
-        return ok(sdk.uuid);
-      }
-    }
-    return ok(undefined);
-  } catch (_e) {
-    return err({
-      status: 500 as const,
-      code: "DB_ERROR",
-      message: "Failed to read last assistant message",
-    });
-  }
-};
-
 export const updateConversationSession = async (
   conversationId: string,
   claudeCodeSessionId: string

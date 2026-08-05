@@ -37,7 +37,6 @@ import {
   updateConversationTitleAndSummary,
   convertUserPromptToSDKMessage,
   getConversation,
-  getLastMainAssistantUuid,
   updateConversationOptions,
 } from "./services/chat.service";
 import {
@@ -141,22 +140,12 @@ const processStream = async (
   try {
     const claudeCodeSessionID = conversation.claudeCodeSessionId ?? undefined;
 
-    // Pin resume to the newest assistant message in OUR transcript so the
-    // resumed model context matches exactly what the user sees (crash-orphaned
-    // session-file tails become dead branches instead of hidden memory).
-    let resumeSessionAt: string | undefined;
-    if (claudeCodeSessionID) {
-      const pin = await getLastMainAssistantUuid(conversation.id);
-      if (pin.isOk()) resumeSessionAt = pin.value;
-    }
-
     const res = sendMessage({
       promptStream,
       workspaceId,
       claudeCodeSessionID,
       model: conversation.selectedModel ?? undefined,
       effort: conversation.selectedEffort ?? undefined,
-      resumeSessionAt,
       onEffortLevel: (level) =>
         streamEvents.emit("effort", conversation.id, level),
     });
