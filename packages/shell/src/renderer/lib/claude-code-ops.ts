@@ -14,9 +14,11 @@ import {
   cancelConversationStream,
   createConversation,
   generateConversationTitle,
+  getConversationOptions,
   getConversationWithMessages,
   listWorkspaceConversations,
   sendMessage,
+  updateConversationOptions,
 } from "./api";
 import { subscribeToStream, type LivePartial } from "./stream-subscription";
 import { selectToolMap } from "./tool-utils";
@@ -101,15 +103,52 @@ export const useLivePartial = (conversationId: string | null) => {
   });
 };
 
-// Reads the CLI's authoritative effort echo for the conversation.
-// Populated imperatively by stream-subscription; queryFn is a noop.
-export const useActualEffort = (conversationId: string | null) => {
-  return useQuery<string | null>({
-    queryKey: queryKeys.conversations.actualEffort(conversationId),
-    queryFn: () => null,
-    enabled: false,
-    initialData: null,
-    staleTime: Infinity,
+// The conversation's options row: requested model/effort (intent) plus the
+// durable Stop-hook effort echo, with arbitration timestamps. Default
+// staleTime on purpose — it's a one-row read, and refetch-on-mount is the
+// safety net that re-syncs after missed doorbells (unlike the detail query,
+// there's no mid-stream refetch hazard here).
+export const useConversationOptions = (conversationId: string | null) => {
+  return useQuery({
+    queryKey: queryKeys.conversations.options(conversationId),
+    queryFn: conversationId
+      ? async () => {
+          const result = await getConversationOptions(conversationId);
+          if (result.isErr()) throw new Error(result.error.message);
+          return result.value;
+        }
+      : skipToken,
+  });
+};
+
+export const conversationOptionsMutationKey = (conversationId: string) =>
+  ["conversation-options", conversationId] as const;
+
+// Requested-options mutation. No onMutate cache writes: optimistic display
+// comes from pending mutation variables (useMutationState in the composer),
+// so a refetch can never clobber an optimistic value. scope serializes
+// rapid picks per conversation; returning the invalidation promise from
+// onSettled keeps the mutation pending until the refetch lands, so the
+// variables overlay covers the whole window.
+export const useUpdateConversationOptions = (conversationId: string | null) => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationKey: conversationId
+      ? conversationOptionsMutationKey(conversationId)
+      : ["conversation-options", "none"],
+    scope: { id: `conversation-options-${conversationId ?? "none"}` },
+    mutationFn: async (options: { model?: string; effort?: EffortLevel }) => {
+      if (!conversationId) throw new Error("No conversation");
+      const result = await updateConversationOptions(conversationId, options);
+      if (result.isErr()) throw new Error(result.error.message);
+      return result.value;
+    },
+    onError: (e) => console.error("Failed to update conversation options:", e),
+    onSettled: () =>
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.conversations.options(conversationId),
+      }),
   });
 };
 

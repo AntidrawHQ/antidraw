@@ -605,6 +605,44 @@ export const createConversation = async (
   }
 };
 
+// Wire shape of GET /options — the main-side ConversationOptions type has
+// Date fields, but JSON serialization delivers ISO strings.
+export type ConversationOptionsPayload = {
+  selectedModel: string | null;
+  selectedEffort: EffortLevel | null;
+  optionsUpdatedAt: string | null;
+  actualEffort: EffortLevel | null;
+  actualEffortAt: string | null;
+};
+
+// Requested options (intent + timestamps) plus the durable effort echo —
+// the source for the renderer's per-conversation options query.
+export const getConversationOptions = async (conversationId: string) => {
+  try {
+    const response = await fetch(
+      `antidraw://app/api/chat/${conversationId}/options`,
+    );
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      return err({
+        status: response.status as 500,
+        code: errorBody?.error?.code ?? "FETCH_ERROR",
+        message: errorBody?.error?.message ?? response.statusText,
+      });
+    }
+
+    const data: ConversationOptionsPayload = await response.json();
+    return ok(data);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "NETWORK_ERROR",
+      message: "Failed to fetch conversation options",
+    });
+  }
+};
+
 // Requested model/effort for a conversation. Persists on the row and applies
 // to the live CLI session immediately (latest-wins under message queueing).
 export const updateConversationOptions = async (

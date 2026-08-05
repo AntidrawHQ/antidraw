@@ -12,8 +12,8 @@ export const queryKeys = {
       ["workspace-conversations", workspaceId] as const,
     livePartial: (id: string | null) =>
       ["conversation", id, "live-partial"] as const,
-    actualEffort: (id: string | null) =>
-      ["conversation", id, "actual-effort"] as const,
+    options: (id: string | null) =>
+      ["conversation", id, "options"] as const,
   },
   userComponents: {
     byWorkspace: (workspaceId: string) =>

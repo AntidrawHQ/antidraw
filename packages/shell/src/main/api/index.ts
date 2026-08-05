@@ -36,7 +36,9 @@ import {
   updateConversationTitleAndSummary,
   convertUserPromptToSDKMessage,
   getConversation,
+  getConversationOptions,
   getLastMainAssistantUuid,
+  recordActualEffort,
   updateConversationOptions,
 } from "./services/chat.service";
 import {
@@ -156,8 +158,16 @@ const processStream = async (
       model: conversation.selectedModel ?? undefined,
       effort: conversation.selectedEffort ?? undefined,
       resumeSessionAt,
-      onEffortLevel: (level) =>
-        streamEvents.emit("effort", conversation.id, level),
+      // Persist the echo BEFORE emitting: the SSE event is just a doorbell
+      // that makes the renderer refetch its options query, so the row write
+      // must be visible by the time the refetch reads it.
+      onEffortLevel: (level) => {
+        const parsed = effortLevelSchema.safeParse(level);
+        if (!parsed.success) return;
+        void recordActualEffort(conversation.id, parsed.data)
+          .then(() => streamEvents.emit("effort", conversation.id, level))
+          .catch(console.error);
+      },
     });
 
     if (res.isErr()) {
@@ -402,6 +412,35 @@ api.get(
       // Keep alive until client disconnects
       await new Promise(() => {});
     });
+  },
+);
+
+// Response shape of GET /chat/:conversationId/options — the renderer's
+// options query. selected*/optionsUpdatedAt = requested state (user intent),
+// actual* = durable Stop-hook effort echo. The model's actual state has no
+// field here: it derives from transcript echoes, which the detail query
+// already carries.
+export type ConversationOptions = {
+  selectedModel: string | null;
+  selectedEffort: EffortLevel | null;
+  optionsUpdatedAt: Date | null;
+  actualEffort: EffortLevel | null;
+  actualEffortAt: Date | null;
+};
+
+api.get(
+  "/chat/:conversationId/options",
+  zValidator("param", z.object({ conversationId: z.uuid() })),
+  async (ctx) => {
+    const { conversationId } = ctx.req.valid("param");
+
+    const result = await getConversationOptions(conversationId);
+    if (result.isErr()) {
+      const { status, code, message } = result.error;
+      return ctx.json({ error: { code, message } }, status);
+    }
+
+    return ctx.json(result.value satisfies ConversationOptions);
   },
 );
 
