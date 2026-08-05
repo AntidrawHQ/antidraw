@@ -22,12 +22,23 @@ export const conversations = sqliteTable("conversations", {
   claudeCodeSessionId: text("claude_code_session_id"),
   title: text("title"),
   summary: text("summary"),
-  // The user's REQUESTED model/effort for this conversation (null = CLI
-  // defaults). Written by the options endpoint / conversation create; read at
-  // cold start as query() options. Deliberately NOT updated from CLI echoes —
-  // actual state is derived from the transcript, requested state lives here.
+  // The user's REQUESTED model/effort (intent, null = CLI defaults). Written
+  // by the options endpoint / conversation create; read at cold start as
+  // query() options. Deliberately never echo-written — actual state lives in
+  // the transcript (model) and the actual* fields below (effort), so a
+  // transient CLI downgrade can't become a permanent request.
   selectedModel: text("selected_model"),
   selectedEffort: text("selected_effort").$type<EffortLevel>(),
+  // When the user last changed the requested options. Display derivation
+  // arbitrates requested-vs-echo by comparing this against echo timestamps;
+  // null = never explicitly requested (echoes always win).
+  optionsUpdatedAt: integer("options_updated_at", { mode: "timestamp_ms" }),
+  // Last CLI Stop-hook effort echo — ACTUAL state cache, not intent. The
+  // selected* fields above are never echo-written; these two are never
+  // user-written. Durable so the last known downgrade survives app restarts
+  // (the model echo needs no column: it lives in the transcript).
+  actualEffort: text("actual_effort").$type<EffortLevel>(),
+  actualEffortAt: integer("actual_effort_at", { mode: "timestamp_ms" }),
   streamStatus: text("stream_status").$type<StreamStatus>().default("idle"),
   createdAt: integer("created_at", { mode: "timestamp_ms" })
     .notNull()

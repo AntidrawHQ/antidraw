@@ -159,11 +159,11 @@ const handleStreamEvent = (
   }
 
   // The CLI's authoritative effort for the turn (post silent-downgrade).
-  // Stored in the query cache like livePartial; the composer mirrors it.
+  // The main process persisted it to the row BEFORE emitting, so this event
+  // is just a doorbell: refetch the options query and read the durable copy.
   if (event.type === "effort") {
-    queryClient.setQueryData<string>(
-      queryKeys.conversations.actualEffort(conversationId),
-      event.level,
-    );
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.conversations.options(conversationId),
+    });
   }
 };

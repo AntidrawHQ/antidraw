@@ -32,6 +32,11 @@ export const createConversation = async (
         title: options?.title ?? null,
         selectedModel: options?.selectedModel ?? null,
         selectedEffort: options?.selectedEffort ?? null,
+        optionsUpdatedAt:
+          options?.selectedModel !== undefined ||
+          options?.selectedEffort !== undefined
+            ? new Date()
+            : null,
       })
       .returning();
 
@@ -61,6 +66,7 @@ export const updateConversationOptions = async (
         ...(options.selectedEffort !== undefined
           ? { selectedEffort: options.selectedEffort }
           : {}),
+        optionsUpdatedAt: new Date(),
         updatedAt: new Date(),
       })
       .where(eq(conversations.id, conversationId));
@@ -70,6 +76,61 @@ export const updateConversationOptions = async (
       status: 500 as const,
       code: "DB_ERROR",
       message: "Failed to update conversation options",
+    });
+  }
+};
+
+// The small read the renderer's options query consumes: requested state
+// (intent) plus the durable effort echo (actual), with the timestamps the
+// display derivation arbitrates between.
+export const getConversationOptions = async (conversationId: string) => {
+  try {
+    const res = await db.query.conversations.findFirst({
+      where: eq(conversations.id, conversationId),
+      columns: {
+        selectedModel: true,
+        selectedEffort: true,
+        optionsUpdatedAt: true,
+        actualEffort: true,
+        actualEffortAt: true,
+      },
+    });
+    if (!res) {
+      return err({
+        status: 404 as const,
+        code: "NOT_FOUND",
+        message: "Conversation not found",
+      });
+    }
+    return ok(res);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "DB_ERROR",
+      message: "Failed to fetch conversation options",
+    });
+  }
+};
+
+// Durable cache of the CLI's Stop-hook effort echo. Writes ONLY the actual*
+// fields — the requested selected* fields are user intent and must never be
+// echo-written. updatedAt is deliberately untouched: an echo is not user
+// activity and shouldn't reorder the sidebar.
+export const recordActualEffort = async (
+  conversationId: string,
+  level: EffortLevel
+) => {
+  try {
+    await db
+      .update(conversations)
+      .set({ actualEffort: level, actualEffortAt: new Date() })
+      .where(eq(conversations.id, conversationId));
+    return ok(undefined);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "DB_ERROR",
+      message: "Failed to record actual effort",
     });
   }
 };
