@@ -21,7 +21,7 @@ import { createUserSDKMessage } from "@/shared/utils/message";
 // through Electron's asar layer, so the kernel returns ENOTDIR. Resolve once
 // and rewrite to the .unpacked sibling directory where the binary actually
 // lives. In dev (no asar in the path), the replace is a no-op.
-const claudeCodeExecutablePath = ((): string | undefined => {
+export const claudeCodeExecutablePath = ((): string | undefined => {
   const requireFromHere = createRequire(import.meta.url);
   const { platform, arch } = process;
   const ext = platform === "win32" ? ".exe" : "";
@@ -171,32 +171,30 @@ export const sendMessage = (params: {
         pathToClaudeCodeExecutable: claudeCodeExecutablePath,
         cwd: workspacePath,
         resume: claudeCodeSessionID,
-        ...(model ? { model } : {}),
-        ...(effort ? { effort } : {}),
-        ...(onEffortLevel
+        model,
+        effort,
+        hooks: onEffortLevel
           ? {
-              hooks: {
-                Stop: [
-                  {
-                    hooks: [
-                      async (input: HookInput) => {
-                        // agent_id present = hook fired inside a subagent;
-                        // its effort must not be mirrored onto the main UI.
-                        if (
-                          input.hook_event_name === "Stop" &&
-                          !("agent_id" in input && input.agent_id) &&
-                          input.effort?.level
-                        ) {
-                          onEffortLevel(input.effort.level);
-                        }
-                        return {};
-                      },
-                    ],
-                  },
-                ],
-              },
+              Stop: [
+                {
+                  hooks: [
+                    async (input: HookInput) => {
+                      // agent_id present = hook fired inside a subagent;
+                      // its effort must not be mirrored onto the main UI.
+                      if (
+                        input.hook_event_name === "Stop" &&
+                        !("agent_id" in input && input.agent_id) &&
+                        input.effort?.level
+                      ) {
+                        onEffortLevel(input.effort.level);
+                      }
+                      return {};
+                    },
+                  ],
+                },
+              ],
             }
-          : {}),
+          : undefined,
         systemPrompt: {
           preset: "claude_code",
           type: "preset",

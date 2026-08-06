@@ -1,7 +1,4 @@
 export const queryKeys = {
-  claudeCode: {
-    authStatus: ["claudeCode", "authStatus"] as const,
-  },
   workspaces: {
     all: ["workspaces"] as const,
     detail: (id: string | null) => ["workspace", id] as const,

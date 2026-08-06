@@ -1,5 +1,4 @@
 import type {
-  ClaudeAuthStatus,
   ComponentListItem,
   ComponentSource,
   Conversation,
@@ -75,30 +74,6 @@ export const setPreference = async (key: string, value: string) => {
 // ============================================================================
 // Claude CLI API
 // ============================================================================
-
-export const getClaudeAuthStatus = async () => {
-  try {
-    const response = await fetch("antidraw://app/api/claude-cli/auth/status");
-
-    if (!response.ok) {
-      const errorBody = await response.json().catch(() => ({}));
-      return err({
-        status: response.status as 500,
-        code: (errorBody?.error?.code as string) ?? "FETCH_ERROR",
-        message: (errorBody?.error?.message as string) ?? response.statusText,
-      });
-    }
-
-    const data: ClaudeAuthStatus = await response.json();
-    return ok(data);
-  } catch (_e) {
-    return err({
-      status: 500 as const,
-      code: "NETWORK_ERROR",
-      message: "Failed to check Claude auth status",
-    });
-  }
-};
 
 export const triggerClaudeLogin = async () => {
   try {
