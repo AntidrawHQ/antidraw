@@ -148,13 +148,6 @@ export const sendMessage = (params: {
   model?: string;
   effort?: EffortLevel;
   /**
-   * Pin the resume point to the last assistant message we persisted, so the
-   * model's memory always matches the transcript the user sees — a crashed
-   * turn's unseen tail in the session file becomes a dead branch instead of
-   * invisible model context. Only meaningful with `claudeCodeSessionID`.
-   */
-  resumeSessionAt?: string;
-  /**
    * Echo of the ACTUAL effort the CLI ran the turn with (after any silent
    * downgrade for the selected model). Fired from a Stop hook; main-thread
    * turns only — subagent hook invocations are filtered out.
@@ -168,7 +161,6 @@ export const sendMessage = (params: {
       claudeCodeSessionID,
       model,
       effort,
-      resumeSessionAt,
       onEffortLevel,
     } = params;
     const workspacePath = getWorkspaceSourcePath(workspaceId);
@@ -179,7 +171,6 @@ export const sendMessage = (params: {
         pathToClaudeCodeExecutable: claudeCodeExecutablePath,
         cwd: workspacePath,
         resume: claudeCodeSessionID,
-        resumeSessionAt,
         model,
         effort,
         hooks: onEffortLevel
