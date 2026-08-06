@@ -150,7 +150,10 @@ export const sendMessage = (params: {
   /**
    * Echo of the ACTUAL effort the CLI ran the turn with (after any silent
    * downgrade for the selected model). Fired from a Stop hook; main-thread
-   * turns only — subagent hook invocations are filtered out.
+   * turns only — subagent hook invocations are filtered out. Nothing
+   * persists or displays this today: it is kept wired as the signal for
+   * future product feedback when the CLI deviates from the user's
+   * selection.
    */
   onEffortLevel?: (level: string) => void;
 }) => {

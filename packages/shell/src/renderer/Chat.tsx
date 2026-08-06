@@ -357,23 +357,23 @@ export function AppChat({ className, ...props }: AppChatProps) {
     let conversationId = activeConversationId;
 
     if (!conversationId) {
-      // Snapshot the composer selection onto the new conversation — it's the
-      // row's requested model/effort from the first message on.
       const conv = await createConversation.mutateAsync({
         workspaceId: activeWorkspaceId,
-        model: composer.selectedModelId,
-        effort: composer.effort,
       });
       setActiveConversationId(conv.id);
       conversationId = conv.id;
     }
 
+    // The composer selection rides the message — the send is the only
+    // moment options are set (persisted on the row and applied to the CLI).
     await sendMessage.mutateAsync({
       message: prompt,
       workspaceId: activeWorkspaceId,
       conversationId,
       userMessageId,
       images: imagesToSend,
+      model: composer.selectedModelId,
+      effort: composer.effort,
     });
 
     // Fire-and-forget title generation if conversation has no title/summary yet

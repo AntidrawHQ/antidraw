@@ -11,8 +11,9 @@ type ConversationEvents = {
   partial: [conversationId: string, partial: SDKPartialAssistantMessage];
   complete: [conversationId: string];
   error: [conversationId: string, error: string];
-  // Actual effort level for the turn, echoed by the CLI via a Stop hook —
-  // includes any silent downgrade the CLI applied for the selected model.
+  // Actual effort the CLI ran the turn with (Stop-hook echo, post any
+  // silent downgrade). Transport only for now — nothing consumes it; kept
+  // wired for future deviation-from-selection product feedback.
   effort: [conversationId: string, level: string];
 };
 
@@ -20,9 +21,9 @@ class ConversationEventEmitter extends EventEmitter<ConversationEvents> {}
 
 // No model/effort here on purpose: the Query exposes no readback and caching
 // them only saves a ~1-5ms no-op control request per send (verified — the CLI
-// re-emits init per turn regardless). Cold starts spawn with the options
-// persisted on the conversation row; the options endpoint applies live
-// switches to a running query.
+// re-emits init per turn regardless). The send path reads the conversation
+// row fresh every time: cold starts spawn with its options, pushes apply
+// them via control requests first.
 export type ActiveStream = {
   // null only between the claim and the spawn: the slot is taken before the
   // CLI exists so no second send can claim it, and callers that need the

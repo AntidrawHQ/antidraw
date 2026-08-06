@@ -16,10 +16,6 @@ export const createConversation = async (
   workspaceId: string,
   options?: {
     title?: string;
-    // Snapshot of the composer's selection at creation time — the
-    // conversation's requested model/effort from its first message on.
-    selectedModel?: string;
-    selectedEffort?: EffortLevel;
   }
 ) => {
   try {
@@ -30,8 +26,6 @@ export const createConversation = async (
         id,
         workspaceId,
         title: options?.title ?? null,
-        selectedModel: options?.selectedModel ?? null,
-        selectedEffort: options?.selectedEffort ?? null,
       })
       .returning();
 
@@ -45,23 +39,20 @@ export const createConversation = async (
   }
 };
 
-// Requested options for the conversation. Only overwrites what the caller
-// sent — an effort-only change must not null out the model.
-export const updateConversationOptions = async (
+// The send-time options snapshot — the ONLY writer of these columns. Full
+// overwrite, nulls included: the row always mirrors what the latest send
+// actually ran with, and the renderer reads it back (via the conversation
+// row) as the picker's default.
+export const setConversationOptions = async (
   conversationId: string,
-  options: { selectedModel?: string; selectedEffort?: EffortLevel }
+  options: { selectedModel: string | null; selectedEffort: EffortLevel | null }
 ) => {
   try {
     await db
       .update(conversations)
       .set({
-        ...(options.selectedModel !== undefined
-          ? { selectedModel: options.selectedModel }
-          : {}),
-        ...(options.selectedEffort !== undefined
-          ? { selectedEffort: options.selectedEffort }
-          : {}),
-        updatedAt: new Date(),
+        selectedModel: options.selectedModel,
+        selectedEffort: options.selectedEffort,
       })
       .where(eq(conversations.id, conversationId));
     return ok(undefined);
@@ -69,7 +60,7 @@ export const updateConversationOptions = async (
     return err({
       status: 500 as const,
       code: "DB_ERROR",
-      message: "Failed to update conversation options",
+      message: "Failed to set conversation options",
     });
   }
 };

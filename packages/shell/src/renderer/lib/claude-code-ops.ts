@@ -101,33 +101,12 @@ export const useLivePartial = (conversationId: string | null) => {
   });
 };
 
-// Reads the CLI's authoritative effort echo for the conversation.
-// Populated imperatively by stream-subscription; queryFn is a noop.
-export const useActualEffort = (conversationId: string | null) => {
-  return useQuery<string | null>({
-    queryKey: queryKeys.conversations.actualEffort(conversationId),
-    queryFn: () => null,
-    enabled: false,
-    initialData: null,
-    staleTime: Infinity,
-  });
-};
-
 export const useCreateConversation = () => {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (params: {
-      workspaceId: string;
-      // Composer selection at creation time — becomes the conversation's
-      // requested model/effort.
-      model?: string;
-      effort?: EffortLevel;
-    }) => {
-      const result = await createConversation(params.workspaceId, {
-        model: params.model,
-        effort: params.effort,
-      });
+    mutationFn: async (params: { workspaceId: string }) => {
+      const result = await createConversation(params.workspaceId);
 
       if (result.isErr()) {
         throw new Error(result.error.message);
@@ -161,6 +140,10 @@ export const useSendMessage = () => {
       conversationId: string;
       userMessageId: string; // Frontend generates this
       images?: ImageAttachment[];
+      // Composer selection snapshot — rides the message; the only way
+      // options are ever set.
+      model?: string;
+      effort?: EffortLevel;
     }) => {
       const result = await sendMessage(params);
 
