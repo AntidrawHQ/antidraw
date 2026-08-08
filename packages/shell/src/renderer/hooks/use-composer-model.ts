@@ -94,11 +94,12 @@ export const useComposerModel = (
   const handleModelChange = (value: string, model: ModelInfo) => {
     persistPreference(MODEL_PREF_KEY, value);
     // Switching models can drop the current effort out of range — snap it.
-    const clamped = clampEffort(
-      effectiveEffort,
-      model.supportedEffortLevels ?? []
-    );
-    const effortChanged = clamped !== undefined && clamped !== effectiveEffort;
+    // Clamp from the RAW value, not effectiveEffort: the desired level must
+    // survive a round trip through a model with fewer levels (Haiku has
+    // none, so clamping its undefined display value would resurrect the
+    // default and clobber the real selection on the way back).
+    const clamped = clampEffort(effortValue, model.supportedEffortLevels ?? []);
+    const effortChanged = clamped !== undefined && clamped !== effortValue;
     if (effortChanged) persistPreference(EFFORT_PREF_KEY, clamped);
     addPicks({ model: value, ...(effortChanged ? { effort: clamped } : {}) });
   };

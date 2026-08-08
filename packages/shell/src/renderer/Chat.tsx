@@ -405,6 +405,10 @@ export function AppChat({ className, ...props }: AppChatProps) {
       workspaceId: activeWorkspaceId,
       conversationId: activeConversationId,
       userMessageId: crypto.randomUUID(),
+      // Every send is a full options overwrite — omitting these would null
+      // the row's snapshot and run the retry on CLI defaults.
+      model: composer.selectedModelId,
+      effort: composer.effort,
     });
   };
 
