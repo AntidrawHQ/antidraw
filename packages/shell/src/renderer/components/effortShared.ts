@@ -52,7 +52,16 @@ export const orderEfforts = (levels: EffortLevel[]): EffortLevel[] =>
 /**
  * Snap a desired level into the available set — used when switching models drops
  * the current level (e.g. you were on `max`, the new model tops out at `high`).
- * Picks the closest available level by rank; returns undefined if none support.
+ *
+ * Snaps DOWN: the highest supported level at or below the desired one — a
+ * model that supports a level supports the ones below it, so moving down
+ * always lands on something sensible and never silently spends more than
+ * the user asked for. The two edge branches:
+ * - nothing supported at or below the desired level (only possible with a
+ *   gap-free set starting above it): the lowest supported level;
+ * - no supported levels at all (e.g. Haiku): undefined — effort is not
+ *   applicable, the dropdown hides, and sends omit effort (which preserves
+ *   the row's remembered value).
  */
 export const clampEffort = (
   desired: EffortLevel | undefined,
@@ -62,7 +71,8 @@ export const clampEffort = (
   if (!ordered.length) return undefined;
   if (desired && ordered.includes(desired)) return desired;
   const target = effortRank(desired ?? DEFAULT_EFFORT);
-  return [...ordered].sort(
-    (a, b) => Math.abs(effortRank(a) - target) - Math.abs(effortRank(b) - target)
-  )[0];
+  const atOrBelow = [...ordered]
+    .reverse()
+    .find((level) => effortRank(level) <= target);
+  return atOrBelow ?? ordered[0];
 };

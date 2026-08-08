@@ -11,7 +11,7 @@ export type { CreateWorkspaceResponse } from "./controllers/workspace.controller
 export type { CreateWorkspaceStatusCode } from "./services/workspace.service";
 export type { DevServerState } from "@/main/lib/runtime-store";
 export type { DevServerInfo } from "@/main/services/dev-server.service";
-export type { EffortLevel } from "./claude-code-ops";
+export type { EffortLevel, ModelInfo } from "./claude-code-ops";
 export type {
   ComponentListItem,
   ComponentSource,
@@ -25,6 +25,7 @@ import {
   sendMessage,
   generateTitle,
   buildPrompt,
+  getSupportedModels,
   type EffortLevel,
 } from "@/main/api/claude-code-ops";
 import {
@@ -36,7 +37,7 @@ import {
   updateConversationTitleAndSummary,
   convertUserPromptToSDKMessage,
   getConversation,
-  updateConversationOptions,
+  setConversationOptions,
 } from "./services/chat.service";
 import {
   streamEvents,
@@ -77,6 +78,12 @@ const chatMessageSchema = z.object({
   conversationId: z.string().uuid().optional(),
   userMessageId: z.string().uuid(), // Frontend-generated, used for dedup
   images: z.array(imageAttachmentSchema).optional(),
+  // The composer's model/effort selection, snapshotted at send time. This is
+  // the ONLY write path for a conversation's options: the send persists the
+  // snapshot on the row (the picker's default next time) and applies it to
+  // the CLI. Absent = CLI defaults.
+  model: z.string().min(1).optional(),
+  effort: effortLevelSchema.optional(),
 });
 
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
@@ -87,7 +94,8 @@ export type StreamEvent =
   | { type: "partial"; partial: SDKPartialAssistantMessage }
   | { type: "complete" }
   | { type: "error"; error: string }
-  // CLI's authoritative per-turn effort (after any silent downgrade).
+  // Actual per-turn effort echoed by the CLI's Stop hook. Transport only —
+  // no renderer consumer yet; reserved for deviation-feedback UI.
   | { type: "effort"; level: string };
 
 // Background processor for streaming messages
@@ -97,12 +105,14 @@ const processStream = async (
   workspaceId: string,
   userMessageId: string,
   images?: ImageAttachment[],
+  options?: { model?: string; effort?: EffortLevel },
 ) => {
-  // Model/effort no longer travel with messages: the options endpoint
-  // (PUT /chat/:conversationId/options) applies them to the live query at
-  // selection time and persists them on the conversation row, which the
-  // cold start below reads. Sends just send — under future message
-  // queueing this stays latest-wins by construction.
+  // Model/effort travel WITH the message: the composer snapshots its
+  // selection into the send request, and this is the only moment options
+  // exist server-side — persisted to the row (the picker's default next
+  // time) and applied to the CLI via spawn options (cold start) or control
+  // requests (push path). No other writer exists, so there is nothing to
+  // race and nothing to re-read.
 
   // Claim the conversation's stream slot. This single synchronous call is the
   // fork: win it and we cold-start and own the lifecycle below; lose it and a
@@ -111,6 +121,19 @@ const processStream = async (
   // concurrent sends from each cold-starting and clobbering the other.
   const promptStream = buildPrompt(message, images);
   const owned = claimStream(conversation.id, promptStream);
+
+  // Persist the snapshot. Model is a full overwrite (absent = the "Default"
+  // pick, i.e. CLI default); effort is preserved when absent — the composer
+  // omits it only for models with no effort levels, and a Haiku turn must
+  // not erase the effort the user chose for this conversation. Failure only
+  // costs the persisted default (the CLI still gets the options below).
+  const persisted = await setConversationOptions(conversation.id, {
+    selectedModel: options?.model ?? null,
+    ...(options?.effort !== undefined ? { selectedEffort: options.effort } : {}),
+  });
+  if (persisted.isErr()) {
+    console.error("Failed to persist options snapshot:", persisted.error);
+  }
 
   // Push path. Persist the user message with the frontend-assigned id (dedup
   // contract) then push into the owner's input stream. This invocation owns NO
@@ -127,6 +150,35 @@ const processStream = async (
         messageType: "user_prompt",
         sdkMessage: userMsg,
       });
+      // Apply this send's options before the push. setModel applies at the
+      // next turn boundary — exactly the turn being pushed (verified: an
+      // in-flight turn is unaffected); effortLevel applies immediately.
+      // applyFlagSettings accepts "max" at runtime — the SDK's
+      // Settings.effortLevel type omits it, hence the cast. No query yet =
+      // the owner's CLI is still spawning; its spawn already carries that
+      // send's options, so this turn just inherits them (the row snapshot
+      // above keeps the record straight either way).
+      if (owner?.query) {
+        try {
+          await owner.query.setModel(options?.model ?? undefined);
+          await owner.query.applyFlagSettings({
+            effortLevel: (options?.effort ?? null) as Exclude<
+              EffortLevel,
+              "max"
+            > | null,
+          });
+        } catch (e) {
+          // Best-effort, log only — nothing to tear down (a dead process
+          // throws out of the owning loop within ~10ms and its finally
+          // cleans up; a wedged one never settles this await at all). The
+          // snapshot is persisted above, so the selection rides the next
+          // send's cold start.
+          console.error(
+            "Pre-push option apply failed; applies next cold start:",
+            e,
+          );
+        }
+      }
       // Enqueue is valid before the owner's CLI exists — the message waits in
       // the ReadableStream and is consumed once the query attaches.
       owner?.promptStream.push(message, images);
@@ -150,8 +202,8 @@ const processStream = async (
       promptStream,
       workspaceId,
       claudeCodeSessionID,
-      model: conversation.selectedModel ?? undefined,
-      effort: conversation.selectedEffort ?? undefined,
+      model: options?.model,
+      effort: options?.effort,
       onEffortLevel: (level) =>
         streamEvents.emit("effort", conversation.id, level),
     });
@@ -242,7 +294,7 @@ api.post(
   "/chat/message",
   zValidator("json", chatMessageSchema),
   async (ctx) => {
-    const { message, workspaceId, conversationId, userMessageId, images } =
+    const { message, workspaceId, conversationId, userMessageId, images, model, effort } =
       ctx.req.valid("json");
 
     const conversationRes = await resolveOrCreateConversation(
@@ -277,7 +329,10 @@ api.post(
     await updateConversationStatus(conversation.id, "streaming");
 
     // Fire and forget - inner try/catch handles errors, this prevents unhandled rejections
-    processStream(conversation, message, workspaceId, userMessageId, images).catch(console.error);
+    processStream(conversation, message, workspaceId, userMessageId, images, {
+      model,
+      effort,
+    }).catch(console.error);
 
     return ctx.json({ conversationId: conversation.id }, 202);
   },
@@ -386,70 +441,26 @@ api.get(
   },
 );
 
-const conversationOptionsSchema = z
-  .object({
-    model: z.string().min(1).optional(),
-    effort: effortLevelSchema.optional(),
-  })
-  .refine((v) => v.model !== undefined || v.effort !== undefined, {
-    message: "Provide model and/or effort",
-  });
-
-// Requested model/effort for a conversation. Decoupled from message sends so
-// selection changes apply at click time (latest-wins under future queueing):
-// persist on the row (cold starts read it), then apply to the live query via
-// control requests. applyFlagSettings accepts "max" at runtime — the SDK's
-// Settings.effortLevel type omits it, hence the cast.
-api.put(
-  "/chat/:conversationId/options",
-  zValidator("param", z.object({ conversationId: z.uuid() })),
-  zValidator("json", conversationOptionsSchema),
-  async (ctx) => {
-    const { conversationId } = ctx.req.valid("param");
-    const { model, effort } = ctx.req.valid("json");
-
-    const persisted = await updateConversationOptions(conversationId, {
-      selectedModel: model,
-      selectedEffort: effort,
-    });
-    if (persisted.isErr()) {
-      const { status, code, message } = persisted.error;
-      return ctx.json({ error: { code, message } }, status);
-    }
-
-    // No query means the slot is claimed but the CLI is still spawning. Skip
-    // the live apply: that spawn reads the row we just persisted, so the
-    // selection lands at start-up anyway.
-    const query = activeStreams.get(conversationId)?.query;
-    if (query) {
-      try {
-        // setModel(undefined) means "reset to default" — only call when set.
-        if (model !== undefined) {
-          await query.setModel(model);
-        }
-        if (effort !== undefined) {
-          await query.applyFlagSettings({
-            effortLevel: effort as Exclude<EffortLevel, "max">,
-          });
-        }
-      } catch (e) {
-        // Best-effort. The selection is already persisted above, so a failed
-        // live apply just means it lands at the next cold start (spawn-time
-        // options work on every CLI version) instead of mid-session.
-        //
-        // Nothing to tear down here. The two reachable causes both resolve
-        // themselves: a dead process throws out of the iterator within ~10ms,
-        // so the loop exits and its finally unregisters; a CLI too old for the
-        // control subtype leaves a perfectly healthy stream that would be
-        // pointless to discard. The UI needs no failure signal either way —
-        // it renders from the init/assistant/Stop-hook echoes.
-        console.error("Live option apply failed; applies next cold start:", e);
-      }
-    }
-
-    return ctx.json({ ok: true });
-  },
-);
+// The CLI's live model catalog (names, ids, supported effort levels). Served
+// from a session-lifetime cache in main — see getSupportedModels; the first
+// request pays one short-lived CLI spawn (~1.5s), no turn ever runs.
+api.get("/models", async (ctx) => {
+  try {
+    const models = await getSupportedModels();
+    return ctx.json({ models });
+  } catch (e) {
+    console.error("Failed to load model catalog:", e);
+    return ctx.json(
+      {
+        error: {
+          code: "MODEL_CATALOG_ERROR",
+          message: "Failed to load model catalog",
+        },
+      },
+      500,
+    );
+  }
+});
 
 // Cancel an active stream
 api.delete(
@@ -469,21 +480,14 @@ api.delete(
 
 const createConversationSchema = z.object({
   workspaceId: z.uuid(),
-  // Composer selection at creation time — becomes the conversation's
-  // requested model/effort from its first message on.
-  model: z.string().min(1).optional(),
-  effort: effortLevelSchema.optional(),
 });
 
 api.post(
   "/chat/conversation",
   zValidator("json", createConversationSchema),
   async (ctx) => {
-    const { workspaceId, model, effort } = ctx.req.valid("json");
-    const result = await createConversation(workspaceId, {
-      selectedModel: model,
-      selectedEffort: effort,
-    });
+    const { workspaceId } = ctx.req.valid("json");
+    const result = await createConversation(workspaceId);
 
     if (result.isErr()) {
       const { status, code, message } = result.error;

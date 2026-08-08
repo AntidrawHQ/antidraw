@@ -15,9 +15,11 @@ import {
   createConversation,
   generateConversationTitle,
   getConversationWithMessages,
+  getSupportedModels,
   listWorkspaceConversations,
   sendMessage,
 } from "./api";
+import { DEFAULT_MODELS } from "@/renderer/components/modelPickerShared";
 import { subscribeToStream, type LivePartial } from "./stream-subscription";
 import { selectToolMap } from "./tool-utils";
 
@@ -101,15 +103,22 @@ export const useLivePartial = (conversationId: string | null) => {
   });
 };
 
-// Reads the CLI's authoritative effort echo for the conversation.
-// Populated imperatively by stream-subscription; queryFn is a noop.
-export const useActualEffort = (conversationId: string | null) => {
-  return useQuery<string | null>({
-    queryKey: queryKeys.conversations.actualEffort(conversationId),
-    queryFn: () => null,
-    enabled: false,
-    initialData: null,
+// The CLI's live model catalog. One fetch per session, cached forever:
+// the catalog is pinned to the bundled CLI binary, which can only change
+// across an app update/restart (main also caches it for the session, so a
+// refetch would be a no-op anyway). DEFAULT_MODELS covers the gap while the
+// first fetch resolves — and remains the working set if it fails, since
+// placeholderData is returned whenever the cache is empty.
+export const useSupportedModels = () => {
+  return useQuery({
+    queryKey: queryKeys.models.catalog,
+    queryFn: async () => {
+      const result = await getSupportedModels();
+      if (result.isErr()) throw new Error(result.error.message);
+      return result.value;
+    },
     staleTime: Infinity,
+    placeholderData: DEFAULT_MODELS,
   });
 };
 
@@ -117,17 +126,8 @@ export const useCreateConversation = () => {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (params: {
-      workspaceId: string;
-      // Composer selection at creation time — becomes the conversation's
-      // requested model/effort.
-      model?: string;
-      effort?: EffortLevel;
-    }) => {
-      const result = await createConversation(params.workspaceId, {
-        model: params.model,
-        effort: params.effort,
-      });
+    mutationFn: async (params: { workspaceId: string }) => {
+      const result = await createConversation(params.workspaceId);
 
       if (result.isErr()) {
         throw new Error(result.error.message);
@@ -161,6 +161,10 @@ export const useSendMessage = () => {
       conversationId: string;
       userMessageId: string; // Frontend generates this
       images?: ImageAttachment[];
+      // Composer selection snapshot — rides the message; the only way
+      // options are ever set.
+      model?: string;
+      effort?: EffortLevel;
     }) => {
       const result = await sendMessage(params);
 

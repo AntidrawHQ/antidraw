@@ -158,12 +158,12 @@ const handleStreamEvent = (
     return;
   }
 
-  // The CLI's authoritative effort for the turn (post silent-downgrade).
-  // Stored in the query cache like livePartial; the composer mirrors it.
   if (event.type === "effort") {
-    queryClient.setQueryData<string>(
-      queryKeys.conversations.actualEffort(conversationId),
-      event.level,
-    );
+    // Actual per-turn effort echoed by the CLI (post any silent downgrade).
+    // Deliberately unconsumed: the picker shows the user's selection, not
+    // CLI state. Reserved for product feedback when the actual effort
+    // deviates from the selection — compare against the sent effort here
+    // when that lands.
+    return;
   }
 };

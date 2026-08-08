@@ -12,8 +12,6 @@ export const queryKeys = {
       ["workspace-conversations", workspaceId] as const,
     livePartial: (id: string | null) =>
       ["conversation", id, "live-partial"] as const,
-    actualEffort: (id: string | null) =>
-      ["conversation", id, "actual-effort"] as const,
   },
   userComponents: {
     byWorkspace: (workspaceId: string) =>
@@ -23,6 +21,9 @@ export const queryKeys = {
   },
   preferences: {
     byKey: (key: string) => ["preferences", key] as const,
+  },
+  models: {
+    catalog: ["model-catalog"] as const,
   },
   frameLayouts: {
     byWorkspace: (workspaceId: string | null) =>

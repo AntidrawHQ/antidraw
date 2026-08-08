@@ -16,10 +16,6 @@ export const createConversation = async (
   workspaceId: string,
   options?: {
     title?: string;
-    // Snapshot of the composer's selection at creation time — the
-    // conversation's requested model/effort from its first message on.
-    selectedModel?: string;
-    selectedEffort?: EffortLevel;
   }
 ) => {
   try {
@@ -30,8 +26,6 @@ export const createConversation = async (
         id,
         workspaceId,
         title: options?.title ?? null,
-        selectedModel: options?.selectedModel ?? null,
-        selectedEffort: options?.selectedEffort ?? null,
       })
       .returning();
 
@@ -45,23 +39,27 @@ export const createConversation = async (
   }
 };
 
-// Requested options for the conversation. Only overwrites what the caller
-// sent — an effort-only change must not null out the model.
-export const updateConversationOptions = async (
+// The send-time options snapshot — the ONLY writer of these columns; the
+// renderer reads them back (via the conversation row) as the picker's
+// default. The two fields deliberately differ:
+// - selectedModel: full overwrite, null included. Absent model is a real
+//   choice — the picker's "Default" row means "CLI default".
+// - selectedEffort: preserved when absent. Effort-capable models always
+//   resolve a level (clampEffort falls back to the default), so an absent
+//   effort only ever means "the sent model takes no effort level" — and an
+//   inapplicable turn must not erase the user's last applicable choice.
+export const setConversationOptions = async (
   conversationId: string,
-  options: { selectedModel?: string; selectedEffort?: EffortLevel }
+  options: { selectedModel: string | null; selectedEffort?: EffortLevel }
 ) => {
   try {
     await db
       .update(conversations)
       .set({
-        ...(options.selectedModel !== undefined
-          ? { selectedModel: options.selectedModel }
-          : {}),
+        selectedModel: options.selectedModel,
         ...(options.selectedEffort !== undefined
           ? { selectedEffort: options.selectedEffort }
           : {}),
-        updatedAt: new Date(),
       })
       .where(eq(conversations.id, conversationId));
     return ok(undefined);
@@ -69,7 +67,7 @@ export const updateConversationOptions = async (
     return err({
       status: 500 as const,
       code: "DB_ERROR",
-      message: "Failed to update conversation options",
+      message: "Failed to set conversation options",
     });
   }
 };
