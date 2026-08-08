@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { ConversationWithMessages, EffortLevel } from "@/main/api";
 import { setPreference } from "@/renderer/lib/api";
+import { useSupportedModels } from "@/renderer/lib/claude-code-ops";
 import { usePreference } from "@/renderer/lib/preference-ops";
 import { queryKeys } from "@/renderer/lib/query-keys";
 import {
@@ -41,6 +42,8 @@ export const useComposerModel = (
   conversation: ConversationWithMessages | undefined
 ) => {
   const queryClient = useQueryClient();
+  // Live CLI catalog; DEFAULT_MODELS placeholder until (or unless) it lands.
+  const { data: models = DEFAULT_MODELS } = useSupportedModels();
   const { data: modelPref } = usePreference(MODEL_PREF_KEY);
   const { data: effortPref } = usePreference(EFFORT_PREF_KEY);
 
@@ -67,8 +70,7 @@ export const useComposerModel = (
     picks.effort ?? conversation?.selectedEffort ?? prefEffort;
 
   const selectedModel =
-    DEFAULT_MODELS.find((m) => matchesModel(m, selectedModelId)) ??
-    DEFAULT_MODELS[0];
+    models.find((m) => matchesModel(m, selectedModelId)) ?? models[0];
   const effortLevels = selectedModel?.supportedEffortLevels ?? [];
   const effectiveEffort = clampEffort(effortValue, effortLevels);
 
@@ -110,7 +112,7 @@ export const useComposerModel = (
   };
 
   return {
-    models: DEFAULT_MODELS,
+    models,
     selectedModelId,
     effortLevels,
     effort: effectiveEffort,

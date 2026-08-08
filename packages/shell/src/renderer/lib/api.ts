@@ -7,6 +7,7 @@ import type {
   DevServerInfo,
   DevServerState,
   EffortLevel,
+  ModelInfo,
   StreamEvent,
   Workspace,
 } from "@/main/api";
@@ -15,6 +16,31 @@ import { fetchEventSource } from "@microsoft/fetch-event-source";
 import { ok, err } from "neverthrow";
 
 export type { StreamEvent, EffortLevel } from "@/main/api";
+
+// The CLI's live model catalog (from main's session-lifetime cache).
+export const getSupportedModels = async () => {
+  try {
+    const response = await fetch("antidraw://app/api/models");
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      return err({
+        status: response.status as 500,
+        code: errorBody?.error?.code ?? "FETCH_ERROR",
+        message: errorBody?.error?.message ?? response.statusText,
+      });
+    }
+
+    const data = (await response.json()) as { models: ModelInfo[] };
+    return ok(data.models);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "NETWORK_ERROR",
+      message: "Failed to fetch model catalog",
+    });
+  }
+};
 
 // ============================================================================
 // UI Preferences API

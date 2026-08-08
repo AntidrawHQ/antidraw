@@ -11,7 +11,7 @@ export type { CreateWorkspaceResponse } from "./controllers/workspace.controller
 export type { CreateWorkspaceStatusCode } from "./services/workspace.service";
 export type { DevServerState } from "@/main/lib/runtime-store";
 export type { DevServerInfo } from "@/main/services/dev-server.service";
-export type { EffortLevel } from "./claude-code-ops";
+export type { EffortLevel, ModelInfo } from "./claude-code-ops";
 export type {
   ComponentListItem,
   ComponentSource,
@@ -25,6 +25,7 @@ import {
   sendMessage,
   generateTitle,
   buildPrompt,
+  getSupportedModels,
   type EffortLevel,
 } from "@/main/api/claude-code-ops";
 import {
@@ -439,6 +440,27 @@ api.get(
     });
   },
 );
+
+// The CLI's live model catalog (names, ids, supported effort levels). Served
+// from a session-lifetime cache in main — see getSupportedModels; the first
+// request pays one short-lived CLI spawn (~1.5s), no turn ever runs.
+api.get("/models", async (ctx) => {
+  try {
+    const models = await getSupportedModels();
+    return ctx.json({ models });
+  } catch (e) {
+    console.error("Failed to load model catalog:", e);
+    return ctx.json(
+      {
+        error: {
+          code: "MODEL_CATALOG_ERROR",
+          message: "Failed to load model catalog",
+        },
+      },
+      500,
+    );
+  }
+});
 
 // Cancel an active stream
 api.delete(

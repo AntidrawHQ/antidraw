@@ -22,6 +22,9 @@ export const queryKeys = {
   preferences: {
     byKey: (key: string) => ["preferences", key] as const,
   },
+  models: {
+    catalog: ["model-catalog"] as const,
+  },
   frameLayouts: {
     byWorkspace: (workspaceId: string | null) =>
       ["frameLayouts", workspaceId] as const,

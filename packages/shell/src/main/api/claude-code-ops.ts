@@ -3,11 +3,12 @@ import path from "node:path";
 import type {
   EffortLevel,
   HookInput,
+  ModelInfo,
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
-export type { EffortLevel };
+export type { EffortLevel, ModelInfo };
 import { ok, err } from "neverthrow";
 import { z } from "zod/v3";
 import { zodToJsonSchema } from "zod-to-json-schema";
@@ -138,6 +139,44 @@ User's first message:
     console.error("Failed to generate title:", e);
     return err("GENERATION_FAILED" as const);
   }
+};
+
+// The CLI's model catalog, fetched once per session. supportedModels()
+// resolves from the initialize handshake — the throwaway query below never
+// starts a turn (its prompt stream never yields) and is aborted the moment
+// the handshake lands, so this costs one short-lived CLI spawn and zero
+// tokens. Cached for the process lifetime: the catalog is pinned to the
+// bundled CLI binary, which can only change across an app update/restart.
+let modelCatalog: Promise<ModelInfo[]> | null = null;
+
+export const getSupportedModels = (): Promise<ModelInfo[]> => {
+  if (modelCatalog) return modelCatalog;
+  const fetching = (async () => {
+    const abortController = new AbortController();
+    const never = (async function* (): AsyncGenerator<SDKUserMessage> {
+      await new Promise(() => {});
+    })();
+    const q = query({
+      prompt: never,
+      options: {
+        pathToClaudeCodeExecutable: claudeCodeExecutablePath,
+        persistSession: false,
+        abortController,
+      },
+    });
+    try {
+      return await q.supportedModels();
+    } finally {
+      abortController.abort();
+    }
+  })();
+  modelCatalog = fetching;
+  // A failed spawn must not poison the session cache — let the next request
+  // retry. (The renderer falls back to its placeholder catalog meanwhile.)
+  fetching.catch(() => {
+    if (modelCatalog === fetching) modelCatalog = null;
+  });
+  return fetching;
 };
 
 export const sendMessage = (params: {

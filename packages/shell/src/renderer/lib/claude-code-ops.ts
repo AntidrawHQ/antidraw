@@ -15,9 +15,11 @@ import {
   createConversation,
   generateConversationTitle,
   getConversationWithMessages,
+  getSupportedModels,
   listWorkspaceConversations,
   sendMessage,
 } from "./api";
+import { DEFAULT_MODELS } from "@/renderer/components/modelPickerShared";
 import { subscribeToStream, type LivePartial } from "./stream-subscription";
 import { selectToolMap } from "./tool-utils";
 
@@ -98,6 +100,25 @@ export const useLivePartial = (conversationId: string | null) => {
     enabled: false,
     initialData: null as LivePartial,
     staleTime: Infinity,
+  });
+};
+
+// The CLI's live model catalog. One fetch per session, cached forever:
+// the catalog is pinned to the bundled CLI binary, which can only change
+// across an app update/restart (main also caches it for the session, so a
+// refetch would be a no-op anyway). DEFAULT_MODELS covers the gap while the
+// first fetch resolves — and remains the working set if it fails, since
+// placeholderData is returned whenever the cache is empty.
+export const useSupportedModels = () => {
+  return useQuery({
+    queryKey: queryKeys.models.catalog,
+    queryFn: async () => {
+      const result = await getSupportedModels();
+      if (result.isErr()) throw new Error(result.error.message);
+      return result.value;
+    },
+    staleTime: Infinity,
+    placeholderData: DEFAULT_MODELS,
   });
 };
 

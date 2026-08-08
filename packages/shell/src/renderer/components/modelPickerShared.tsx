@@ -27,11 +27,11 @@ export const matchesModel = (model: ModelInfo, id: string | undefined) =>
   id !== undefined && (model.value === id || model.resolvedModel === id);
 
 /**
- * The real catalog returned by `query.supportedModels()` (Agent SDK v0.3.201),
- * captured live so the examples read authentically.
- *
- * TODO: replace this hardcoded list with an actual `await query.supportedModels()`
- * call against `@anthropic-ai/claude-agent-sdk` once real model switching lands.
+ * Fallback catalog: the real `query.supportedModels()` response (Agent SDK
+ * v0.3.201), captured live. The composer normally runs on the live catalog
+ * (`useSupportedModels` → `GET /api/models`, fetched once per session from
+ * the CLI's initialize handshake); this snapshot covers the gap until that
+ * first fetch resolves and keeps the picker working if it fails.
  */
 export const DEFAULT_MODELS: ModelInfo[] = [
   {
