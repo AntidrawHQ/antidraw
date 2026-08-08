@@ -121,12 +121,14 @@ const processStream = async (
   const promptStream = buildPrompt(message, images);
   const owned = claimStream(conversation.id, promptStream);
 
-  // Persist the snapshot — the full selection, nulls included, so the row
-  // always mirrors what the latest send actually ran with. Failure only
+  // Persist the snapshot. Model is a full overwrite (absent = the "Default"
+  // pick, i.e. CLI default); effort is preserved when absent — the composer
+  // omits it only for models with no effort levels, and a Haiku turn must
+  // not erase the effort the user chose for this conversation. Failure only
   // costs the persisted default (the CLI still gets the options below).
   const persisted = await setConversationOptions(conversation.id, {
     selectedModel: options?.model ?? null,
-    selectedEffort: options?.effort ?? null,
+    ...(options?.effort !== undefined ? { selectedEffort: options.effort } : {}),
   });
   if (persisted.isErr()) {
     console.error("Failed to persist options snapshot:", persisted.error);

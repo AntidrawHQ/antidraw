@@ -39,20 +39,27 @@ export const createConversation = async (
   }
 };
 
-// The send-time options snapshot — the ONLY writer of these columns. Full
-// overwrite, nulls included: the row always mirrors what the latest send
-// actually ran with, and the renderer reads it back (via the conversation
-// row) as the picker's default.
+// The send-time options snapshot — the ONLY writer of these columns; the
+// renderer reads them back (via the conversation row) as the picker's
+// default. The two fields deliberately differ:
+// - selectedModel: full overwrite, null included. Absent model is a real
+//   choice — the picker's "Default" row means "CLI default".
+// - selectedEffort: preserved when absent. Effort-capable models always
+//   resolve a level (clampEffort falls back to the default), so an absent
+//   effort only ever means "the sent model takes no effort level" — and an
+//   inapplicable turn must not erase the user's last applicable choice.
 export const setConversationOptions = async (
   conversationId: string,
-  options: { selectedModel: string | null; selectedEffort: EffortLevel | null }
+  options: { selectedModel: string | null; selectedEffort?: EffortLevel }
 ) => {
   try {
     await db
       .update(conversations)
       .set({
         selectedModel: options.selectedModel,
-        selectedEffort: options.selectedEffort,
+        ...(options.selectedEffort !== undefined
+          ? { selectedEffort: options.selectedEffort }
+          : {}),
       })
       .where(eq(conversations.id, conversationId));
     return ok(undefined);

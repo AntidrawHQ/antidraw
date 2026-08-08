@@ -22,10 +22,12 @@ export const conversations = sqliteTable("conversations", {
   claudeCodeSessionId: text("claude_code_session_id"),
   title: text("title"),
   summary: text("summary"),
-  // The model/effort snapshot of the latest send (null = CLI defaults).
   // Options travel with the message: the send is the only writer of these
   // columns, and the composer reads them back as its default for the next
-  // send. Nothing else writes or applies options.
+  // send. Nothing else writes or applies options. selectedModel is the
+  // latest send's snapshot (null = CLI default); selectedEffort is the last
+  // APPLICABLE choice — a send on an effort-less model (Haiku) omits effort
+  // and leaves this column untouched rather than erasing it.
   selectedModel: text("selected_model"),
   selectedEffort: text("selected_effort").$type<EffortLevel>(),
   streamStatus: text("stream_status").$type<StreamStatus>().default("idle"),
