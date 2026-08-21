@@ -21,14 +21,14 @@ class ConversationEventEmitter extends EventEmitter<ConversationEvents> {}
 
 // No model/effort here on purpose: the Query exposes no readback and caching
 // them only saves a ~1-5ms no-op control request per send (verified — the CLI
-// re-emits init per turn regardless). The send path reads the conversation
-// row fresh every time: cold starts spawn with its options, pushes apply
-// them via control requests first.
+// re-emits init per turn regardless). There is nothing to cache anyway:
+// options ride each send from the composer, so cold starts pass them as
+// spawn options and pushes apply them via control requests first.
 export type ActiveStream = {
   // null only between the claim and the spawn: the slot is taken before the
   // CLI exists so no second send can claim it, and callers that need the
-  // query skip that window (it is one DB read wide, and zero for a
-  // conversation with no session to resume).
+  // query skip that window. It spans exactly one await on every send — the
+  // options snapshot persist — since sendMessage() itself is synchronous.
   query: Query | null;
   promptStream: PromptStream;
 };
