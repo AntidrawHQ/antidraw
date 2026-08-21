@@ -9,6 +9,10 @@ import type { PromptStream } from "../api/claude-code-ops";
 type ConversationEvents = {
   message: [conversationId: string, message: Message];
   partial: [conversationId: string, partial: SDKPartialAssistantMessage];
+  // The CLI folded a pushed user message into a turn (replay ack carrying
+  // the userMessageId we stamped at push time). Until this fires the
+  // message is "queued" from the UI's perspective.
+  accepted: [conversationId: string, userMessageId: string];
   complete: [conversationId: string];
   error: [conversationId: string, error: string];
   // Actual effort the CLI ran the turn with (Stop-hook echo, post any
@@ -31,6 +35,26 @@ export type ActiveStream = {
   // options snapshot persist — since sendMessage() itself is synchronous.
   query: Query | null;
   promptStream: PromptStream;
+  // userMessageIds pushed to the CLI but not yet acked by a replay. The CLI
+  // queues pushed messages and drains them at the next tool boundary (or,
+  // if the turn already finalized, as a fresh turn) — so a non-empty set at
+  // `result` time means more output is coming and the owning loop must not
+  // flip to idle yet. Added BEFORE push (the ack arrives asynchronously via
+  // the loop), removed on ack or on a successful cancel.
+  pendingUserMessageIds: Set<string>;
+  // A `result` arrived while pendingUserMessageIds was non-empty, so the
+  // owning loop held the turn open (stayed "streaming"). Cleared by the next
+  // ack (the CLI did start the follow-on turn) — or, if every pending
+  // message is cancelled instead, the cancel path settles the held turn
+  // itself, because the loop is parked on a CLI that has gone idle.
+  resultHeld: boolean;
+};
+
+// cancelAsyncMessage is a real control request on the SDK's Query (subtype
+// "cancel_async_message"; returns the CLI's `cancelled` boolean) but is not
+// declared on the public Query interface in 0.3.201 — narrow here, once.
+type QueryWithCancelAsyncMessage = Query & {
+  cancelAsyncMessage?: (messageUuid: string) => Promise<boolean>;
 };
 
 // Simple exports - no wrapper object
@@ -61,7 +85,12 @@ export const claimStream = (
   promptStream: PromptStream
 ): boolean => {
   if (activeStreams.has(conversationId)) return false;
-  activeStreams.set(conversationId, { query: null, promptStream });
+  activeStreams.set(conversationId, {
+    query: null,
+    promptStream,
+    pendingUserMessageIds: new Set(),
+    resultHeld: false,
+  });
   return true;
 };
 
@@ -95,4 +124,23 @@ export const cancelStream = async (conversationId: string): Promise<boolean> => 
   if (!stream?.query) return false;
   await stream.query.interrupt();
   return true;
+};
+
+// Withdraw a pushed-but-not-yet-accepted message from the CLI's queue.
+// Returns the CLI's own verdict: true = it was still queued and is now
+// dropped (it will never run and never be acked); false = already folded
+// into a turn (its ack has arrived or is about to), or never reached the CLI
+// (no query yet: the message sits in the ReadableStream buffer during the
+// spawn window — not worth reaching into, it will simply run). On true the
+// uuid leaves the pending set here; the caller settles any held turn.
+export const cancelQueuedMessage = async (
+  conversationId: string,
+  userMessageId: string
+): Promise<boolean> => {
+  const stream = activeStreams.get(conversationId);
+  const query = stream?.query as QueryWithCancelAsyncMessage | null | undefined;
+  if (!stream || !query?.cancelAsyncMessage) return false;
+  const cancelled = await query.cancelAsyncMessage(userMessageId);
+  if (cancelled) stream.pendingUserMessageIds.delete(userMessageId);
+  return cancelled;
 };

@@ -550,6 +550,40 @@ export const subscribeToConversation = async function* (
   yield* stream;
 };
 
+// Withdraw a queued (sent mid-turn, not yet accepted) message. The backend
+// answers with the CLI's verdict: cancelled=true means it never runs and its
+// row is gone; false means it already entered a turn (or never reached the
+// CLI) and will run — keep the bubble, drop only the "Queued" mark.
+export const cancelQueuedMessage = async (
+  conversationId: string,
+  userMessageId: string,
+) => {
+  try {
+    const response = await fetch(
+      `antidraw://app/api/chat/${conversationId}/message/${userMessageId}`,
+      { method: "DELETE" },
+    );
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      return err({
+        status: response.status as 404 | 500,
+        code: errorBody?.error?.code ?? "FETCH_ERROR",
+        message: errorBody?.error?.message ?? response.statusText,
+      });
+    }
+
+    const data: { cancelled: boolean } = await response.json();
+    return ok(data);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "NETWORK_ERROR",
+      message: "Failed to cancel queued message",
+    });
+  }
+};
+
 // Cancel an active stream
 export const cancelConversationStream = async (conversationId: string) => {
   try {

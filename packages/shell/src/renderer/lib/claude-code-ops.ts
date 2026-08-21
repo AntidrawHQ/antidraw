@@ -12,6 +12,7 @@ import type { ToolPart } from "@/renderer/components/ui/tool";
 import { queryKeys } from "./query-keys";
 import {
   cancelConversationStream,
+  cancelQueuedMessage,
   createConversation,
   generateConversationTitle,
   getConversationWithMessages,
@@ -122,6 +123,20 @@ export const useSupportedModels = () => {
   });
 };
 
+// userMessageIds sent while a turn was in flight and not yet acked by the
+// CLI (message_accepted). Renderer-only cache state: populated by
+// useSendMessage, drained by stream-subscription (ack / complete / error)
+// and useCancelQueuedMessage. Nothing is persisted; a refetch clears it.
+export const useQueuedMessageIds = (conversationId: string | null) => {
+  return useQuery<string[]>({
+    queryKey: queryKeys.conversations.queuedMessageIds(conversationId),
+    queryFn: () => [],
+    enabled: false,
+    initialData: [],
+    staleTime: Infinity,
+  });
+};
+
 export const useCreateConversation = () => {
   const queryClient = useQueryClient();
 
@@ -207,6 +222,15 @@ onMutate: async ({ message, conversationId, userMessageId, images }) => {
         createdAt: new Date(),
       };
 
+      // Sent mid-turn: the CLI queues it. Mark it until the ack
+      // (message_accepted) says it has entered a turn.
+      if (previousChat.streamStatus === "streaming") {
+        queryClient.setQueryData<string[]>(
+          queryKeys.conversations.queuedMessageIds(conversationId),
+          (prev) => [...(prev ?? []), userMessageId],
+        );
+      }
+
       queryClient.setQueryData<ConversationWithMessages>(
         queryKeys.conversations.detail(conversationId),
         {
@@ -219,13 +243,58 @@ onMutate: async ({ message, conversationId, userMessageId, images }) => {
       return { previousChat };
     },
 
-    onError: (_err, { conversationId }, context) => {
+    onError: (_err, { conversationId, userMessageId }, context) => {
       if (context?.previousChat) {
         queryClient.setQueryData(
           queryKeys.conversations.detail(conversationId),
           context.previousChat,
         );
       }
+      queryClient.setQueryData<string[]>(
+        queryKeys.conversations.queuedMessageIds(conversationId),
+        (prev) => prev?.filter((id) => id !== userMessageId) ?? [],
+      );
+    },
+  });
+};
+
+// Withdraw a queued message. The backend relays the CLI's verdict:
+// cancelled=true → it never runs; drop the optimistic bubble and the mark.
+// cancelled=false → it already entered a turn (ack imminent) or never
+// reached the CLI; it will run, so keep the bubble and drop only the mark.
+export const useCancelQueuedMessage = () => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      conversationId,
+      userMessageId,
+    }: {
+      conversationId: string;
+      userMessageId: string;
+    }) => {
+      const result = await cancelQueuedMessage(conversationId, userMessageId);
+      if (result.isErr()) {
+        throw new Error(result.error.message);
+      }
+      return result.value;
+    },
+    onSuccess: ({ cancelled }, { conversationId, userMessageId }) => {
+      queryClient.setQueryData<string[]>(
+        queryKeys.conversations.queuedMessageIds(conversationId),
+        (prev) => prev?.filter((id) => id !== userMessageId) ?? [],
+      );
+      if (!cancelled) return;
+      queryClient.setQueryData<ConversationWithMessages>(
+        queryKeys.conversations.detail(conversationId),
+        (old) =>
+          old
+            ? {
+                ...old,
+                messages: old.messages.filter((m) => m.id !== userMessageId),
+              }
+            : old,
+      );
     },
   });
 };

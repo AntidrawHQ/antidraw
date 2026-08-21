@@ -1,5 +1,6 @@
 import { createRequire } from "node:module";
 import path from "node:path";
+import type { UUID } from "node:crypto";
 import type {
   EffortLevel,
   HookInput,
@@ -49,15 +50,24 @@ export const claudeCodeExecutablePath = ((): string | undefined => {
   return undefined;
 })();
 
+export type PromptPushOptions = {
+  // Stamped onto the SDKUserMessage as its uuid. With --replay-user-messages
+  // the CLI echoes it back (isReplay: true) when the message is folded into
+  // a turn — that echo is the acceptance ack the queueing UX correlates on,
+  // so callers pass the frontend's userMessageId here.
+  uuid?: UUID;
+  images?: ImageAttachment[];
+};
+
 export type PromptStream = {
   prompt: AsyncIterable<SDKUserMessage>;
-  push: (message: string, images?: ImageAttachment[]) => void;
+  push: (message: string, options?: PromptPushOptions) => void;
   end: () => void;
 };
 
 export const buildPrompt = (
   message: string,
-  images?: ImageAttachment[]
+  options?: PromptPushOptions
 ): PromptStream => {
   let closed = false;
   let controller!: ReadableStreamDefaultController<SDKUserMessage>;
@@ -65,18 +75,18 @@ export const buildPrompt = (
     start: (c) => (controller = c),
   });
 
-  const push = (text: string, imgs?: ImageAttachment[]) => {
+  const push = (text: string, opts?: PromptPushOptions) => {
     if (closed) return;
     controller.enqueue(
       createUserSDKMessage({
         text,
-        uuid: crypto.randomUUID(),
-        images: imgs,
+        uuid: opts?.uuid ?? crypto.randomUUID(),
+        images: opts?.images,
       })
     );
   };
 
-  push(message, images);
+  push(message, options);
 
   return {
     prompt,
@@ -255,6 +265,12 @@ Current workspace directory: ${workspacePath}
         },
         permissionMode: "bypassPermissions",
         includePartialMessages: true,
+        // Ask the CLI to re-emit each stdin user message once it is folded
+        // into a turn ({type:"user", isReplay:true, uuid}). That replay is the
+        // only acceptance signal there is for a pushed message — the SDK's
+        // streamInput just writes to stdin. Not a first-class SDK option,
+        // only the CLI flag (verified live: without it, no ack ever comes).
+        extraArgs: { "replay-user-messages": null },
       },
     });
 

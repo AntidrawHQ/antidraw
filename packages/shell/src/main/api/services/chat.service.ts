@@ -1,3 +1,4 @@
+import type { UUID } from "node:crypto";
 import {
   conversations,
   messages,
@@ -142,15 +143,36 @@ export const getConversation = async (
   }
 };
 
+// The persisted copy of a user prompt carries the frontend's userMessageId as
+// its SDK uuid — the same uuid stamped on the message pushed to the CLI, so
+// the row, the optimistic renderer bubble, and the CLI's replay ack all name
+// one message.
 export const convertUserPromptToSDKMessage = (
   prompt: string,
+  userMessageId: UUID,
   images?: ImageAttachment[]
 ) => {
   return createUserSDKMessage({
     text: prompt,
-    uuid: crypto.randomUUID(),
+    uuid: userMessageId,
     images,
   });
+};
+
+// Removes a message row. Used when a queued (not yet accepted) user prompt
+// is withdrawn from the CLI's queue: the send-time user_prompt row is the
+// only copy, and a message that never ran must not survive in history.
+export const deleteMessage = async (messageId: string) => {
+  try {
+    await db.delete(messages).where(eq(messages.id, messageId));
+    return ok(undefined);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "DB_ERROR",
+      message: "Failed to delete message",
+    });
+  }
 };
 
 export const addMessage = async (params: {

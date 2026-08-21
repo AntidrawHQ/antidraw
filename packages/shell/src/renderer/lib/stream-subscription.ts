@@ -51,11 +51,30 @@ const clearLive = (conversationId: string, queryClient: QueryClient): void => {
   );
 };
 
+const clearQueued = (
+  conversationId: string,
+  queryClient: QueryClient,
+): void => {
+  queryClient.setQueryData<string[]>(
+    queryKeys.conversations.queuedMessageIds(conversationId),
+    [],
+  );
+};
+
 const handleStreamEvent = (
   conversationId: string,
   event: StreamEvent,
   queryClient: QueryClient,
 ): void => {
+  // The CLI folded a mid-turn send into a turn — it is no longer "queued".
+  if (event.type === "message_accepted") {
+    queryClient.setQueryData<string[]>(
+      queryKeys.conversations.queuedMessageIds(conversationId),
+      (prev) => prev?.filter((id) => id !== event.userMessageId) ?? [],
+    );
+    return;
+  }
+
   if (event.type === "partial") {
     const raw = event.partial.event;
 
@@ -134,6 +153,9 @@ const handleStreamEvent = (
 
   if (event.type === "complete") {
     clearLive(conversationId, queryClient);
+    // A turn can only complete with nothing left un-acked (the backend holds
+    // the turn open otherwise), so any leftover mark is stale.
+    clearQueued(conversationId, queryClient);
     queryClient.setQueryData<ConversationWithMessages>(
       queryKeys.conversations.detail(conversationId),
       (old) => (old ? { ...old, streamStatus: "idle" } : old),
@@ -148,6 +170,7 @@ const handleStreamEvent = (
 
   if (event.type === "error") {
     clearLive(conversationId, queryClient);
+    clearQueued(conversationId, queryClient);
     queryClient.setQueryData<ConversationWithMessages>(
       queryKeys.conversations.detail(conversationId),
       (old) => (old ? { ...old, streamStatus: "error" } : old),
