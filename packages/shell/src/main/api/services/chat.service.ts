@@ -3,6 +3,7 @@ import {
   messages,
   type StreamStatus,
 } from "@/main/api/models/chat.model";
+import type { EffortLevel } from "@anthropic-ai/claude-agent-sdk";
 import { db } from "@/main/db";
 import type { ImageAttachment } from "@/shared/utils/message";
 import { streamEvents } from "@/main/lib/stream-manager";
@@ -11,7 +12,12 @@ import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { eq, desc } from "drizzle-orm";
 import { ok, err } from "neverthrow";
 
-export const createConversation = async (workspaceId: string, title?: string) => {
+export const createConversation = async (
+  workspaceId: string,
+  options?: {
+    title?: string;
+  }
+) => {
   try {
     const id = crypto.randomUUID();
     const [conversation] = await db
@@ -19,7 +25,7 @@ export const createConversation = async (workspaceId: string, title?: string) =>
       .values({
         id,
         workspaceId,
-        title: title ?? null,
+        title: options?.title ?? null,
       })
       .returning();
 
@@ -29,6 +35,39 @@ export const createConversation = async (workspaceId: string, title?: string) =>
       status: 500 as const,
       code: "DB_ERROR",
       message: "Failed to create conversation",
+    });
+  }
+};
+
+// The send-time options snapshot — the ONLY writer of these columns; the
+// renderer reads them back (via the conversation row) as the picker's
+// default. The two fields deliberately differ:
+// - selectedModel: full overwrite, null included. Absent model is a real
+//   choice — the picker's "Default" row means "CLI default".
+// - selectedEffort: preserved when absent. Effort-capable models always
+//   resolve a level (clampEffort falls back to the default), so an absent
+//   effort only ever means "the sent model takes no effort level" — and an
+//   inapplicable turn must not erase the user's last applicable choice.
+export const setConversationOptions = async (
+  conversationId: string,
+  options: { selectedModel: string | null; selectedEffort?: EffortLevel }
+) => {
+  try {
+    await db
+      .update(conversations)
+      .set({
+        selectedModel: options.selectedModel,
+        ...(options.selectedEffort !== undefined
+          ? { selectedEffort: options.selectedEffort }
+          : {}),
+      })
+      .where(eq(conversations.id, conversationId));
+    return ok(undefined);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "DB_ERROR",
+      message: "Failed to set conversation options",
     });
   }
 };

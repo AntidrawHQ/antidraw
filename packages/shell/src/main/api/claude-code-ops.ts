@@ -1,7 +1,14 @@
 import { createRequire } from "node:module";
 import path from "node:path";
-import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type {
+  EffortLevel,
+  HookInput,
+  ModelInfo,
+  SDKUserMessage,
+} from "@anthropic-ai/claude-agent-sdk";
 import { query } from "@anthropic-ai/claude-agent-sdk";
+
+export type { EffortLevel, ModelInfo };
 import { ok, err } from "neverthrow";
 import { z } from "zod/v3";
 import { zodToJsonSchema } from "zod-to-json-schema";
@@ -15,7 +22,7 @@ import { createUserSDKMessage } from "@/shared/utils/message";
 // through Electron's asar layer, so the kernel returns ENOTDIR. Resolve once
 // and rewrite to the .unpacked sibling directory where the binary actually
 // lives. In dev (no asar in the path), the replace is a no-op.
-const claudeCodeExecutablePath = ((): string | undefined => {
+export const claudeCodeExecutablePath = ((): string | undefined => {
   const requireFromHere = createRequire(import.meta.url);
   const { platform, arch } = process;
   const ext = platform === "win32" ? ".exe" : "";
@@ -134,14 +141,70 @@ User's first message:
   }
 };
 
+// The CLI's model catalog, fetched once per session. supportedModels()
+// resolves from the initialize handshake — the throwaway query below never
+// starts a turn (its prompt stream never yields) and is aborted the moment
+// the handshake lands, so this costs one short-lived CLI spawn and zero
+// tokens. Cached for the process lifetime: the catalog is pinned to the
+// bundled CLI binary, which can only change across an app update/restart.
+let modelCatalog: Promise<ModelInfo[]> | null = null;
+
+export const getSupportedModels = (): Promise<ModelInfo[]> => {
+  if (modelCatalog) return modelCatalog;
+  const fetching = (async () => {
+    const abortController = new AbortController();
+    const never = (async function* (): AsyncGenerator<SDKUserMessage> {
+      await new Promise(() => {});
+    })();
+    const q = query({
+      prompt: never,
+      options: {
+        pathToClaudeCodeExecutable: claudeCodeExecutablePath,
+        persistSession: false,
+        abortController,
+      },
+    });
+    try {
+      return await q.supportedModels();
+    } finally {
+      abortController.abort();
+    }
+  })();
+  modelCatalog = fetching;
+  // A failed spawn must not poison the session cache — let the next request
+  // retry. (The renderer falls back to its placeholder catalog meanwhile.)
+  fetching.catch(() => {
+    if (modelCatalog === fetching) modelCatalog = null;
+  });
+  return fetching;
+};
+
 export const sendMessage = (params: {
   // message: string;
   promptStream: PromptStream;
   workspaceId: string;
   claudeCodeSessionID?: string;
+  model?: string;
+  effort?: EffortLevel;
+  /**
+   * Echo of the ACTUAL effort the CLI ran the turn with (after any silent
+   * downgrade for the selected model). Fired from a Stop hook; main-thread
+   * turns only — subagent hook invocations are filtered out. Nothing
+   * persists or displays this today: it is kept wired as the signal for
+   * future product feedback when the CLI deviates from the user's
+   * selection.
+   */
+  onEffortLevel?: (level: string) => void;
 }) => {
   try {
-    const { promptStream, workspaceId, claudeCodeSessionID } = params;
+    const {
+      promptStream,
+      workspaceId,
+      claudeCodeSessionID,
+      model,
+      effort,
+      onEffortLevel,
+    } = params;
     const workspacePath = getWorkspaceSourcePath(workspaceId);
 
     const res = query({
@@ -150,6 +213,30 @@ export const sendMessage = (params: {
         pathToClaudeCodeExecutable: claudeCodeExecutablePath,
         cwd: workspacePath,
         resume: claudeCodeSessionID,
+        model,
+        effort,
+        hooks: onEffortLevel
+          ? {
+              Stop: [
+                {
+                  hooks: [
+                    async (input: HookInput) => {
+                      // agent_id present = hook fired inside a subagent;
+                      // its effort must not be mirrored onto the main UI.
+                      if (
+                        input.hook_event_name === "Stop" &&
+                        !("agent_id" in input && input.agent_id) &&
+                        input.effort?.level
+                      ) {
+                        onEffortLevel(input.effort.level);
+                      }
+                      return {};
+                    },
+                  ],
+                },
+              ],
+            }
+          : undefined,
         systemPrompt: {
           preset: "claude_code",
           type: "preset",

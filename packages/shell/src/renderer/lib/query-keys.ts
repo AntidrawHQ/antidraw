@@ -1,7 +1,4 @@
 export const queryKeys = {
-  claudeCode: {
-    authStatus: ["claudeCode", "authStatus"] as const,
-  },
   workspaces: {
     all: ["workspaces"] as const,
     detail: (id: string | null) => ["workspace", id] as const,
@@ -24,6 +21,9 @@ export const queryKeys = {
   },
   preferences: {
     byKey: (key: string) => ["preferences", key] as const,
+  },
+  models: {
+    catalog: ["model-catalog"] as const,
   },
   frameLayouts: {
     byWorkspace: (workspaceId: string | null) =>

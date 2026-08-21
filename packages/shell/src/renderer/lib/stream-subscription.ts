@@ -155,5 +155,15 @@ const handleStreamEvent = (
     queryClient.invalidateQueries({
       queryKey: queryKeys.conversations.detail(conversationId),
     });
+    return;
+  }
+
+  if (event.type === "effort") {
+    // Actual per-turn effort echoed by the CLI (post any silent downgrade).
+    // Deliberately unconsumed: the picker shows the user's selection, not
+    // CLI state. Reserved for product feedback when the actual effort
+    // deviates from the selection — compare against the sent effort here
+    // when that lands.
+    return;
   }
 };

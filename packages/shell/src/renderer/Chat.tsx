@@ -36,6 +36,9 @@ import type { ToolPart } from "@/renderer/components/ui/tool";
 import { AuthError } from "@/renderer/components/auth-error";
 import { useWorkspaceStore } from "./store/workspace";
 import { ChatEmptyState } from "./components/ChatEmptyState";
+import ModelPicker from "@/renderer/components/ModelPicker";
+import EffortDropdown from "@/renderer/components/EffortDropdown";
+import { useComposerModel } from "@/renderer/hooks/use-composer-model";
 import {
   SUPPORTED_IMAGE_TYPES,
   type ImageAttachment,
@@ -304,6 +307,8 @@ export function AppChat({ className, ...props }: AppChatProps) {
 
   const isLoading = createConversation.isPending || sendMessage.isPending || isStreaming;
 
+  const composer = useComposerModel(activeConversationId, conversation);
+
   // Show the chat empty state whenever the active conversation has no messages
   // yet — not just when no conversation exists. Guard against the message fetch
   // flash so it doesn't flicker while an existing conversation loads.
@@ -352,17 +357,23 @@ export function AppChat({ className, ...props }: AppChatProps) {
     let conversationId = activeConversationId;
 
     if (!conversationId) {
-      const conv = await createConversation.mutateAsync(activeWorkspaceId);
+      const conv = await createConversation.mutateAsync({
+        workspaceId: activeWorkspaceId,
+      });
       setActiveConversationId(conv.id);
       conversationId = conv.id;
     }
 
+    // The composer selection rides the message — the send is the only
+    // moment options are set (persisted on the row and applied to the CLI).
     await sendMessage.mutateAsync({
       message: prompt,
       workspaceId: activeWorkspaceId,
       conversationId,
       userMessageId,
       images: imagesToSend,
+      model: composer.selectedModelId,
+      effort: composer.effort,
     });
 
     // Fire-and-forget title generation if conversation has no title/summary yet
@@ -394,6 +405,10 @@ export function AppChat({ className, ...props }: AppChatProps) {
       workspaceId: activeWorkspaceId,
       conversationId: activeConversationId,
       userMessageId: crypto.randomUUID(),
+      // Every send is a full options overwrite — omitting these would null
+      // the row's snapshot and run the retry on CLI defaults.
+      model: composer.selectedModelId,
+      effort: composer.effort,
     });
   };
 
@@ -454,43 +469,57 @@ export function AppChat({ className, ...props }: AppChatProps) {
               className="bg-transparent dark:bg-transparent"
               onPaste={handlePaste}
             />
-            <PromptInputActions className="justify-end pt-2">
-              <PromptInputAction tooltip="Attach image">
-                <FileUploadTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8 rounded-full"
-                  >
-                    <Paperclip className="size-4" />
-                  </Button>
-                </FileUploadTrigger>
-              </PromptInputAction>
-              {isStreaming ? (
-                <PromptInputAction tooltip="Stop generation">
-                  <Button
-                    variant="default"
-                    size="icon"
-                    className="h-8 w-8 rounded-full"
-                    onClick={handleStop}
-                    disabled={cancelStream.isPending}
-                  >
-                    <Square className="size-4 fill-current" />
-                  </Button>
+            <PromptInputActions className="justify-between pt-2">
+              <div className="flex items-center gap-2">
+                <ModelPicker
+                  models={composer.models}
+                  value={composer.selectedModelId}
+                  onChange={composer.handleModelChange}
+                />
+                <EffortDropdown
+                  levels={composer.effortLevels}
+                  value={composer.effort}
+                  onChange={composer.handleEffortChange}
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <PromptInputAction tooltip="Attach image">
+                  <FileUploadTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 rounded-full"
+                    >
+                      <Paperclip className="size-4" />
+                    </Button>
+                  </FileUploadTrigger>
                 </PromptInputAction>
-              ) : (
-                <PromptInputAction tooltip="Send message">
-                  <Button
-                    variant="default"
-                    size="icon"
-                    className="h-8 w-8 rounded-full"
-                    onClick={handleSubmit}
-                    disabled={!input.trim() || isLoading}
-                  >
-                    <ArrowUp className="size-4" />
-                  </Button>
-                </PromptInputAction>
-              )}
+                {isStreaming ? (
+                  <PromptInputAction tooltip="Stop generation">
+                    <Button
+                      variant="default"
+                      size="icon"
+                      className="h-8 w-8 rounded-full"
+                      onClick={handleStop}
+                      disabled={cancelStream.isPending}
+                    >
+                      <Square className="size-4 fill-current" />
+                    </Button>
+                  </PromptInputAction>
+                ) : (
+                  <PromptInputAction tooltip="Send message">
+                    <Button
+                      variant="default"
+                      size="icon"
+                      className="h-8 w-8 rounded-full"
+                      onClick={handleSubmit}
+                      disabled={!input.trim() || isLoading}
+                    >
+                      <ArrowUp className="size-4" />
+                    </Button>
+                  </PromptInputAction>
+                )}
+              </div>
             </PromptInputActions>
           </PromptInput>
         </div>
