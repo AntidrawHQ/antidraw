@@ -13,6 +13,8 @@ type CreateWorkspaceFlowOptions = {
   onError?: (error: Error) => void;
 };
 
+const MAX_NPM_LINES = 200;
+
 export const useCreateWorkspaceFlow = (
   options?: CreateWorkspaceFlowOptions,
 ) => {
@@ -28,6 +30,11 @@ export const useCreateWorkspaceFlow = (
   // partial line until its remainder arrives
   const partialLineRef = useRef("");
   const { mutate, isPending } = useCreateWorkspace();
+
+  // Only the tail of the log is ever visible; cap the buffer so a long install
+  // (hundreds of fetch lines) doesn't grow state and re-render cost unbounded
+  const appendNpmLines = (lines: string[]) =>
+    setNpmLines((prev) => [...prev, ...lines].slice(-MAX_NPM_LINES));
 
   const isCreating =
     status !== "idle" && status !== "done" && status !== "error";
@@ -51,13 +58,21 @@ export const useCreateWorkspaceFlow = (
             setNpmLines([]);
             partialLineRef.current = "";
           }
-          if (event.type === "npm" && event.output.type !== "exit") {
-            const chunks = (partialLineRef.current + event.output.data).split(
-              "\n",
-            );
-            partialLineRef.current = chunks.pop() ?? "";
-            const lines = chunks.map((line) => line.trim()).filter(Boolean);
-            if (lines.length > 0) setNpmLines((prev) => [...prev, ...lines]);
+          if (event.type === "npm") {
+            if (event.output.type === "exit") {
+              // Flush whatever is still buffered without a trailing newline
+              // (e.g. a spawn error message) so it isn't silently dropped
+              const rest = partialLineRef.current.trim();
+              partialLineRef.current = "";
+              if (rest) appendNpmLines([rest]);
+            } else {
+              const chunks = (partialLineRef.current + event.output.data).split(
+                "\n",
+              );
+              partialLineRef.current = chunks.pop() ?? "";
+              const lines = chunks.map((line) => line.trim()).filter(Boolean);
+              if (lines.length > 0) appendNpmLines(lines);
+            }
           }
           if (event.type === "done") setStatus("done");
           if (event.type === "error") {

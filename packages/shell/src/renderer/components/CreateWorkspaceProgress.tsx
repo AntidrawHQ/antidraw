@@ -20,19 +20,32 @@ type StepKey = (typeof STEPS)[number]["key"];
 const ICON_SIZE = 18;
 
 const CheckCircleIcon = () => (
-  <svg width={ICON_SIZE} height={ICON_SIZE} viewBox="0 0 24 24" fill="#7c6cd6">
+  <svg
+    aria-hidden="true"
+    width={ICON_SIZE}
+    height={ICON_SIZE}
+    viewBox="0 0 24 24"
+    fill="#7c6cd6"
+  >
     <path d="M17 3.34a10 10 0 1 1 -14.995 8.984l-.005 -.324l.005 -.324a10 10 0 0 1 14.995 -8.336zm-1.293 5.953a1 1 0 0 0 -1.32 -.083l-.094 .083l-3.293 3.292l-1.293 -1.292l-.094 -.083a1 1 0 0 0 -1.403 1.403l.083 .094l2 2l.094 .083a1 1 0 0 0 1.226 0l.094 -.083l4 -4l.083 -.094a1 1 0 0 0 -.083 -1.32z" />
   </svg>
 );
 
 const XCircleIcon = () => (
-  <svg width={ICON_SIZE} height={ICON_SIZE} viewBox="0 0 24 24" fill="#d9605c">
+  <svg
+    aria-hidden="true"
+    width={ICON_SIZE}
+    height={ICON_SIZE}
+    viewBox="0 0 24 24"
+    fill="#d9605c"
+  >
     <path d="M17 3.34a10 10 0 1 1 -14.995 8.984l-.005 -.324l.005 -.324a10 10 0 0 1 14.995 -8.336zm-6.489 5.8a1 1 0 0 0 -1.218 1.567l1.292 1.293l-1.292 1.293l-.083 .094a1 1 0 0 0 1.497 1.32l1.293 -1.292l1.293 1.292l.094 .083a1 1 0 0 0 1.32 -1.497l-1.292 -1.293l1.292 -1.293l.083 -.094a1 1 0 0 0 -1.497 -1.32l-1.293 1.292l-1.293 -1.292l-.094 -.083z" />
   </svg>
 );
 
 const HalfCircleIcon = ({ active }: { active: boolean }) => (
   <svg
+    aria-hidden="true"
     width={ICON_SIZE}
     height={ICON_SIZE}
     viewBox="0 0 24 24"
@@ -67,7 +80,8 @@ const STREAMING_STEPS: StepKey[] = [
 ];
 
 const lineTone = (line: string): string =>
-  line.startsWith("npm ERR!")
+  // npm >= 10.2 prints "npm error"; older versions print "npm ERR!"
+  /^npm (error|ERR!)/.test(line)
     ? "text-[#e08a86]"
     : /attempt \d+ failed/.test(line)
       ? "text-[#c99a62]"
@@ -96,8 +110,21 @@ export const CreateWorkspaceProgress = ({
     if (el) el.scrollTop = el.scrollHeight;
   }, [lines]);
 
+  const currentLabel = STEPS[current]?.label;
+  const announcement =
+    status === "done"
+      ? "Workspace created"
+      : hasError
+        ? `${currentLabel ?? "Workspace creation"} failed`
+        : currentLabel
+          ? `${currentLabel}…`
+          : "";
+
   return (
     <div className="flex flex-col">
+      <div role="status" aria-live="polite" className="sr-only">
+        {announcement}
+      </div>
       {STEPS.map((step, i) => {
         const isFailed = hasError && current === i;
         const isDone = !isFailed && (status === "done" || current > i);
@@ -159,19 +186,21 @@ export const CreateWorkspaceProgress = ({
                           : "border-white/[0.07]")
                       }
                     >
-                      {lines.map((line, j) => (
-                        <span
-                          key={j}
-                          className={
-                            "block truncate font-mono text-[11px] leading-[1.7] " +
-                            (j === lines.length - 1 && !isFailed
-                              ? "text-[#c5c5c5]"
-                              : lineTone(line))
-                          }
-                        >
-                          {line}
-                        </span>
-                      ))}
+                      {showLog
+                        ? lines.map((line, j) => (
+                            <span
+                              key={j}
+                              className={
+                                "block truncate font-mono text-[11px] leading-[1.7] " +
+                                (j === lines.length - 1 && !isFailed
+                                  ? "text-[#c5c5c5]"
+                                  : lineTone(line))
+                              }
+                            >
+                              {line}
+                            </span>
+                          ))
+                        : null}
                     </div>
                   </div>
                 </div>
@@ -180,7 +209,10 @@ export const CreateWorkspaceProgress = ({
 
             {isFailed ? (
               <div className="flex items-center justify-between gap-3 pb-2 pl-[28px] animate-in fade-in-0 slide-in-from-bottom-1 duration-300">
-                <span className="text-[12px] leading-[1.5] text-[#b98785]">
+                <span
+                  role="alert"
+                  className="text-[12px] leading-[1.5] text-[#b98785]"
+                >
                   {errorMessage}
                 </span>
                 <button
