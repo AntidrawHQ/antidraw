@@ -3,6 +3,11 @@ import type { ConversationWithMessages } from "@/main/api";
 import type { BetaContentBlock } from "@anthropic-ai/sdk/resources/beta/messages";
 import { subscribeToConversation, type StreamEvent } from "./api";
 import { queryKeys } from "./query-keys";
+
+// Mutation key of useSendMessage — referenced here so queue_state can spare
+// the marks of sends whose POST is still in flight (the backend cannot know
+// about those yet).
+export const SEND_MESSAGE_MUTATION_KEY = "send-message";
 import { parsePartialJson } from "@/shared/utils/parse-partial-json";
 
 const activeSubscriptions = new Map<string, Promise<void>>();
@@ -61,11 +66,50 @@ const clearQueued = (
   );
 };
 
+const inFlightSendIds = (queryClient: QueryClient): string[] =>
+  queryClient
+    .getMutationCache()
+    .getAll()
+    .filter(
+      (m) =>
+        m.options.mutationKey?.[0] === SEND_MESSAGE_MUTATION_KEY &&
+        m.state.status === "pending",
+    )
+    .map((m) => (m.state.variables as { userMessageId?: string })?.userMessageId)
+    .filter((id): id is string => typeof id === "string");
+
 const handleStreamEvent = (
   conversationId: string,
   event: StreamEvent,
   queryClient: QueryClient,
 ): void => {
+  // Authoritative queue snapshot on (re)subscribe: rebuild the marks from
+  // it, keeping only the sends the backend cannot know about yet.
+  if (event.type === "queue_state") {
+    const inFlight = inFlightSendIds(queryClient);
+    queryClient.setQueryData<string[]>(
+      queryKeys.conversations.queuedMessageIds(conversationId),
+      (prev) => [
+        ...event.userMessageIds,
+        ...(prev ?? []).filter(
+          (id) => inFlight.includes(id) && !event.userMessageIds.includes(id),
+        ),
+      ],
+    );
+    return;
+  }
+
+  // The CLI reported a turn in flight. The only thing that can have made
+  // the cache say otherwise is a refetch that raced the CLI's own report
+  // (the backend writes the row on `running`, not on send), so re-assert.
+  if (event.type === "streaming") {
+    queryClient.setQueryData<ConversationWithMessages>(
+      queryKeys.conversations.detail(conversationId),
+      (old) => (old ? { ...old, streamStatus: "streaming" } : old),
+    );
+    return;
+  }
+
   // The CLI folded a mid-turn send into a turn — it is no longer "queued".
   if (event.type === "message_accepted") {
     queryClient.setQueryData<string[]>(

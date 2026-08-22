@@ -21,7 +21,11 @@ import {
   sendMessage,
 } from "./api";
 import { DEFAULT_MODELS } from "@/renderer/components/modelPickerShared";
-import { subscribeToStream, type LivePartial } from "./stream-subscription";
+import {
+  SEND_MESSAGE_MUTATION_KEY,
+  subscribeToStream,
+  type LivePartial,
+} from "./stream-subscription";
 import { selectToolMap } from "./tool-utils";
 
 // Shared query options for conversation data
@@ -170,6 +174,7 @@ export const useSendMessage = () => {
   const queryClient = useQueryClient();
 
   return useMutation({
+    mutationKey: [SEND_MESSAGE_MUTATION_KEY],
     mutationFn: async (params: {
       message: string;
       workspaceId: string;
@@ -240,7 +245,35 @@ onMutate: async ({ message, conversationId, userMessageId, images }) => {
         },
       );
 
-      return { previousChat };
+      return { previousChat, optimisticMessage: userMessage };
+    },
+
+    // The 202 means the backend has claimed the slot and registered this
+    // send. The backend does not write streamStatus on send any more (the
+    // CLI's `running` does, a moment later), so until then the row says
+    // whatever it said before. Two things must hold regardless of what a
+    // crossing `complete` + refetch may have done in between: the cache
+    // says streaming (shimmer, Stop, and the subscribe effect), and the SSE
+    // subscription is open so the CLI's `streaming`/`queue_state`/ack
+    // events for this send are observed. subscribeToStream is idempotent.
+    onSuccess: (_data, { conversationId, userMessageId }, context) => {
+      queryClient.setQueryData<ConversationWithMessages>(
+        queryKeys.conversations.detail(conversationId),
+        (old) => {
+          if (!old) return old;
+          const optimistic = context?.optimisticMessage;
+          const hasBubble = old.messages.some((m) => m.id === userMessageId);
+          return {
+            ...old,
+            streamStatus: "streaming",
+            messages:
+              hasBubble || !optimistic
+                ? old.messages
+                : [...old.messages, optimistic],
+          };
+        },
+      );
+      subscribeToStream(conversationId, queryClient);
     },
 
     onError: (_err, { conversationId, userMessageId }, context) => {

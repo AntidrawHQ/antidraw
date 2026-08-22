@@ -49,6 +49,7 @@ import {
   unregisterStream,
   cancelStream as cancelActiveStream,
   cancelQueuedMessage,
+  type ActiveStream,
 } from "@/main/lib/stream-manager";
 import { workspaceController } from "./controllers/workspace.controller";
 import { preferenceController } from "./controllers/preference.controller";
@@ -98,27 +99,61 @@ export type StreamEvent =
   // The CLI folded a mid-turn send into a turn (replay ack). The renderer
   // drops its "Queued" mark for that userMessageId.
   | { type: "message_accepted"; userMessageId: string }
+  // The CLI reported `running`: a turn is in flight. Counterpart of
+  // `complete`; the renderer flips to streaming and keeps listening.
+  | { type: "streaming" }
+  // Sent once on every SSE subscribe: the un-acked queued messages right
+  // now, so a (re)subscribing renderer rebuilds its "Queued" marks from the
+  // truth instead of client memory.
+  | { type: "queue_state"; userMessageIds: string[] }
   | { type: "complete" }
   | { type: "error"; error: string }
   // Actual per-turn effort echoed by the CLI's Stop hook. Transport only —
   // no renderer consumer yet; reserved for deviation-feedback UI.
   | { type: "effort"; level: string };
 
-// Closes a turn the owning loop is holding open for pushed messages that
-// will now never be acked (cancelled, or the push failed). The loop holds
-// when a `result` lands with pushes un-acked; normally the CLI then starts a
-// turn for them and the ack hands completion back to the loop. If instead
-// every pending push is withdrawn, the CLI goes idle and says nothing more —
-// so whoever emptied the set settles here. This is the only end-of-turn
-// write outside the owning loop, and it is safe because the loop is parked
-// in for-await with nothing left to arrive. No-op unless a turn is held and
-// nothing is pending.
-const settleHeldTurn = async (conversationId: string) => {
+// End of turn = the CLI said `idle` AND nothing we pushed is still
+// un-acked. The owning loop calls this on `idle`; it is also called from
+// the two places that can empty the pending set while the CLI is already
+// idle — a successful cancel, a failed push — because the CLI will say
+// nothing more in that case. Idempotent per idle (idleSettled), reset by
+// the next `running`. No-op while the CLI is running or spawning.
+const settleIdle = async (conversationId: string) => {
   const stream = activeStreams.get(conversationId);
-  if (!stream?.resultHeld || stream.pendingUserMessageIds.size > 0) return;
-  stream.resultHeld = false;
+  if (!stream || stream.cliState !== "idle" || stream.idleSettled) return;
+  if (stream.pendingUserMessageIds.size > 0) return;
+  stream.idleSettled = true;
+  disarmIdleWatchdog(stream);
   await updateConversationStatus(conversationId, "idle");
   streamEvents.emit("complete", conversationId);
+};
+
+// `idle` arrived with a push still in flight on stdin. The CLI's `running`
+// for it follows within milliseconds; if it never comes the push was lost
+// (dead input, CLI ignored it) and the hold must not last forever. On
+// expiry the lost ids are forgotten (their rows remain — the renderer's
+// marks clear on complete) and the turn closes.
+const IDLE_WATCHDOG_MS = 30_000;
+
+const disarmIdleWatchdog = (stream: ActiveStream) => {
+  if (stream.idleWatchdog) clearTimeout(stream.idleWatchdog);
+  stream.idleWatchdog = null;
+};
+
+const armIdleWatchdog = (conversationId: string, stream: ActiveStream) => {
+  disarmIdleWatchdog(stream);
+  stream.idleWatchdog = setTimeout(() => {
+    stream.idleWatchdog = null;
+    if (stream.cliState !== "idle" || stream.idleSettled) return;
+    console.error(
+      "CLI idle but pushes never acked after",
+      IDLE_WATCHDOG_MS,
+      "ms; releasing",
+      [...stream.pendingUserMessageIds],
+    );
+    stream.pendingUserMessageIds.clear();
+    void settleIdle(conversationId);
+  }, IDLE_WATCHDOG_MS);
 };
 
 // Background processor for streaming messages
@@ -148,13 +183,14 @@ const processStream = async (
   });
   const owned = claimStream(conversation.id, promptStream);
   // Win or lose, the slot exists now and nothing has awaited since the
-  // claim, so this lookup cannot miss. Track this send's uuid as pending
-  // BEFORE the first await below: if the live turn's `result` lands while
-  // we are still persisting, the owning loop must hold the turn open for
-  // this message rather than flip idle and strand the follow-on turn with
-  // the renderer unsubscribed.
+  // claim, so this lookup cannot miss. A follow-up is tracked as pending
+  // from here, BEFORE the first await: if the CLI's `idle` for the current
+  // turn lands while we are still persisting, the owning loop sees the
+  // pending id and holds instead of closing the turn under us. The owner's
+  // own first message is not tracked — it is the spawn prompt, never
+  // "queued", and the CLI reports `running` for it before anything else.
   const stream = activeStreams.get(conversation.id)!;
-  stream.pendingUserMessageIds.add(userMessageId);
+  if (!owned) stream.pendingUserMessageIds.add(userMessageId);
 
   // Persist the snapshot. Model is a full overwrite (absent = the "Default"
   // pick, i.e. CLI default); effort is preserved when absent — the composer
@@ -234,7 +270,7 @@ const processStream = async (
       // turn open only for it, close that turn.
       console.error("Failed to push follow-up turn:", e);
       stream.pendingUserMessageIds.delete(userMessageId);
-      await settleHeldTurn(conversation.id);
+      await settleIdle(conversation.id);
     }
     return;
   }
@@ -290,6 +326,36 @@ const processStream = async (
         continue;
       }
 
+      // The CLI's session state — the lifecycle authority. `running` (and
+      // `requires_action`, a parked prompt inside a turn) = streaming.
+      // `idle` = the turn and the CLI's own command queue are fully drained
+      // (verified: it is NOT emitted between a turn's result and a queued
+      // follow-up; it survives interrupt; a later push re-emits `running`).
+      // The one thing the CLI cannot know about is a push still on stdin
+      // that it has not parsed yet — that is what pendingUserMessageIds
+      // guards: idle with un-acked pushes holds (its `running` follows in
+      // milliseconds, watchdog otherwise). Not persisted.
+      if (
+        sdkMessage.type === "system" &&
+        sdkMessage.subtype === "session_state_changed"
+      ) {
+        if (sdkMessage.state === "idle") {
+          stream.cliState = "idle";
+          if (stream.pendingUserMessageIds.size === 0) {
+            await settleIdle(conversation.id);
+          } else {
+            armIdleWatchdog(conversation.id, stream);
+          }
+        } else {
+          stream.cliState = sdkMessage.state;
+          stream.idleSettled = false;
+          disarmIdleWatchdog(stream);
+          await updateConversationStatus(conversation.id, "streaming");
+          streamEvents.emit("streaming", conversation.id);
+        }
+        continue;
+      }
+
       // Replay ack (--replay-user-messages): the CLI re-emits a stdin user
       // message once it is folded into a turn, carrying the uuid we stamped
       // — i.e. the userMessageId. This is acceptance. Relay it and do NOT
@@ -302,9 +368,6 @@ const processStream = async (
         sdkMessage.isReplay
       ) {
         stream.pendingUserMessageIds.delete(sdkMessage.uuid);
-        // The CLI did start a turn for the held message — the normal
-        // end-of-turn path owns completion again.
-        stream.resultHeld = false;
         streamEvents.emit("accepted", conversation.id, sdkMessage.uuid);
         continue;
       }
@@ -315,8 +378,11 @@ const processStream = async (
         sdkMessage.type === "system" &&
         sdkMessage.subtype === "init"
       ) {
-        sessionId = sdkMessage.session_id;
-        await updateConversationSession(conversation.id, sessionId);
+        const initSessionId: string | undefined = sdkMessage.session_id;
+        if (initSessionId) {
+          sessionId = initSessionId;
+          await updateConversationSession(conversation.id, initSessionId);
+        }
 
         const userMsg = convertUserPromptToSDKMessage(
           message,
@@ -338,23 +404,10 @@ const processStream = async (
         sdkMessage,
       });
 
-      // End-of-turn: flip status back to idle and notify subscribers so
-      // the renderer clears its live partial / shimmer state. The
-      // for-await loop continues, waiting for the next pushed turn.
-      //
-      // Exception: a pushed message that is still un-acked at result time
-      // landed after this turn finalized — the CLI is about to start a
-      // fresh turn for it (verified live). Hold the turn open (stay
-      // "streaming", no "complete") so the renderer keeps its subscription
-      // and shimmer; the ack resets resultHeld, or a cancel settles it.
-      if (sdkMessage.type === "result") {
-        if (stream.pendingUserMessageIds.size === 0) {
-          await updateConversationStatus(conversation.id, "idle");
-          streamEvents.emit("complete", conversation.id);
-        } else {
-          stream.resultHeld = true;
-        }
-      }
+      // `result` is persisted like any other message but is NOT an
+      // end-of-turn signal: a queued follow-up runs straight after it with
+      // no idle in between. The CLI's `session_state_changed: idle` above
+      // is the only thing that closes a turn.
     }
 
     // Reached only if the input stream is closed (end()) or the SDK tears
@@ -395,9 +448,14 @@ api.post(
     // Mid-turn sends are accepted: processStream's claimStream() fork routes
     // them as pushes into the live stream, the CLI queues them, and the
     // replay ack (message_accepted) reports when each is folded into a
-    // turn. streamStatus is per-turn state: "streaming" from here until the
-    // owning loop sees a result with no un-acked pushes outstanding.
-    await updateConversationStatus(conversation.id, "streaming");
+    // turn.
+    //
+    // No status write here. streamStatus has exactly one writer — the
+    // owning loop, driven by the CLI's session state (`running` →
+    // streaming, drained `idle` → idle). A second writer on the send path
+    // is what let a send crossing the end of a turn leave the row idle
+    // while the CLI ran the follow-up. The renderer covers the spawn window
+    // with its optimistic state and subscribes on the 202.
 
     // Fire and forget - inner try/catch handles errors, this prevents unhandled rejections
     processStream(conversation, message, workspaceId, userMessageId, images, {
@@ -448,6 +506,17 @@ api.get(
     }
 
     return streamSSE(ctx, async (stream) => {
+      // Seed the subscriber with the truth about the queue before any live
+      // event can race it.
+      stream.writeSSE({
+        data: JSON.stringify({
+          type: "queue_state",
+          userMessageIds: [
+            ...(activeStreams.get(conversationId)?.pendingUserMessageIds ?? []),
+          ],
+        } satisfies StreamEvent),
+      });
+
       const onMessage = (convId: string, message: Message) => {
         if (convId !== conversationId) return;
         stream.writeSSE({
@@ -481,6 +550,13 @@ api.get(
         });
       };
 
+      const onStreaming = (convId: string) => {
+        if (convId !== conversationId) return;
+        stream.writeSSE({
+          data: JSON.stringify({ type: "streaming" } satisfies StreamEvent),
+        });
+      };
+
       const onComplete = (convId: string) => {
         if (convId !== conversationId) return;
         stream.writeSSE({
@@ -505,6 +581,7 @@ api.get(
       streamEvents.on("message", onMessage);
       streamEvents.on("partial", onPartial);
       streamEvents.on("accepted", onAccepted);
+      streamEvents.on("streaming", onStreaming);
       streamEvents.on("complete", onComplete);
       streamEvents.on("error", onError);
       streamEvents.on("effort", onEffort);
@@ -513,6 +590,7 @@ api.get(
         streamEvents.off("message", onMessage);
         streamEvents.off("partial", onPartial);
         streamEvents.off("accepted", onAccepted);
+        streamEvents.off("streaming", onStreaming);
         streamEvents.off("complete", onComplete);
         streamEvents.off("error", onError);
         streamEvents.off("effort", onEffort);
@@ -587,9 +665,9 @@ api.delete(
       console.error("Failed to delete cancelled message row:", deleted.error);
     }
 
-    // If the owning loop was holding a turn open only for this message,
-    // nothing more will come from the CLI — close it.
-    await settleHeldTurn(conversationId);
+    // If the CLI is already idle and this was the last un-acked push, it
+    // will say nothing more — close the turn.
+    await settleIdle(conversationId);
 
     return ctx.json({ cancelled: true });
   },

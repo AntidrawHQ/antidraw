@@ -13,6 +13,10 @@ type ConversationEvents = {
   // the userMessageId we stamped at push time). Until this fires the
   // message is "queued" from the UI's perspective.
   accepted: [conversationId: string, userMessageId: string];
+  // The CLI reported session state `running`: a turn is in flight (or about
+  // to be). The renderer flips to streaming on this — it is the push-side
+  // counterpart of `complete`, and the only other status writer.
+  streaming: [conversationId: string];
   complete: [conversationId: string];
   error: [conversationId: string, error: string];
   // Actual effort the CLI ran the turn with (Stop-hook echo, post any
@@ -28,6 +32,15 @@ class ConversationEventEmitter extends EventEmitter<ConversationEvents> {}
 // re-emits init per turn regardless). There is nothing to cache anyway:
 // options ride each send from the composer, so cold starts pass them as
 // spawn options and pushes apply them via control requests first.
+// The CLI's own session state, as reported by its `session_state_changed`
+// events (enabled via CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS at spawn).
+// "spawning" is ours: the process exists but has not reported yet.
+//   running          — a turn is in flight (emitted before the first init)
+//   requires_action  — parked on a permission/dialog prompt (still a turn)
+//   idle             — the turn AND the CLI's command queue are fully
+//                      drained; nothing more will arrive until a push
+export type CliSessionState = "spawning" | "running" | "requires_action" | "idle";
+
 export type ActiveStream = {
   // null only between the claim and the spawn: the slot is taken before the
   // CLI exists so no second send can claim it, and callers that need the
@@ -35,19 +48,25 @@ export type ActiveStream = {
   // options snapshot persist — since sendMessage() itself is synchronous.
   query: Query | null;
   promptStream: PromptStream;
-  // userMessageIds pushed to the CLI but not yet acked by a replay. The CLI
-  // queues pushed messages and drains them at the next tool boundary (or,
-  // if the turn already finalized, as a fresh turn) — so a non-empty set at
-  // `result` time means more output is coming and the owning loop must not
-  // flip to idle yet. Added BEFORE push (the ack arrives asynchronously via
-  // the loop), removed on ack or on a successful cancel.
+  // Follow-up (push-path) userMessageIds not yet acked by a replay. Serves
+  // three things: the renderer's "Queued" marks, cancel, and one guard —
+  // a CLI `idle` that lands while a push is still in flight on stdin (the
+  // CLI has not parsed it yet, so its queue looked empty) must not close
+  // the turn; the `running` for that push follows within milliseconds.
+  // Added BEFORE push (the ack arrives asynchronously via the loop),
+  // removed on ack or on a successful cancel. Verified live: `idle` is not
+  // emitted between a turn's result and a queued follow-up the CLI already
+  // holds — only when its queue is truly empty.
   pendingUserMessageIds: Set<string>;
-  // A `result` arrived while pendingUserMessageIds was non-empty, so the
-  // owning loop held the turn open (stayed "streaming"). Cleared by the next
-  // ack (the CLI did start the follow-on turn) — or, if every pending
-  // message is cancelled instead, the cancel path settles the held turn
-  // itself, because the loop is parked on a CLI that has gone idle.
-  resultHeld: boolean;
+  // Last state the CLI reported. The owning loop is the only writer.
+  cliState: CliSessionState;
+  // True once the current `idle` has been turned into status idle +
+  // `complete`. Reset on `running`. Lets the idle guard above be released
+  // later (ack, cancel, watchdog) without double-completing.
+  idleSettled: boolean;
+  // Safety net for the idle guard: if `idle` arrived with a push in flight
+  // and no `running` follows (the push was lost), release the hold.
+  idleWatchdog: ReturnType<typeof setTimeout> | null;
 };
 
 // cancelAsyncMessage is a real control request on the SDK's Query (subtype
@@ -89,7 +108,9 @@ export const claimStream = (
     query: null,
     promptStream,
     pendingUserMessageIds: new Set(),
-    resultHeld: false,
+    cliState: "spawning",
+    idleSettled: false,
+    idleWatchdog: null,
   });
   return true;
 };
@@ -104,6 +125,8 @@ export const attachQuery = (conversationId: string, query: Query): void => {
 // terminated — so an entry can never vanish under a live loop. That single
 // writer is what lets the send path trust whatever claimStream tells it.
 export const unregisterStream = (conversationId: string): void => {
+  const stream = activeStreams.get(conversationId);
+  if (stream?.idleWatchdog) clearTimeout(stream.idleWatchdog);
   activeStreams.delete(conversationId);
 };
 

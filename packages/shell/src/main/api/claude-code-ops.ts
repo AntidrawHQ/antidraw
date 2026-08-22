@@ -271,6 +271,15 @@ Current workspace directory: ${workspacePath}
         // streamInput just writes to stdin. Not a first-class SDK option,
         // only the CLI flag (verified live: without it, no ack ever comes).
         extraArgs: { "replay-user-messages": null },
+        // Make the CLI report its session state ({type:"system",
+        // subtype:"session_state_changed", state:"running"|"idle"|
+        // "requires_action"}). `idle` fires only when the turn AND the CLI's
+        // command queue are fully drained, which is the end-of-turn signal
+        // the stream lifecycle keys on — `result` is not one (a queued
+        // follow-up runs after it with no idle in between). Gated behind an
+        // env var rather than an option; the SDK merges this into the child
+        // env. Verified live against the pinned CLI.
+        env: { ...process.env, CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1" },
       },
     });
 
