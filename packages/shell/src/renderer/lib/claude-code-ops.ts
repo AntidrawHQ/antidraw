@@ -21,11 +21,7 @@ import {
   sendMessage,
 } from "./api";
 import { DEFAULT_MODELS } from "@/renderer/components/modelPickerShared";
-import {
-  SEND_MESSAGE_MUTATION_KEY,
-  subscribeToStream,
-  type LivePartial,
-} from "./stream-subscription";
+import { subscribeToStream, type LivePartial } from "./stream-subscription";
 import { selectToolMap } from "./tool-utils";
 
 // Shared query options for conversation data
@@ -48,21 +44,19 @@ export const useConversationMessages = (conversationId: string | null) => {
   return useQuery(conversationQueryOpts(conversationId));
 };
 
-// Hook that subscribes to stream events when conversation is streaming
+// The conversation query plus its live SSE mirror. The subscription is owned
+// by the open conversation — it opens when this mounts for a conversation and
+// stops when the conversation changes or the view unmounts — not by whether
+// a turn is in flight: the CLI keeps emitting after a turn (background
+// tasks), and the server seeds status + queue on every connect.
 export const useConversationWithStream = (conversationId: string | null) => {
   const queryClient = useQueryClient();
-
-  // Main data query
   const query = useQuery(conversationQueryOpts(conversationId));
 
-  const isStreaming = query.data?.streamStatus === "streaming";
-
-  // SSE subscription - fire and forget, runs until server terminates
   useEffect(() => {
-    if (!conversationId || !isStreaming) return;
-    subscribeToStream(conversationId, queryClient);
-    // No cleanup - subscription runs until server sends terminal event
-  }, [conversationId, isStreaming, queryClient]);
+    if (!conversationId) return;
+    return subscribeToStream(conversationId, queryClient);
+  }, [conversationId, queryClient]);
 
   return query;
 };
@@ -127,10 +121,8 @@ export const useSupportedModels = () => {
   });
 };
 
-// userMessageIds sent while a turn was in flight and not yet acked by the
-// CLI (message_accepted). Renderer-only cache state: populated by
-// useSendMessage, drained by stream-subscription (ack / complete / error)
-// and useCancelQueuedMessage. Nothing is persisted; a refetch clears it.
+// Mid-turn sends the CLI has not yet folded into a turn. Server-owned:
+// written only by the `queue_state` event (sent on connect and on change).
 export const useQueuedMessageIds = (conversationId: string | null) => {
   return useQuery<string[]>({
     queryKey: queryKeys.conversations.queuedMessageIds(conversationId),
@@ -174,7 +166,6 @@ export const useSendMessage = () => {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationKey: [SEND_MESSAGE_MUTATION_KEY],
     mutationFn: async (params: {
       message: string;
       workspaceId: string;
@@ -227,15 +218,6 @@ onMutate: async ({ message, conversationId, userMessageId, images }) => {
         createdAt: new Date(),
       };
 
-      // Sent mid-turn: the CLI queues it. Mark it until the ack
-      // (message_accepted) says it has entered a turn.
-      if (previousChat.streamStatus === "streaming") {
-        queryClient.setQueryData<string[]>(
-          queryKeys.conversations.queuedMessageIds(conversationId),
-          (prev) => [...(prev ?? []), userMessageId],
-        );
-      }
-
       queryClient.setQueryData<ConversationWithMessages>(
         queryKeys.conversations.detail(conversationId),
         {
@@ -245,56 +227,23 @@ onMutate: async ({ message, conversationId, userMessageId, images }) => {
         },
       );
 
-      return { previousChat, optimisticMessage: userMessage };
+      return { previousChat };
     },
 
-    // The 202 means the backend has claimed the slot and registered this
-    // send. The backend does not write streamStatus on send any more (the
-    // CLI's `running` does, a moment later), so until then the row says
-    // whatever it said before. Two things must hold regardless of what a
-    // crossing `complete` + refetch may have done in between: the cache
-    // says streaming (shimmer, Stop, and the subscribe effect), and the SSE
-    // subscription is open so the CLI's `streaming`/`queue_state`/ack
-    // events for this send are observed. subscribeToStream is idempotent.
-    onSuccess: (_data, { conversationId, userMessageId }, context) => {
-      queryClient.setQueryData<ConversationWithMessages>(
-        queryKeys.conversations.detail(conversationId),
-        (old) => {
-          if (!old) return old;
-          const optimistic = context?.optimisticMessage;
-          const hasBubble = old.messages.some((m) => m.id === userMessageId);
-          return {
-            ...old,
-            streamStatus: "streaming",
-            messages:
-              hasBubble || !optimistic
-                ? old.messages
-                : [...old.messages, optimistic],
-          };
-        },
-      );
-      subscribeToStream(conversationId, queryClient);
-    },
-
-    onError: (_err, { conversationId, userMessageId }, context) => {
+    onError: (_err, { conversationId }, context) => {
       if (context?.previousChat) {
         queryClient.setQueryData(
           queryKeys.conversations.detail(conversationId),
           context.previousChat,
         );
       }
-      queryClient.setQueryData<string[]>(
-        queryKeys.conversations.queuedMessageIds(conversationId),
-        (prev) => prev?.filter((id) => id !== userMessageId) ?? [],
-      );
     },
   });
 };
 
-// Withdraw a queued message. The backend relays the CLI's verdict:
-// cancelled=true → it never runs; drop the optimistic bubble and the mark.
-// cancelled=false → it already entered a turn (ack imminent) or never
-// reached the CLI; it will run, so keep the bubble and drop only the mark.
+// Withdraw a queued message. The server answers with the CLI's verdict and
+// broadcasts the new queue_state either way; the only thing left to do here
+// is drop the bubble when it was truly withdrawn (its row is gone).
 export const useCancelQueuedMessage = () => {
   const queryClient = useQueryClient();
 
@@ -313,10 +262,6 @@ export const useCancelQueuedMessage = () => {
       return result.value;
     },
     onSuccess: ({ cancelled }, { conversationId, userMessageId }) => {
-      queryClient.setQueryData<string[]>(
-        queryKeys.conversations.queuedMessageIds(conversationId),
-        (prev) => prev?.filter((id) => id !== userMessageId) ?? [],
-      );
       if (!cancelled) return;
       queryClient.setQueryData<ConversationWithMessages>(
         queryKeys.conversations.detail(conversationId),

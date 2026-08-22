@@ -1,4 +1,3 @@
-import type { UUID } from "node:crypto";
 import {
   conversations,
   messages,
@@ -7,8 +6,7 @@ import {
 } from "@/main/api/models/chat.model";
 import type { EffortLevel } from "@anthropic-ai/claude-agent-sdk";
 import { db } from "@/main/db";
-import type { ImageAttachment } from "@/shared/utils/message";
-import { getStreamStatus, streamEvents } from "@/main/lib/stream-manager";
+import { emitStreamEvent, getStreamStatus } from "@/main/lib/stream-manager";
 
 // Every conversation that leaves the service carries its live stream status,
 // read from memory at that moment. The status is not a column (see
@@ -20,7 +18,6 @@ const withStreamStatus = <T extends ConversationRow>(
   ...row,
   streamStatus: getStreamStatus(row.id),
 });
-import { createUserSDKMessage } from "@/shared/utils/message";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { eq, desc } from "drizzle-orm";
 import { ok, err } from "neverthrow";
@@ -103,16 +100,6 @@ export const listConversations = async (workspaceId: string) => {
   }
 };
 
-export const resolveOrCreateConversation = async (
-  workspaceId: string,
-  conversationId?: string
-) => {
-  if (conversationId) {
-    return getConversation(conversationId);
-  }
-  return createConversation(workspaceId);
-};
-
 export const getConversation = async (
   conversationID: string,
   options: {
@@ -155,22 +142,6 @@ export const getConversation = async (
   }
 };
 
-// The persisted copy of a user prompt carries the frontend's userMessageId as
-// its SDK uuid — the same uuid stamped on the message pushed to the CLI, so
-// the row, the optimistic renderer bubble, and the CLI's replay ack all name
-// one message.
-export const convertUserPromptToSDKMessage = (
-  prompt: string,
-  userMessageId: UUID,
-  images?: ImageAttachment[]
-) => {
-  return createUserSDKMessage({
-    text: prompt,
-    uuid: userMessageId,
-    images,
-  });
-};
-
 // Removes a message row. Used when a queued (not yet accepted) user prompt
 // is withdrawn from the CLI's queue: the send-time user_prompt row is the
 // only copy, and a message that never ran must not survive in history.
@@ -207,7 +178,7 @@ export const addMessage = async (params: {
       .returning();
 
     // Emit after insert - automatic, can't forget
-    streamEvents.emit("message", params.conversationId, message);
+    emitStreamEvent(params.conversationId, { type: "message", message });
 
     return ok(message);
   } catch (e) {

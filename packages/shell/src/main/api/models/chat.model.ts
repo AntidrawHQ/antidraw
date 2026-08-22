@@ -7,10 +7,9 @@ import { workspaces } from "./workspace.model";
 // Not a column. A stream cannot outlive the process (the CLI is a child),
 // so the live status is in-memory truth (stream-manager: activeStreams +
 // the CLI's reported session state) and is attached to conversation rows
-// at the service boundary. "idle" at rest, "streaming" while the CLI says a
-// turn is in flight, "error" if the owning loop died. The UI only
-// distinguishes streaming vs not.
-export type StreamStatus = "idle" | "streaming" | "error";
+// at the service boundary. "streaming" while the CLI says a turn is in
+// flight, "idle" otherwise.
+export type StreamStatus = "idle" | "streaming";
 
 export const conversations = sqliteTable("conversations", {
   id: text("id").primaryKey(),

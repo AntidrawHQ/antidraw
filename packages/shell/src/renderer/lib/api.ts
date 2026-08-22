@@ -469,81 +469,40 @@ export const sendMessage = async (params: {
   }
 };
 
-// Subscribe to conversation stream events via SSE.
-//
-// The AbortController is the single kill switch: aborting it cancels the
-// underlying fetch (which makes the backend's request abort signal fire and
-// detach its event listeners) and resolves fetchEventSource cleanly without
-// triggering its default 1s auto-reconnect. Without this, a closed wrapper
-// controller would still see the underlying HTTP stay open; the next event
-// from the server would throw on enqueue, the library would auto-retry, and
-// each retry would re-attach a listener on the backend — a geometric leak.
-//
-// `onerror` throws to make the no-retry intent explicit even though the
-// signal abort would already prevent retries. Any non-clean close
-// (transport error, backend crash, body ending before a terminal event) is
-// surfaced as a synthetic `error` event so the consumer's existing error
-// path runs — invalidating the conversation query and flipping status to
-// `"error"` — instead of silently completing.
+// One SSE connection for a conversation. Yields every StreamEvent until the
+// caller aborts `signal` or the transport ends (error, close); it never
+// decides on its own that a stream is "finished" — turn boundaries are just
+// `status` events inside it. Aborting the signal cancels the underlying
+// fetch, which makes the backend drop its listener; `onerror` throws so the
+// library never auto-retries behind our back (the consumer reconnects).
 export const subscribeToConversation = async function* (
   conversationId: string,
+  signal: AbortSignal,
 ): AsyncGenerator<StreamEvent> {
-  const abort = new AbortController();
-  let receivedTerminal = false;
-
+  let closed = false;
   const stream = new ReadableStream<StreamEvent>({
     start(controller) {
-      const finish = () => {
+      const close = () => {
+        if (closed) return;
+        closed = true;
         controller.close();
-        abort.abort();
       };
-
-      const failClosed = (message: string) => {
-        if (!receivedTerminal) {
-          receivedTerminal = true;
-          controller.enqueue({
-            type: "error",
-            error: message,
-          } satisfies StreamEvent);
-        }
-        finish();
-      };
-
       fetchEventSource(`antidraw://app/api/chat/${conversationId}/stream`, {
-        signal: abort.signal,
+        signal,
+        openWhenHidden: true,
         onopen: async (response) => {
-          if (!response.ok) {
-            const errorBody = await response.json().catch(() => ({}));
-            const errorMessage =
-              errorBody?.error?.message ?? response.statusText;
-            failClosed(errorMessage);
-          }
+          if (!response.ok) close();
         },
         onmessage: (ev) => {
-          const event = JSON.parse(ev.data) as StreamEvent;
-          controller.enqueue(event);
-          if (event.type === "complete" || event.type === "error") {
-            receivedTerminal = true;
-            finish();
-          }
+          if (!closed) controller.enqueue(JSON.parse(ev.data) as StreamEvent);
         },
         onerror: (error) => {
-          const message =
-            error instanceof Error ? error.message : "Stream connection failed";
-          failClosed(message);
+          close();
           throw error;
         },
-        onclose: () => {
-          if (!receivedTerminal) {
-            failClosed("Stream ended unexpectedly");
-          } else {
-            finish();
-          }
-        },
+        onclose: close,
       });
-    },
-    cancel() {
-      abort.abort();
+      signal.addEventListener("abort", close);
     },
   });
 

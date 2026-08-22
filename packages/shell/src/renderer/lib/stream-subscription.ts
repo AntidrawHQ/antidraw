@@ -3,14 +3,7 @@ import type { ConversationWithMessages } from "@/main/api";
 import type { BetaContentBlock } from "@anthropic-ai/sdk/resources/beta/messages";
 import { subscribeToConversation, type StreamEvent } from "./api";
 import { queryKeys } from "./query-keys";
-
-// Mutation key of useSendMessage — referenced here so queue_state can spare
-// the marks of sends whose POST is still in flight (the backend cannot know
-// about those yet).
-export const SEND_MESSAGE_MUTATION_KEY = "send-message";
 import { parsePartialJson } from "@/shared/utils/parse-partial-json";
-
-const activeSubscriptions = new Map<string, Promise<void>>();
 
 // The in-flight content block — stored as the SDK's own BetaContentBlock,
 // with `partialJson` as a sibling string accumulator for tool_use blocks
@@ -21,32 +14,55 @@ export type LivePartial = {
   partialJson?: string;
 } | null;
 
+const activeSubscriptions = new Map<string, () => void>();
+
+/**
+ * Keep one SSE subscription open for a conversation, for as long as the
+ * caller wants it (returns the stop function; idempotent per conversation).
+ * The server seeds status + queue on every connect and then streams deltas;
+ * the CLI keeps emitting after a turn (background tasks etc.), so the
+ * subscription is NOT tied to streaming — it lives while the conversation
+ * is open. If the transport drops while still wanted, refetch (rows may
+ * have been missed) and reconnect.
+ */
 export const subscribeToStream = (
   conversationId: string,
   queryClient: QueryClient,
-): void => {
-  // Already subscribed - no-op
-  if (activeSubscriptions.has(conversationId)) return;
+): (() => void) => {
+  const existing = activeSubscriptions.get(conversationId);
+  if (existing) return existing;
 
-  const promise = (async () => {
-    try {
-      const stream = subscribeToConversation(conversationId);
+  let stopped = false;
+  let abort = new AbortController();
+  const stop = () => {
+    stopped = true;
+    abort.abort();
+    activeSubscriptions.delete(conversationId);
+  };
+  activeSubscriptions.set(conversationId, stop);
 
-      for await (const event of stream) {
-        handleStreamEvent(conversationId, event, queryClient);
+  void (async () => {
+    while (!stopped) {
+      abort = new AbortController();
+      try {
+        for await (const event of subscribeToConversation(
+          conversationId,
+          abort.signal,
+        )) {
+          handleStreamEvent(conversationId, event, queryClient);
+        }
+      } catch (e) {
+        console.error("Stream subscription error:", e);
       }
-    } catch (e) {
-      console.error("Stream subscription error:", e);
-    } finally {
-      activeSubscriptions.delete(conversationId);
+      if (stopped) break;
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.conversations.detail(conversationId),
+      });
+      await new Promise((r) => setTimeout(r, 1000));
     }
   })();
 
-  activeSubscriptions.set(conversationId, promise);
-};
-
-export const isSubscribed = (conversationId: string): boolean => {
-  return activeSubscriptions.has(conversationId);
+  return stop;
 };
 
 const clearLive = (conversationId: string, queryClient: QueryClient): void => {
@@ -56,65 +72,26 @@ const clearLive = (conversationId: string, queryClient: QueryClient): void => {
   );
 };
 
-const clearQueued = (
-  conversationId: string,
-  queryClient: QueryClient,
-): void => {
-  queryClient.setQueryData<string[]>(
-    queryKeys.conversations.queuedMessageIds(conversationId),
-    [],
-  );
-};
-
-const inFlightSendIds = (queryClient: QueryClient): string[] =>
-  queryClient
-    .getMutationCache()
-    .getAll()
-    .filter(
-      (m) =>
-        m.options.mutationKey?.[0] === SEND_MESSAGE_MUTATION_KEY &&
-        m.state.status === "pending",
-    )
-    .map((m) => (m.state.variables as { userMessageId?: string })?.userMessageId)
-    .filter((id): id is string => typeof id === "string");
-
+// Mirror each StreamEvent into the React Query cache. The server is the
+// authority for status and the queued set; the renderer only reflects.
 const handleStreamEvent = (
   conversationId: string,
   event: StreamEvent,
   queryClient: QueryClient,
 ): void => {
-  // Authoritative queue snapshot on (re)subscribe: rebuild the marks from
-  // it, keeping only the sends the backend cannot know about yet.
-  if (event.type === "queue_state") {
-    const inFlight = inFlightSendIds(queryClient);
-    queryClient.setQueryData<string[]>(
-      queryKeys.conversations.queuedMessageIds(conversationId),
-      (prev) => [
-        ...event.userMessageIds,
-        ...(prev ?? []).filter(
-          (id) => inFlight.includes(id) && !event.userMessageIds.includes(id),
-        ),
-      ],
-    );
-    return;
-  }
-
-  // The CLI reported a turn in flight. The only thing that can have made
-  // the cache say otherwise is a refetch that raced the CLI's own report
-  // (the backend writes the row on `running`, not on send), so re-assert.
-  if (event.type === "streaming") {
+  if (event.type === "status") {
     queryClient.setQueryData<ConversationWithMessages>(
       queryKeys.conversations.detail(conversationId),
-      (old) => (old ? { ...old, streamStatus: "streaming" } : old),
+      (old) => (old ? { ...old, streamStatus: event.status } : old),
     );
+    if (event.status === "idle") clearLive(conversationId, queryClient);
     return;
   }
 
-  // The CLI folded a mid-turn send into a turn — it is no longer "queued".
-  if (event.type === "message_accepted") {
+  if (event.type === "queue_state") {
     queryClient.setQueryData<string[]>(
       queryKeys.conversations.queuedMessageIds(conversationId),
-      (prev) => prev?.filter((id) => id !== event.userMessageId) ?? [],
+      event.userMessageIds,
     );
     return;
   }
@@ -192,45 +169,6 @@ const handleStreamEvent = (
     if (event.message.sdkMessage.type === "assistant") {
       clearLive(conversationId, queryClient);
     }
-    return;
-  }
-
-  if (event.type === "complete") {
-    clearLive(conversationId, queryClient);
-    // A turn can only complete with nothing left un-acked (the backend holds
-    // the turn open otherwise), so any leftover mark is stale.
-    clearQueued(conversationId, queryClient);
-    queryClient.setQueryData<ConversationWithMessages>(
-      queryKeys.conversations.detail(conversationId),
-      (old) => (old ? { ...old, streamStatus: "idle" } : old),
-    );
-    // TODO: Rearchitect to a single stream endpoint that sends initial state + live events,
-    // eliminating the race condition between initial fetch and stream subscription.
-    queryClient.invalidateQueries({
-      queryKey: queryKeys.conversations.detail(conversationId),
-    });
-    return;
-  }
-
-  if (event.type === "error") {
-    clearLive(conversationId, queryClient);
-    clearQueued(conversationId, queryClient);
-    queryClient.setQueryData<ConversationWithMessages>(
-      queryKeys.conversations.detail(conversationId),
-      (old) => (old ? { ...old, streamStatus: "error" } : old),
-    );
-    queryClient.invalidateQueries({
-      queryKey: queryKeys.conversations.detail(conversationId),
-    });
-    return;
-  }
-
-  if (event.type === "effort") {
-    // Actual per-turn effort echoed by the CLI (post any silent downgrade).
-    // Deliberately unconsumed: the picker shows the user's selection, not
-    // CLI state. Reserved for product feedback when the actual effort
-    // deviates from the selection — compare against the sent effort here
-    // when that lands.
     return;
   }
 };
