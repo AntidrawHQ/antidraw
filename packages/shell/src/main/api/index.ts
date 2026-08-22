@@ -34,7 +34,6 @@ import {
   resolveOrCreateConversation,
   addMessage,
   updateConversationSession,
-  updateConversationStatus,
   updateConversationTitleAndSummary,
   convertUserPromptToSDKMessage,
   deleteMessage,
@@ -49,6 +48,7 @@ import {
   unregisterStream,
   cancelStream as cancelActiveStream,
   cancelQueuedMessage,
+  markStreamError,
   type ActiveStream,
 } from "@/main/lib/stream-manager";
 import { workspaceController } from "./controllers/workspace.controller";
@@ -124,7 +124,6 @@ const settleIdle = async (conversationId: string) => {
   if (stream.pendingUserMessageIds.size > 0) return;
   stream.idleSettled = true;
   disarmIdleWatchdog(stream);
-  await updateConversationStatus(conversationId, "idle");
   streamEvents.emit("complete", conversationId);
 };
 
@@ -350,7 +349,6 @@ const processStream = async (
           stream.cliState = sdkMessage.state;
           stream.idleSettled = false;
           disarmIdleWatchdog(stream);
-          await updateConversationStatus(conversation.id, "streaming");
           streamEvents.emit("streaming", conversation.id);
         }
         continue;
@@ -414,13 +412,15 @@ const processStream = async (
     // down. In the keep-alive model this is the absolute end of the
     // conversation, not a per-turn signal. We hold the slot from the claim
     // until the finally below, so this loop is unambiguously the owner and
-    // reports unconditionally.
-    await updateConversationStatus(conversation.id, "idle");
+    // reports unconditionally. (Status flips to idle by itself: the finally
+    // unregisters the stream, and status is derived from the registry.)
     streamEvents.emit("complete", conversation.id);
   } catch (e) {
     const errorMessage = e instanceof Error ? e.message : "Unknown error";
+    // Remembered in memory so a fresh load still reads "error" until the
+    // next send claims a new stream.
+    markStreamError(conversation.id);
     streamEvents.emit("error", conversation.id, errorMessage);
-    await updateConversationStatus(conversation.id, "error");
   } finally {
     unregisterStream(conversation.id);
   }
@@ -450,12 +450,11 @@ api.post(
     // replay ack (message_accepted) reports when each is folded into a
     // turn.
     //
-    // No status write here. streamStatus has exactly one writer — the
-    // owning loop, driven by the CLI's session state (`running` →
-    // streaming, drained `idle` → idle). A second writer on the send path
-    // is what let a send crossing the end of a turn leave the row idle
-    // while the CLI ran the follow-up. The renderer covers the spawn window
-    // with its optimistic state and subscribes on the 202.
+    // No status write here — there is no status to write. streamStatus is
+    // derived from the stream registry + the CLI's session state whenever a
+    // conversation is read, so it can never disagree with reality. The
+    // renderer covers the spawn window with its optimistic state and
+    // subscribes on the 202.
 
     // Fire and forget - inner try/catch handles errors, this prevents unhandled rejections
     processStream(conversation, message, workspaceId, userMessageId, images, {

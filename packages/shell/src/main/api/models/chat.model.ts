@@ -4,15 +4,13 @@ import type { EffortLevel, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { relations } from "drizzle-orm";
 import { workspaces } from "./workspace.model";
 
-// Use text + TS type (not SQLite enum - simpler, no migration issues for new statuses)
-export type StreamStatus =
-  // "idle" at rest, "streaming" while a turn is in flight, "error" if it failed.
-  // A finished turn returns to "idle"; the UI only distinguishes streaming vs not.
-  // ("completed" was dropped — the backend never persisted it and no reader
-  // branched on it. Legacy "completed" rows are normalized to "idle" on boot.)
-  | "idle"
-  | "streaming"
-  | "error";
+// Not a column. A stream cannot outlive the process (the CLI is a child),
+// so the live status is in-memory truth (stream-manager: activeStreams +
+// the CLI's reported session state) and is attached to conversation rows
+// at the service boundary. "idle" at rest, "streaming" while the CLI says a
+// turn is in flight, "error" if the owning loop died. The UI only
+// distinguishes streaming vs not.
+export type StreamStatus = "idle" | "streaming" | "error";
 
 export const conversations = sqliteTable("conversations", {
   id: text("id").primaryKey(),
@@ -30,7 +28,6 @@ export const conversations = sqliteTable("conversations", {
   // and leaves this column untouched rather than erasing it.
   selectedModel: text("selected_model"),
   selectedEffort: text("selected_effort").$type<EffortLevel>(),
-  streamStatus: text("stream_status").$type<StreamStatus>().default("idle"),
   createdAt: integer("created_at", { mode: "timestamp_ms" })
     .notNull()
     .default(sql`(unixepoch() * 1000)`),
@@ -75,7 +72,9 @@ export const messagesRelations = relations(messages, ({ one }) => ({
 }));
 
 // Type exports
-export type Conversation = typeof conversations.$inferSelect;
+export type ConversationRow = typeof conversations.$inferSelect;
+// What the API hands out: the row plus the live, in-memory stream status.
+export type Conversation = ConversationRow & { streamStatus: StreamStatus };
 export type NewConversation = typeof conversations.$inferInsert;
 export type Message = typeof messages.$inferSelect;
 export type NewMessage = typeof messages.$inferInsert;

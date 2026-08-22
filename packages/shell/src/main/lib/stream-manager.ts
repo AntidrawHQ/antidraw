@@ -1,5 +1,5 @@
 import { EventEmitter } from "events";
-import type { Message } from "@/main/api/models/chat.model";
+import type { Message, StreamStatus } from "@/main/api/models/chat.model";
 import type {
   Query,
   SDKPartialAssistantMessage,
@@ -80,6 +80,29 @@ type QueryWithCancelAsyncMessage = Query & {
 export const streamEvents = new ConversationEventEmitter();
 export const activeStreams = new Map<string, ActiveStream>();
 
+// Conversations whose last owning loop died (CLI crash, spawn failure).
+// Cleared the moment a new stream is claimed for them. Lets a fresh load
+// still see "error" until the user sends again — that is the only thing
+// "error" was ever used for.
+const erroredStreams = new Set<string>();
+
+export const markStreamError = (conversationId: string): void => {
+  erroredStreams.add(conversationId);
+};
+
+/**
+ * The live stream status of a conversation, derived — never stored. A stream
+ * is a child process: it cannot outlive us, so there is nothing to persist
+ * and nothing to reset on boot. No active stream = idle (or error if the
+ * last one died); active stream = whatever the CLI last reported, with
+ * "spawning" counted as streaming because a turn is about to run.
+ */
+export const getStreamStatus = (conversationId: string): StreamStatus => {
+  const stream = activeStreams.get(conversationId);
+  if (!stream) return erroredStreams.has(conversationId) ? "error" : "idle";
+  return stream.cliState === "idle" ? "idle" : "streaming";
+};
+
 /**
  * Take the conversation's stream slot, synchronously.
  *
@@ -89,10 +112,9 @@ export const activeStreams = new Map<string, ActiveStream>();
  * decision cannot be raced.
  *
  * Nothing awaits between the has() and the set(), so two concurrent sends
- * cannot both win. That is the whole point: streamStatus lives in SQLite, so
- * the 409 gate in POST /chat/message reads a snapshot fetched one round trip
- * ago and cannot serialise in-process work. The DB status drives the UI; this
- * map decides who owns the stream.
+ * cannot both win. That is the whole point: this map is the only place that
+ * can serialise in-process work — it decides who owns the stream, and the
+ * status the UI sees is derived from it (getStreamStatus).
  *
  * The claim carries the promptStream because buildPrompt() is synchronous and
  * pushing is an enqueue — so a loser can push immediately, before the winner's
@@ -104,6 +126,7 @@ export const claimStream = (
   promptStream: PromptStream
 ): boolean => {
   if (activeStreams.has(conversationId)) return false;
+  erroredStreams.delete(conversationId);
   activeStreams.set(conversationId, {
     query: null,
     promptStream,

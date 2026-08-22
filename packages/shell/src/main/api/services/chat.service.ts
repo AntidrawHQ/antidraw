@@ -2,12 +2,24 @@ import type { UUID } from "node:crypto";
 import {
   conversations,
   messages,
-  type StreamStatus,
+  type Conversation,
+  type ConversationRow,
 } from "@/main/api/models/chat.model";
 import type { EffortLevel } from "@anthropic-ai/claude-agent-sdk";
 import { db } from "@/main/db";
 import type { ImageAttachment } from "@/shared/utils/message";
-import { streamEvents } from "@/main/lib/stream-manager";
+import { getStreamStatus, streamEvents } from "@/main/lib/stream-manager";
+
+// Every conversation that leaves the service carries its live stream status,
+// read from memory at that moment. The status is not a column (see
+// StreamStatus in chat.model) — attaching it here is what keeps every read
+// path (load, list, create, resolve) current by construction.
+const withStreamStatus = <T extends ConversationRow>(
+  row: T
+): T & Pick<Conversation, "streamStatus"> => ({
+  ...row,
+  streamStatus: getStreamStatus(row.id),
+});
 import { createUserSDKMessage } from "@/shared/utils/message";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { eq, desc } from "drizzle-orm";
@@ -30,7 +42,7 @@ export const createConversation = async (
       })
       .returning();
 
-    return ok(conversation);
+    return ok(withStreamStatus(conversation));
   } catch (_e) {
     return err({
       status: 500 as const,
@@ -81,7 +93,7 @@ export const listConversations = async (workspaceId: string) => {
       .where(eq(conversations.workspaceId, workspaceId))
       .orderBy(desc(conversations.updatedAt));
 
-    return ok(result);
+    return ok(result.map(withStreamStatus));
   } catch (_e) {
     return err({
       status: 500 as const,
@@ -133,7 +145,7 @@ export const getConversation = async (
       });
     }
 
-    return ok(res);
+    return ok(withStreamStatus(res));
   } catch (_e) {
     return err({
       status: 500 as const,
@@ -233,46 +245,6 @@ export const updateConversationSession = async (
       status: 500 as const,
       code: "DB_ERROR",
       message: "Failed to update session",
-    });
-  }
-};
-
-// Crash recovery: any conversation left at "streaming" can only mean the
-// previous app session crashed mid-turn (in-memory activeStreams is gone on
-// boot). Reset to "idle" so the UI doesn't render a phantom shimmer for a
-// stream that no longer exists. (Legacy "completed" rows are handled once by
-// migration 0001_normalize_completed_stream_status, not here.)
-export const resetStreamingConversations = async () => {
-  try {
-    await db
-      .update(conversations)
-      .set({ streamStatus: "idle" })
-      .where(eq(conversations.streamStatus, "streaming"));
-    return ok(undefined);
-  } catch (_e) {
-    return err({
-      status: 500 as const,
-      code: "DB_ERROR",
-      message: "Failed to reset streaming conversations",
-    });
-  }
-};
-
-export const updateConversationStatus = async (
-  conversationId: string,
-  status: StreamStatus
-) => {
-  try {
-    await db
-      .update(conversations)
-      .set({ streamStatus: status, updatedAt: new Date() })
-      .where(eq(conversations.id, conversationId));
-    return ok(undefined);
-  } catch (_e) {
-    return err({
-      status: 500 as const,
-      code: "DB_ERROR",
-      message: "Failed to update conversation status",
     });
   }
 };
