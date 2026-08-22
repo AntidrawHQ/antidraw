@@ -3,7 +3,6 @@ import path from "node:path";
 import type { UUID } from "node:crypto";
 import type {
   EffortLevel,
-  HookInput,
   ModelInfo,
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -51,52 +50,35 @@ export const claudeCodeExecutablePath = ((): string | undefined => {
 })();
 
 export type PromptPushOptions = {
-  // Stamped onto the SDKUserMessage as its uuid. With --replay-user-messages
-  // the CLI echoes it back (isReplay: true) when the message is folded into
-  // a turn — that echo is the acceptance ack the queueing UX correlates on,
-  // so callers pass the frontend's userMessageId here.
-  uuid?: UUID;
+  // The frontend's userMessageId, stamped onto the SDKUserMessage as its
+  // uuid. With --replay-user-messages the CLI echoes it back (isReplay:
+  // true) when the message is folded into a turn — the acceptance ack.
+  uuid: UUID;
   images?: ImageAttachment[];
 };
 
+// The CLI's stdin, as a push stream. Never closed: the CLI stays alive
+// across turns and follow-ups are pushed into it.
 export type PromptStream = {
   prompt: AsyncIterable<SDKUserMessage>;
-  push: (message: string, options?: PromptPushOptions) => void;
-  end: () => void;
+  push: (message: string, options: PromptPushOptions) => void;
 };
 
 export const buildPrompt = (
   message: string,
-  options?: PromptPushOptions
+  options: PromptPushOptions
 ): PromptStream => {
-  let closed = false;
   let controller!: ReadableStreamDefaultController<SDKUserMessage>;
   const prompt = new ReadableStream<SDKUserMessage>({
     start: (c) => (controller = c),
   });
-
-  const push = (text: string, opts?: PromptPushOptions) => {
-    if (closed) return;
+  const push = (text: string, opts: PromptPushOptions) => {
     controller.enqueue(
-      createUserSDKMessage({
-        text,
-        uuid: opts?.uuid ?? crypto.randomUUID(),
-        images: opts?.images,
-      })
+      createUserSDKMessage({ text, uuid: opts.uuid, images: opts.images })
     );
   };
-
   push(message, options);
-
-  return {
-    prompt,
-    push,
-    end: () => {
-      if (closed) return;
-      closed = true;
-      controller.close();
-    },
-  };
+  return { prompt, push };
 };
 
 const titleGenerationSchema = z.object({
@@ -196,15 +178,6 @@ export const sendMessage = (params: {
   claudeCodeSessionID?: string;
   model?: string;
   effort?: EffortLevel;
-  /**
-   * Echo of the ACTUAL effort the CLI ran the turn with (after any silent
-   * downgrade for the selected model). Fired from a Stop hook; main-thread
-   * turns only — subagent hook invocations are filtered out. Nothing
-   * persists or displays this today: it is kept wired as the signal for
-   * future product feedback when the CLI deviates from the user's
-   * selection.
-   */
-  onEffortLevel?: (level: string) => void;
 }) => {
   try {
     const {
@@ -213,7 +186,6 @@ export const sendMessage = (params: {
       claudeCodeSessionID,
       model,
       effort,
-      onEffortLevel,
     } = params;
     const workspacePath = getWorkspaceSourcePath(workspaceId);
 
@@ -225,28 +197,6 @@ export const sendMessage = (params: {
         resume: claudeCodeSessionID,
         model,
         effort,
-        hooks: onEffortLevel
-          ? {
-              Stop: [
-                {
-                  hooks: [
-                    async (input: HookInput) => {
-                      // agent_id present = hook fired inside a subagent;
-                      // its effort must not be mirrored onto the main UI.
-                      if (
-                        input.hook_event_name === "Stop" &&
-                        !("agent_id" in input && input.agent_id) &&
-                        input.effort?.level
-                      ) {
-                        onEffortLevel(input.effort.level);
-                      }
-                      return {};
-                    },
-                  ],
-                },
-              ],
-            }
-          : undefined,
         systemPrompt: {
           preset: "claude_code",
           type: "preset",

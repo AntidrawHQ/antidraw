@@ -452,7 +452,7 @@ export const sendMessage = async (params: {
     if (!response.ok) {
       const errorBody = await response.json().catch(() => ({}));
       return err({
-        status: response.status as 409 | 500,
+        status: response.status as 404 | 500,
         code: errorBody?.error?.code ?? "FETCH_ERROR",
         message: errorBody?.error?.message ?? response.statusText,
       });

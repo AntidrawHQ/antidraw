@@ -337,9 +337,8 @@ export function AppChat({ className, ...props }: AppChatProps) {
   const isStreaming = conversation?.streamStatus === "streaming";
 
   // Only an in-flight HTTP send blocks submitting. Streaming does not: a
-  // mid-turn send is queued by the CLI and acked via message_accepted.
+  // mid-turn send is queued by the CLI and marked until it is folded in.
   const isSendPending = createConversation.isPending || sendMessage.isPending;
-  const isLoading = isSendPending || isStreaming;
 
   const composer = useComposerModel(activeConversationId, conversation);
 
@@ -347,7 +346,8 @@ export function AppChat({ className, ...props }: AppChatProps) {
   // yet — not just when no conversation exists. Guard against the message fetch
   // flash so it doesn't flicker while an existing conversation loads.
   const hasMessages = (conversation?.messages?.length ?? 0) > 0;
-  const showEmptyState = !hasMessages && !isLoading && !isConversationLoading;
+  const showEmptyState =
+    !hasMessages && !isSendPending && !isStreaming && !isConversationLoading;
 
   const fileToBase64 = (
     file: File
@@ -474,7 +474,6 @@ export function AppChat({ className, ...props }: AppChatProps) {
           <PromptInput
             value={input}
             onValueChange={setInput}
-            isLoading={isLoading}
             onSubmit={handleSubmit}
             className="bg-neutral-700 border-neutral-600"
           >
