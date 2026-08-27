@@ -99,11 +99,11 @@ export const useToolMap = (conversationId: string | null) => {
 // Reads the live in-flight content block from the cache.
 // Populated imperatively by stream-subscription's reducer; queryFn is a noop.
 export const useLivePartial = (conversationId: string | null) => {
-  return useQuery<LivePartial>({
+  return useQuery<LivePartial | null>({
     queryKey: queryKeys.conversations.livePartial(conversationId),
     queryFn: () => null,
     enabled: false,
-    initialData: null as LivePartial,
+    initialData: null,
     staleTime: Infinity,
   });
 };
@@ -127,10 +127,9 @@ export const useSupportedModels = () => {
   });
 };
 
-// userMessageIds sent while a turn was in flight and not yet acked by the
-// CLI (message_accepted). Renderer-only cache state: populated by
-// useSendMessage, drained by stream-subscription (ack / complete / error)
-// and useCancelQueuedMessage. Nothing is persisted; a refetch clears it.
+// userMessageIds the backend has handed the CLI but the CLI has not acked.
+// Mirror-only: the sole writer is stream-subscription applying the backend's
+// `queue` snapshots. Nothing is persisted; a refetch clears it.
 export const useQueuedMessageIds = (conversationId: string | null) => {
   return useQuery<string[]>({
     queryKey: queryKeys.conversations.queuedMessageIds(conversationId),
@@ -170,6 +169,13 @@ export const useCreateConversation = () => {
 };
 
 // Send mutation with optimistic update
+// seq is assigned by SQLite on insert, so a bubble that has not been persisted
+// yet has no real one. This stands in until the persisted row arrives over the
+// SSE and replaces it (see the "message" handler in stream-subscription). It
+// sorts last, which is true — an optimistic message is always the newest thing
+// in the transcript. Anything deriving a cursor from seq must skip it.
+export const PENDING_SEQ = Number.MAX_SAFE_INTEGER;
+
 export const useSendMessage = () => {
   const queryClient = useQueryClient();
 
@@ -224,17 +230,9 @@ onMutate: async ({ message, conversationId, userMessageId, images }) => {
         conversationId,
         messageType: "user_prompt",
         sdkMessage,
+        seq: PENDING_SEQ,
         createdAt: new Date(),
       };
-
-      // Sent mid-turn: the CLI queues it. Mark it until the ack
-      // (message_accepted) says it has entered a turn.
-      if (previousChat.streamStatus === "streaming") {
-        queryClient.setQueryData<string[]>(
-          queryKeys.conversations.queuedMessageIds(conversationId),
-          (prev) => [...(prev ?? []), userMessageId],
-        );
-      }
 
       queryClient.setQueryData<ConversationWithMessages>(
         queryKeys.conversations.detail(conversationId),

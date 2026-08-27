@@ -5,7 +5,7 @@ import { relations } from "drizzle-orm";
 import { workspaces } from "./workspace.model";
 
 // Not a column. A stream cannot outlive the process (the CLI is a child),
-// so the live status is in-memory truth (stream-manager: activeStreams +
+// so the live status is in-memory truth (conversation-store derives it from
 // the CLI's reported session state) and is attached to conversation rows
 // at the service boundary. "idle" at rest, "streaming" while the CLI says a
 // turn is in flight, "error" if the owning loop died. The UI only
@@ -39,7 +39,16 @@ export const conversations = sqliteTable("conversations", {
 export const messages = sqliteTable(
   "messages",
   {
-    id: text("id").primaryKey(),
+    // The transcript's sort key. createdAt only has second resolution
+    // (unixepoch() * 1000), so a turn's messages routinely share a timestamp
+    // and ordering by it is a coin toss. seq is the rowid alias, so SQLite
+    // assigns it on insert; AUTOINCREMENT additionally makes it a high-water
+    // mark, so a number is never reused after deleteMessage removes a row.
+    seq: integer("seq").primaryKey({ autoIncrement: true }),
+    // Still the message's identity everywhere above the DB: the renderer
+    // dedups on it, the CLI's replay ack names it, deleteMessage takes it.
+    // Only the storage-level role of "primary key" moved to seq.
+    id: text("id").notNull().unique(),
     conversationId: text("conversation_id")
       .notNull()
       .references(() => conversations.id, { onDelete: "cascade" }),
@@ -51,9 +60,7 @@ export const messages = sqliteTable(
       .notNull()
       .default(sql`(unixepoch() * 1000)`),
   },
-  (table) => [
-    index("idx_messages_conv_created").on(table.conversationId, table.createdAt),
-  ]
+  (table) => [index("idx_messages_conv_seq").on(table.conversationId, table.seq)]
 );
 
 export const conversationsRelations = relations(conversations, ({ one, many }) => ({

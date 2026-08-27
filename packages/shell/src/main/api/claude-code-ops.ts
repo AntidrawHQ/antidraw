@@ -10,7 +10,7 @@ import type {
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
 export type { EffortLevel, ModelInfo };
-import { ok, err } from "neverthrow";
+import { ok, err, type Result } from "neverthrow";
 import { z } from "zod/v3";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { getWorkspaceSourcePath } from "@/main/api/init";
@@ -59,9 +59,17 @@ export type PromptPushOptions = {
   images?: ImageAttachment[];
 };
 
+// STREAM_CLOSED: end() has run. ENQUEUE_FAILED: the SDK errored the
+// underlying controller. Either way the message never reaches the CLI, so it
+// will never be acked — the caller must stop tracking it as queued.
+export type PushError = "STREAM_CLOSED" | "ENQUEUE_FAILED";
+
 export type PromptStream = {
   prompt: AsyncIterable<SDKUserMessage>;
-  push: (message: string, options?: PromptPushOptions) => void;
+  push: (
+    message: string,
+    options?: PromptPushOptions
+  ) => Result<void, PushError>;
   end: () => void;
 };
 
@@ -75,17 +83,30 @@ export const buildPrompt = (
     start: (c) => (controller = c),
   });
 
-  const push = (text: string, opts?: PromptPushOptions) => {
-    if (closed) return;
-    controller.enqueue(
-      createUserSDKMessage({
-        text,
-        uuid: opts?.uuid ?? crypto.randomUUID(),
-        images: opts?.images,
-      })
-    );
+  // Reports failure instead of swallowing it: a push that does not reach the
+  // CLI is never acked, so a silent no-op would leave the message marked
+  // queued forever.
+  const push = (
+    text: string,
+    opts?: PromptPushOptions
+  ): Result<void, PushError> => {
+    if (closed) return err("STREAM_CLOSED" as const);
+    try {
+      controller.enqueue(
+        createUserSDKMessage({
+          text,
+          uuid: opts?.uuid ?? crypto.randomUUID(),
+          images: opts?.images,
+        })
+      );
+      return ok(undefined);
+    } catch (e) {
+      console.error("Failed to enqueue prompt:", e);
+      return err("ENQUEUE_FAILED" as const);
+    }
   };
 
+  // Cannot fail: the stream was created two lines up and is not closed.
   push(message, options);
 
   return {

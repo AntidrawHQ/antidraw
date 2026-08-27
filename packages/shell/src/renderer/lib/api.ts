@@ -522,7 +522,11 @@ export const subscribeToConversation = async function* (
         onmessage: (ev) => {
           const event = JSON.parse(ev.data) as StreamEvent;
           controller.enqueue(event);
-          if (event.type === "complete" || event.type === "error") {
+          // Only a dead owning loop ends the subscription. `state: "idle"`
+          // does NOT: the CLI goes idle between turns, and it can report
+          // idle while a message we handed it is still un-acked — closing
+          // there would miss that message's ack and every event after it.
+          if (event.type === "error") {
             receivedTerminal = true;
             finish();
           }
