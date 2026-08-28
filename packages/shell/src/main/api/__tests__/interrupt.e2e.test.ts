@@ -94,6 +94,17 @@ describe("stopping a turn mid-block", () => {
 
       expect(getPartial(conversationId)).toBeNull();
 
+      // A deliberate stop is not a failure. interrupt() is a control request,
+      // not something that ends the stream: the CLI aborts the turn and stays
+      // alive, so nothing enters runColdStart's catch, markError never runs,
+      // and the next message goes into this same session as a follow-up.
+      // Measured separately: the handle is still open 15s after an interrupt.
+      expect(conversation.streamStatus).toBe("idle");
+      expect(getHandle(conversationId)?.query).toBeTruthy();
+
+      // Teardown only. end() closes stdin, so the CLI exits and the SDK
+      // reports that exit as an error result — that log line belongs to the
+      // teardown below, NOT to the interrupt above.
       getHandle(conversationId)?.promptStream.end();
       await until(
         () => (getHandle(conversationId) === undefined ? true : null),
