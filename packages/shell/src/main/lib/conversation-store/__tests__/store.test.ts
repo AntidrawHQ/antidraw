@@ -1,7 +1,7 @@
 import { describe, test, expect, afterEach, vi } from "vitest";
 import type { Query } from "@anthropic-ai/claude-agent-sdk";
 import { buildPrompt } from "@/main/api/claude-code-ops";
-import { subscribe } from "../events";
+import { conversationEvents, subscribe } from "../events";
 import {
   addPending,
   attachQuery,
@@ -69,6 +69,17 @@ const capture = (conversationId: string) => {
   );
   return seen;
 };
+
+describe("the error event", () => {
+  // Node throws ERR_UNHANDLED_ERROR when "error" is emitted with no listener,
+  // which would swallow the real cause of a turn that failed before anyone
+  // subscribed. The store keeps a permanent listener so this stays ordinary.
+  test("emitting one with nobody subscribed does not throw", () => {
+    expect(() =>
+      conversationEvents.emit("error", freshId(), { error: "boom" }),
+    ).not.toThrow();
+  });
+});
 
 describe("openHandle", () => {
   test("the first caller cold-starts and the second is a follow-up", () => {

@@ -48,6 +48,17 @@ class ConversationEventEmitter extends EventEmitter<ConversationEvents> {}
 
 export const conversationEvents = new ConversationEventEmitter();
 
+// Node gives "error" special treatment: emitting it with no listener attached
+// throws ERR_UNHANDLED_ERROR instead of returning false like every other
+// event. Subscribers only exist while something is watching, so a turn that
+// fails before the renderer connects — a failed spawn, most likely — would
+// replace its own cause with a meaningless unhandled-error. This permanent
+// listener keeps emit() ordinary and makes sure the reason is logged whether
+// anyone is watching or not.
+conversationEvents.on("error", (conversationId, { error }) => {
+  console.error(`Conversation ${conversationId} failed:`, error);
+});
+
 // What a subscriber receives: the same payloads, tagged, ready to go on the
 // wire as-is.
 export type StreamEvent = {
