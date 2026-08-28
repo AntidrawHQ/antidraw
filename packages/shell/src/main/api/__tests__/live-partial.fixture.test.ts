@@ -41,25 +41,45 @@ const replay = (upTo = streamEvents.length) => {
 };
 
 describe("foldPartial against a recorded stream", () => {
-  // If a re-record loses a block type, the guarantees below quietly stop being
-  // tested. Fail loudly instead.
-  test("the fixture still covers every block and delta type", () => {
-    const deltas = new Set(
-      streamEvents.flatMap((e) =>
-        e.type === "content_block_delta" ? [e.delta.type] : [],
-      ),
-    );
-    expect(new Set(finalBlocks.map((b) => b.type))).toEqual(
-      new Set(["thinking", "tool_use", "text"]),
-    );
-    expect(deltas).toEqual(
-      new Set([
-        "thinking_delta",
-        "signature_delta",
-        "input_json_delta",
-        "text_delta",
-      ]),
-    );
+  // A re-record that loses a block type — or thins one out to a single delta —
+  // quietly stops testing the guarantees below. Minimums, not just presence:
+  // an earlier recording had exactly ONE text_delta, so text accumulation was
+  // effectively untested while every assertion still passed.
+  test("the fixture still covers every block and delta type, in volume", () => {
+    const count = (pred: (e: (typeof streamEvents)[number]) => boolean) =>
+      streamEvents.filter(pred).length;
+    const deltas = (type: string) =>
+      count((e) => e.type === "content_block_delta" && e.delta.type === type);
+
+    const blocks = finalBlocks.reduce<Record<string, number>>((acc, b) => {
+      acc[b.type] = (acc[b.type] ?? 0) + 1;
+      return acc;
+    }, {});
+    expect(Object.keys(blocks).sort()).toEqual(["text", "thinking", "tool_use"]);
+    expect(blocks.thinking).toBeGreaterThanOrEqual(3);
+    expect(blocks.tool_use).toBeGreaterThanOrEqual(3);
+    expect(blocks.text).toBeGreaterThanOrEqual(2);
+
+    // Several deltas each, so accumulation is exercised rather than a single
+    // delta that a broken fold could still pass by returning the seed.
+    expect(deltas("text_delta")).toBeGreaterThanOrEqual(5);
+    expect(deltas("thinking_delta")).toBeGreaterThanOrEqual(5);
+    expect(deltas("input_json_delta")).toBeGreaterThanOrEqual(5);
+    expect(deltas("signature_delta")).toBeGreaterThanOrEqual(1);
+
+    // More than one turn, so a follow-up into a live session is covered too.
+    expect(count((e) => e.type === "message_start")).toBeGreaterThanOrEqual(3);
+  });
+
+  test("a block accumulated from many deltas is not just its seed", () => {
+    const { completed } = replay();
+    // The failure this guards: a fold that drops every delta still "passes"
+    // shape checks, because content_block_start already carries a valid block.
+    const grown = completed.filter((p) => {
+      const b = p.block as { text?: string; thinking?: string };
+      return (b.text ?? b.thinking ?? "").length > 40;
+    });
+    expect(grown.length).toBeGreaterThanOrEqual(2);
   });
 
   test("replaying the deltas reproduces the SDK's own blocks", () => {
