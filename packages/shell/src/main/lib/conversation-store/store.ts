@@ -52,6 +52,13 @@ export const getStreamStatus = (conversationId: string): StreamStatus => {
   return handle.cliState === "idle" ? "idle" : "streaming";
 };
 
+// The CLI's own session state, for seeding a subscriber. No handle means no
+// CLI, which is exactly what "idle" reports — the same collapse getStreamStatus
+// makes, kept in the CLI's vocabulary because that is what the `state` event
+// carries.
+export const getCliState = (conversationId: string): CliSessionState =>
+  handles.get(conversationId)?.cliState ?? "idle";
+
 // The in-flight content block, kept so a subscriber that connects mid-block
 // can be handed the text so far instead of a gap that only fills on the next
 // delta. The renderer folds the same deltas from the same helper.

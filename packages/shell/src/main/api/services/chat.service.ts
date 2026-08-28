@@ -4,6 +4,7 @@ import {
   messages,
   type Conversation,
   type ConversationRow,
+  type Message,
 } from "@/main/api/models/chat.model";
 import type { EffortLevel } from "@anthropic-ai/claude-agent-sdk";
 import { db } from "@/main/db";
@@ -25,7 +26,7 @@ const withStreamStatus = <T extends ConversationRow>(
 });
 import { createUserSDKMessage } from "@/shared/utils/message";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, and, gt, asc } from "drizzle-orm";
 import { ok, err } from "neverthrow";
 
 export const createConversation = async (
@@ -161,6 +162,22 @@ export const getConversation = async (
     });
   }
 };
+
+// The transcript after a point, for a subscriber that is resuming. `afterSeq`
+// is exclusive: it is the last seq the caller already has, so a caller fully
+// caught up gets nothing back. Ordered by seq, and covered end to end by
+// idx_messages_conv_seq.
+export const getMessagesAfterSeq = async (
+  conversationId: string,
+  afterSeq: number
+): Promise<Message[]> =>
+  db
+    .select()
+    .from(messages)
+    .where(
+      and(eq(messages.conversationId, conversationId), gt(messages.seq, afterSeq))
+    )
+    .orderBy(asc(messages.seq));
 
 // The persisted copy of a user prompt carries the frontend's userMessageId as
 // its SDK uuid — the same uuid stamped on the message pushed to the CLI, so

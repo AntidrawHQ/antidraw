@@ -33,11 +33,13 @@ import {
   updateConversationTitleAndSummary,
   deleteMessage,
   getConversation,
+  getMessagesAfterSeq,
 } from "./services/chat.service";
 import {
   subscribe,
   getPending,
   getPartial,
+  getCliState,
   interrupt,
   cancelQueued,
   type StreamEvent,
@@ -135,11 +137,23 @@ api.get(
   },
 );
 
+// `afterSeq` is the last message seq the subscriber already has. Present, it
+// asks for the transcript after that point to be replayed before live events
+// start; absent, there is no replay. A resuming client passes it so a drop
+// costs it nothing, and a first-time subscriber passes it too — the gap
+// between GET /chat/:id reading the DB and this route attaching its listener
+// is the same gap, just a smaller one.
+const streamQuerySchema = z.object({
+  afterSeq: z.coerce.number().int().nonnegative().optional(),
+});
+
 api.get(
   "/chat/:conversationId/stream",
   zValidator("param", z.object({ conversationId: z.uuid() })),
+  zValidator("query", streamQuerySchema),
   async (ctx) => {
     const { conversationId } = ctx.req.valid("param");
+    const { afterSeq } = ctx.req.valid("query");
 
     const conversation = await getConversation(conversationId);
     if (conversation.isErr()) {
@@ -148,16 +162,70 @@ api.get(
     }
 
     return streamSSE(ctx, async (stream) => {
-      const send = (event: StreamEvent) =>
-        stream.writeSSE({ data: JSON.stringify(event) });
+      // Writes are chained rather than awaited at each call site: send() stays
+      // synchronous, so the ordering below is the ordering on the wire, and a
+      // listener that fires mid-await cannot interleave its frame into one
+      // already being written.
+      // A rejected link stays rejected, so the chain is caught at each step
+      // rather than propagating one unhandled rejection per later event. The
+      // only way a write fails is the subscriber having gone, and the abort
+      // listener below is what answers for that; there is nobody left to tell.
+      let writes = Promise.resolve();
+      let writable = true;
+      const send = (event: StreamEvent) => {
+        if (!writable) return;
+        writes = writes
+          .then(() => stream.writeSSE({ data: JSON.stringify(event) }))
+          .catch(() => {
+            writable = false;
+          });
+      };
 
-      // Seed the current picture before live events start, so a subscriber
-      // that arrives mid-turn is not blind until the next change.
-      send({ type: "queue", userMessageIds: getPending(conversationId) });
-      send({ type: "livePartial", livePartial: getPartial(conversationId) });
-
-      const unsubscribe = subscribe(conversationId, send);
+      // Attach BEFORE reading the backlog, and hold what arrives. Reading
+      // first would reopen the very gap the replay exists to close: anything
+      // emitted between the read and the attach would reach nobody.
+      let buffered: StreamEvent[] | null = [];
+      const unsubscribe = subscribe(conversationId, (event) => {
+        if (buffered) buffered.push(event);
+        else send(event);
+      });
       ctx.req.raw.signal.addEventListener("abort", unsubscribe);
+
+      // Captured now, sent below. Taking them before the await is what makes
+      // them safe to send late: every change after this point is in `buffered`
+      // and gets replayed on top.
+      const seeds: StreamEvent[] = [
+        { type: "state", state: getCliState(conversationId) },
+        { type: "queue", userMessageIds: getPending(conversationId) },
+        { type: "livePartial", livePartial: getPartial(conversationId) },
+      ];
+
+      let replayedThrough = afterSeq ?? 0;
+      if (afterSeq !== undefined) {
+        const backlog = await getMessagesAfterSeq(conversationId, afterSeq);
+        for (const message of backlog) send({ type: "message", message });
+        replayedThrough = backlog.at(-1)?.seq ?? afterSeq;
+      }
+
+      // After the backlog, not before: the seeded livePartial is the block in
+      // flight now, and the renderer drops the live block on any persisted
+      // assistant message. Seeding first would let an older backlog message
+      // clear a partial that is still streaming.
+      for (const seed of seeds) send(seed);
+
+      // One synchronous drain — no await inside, so nothing can arrive while
+      // the buffer is half-empty. Everything past this point sends directly.
+      const pending = buffered;
+      buffered = null;
+      for (const event of pending) {
+        // A message can be in both halves: persisted before the read, emitted
+        // after the attach. The renderer dedups by id anyway; this keeps the
+        // duplicate off the wire.
+        if (event.type === "message" && event.message.seq <= replayedThrough) {
+          continue;
+        }
+        send(event);
+      }
 
       await new Promise(() => {});
     });
