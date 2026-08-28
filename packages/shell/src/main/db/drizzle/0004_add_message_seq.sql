@@ -11,12 +11,16 @@ CREATE TABLE `__new_messages` (
 --> statement-breakpoint
 -- Hand-edited from the drizzle-kit output. The generator copies a rebuild
 -- column-for-column, so it emitted `SELECT "seq" ... FROM messages` — but seq
--- is new here and does not exist on the old table, and SQLite's legacy
--- double-quote fallback turns that into the string literal 'seq', which fails
--- the INTEGER PRIMARY KEY with a datatype mismatch mid-rebuild. Omit seq so
--- SQLite assigns it, ordered by (created_at, rowid): created_at only has
--- second resolution, so within a shared second the original insertion order
--- is the best available truth.
+-- is new here and does not exist on the old table, so that statement fails
+-- (`no such column: seq` under libsql; the sqlite3 CLI instead resolves the
+-- quoted name to the string literal 'seq' and fails the INTEGER PRIMARY KEY
+-- with a datatype mismatch). Omit seq so SQLite assigns it, ordered by
+-- (created_at, rowid): created_at only has second resolution, so within a
+-- shared second the original insertion order is the best available truth.
+--
+-- The rebuild is safe to retry: libsql runs a migration batch in a
+-- transaction with foreign key checks off, so a failure rolls back whole and
+-- pre-existing rows that violate the FK cannot block it.
 INSERT INTO `__new_messages`("id", "conversation_id", "message_type", "sdk_message", "created_at") SELECT "id", "conversation_id", "message_type", "sdk_message", "created_at" FROM `messages` ORDER BY "created_at", "rowid";--> statement-breakpoint
 DROP TABLE `messages`;--> statement-breakpoint
 ALTER TABLE `__new_messages` RENAME TO `messages`;--> statement-breakpoint
