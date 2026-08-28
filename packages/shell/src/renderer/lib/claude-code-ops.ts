@@ -22,6 +22,7 @@ import {
 } from "./api";
 import { DEFAULT_MODELS } from "@/renderer/components/modelPickerShared";
 import {
+  PENDING_SEQ,
   SEND_MESSAGE_MUTATION_KEY,
   subscribeToStream,
   type LivePartial,
@@ -168,14 +169,10 @@ export const useCreateConversation = () => {
   });
 };
 
-// Send mutation with optimistic update
-// seq is assigned by SQLite on insert, so a bubble that has not been persisted
-// yet has no real one. This stands in until the persisted row arrives over the
-// SSE and replaces it (see the "message" handler in stream-subscription). It
-// sorts last, which is true — an optimistic message is always the newest thing
-// in the transcript. Anything deriving a cursor from seq must skip it.
-export const PENDING_SEQ = Number.MAX_SAFE_INTEGER;
+// Re-exported from its definition next to the cursor that has to skip it.
+export { PENDING_SEQ } from "./stream-subscription";
 
+// Send mutation with optimistic update
 export const useSendMessage = () => {
   const queryClient = useQueryClient();
 

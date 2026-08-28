@@ -469,7 +469,27 @@ export const sendMessage = async (params: {
   }
 };
 
+// The link died, not the conversation. Thrown out of subscribeToConversation
+// so the caller can tell a transport failure — which resuming fixes — from a
+// backend `error` event, which is the turn itself failing and is terminal.
+// `retriable` is false only when reconnecting cannot help: a 4xx on open means
+// the conversation is gone, and no amount of retrying brings it back.
+export class StreamDisconnectedError extends Error {
+  readonly retriable: boolean;
+
+  constructor(message: string, retriable: boolean) {
+    super(message);
+    this.name = "StreamDisconnectedError";
+    this.retriable = retriable;
+  }
+}
+
 // Subscribe to conversation stream events via SSE.
+//
+// `afterSeq`, when given, asks the backend to replay the transcript past that
+// point before live events start. That is what makes a reconnect lossless, and
+// it also closes the gap between the initial GET reading the DB and this
+// subscription attaching its listener.
 //
 // The AbortController is the single kill switch: aborting it cancels the
 // underlying fetch (which makes the backend's request abort signal fire and
@@ -478,45 +498,57 @@ export const sendMessage = async (params: {
 // controller would still see the underlying HTTP stay open; the next event
 // from the server would throw on enqueue, the library would auto-retry, and
 // each retry would re-attach a listener on the backend — a geometric leak.
+// That is a reason to keep retries out of THIS function, not out of the
+// caller: subscribeToStream reconnects by calling it again, and this abort
+// fires first, so the backend detaches before the replacement attaches.
 //
-// `onerror` throws to make the no-retry intent explicit even though the
-// signal abort would already prevent retries. Any non-clean close
-// (transport error, backend crash, body ending before a terminal event) is
-// surfaced as a synthetic `error` event so the consumer's existing error
-// path runs — invalidating the conversation query and flipping status to
-// `"error"` — instead of silently completing.
+// A non-clean close (transport error, backend crash, body ending before a
+// terminal event) errors the stream with StreamDisconnectedError rather than
+// synthesizing an `error` event. Enqueued events still drain first — the
+// ReadableStream contract — so nothing already received is lost, and the
+// caller decides between resuming and giving up.
 export const subscribeToConversation = async function* (
   conversationId: string,
+  afterSeq?: number,
 ): AsyncGenerator<StreamEvent> {
   const abort = new AbortController();
   let receivedTerminal = false;
 
+  const url = new URL(`antidraw://app/api/chat/${conversationId}/stream`);
+  if (afterSeq !== undefined) url.searchParams.set("afterSeq", String(afterSeq));
+
   const stream = new ReadableStream<StreamEvent>({
     start(controller) {
+      // A controller can only be ended once, and both endings are reachable
+      // from the same failure: onopen rejecting does not stop fetchEventSource
+      // from going on to close the body. Whichever gets there first wins.
+      let settled = false;
+
       const finish = () => {
+        if (settled) return;
+        settled = true;
         controller.close();
         abort.abort();
       };
 
-      const failClosed = (message: string) => {
-        if (!receivedTerminal) {
-          receivedTerminal = true;
-          controller.enqueue({
-            type: "error",
-            error: message,
-          } satisfies StreamEvent);
-        }
-        finish();
+      const failClosed = (message: string, retriable: boolean) => {
+        if (settled) return;
+        settled = true;
+        receivedTerminal = true;
+        controller.error(new StreamDisconnectedError(message, retriable));
+        abort.abort();
       };
 
-      fetchEventSource(`antidraw://app/api/chat/${conversationId}/stream`, {
+      fetchEventSource(url.toString(), {
         signal: abort.signal,
         onopen: async (response) => {
           if (!response.ok) {
             const errorBody = await response.json().catch(() => ({}));
             const errorMessage =
               errorBody?.error?.message ?? response.statusText;
-            failClosed(errorMessage);
+            // 4xx is a verdict about the conversation; 5xx is the backend
+            // having a bad moment, which a retry can outlast.
+            failClosed(errorMessage, response.status >= 500);
           }
         },
         onmessage: (ev) => {
@@ -534,12 +566,12 @@ export const subscribeToConversation = async function* (
         onerror: (error) => {
           const message =
             error instanceof Error ? error.message : "Stream connection failed";
-          failClosed(message);
+          failClosed(message, true);
           throw error;
         },
         onclose: () => {
           if (!receivedTerminal) {
-            failClosed("Stream ended unexpectedly");
+            failClosed("Stream ended unexpectedly", true);
           } else {
             finish();
           }
