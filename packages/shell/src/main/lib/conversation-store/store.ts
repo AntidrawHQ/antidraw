@@ -1,7 +1,7 @@
 import type { Query } from "@anthropic-ai/claude-agent-sdk";
 import type { StreamStatus } from "@/main/api/models/chat.model";
 import type { PromptStream } from "@/main/api/claude-code-ops";
-import type { CliHandle, CliSessionState, TurnRole } from "./types";
+import type { CliHandle, CliSessionState, TurnType } from "./types";
 import {
   foldPartial,
   type LivePartial,
@@ -19,7 +19,7 @@ export const getHandle = (
 export const openHandle = (
   conversationId: string,
   promptStream: PromptStream,
-): TurnRole => {
+): TurnType => {
   if (handles.has(conversationId)) return "follow-up";
   errored.delete(conversationId);
   handles.set(conversationId, {

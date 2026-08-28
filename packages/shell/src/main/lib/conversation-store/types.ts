@@ -10,7 +10,7 @@ export type CliSessionState =
 
 // Which side of the fork a send landed on: it either has to start the CLI,
 // or a CLI is already there and it is a follow-up into the live one.
-export type TurnRole = "cold-start" | "follow-up";
+export type TurnType = "cold-start" | "follow-up";
 
 export type CliHandle = {
   readonly conversationId: string;

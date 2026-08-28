@@ -186,7 +186,7 @@ export const runTurn = async (req: TurnRequest): Promise<void> => {
     uuid: userMessageId as UUID,
     images,
   });
-  const role = openHandle(conversation.id, promptStream);
+  const turnType = openHandle(conversation.id, promptStream);
   const handle = getHandle(conversation.id)!;
   addPending(conversation.id, userMessageId);
 
@@ -210,7 +210,7 @@ export const runTurn = async (req: TurnRequest): Promise<void> => {
   });
   if (recorded.isErr()) {
     console.error("Failed to persist the user prompt:", recorded.error);
-    if (role === "cold-start") {
+    if (turnType === "cold-start") {
       clearPending(conversation.id);
       releaseHandle(conversation.id);
     } else {
@@ -219,7 +219,7 @@ export const runTurn = async (req: TurnRequest): Promise<void> => {
     return;
   }
 
-  return role === "cold-start"
+  return turnType === "cold-start"
     ? runColdStart(req, promptStream)
     : pushFollowUpTurn(req, handle);
 };
