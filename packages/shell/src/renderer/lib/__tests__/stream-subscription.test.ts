@@ -19,15 +19,28 @@ vi.mock("../api", async (importOriginal) => {
 
 const { subscribeToConversation } = await import("../api");
 const { StreamDisconnectedError } = await import("../api");
-const { subscribeToStream, isSubscribed, PENDING_SEQ } = await import(
-  "../stream-subscription"
-);
+const { subscribeToStream, releaseStream, isSubscribed, PENDING_SEQ } =
+  await import("../stream-subscription");
 
 const mockSubscribe = vi.mocked(subscribeToConversation);
 
 // One attempt's worth of stream: some events, then either a clean end or a
 // throw. A clean end is what the backend sending a terminal event looks like.
-type Attempt = { events?: StreamEvent[]; throws?: unknown };
+type Attempt = {
+  events?: StreamEvent[];
+  throws?: unknown;
+  // Stands in for a live stream with nothing to say — the state a
+  // subscription spends almost all of its time in. It ends only when the
+  // release signal reaches it, which is exactly what the real transport does.
+  hangs?: boolean;
+  // The transport failing at the same moment it is released: both endings are
+  // reachable from one teardown, and which wins is a race.
+  throwsOnRelease?: unknown;
+};
+
+// Streams still running. Release clears the map entry synchronously, so the
+// map says nothing about whether the loop actually unwound — this does.
+const open = { count: 0 };
 
 const scriptAttempts = (attempts: Attempt[]) => {
   const cursors: (number | undefined)[] = [];
@@ -35,12 +48,33 @@ const scriptAttempts = (attempts: Attempt[]) => {
   mockSubscribe.mockImplementation(((
     _conversationId: string,
     afterSeq?: number,
+    releaseSignal?: AbortSignal,
   ) => {
     cursors.push(afterSeq);
     const attempt = remaining.shift() ?? {};
+    const released = () =>
+      new Promise<void>((resolve) => {
+        if (releaseSignal?.aborted) return resolve();
+        releaseSignal?.addEventListener("abort", () => resolve(), {
+          once: true,
+        });
+      });
+    open.count++;
     return (async function* () {
-      for (const event of attempt.events ?? []) yield event;
-      if (attempt.throws !== undefined) throw attempt.throws;
+      try {
+        for (const event of attempt.events ?? []) yield event;
+        if (attempt.hangs) {
+          await released();
+          return;
+        }
+        if (attempt.throwsOnRelease !== undefined) {
+          await released();
+          throw attempt.throwsOnRelease;
+        }
+        if (attempt.throws !== undefined) throw attempt.throws;
+      } finally {
+        open.count--;
+      }
     })();
   }) as typeof subscribeToConversation);
   return cursors;
@@ -91,17 +125,27 @@ const detail = (queryClient: QueryClient, conversationId: string) =>
 
 // Drives fake timers and the microtask queue until the subscription's loop has
 // run itself out. Backoff is real time in production; here it is skipped.
+// Drains unconditionally rather than while isSubscribed: release clears the
+// map entry up front, so looping on it would exit before anything the loop
+// still had to do — including writing an error — had a chance to happen.
 const settle = async (conversationId: string) => {
-  for (let i = 0; i < 100 && isSubscribed(conversationId); i++) {
+  for (let i = 0; i < 40; i++) {
     await Promise.resolve();
     await vi.advanceTimersByTimeAsync(10_000);
   }
   expect(isSubscribed(conversationId)).toBe(false);
 };
 
+// Lets the loop advance without driving it to completion — used where the
+// subscription is meant to still be alive afterwards.
+const flush = async (ticks = 20) => {
+  for (let i = 0; i < ticks; i++) await Promise.resolve();
+};
+
 let queryClient: QueryClient;
 
 beforeEach(() => {
+  open.count = 0;
   vi.useFakeTimers();
   vi.spyOn(console, "error").mockImplementation(() => {});
   queryClient = new QueryClient({
@@ -209,7 +253,7 @@ describe("reconnecting", () => {
     subscribeToStream(conversationId, queryClient);
     await settle(conversationId);
 
-    expect(cursors).toHaveLength(6); // the first try plus five retries
+    expect(cursors).toHaveLength(8); // the first try plus one per backoff step
     expect(detail(queryClient, conversationId).streamStatus).toBe("error");
   });
 
@@ -222,20 +266,17 @@ describe("reconnecting", () => {
       throws: new StreamDisconnectedError("flap", true),
     };
     const cursors = scriptAttempts([
-      drop,
-      drop,
-      drop,
-      drop,
-      drop,
-      flap, // sixth attempt would be the last, but it delivers something
-      ...Array.from({ length: 10 }, () => drop),
+      ...Array.from({ length: 5 }, () => drop),
+      flap, // partway through the budget, but it delivers something
+      ...Array.from({ length: 12 }, () => drop),
     ]);
 
     subscribeToStream(conversationId, queryClient);
     await settle(conversationId);
 
-    // Budget resets at the flap, so five more attempts follow it.
-    expect(cursors).toHaveLength(12);
+    // 6 attempts up to and including the flap, then a full budget of 8 after
+    // it. Without the reset the run would have stopped at 8 in total.
+    expect(cursors).toHaveLength(14);
   });
 
   test("does not retry a conversation the backend says is gone", async () => {
@@ -361,5 +402,118 @@ describe("replayed events", () => {
     // Both halves matter: one row, and its seq is real — a lingering
     // PENDING_SEQ would poison the next cursor.
     expect(detail(queryClient, conversationId).messages).toEqual([persisted]);
+  });
+});
+
+describe("releasing", () => {
+  test("ends the loop and stops reconnecting", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    const cursors = scriptAttempts([
+      { throws: new StreamDisconnectedError("dropped", true) },
+      { events: [{ type: "state", state: "running" }] },
+    ]);
+
+    subscribeToStream(conversationId, queryClient);
+    await flush();
+    releaseStream(conversationId);
+    await settle(conversationId);
+
+    // The drop was retriable, so without the release a second attempt would
+    // have followed it.
+    expect(cursors).toHaveLength(1);
+  });
+
+  test("does not wait out a backoff it is sitting in", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    scriptAttempts([{ throws: new StreamDisconnectedError("dropped", true) }]);
+
+    subscribeToStream(conversationId, queryClient);
+    await flush();
+
+    // Mid-backoff. Releasing has to interrupt the timer, not merely be
+    // noticed once it expires.
+    releaseStream(conversationId);
+    await flush();
+    expect(isSubscribed(conversationId)).toBe(false);
+  });
+
+  test("is not reported as a failed conversation", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    scriptAttempts([{ throws: new StreamDisconnectedError("dropped", true) }]);
+
+    subscribeToStream(conversationId, queryClient);
+    await flush();
+    releaseStream(conversationId);
+    await settle(conversationId);
+
+    // Navigating away is not an error, and the cache it would be written to
+    // is one nothing is watching any more.
+    expect(detail(queryClient, conversationId).streamStatus).toBe("streaming");
+  });
+
+  test("frees the slot immediately, so a resubscribe takes hold", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    const cursors = scriptAttempts([
+      { throws: new StreamDisconnectedError("dropped", true) },
+      { events: [{ type: "state", state: "running" }] },
+    ]);
+
+    subscribeToStream(conversationId, queryClient);
+    await flush();
+
+    // React runs a cleanup and then the effect again. The releasing loop is
+    // still unwinding at this point; if its exit cleared the map afterwards,
+    // the new subscription would be silently dropped on the floor.
+    releaseStream(conversationId);
+    subscribeToStream(conversationId, queryClient);
+    expect(isSubscribed(conversationId)).toBe(true);
+
+    await settle(conversationId);
+    expect(cursors).toHaveLength(2);
+  });
+
+  test("ends a stream that is sitting idle with nothing to say", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    const cursors = scriptAttempts([{ hangs: true }]);
+
+    subscribeToStream(conversationId, queryClient);
+    await flush();
+    // The loop is parked inside the stream, not between attempts. Only the
+    // signal reaching the transport can end it — settle asserts it did.
+    releaseStream(conversationId);
+    await settle(conversationId);
+
+    expect(cursors).toHaveLength(1);
+    // The map entry goes synchronously either way; this is the assertion that
+    // distinguishes a released stream from one still sitting open forever.
+    expect(open.count).toBe(0);
+    expect(detail(queryClient, conversationId).streamStatus).toBe("streaming");
+  });
+
+  test("a transport failure racing the release is still not an error", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    // Non-retriable, so without the released-check this takes the give-up
+    // branch and paints the conversation red on the way out.
+    scriptAttempts([
+      { throwsOnRelease: new StreamDisconnectedError("gone", false) },
+    ]);
+
+    subscribeToStream(conversationId, queryClient);
+    await flush();
+    releaseStream(conversationId);
+    await settle(conversationId);
+
+    expect(detail(queryClient, conversationId).streamStatus).toBe("streaming");
+    expect(open.count).toBe(0);
+  });
+
+  test("is a no-op for a conversation that was never subscribed", () => {
+    expect(() => releaseStream(freshId())).not.toThrow();
   });
 });

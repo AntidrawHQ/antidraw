@@ -13,7 +13,12 @@ import {
   type LivePartial,
 } from "@/shared/utils/live-partial";
 
-const activeSubscriptions = new Map<string, Promise<void>>();
+type Subscription = { readonly promise: Promise<void>; readonly stop: () => void };
+
+// One entry per conversation, and exactly one owner: the open conversation.
+// Anything else that calls subscribeToStream is asserting "make sure this is
+// running", not taking ownership — releasing is the owner's job alone.
+const activeSubscriptions = new Map<string, Subscription>();
 
 export type { LivePartial } from "@/shared/utils/live-partial";
 
@@ -26,11 +31,13 @@ export type { LivePartial } from "@/shared/utils/live-partial";
 // after MAX_SAFE_INTEGER: nothing, silently, forever.
 export const PENDING_SEQ = Number.MAX_SAFE_INTEGER;
 
-// Reconnect is bounded on purpose. A subscription is never torn down when the
-// user navigates away (one listener per conversation visited — the known leak),
-// so an unbounded retry would let abandoned subscriptions resurrect themselves
-// indefinitely. Once the subscription lifecycle is owned properly, this can go.
-const BACKOFF_MS = [250, 500, 1000, 2000, 4000];
+// Retries are bounded because streamStatus stays "streaming" throughout them:
+// the spinner holds, which is right for a blip and wrong forever. Giving up is
+// what turns a hung spinner into a reported error. An abandoned subscription
+// resurrecting itself used to be the binding reason for the ceiling and is not
+// any more — releaseStream ends the loop — so the budget is now set by how long
+// a user should be left watching a spinner, which is about half a minute.
+const BACKOFF_MS = [250, 500, 1000, 2000, 4000, 8000, 8000];
 
 // Where we are in the transcript: the highest seq the cache actually holds.
 // Optimistic rows are skipped — they carry PENDING_SEQ, not a real position.
@@ -49,8 +56,19 @@ const cursorFor = (
   );
 };
 
-const delay = (ms: number) =>
-  new Promise<void>((resolve) => setTimeout(resolve, ms));
+// Resolves on the timer or on release, whichever comes first. Backoff is the
+// one place the loop sits idle for seconds at a time; without this a released
+// subscription would keep the conversation marked subscribed until it expired.
+const delay = (ms: number, signal: AbortSignal) =>
+  new Promise<void>((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done);
+  });
 
 export const subscribeToStream = (
   conversationId: string,
@@ -59,15 +77,38 @@ export const subscribeToStream = (
   // Already subscribed - no-op
   if (activeSubscriptions.has(conversationId)) return;
 
+  const release = new AbortController();
+  // Whether this loop is still the one the map points at. Guards both exits
+  // from deleting a slot a later subscription has already claimed.
+  let ownsSlot = true;
+
+  const vacate = () => {
+    if (!ownsSlot) return;
+    ownsSlot = false;
+    activeSubscriptions.delete(conversationId);
+  };
+
+  const stop = () => {
+    // Vacated first and synchronously, so a subscribe that follows this
+    // release — React running a cleanup and then the effect again — starts a
+    // new subscription instead of finding a dying one and no-oping onto it.
+    vacate();
+    // The signal reaches the live stream, which closes its iteration and
+    // aborts the fetch, which fires the backend's request abort and detaches
+    // its listeners. That last hop is the whole point of releasing at all.
+    release.abort();
+  };
+
   const promise = (async () => {
     try {
-      for (let attempt = 0; ; attempt++) {
+      for (let attempt = 0; !release.signal.aborted; attempt++) {
         try {
           // The cursor is read fresh on every attempt, so a reconnect asks for
           // exactly what the drop cost us and nothing we already rendered.
           const stream = subscribeToConversation(
             conversationId,
             cursorFor(conversationId, queryClient),
+            release.signal,
           );
 
           for await (const event of stream) {
@@ -80,6 +121,11 @@ export const subscribeToStream = (
           // Ended cleanly: the backend sent a terminal event. Nothing to resume.
           return;
         } catch (e) {
+          // A released subscription is not a failed one. Reporting an error
+          // here would mark a conversation the user simply navigated away
+          // from, and would write it into a cache nothing is watching.
+          if (release.signal.aborted) return;
+
           const retriable =
             e instanceof StreamDisconnectedError && e.retriable;
           if (!retriable || attempt >= BACKOFF_MS.length) {
@@ -95,15 +141,28 @@ export const subscribeToStream = (
             );
             return;
           }
-          await delay(BACKOFF_MS[attempt]);
+          await delay(BACKOFF_MS[attempt], release.signal);
         }
       }
     } finally {
-      activeSubscriptions.delete(conversationId);
+      vacate();
     }
   })();
 
-  activeSubscriptions.set(conversationId, promise);
+  activeSubscriptions.set(conversationId, { promise, stop });
+};
+
+// Ends the subscription and, through the abort, detaches the backend's
+// listeners with it. Keyed on the conversation because there is only ever one
+// owner of one subscription.
+//
+// Deliberately NOT called when a turn ends. The CLI reports idle between turns
+// while the session stays alive, and it can report idle with a message we
+// handed it still un-acked — releasing there would miss that ack and every
+// event after it. The subscription belongs to the open conversation, not to
+// the turn that happens to be running in it.
+export const releaseStream = (conversationId: string): void => {
+  activeSubscriptions.get(conversationId)?.stop();
 };
 
 export const isSubscribed = (conversationId: string): boolean => {

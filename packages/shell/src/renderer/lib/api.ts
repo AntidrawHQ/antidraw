@@ -491,6 +491,10 @@ export class StreamDisconnectedError extends Error {
 // it also closes the gap between the initial GET reading the DB and this
 // subscription attaching its listener.
 //
+// `release` ends the subscription from the outside — the open conversation
+// closing. It completes the iteration rather than throwing: the caller asked
+// for this, so there is nothing to report.
+//
 // The AbortController is the single kill switch: aborting it cancels the
 // underlying fetch (which makes the backend's request abort signal fire and
 // detach its event listeners) and resolves fetchEventSource cleanly without
@@ -510,6 +514,7 @@ export class StreamDisconnectedError extends Error {
 export const subscribeToConversation = async function* (
   conversationId: string,
   afterSeq?: number,
+  release?: AbortSignal,
 ): AsyncGenerator<StreamEvent> {
   const abort = new AbortController();
   let receivedTerminal = false;
@@ -538,6 +543,17 @@ export const subscribeToConversation = async function* (
         controller.error(new StreamDisconnectedError(message, retriable));
         abort.abort();
       };
+
+      // Ending the iteration is the caller's only reliable exit. Calling
+      // return() on the generator would not do it: while it is suspended
+      // awaiting the next chunk, the return request queues behind that read,
+      // and a stream with nothing to say never resolves it. Closing the
+      // controller here ends the for-await AND aborts the fetch, which is
+      // what makes the backend drop its listeners.
+      if (release) {
+        if (release.aborted) return finish();
+        release.addEventListener("abort", finish, { once: true });
+      }
 
       fetchEventSource(url.toString(), {
         signal: abort.signal,

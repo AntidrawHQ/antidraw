@@ -24,6 +24,7 @@ import { DEFAULT_MODELS } from "@/renderer/components/modelPickerShared";
 import {
   PENDING_SEQ,
   SEND_MESSAGE_MUTATION_KEY,
+  releaseStream,
   subscribeToStream,
   type LivePartial,
 } from "./stream-subscription";
@@ -58,12 +59,24 @@ export const useConversationWithStream = (conversationId: string | null) => {
 
   const isStreaming = query.data?.streamStatus === "streaming";
 
-  // SSE subscription - fire and forget, runs until server terminates
+  // Opened on demand. Idempotent, so re-running it while one is already live
+  // costs nothing — this only has to make sure a turn in flight is watched.
   useEffect(() => {
     if (!conversationId || !isStreaming) return;
     subscribeToStream(conversationId, queryClient);
-    // No cleanup - subscription runs until server sends terminal event
   }, [conversationId, isStreaming, queryClient]);
+
+  // Released when this stops being the open conversation, which is a different
+  // lifetime from the one above — hence a second effect rather than a cleanup
+  // on the first. Releasing when isStreaming goes false would tear the
+  // subscription down between turns, and the CLI reports idle while a message
+  // we handed it can still be un-acked; we would miss that ack and everything
+  // after it. Reopening later is cheap now that the stream resumes from a
+  // cursor, and the state seed corrects a status that went stale while away.
+  useEffect(() => {
+    if (!conversationId) return;
+    return () => releaseStream(conversationId);
+  }, [conversationId]);
 
   return query;
 };
@@ -246,11 +259,13 @@ onMutate: async ({ message, conversationId, userMessageId, images }) => {
     // The 202 means the backend has claimed the slot and registered this
     // send. The backend does not write streamStatus on send any more (the
     // CLI's `running` does, a moment later), so until then the row says
-    // whatever it said before. Two things must hold regardless of what a
-    // crossing `complete` + refetch may have done in between: the cache
-    // says streaming (shimmer, Stop, and the subscribe effect), and the SSE
-    // subscription is open so the CLI's `streaming`/`queue_state`/ack
-    // events for this send are observed. subscribeToStream is idempotent.
+    // whatever it said before. Re-asserting streaming here is what a crossing
+    // `complete` + refetch may have undone, and it is also what opens the
+    // subscription: onMutate already flipped the cache to streaming, so the
+    // subscribe effect has run by the time this 202 lands, and this write
+    // keeps it that way. The subscription is deliberately NOT opened from
+    // here — an unmounted conversation must not acquire one, and the effect
+    // is the single owner that can release it.
     onSuccess: (_data, { conversationId, userMessageId }, context) => {
       queryClient.setQueryData<ConversationWithMessages>(
         queryKeys.conversations.detail(conversationId),
@@ -268,7 +283,6 @@ onMutate: async ({ message, conversationId, userMessageId, images }) => {
           };
         },
       );
-      subscribeToStream(conversationId, queryClient);
     },
 
     onError: (_err, { conversationId, userMessageId }, context) => {
