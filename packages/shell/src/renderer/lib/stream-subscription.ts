@@ -181,17 +181,19 @@ const handleStreamEvent = (
       queryKeys.conversations.detail(conversationId),
       (old) => {
         if (!old) return old;
-        const index = old.messages.findIndex((m) => m.id === event.message.id);
-        if (index === -1) {
-          return { ...old, messages: [...old.messages, event.message] };
-        }
-        // The optimistic bubble for this send is already in the list, carrying
-        // PENDING_SEQ and a client clock. Swap the persisted row in rather than
-        // skipping it: same id, same content, but with the seq the DB actually
-        // assigned — otherwise the placeholder lingers until the next refetch,
-        // and the cursor never advances past it.
-        const messages = [...old.messages];
-        messages[index] = event.message;
+        // Placed by seq, not appended: the stream promises nothing about the
+        // order between a replayed backlog and live events, so a live message
+        // can arrive ahead of older rows. Optimistic rows carry PENDING_SEQ
+        // and so stay at the tail.
+        //
+        // A row already present is replaced rather than skipped. That is the
+        // optimistic bubble for this send, holding PENDING_SEQ and a client
+        // clock; the persisted row has the same id and content but the seq
+        // the DB actually assigned — leave the placeholder and the cursor
+        // never advances past it.
+        const messages = old.messages.filter((m) => m.id !== event.message.id);
+        const at = messages.findIndex((m) => m.seq > event.message.seq);
+        messages.splice(at === -1 ? messages.length : at, 0, event.message);
         return { ...old, messages };
       },
     );

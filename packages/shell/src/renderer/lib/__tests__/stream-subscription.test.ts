@@ -308,6 +308,46 @@ describe("replayed events", () => {
     );
   });
 
+  test("a message arriving ahead of older rows is placed by seq", async () => {
+    const conversationId = freshId();
+    const existing = message(1, "a");
+    seedCache(queryClient, conversationId, [existing]);
+    // The stream sends live events straight through while the backlog is
+    // still being read, so the newer row can land first.
+    const live = message(3, "live");
+    const backlog = message(2, "backlog");
+    scriptAttempts([
+      {
+        events: [
+          { type: "message", message: live },
+          { type: "message", message: backlog },
+        ],
+      },
+    ]);
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    expect(
+      detail(queryClient, conversationId).messages.map((m) => m.seq),
+    ).toEqual([1, 2, 3]);
+  });
+
+  test("an optimistic bubble stays at the tail of rows placed by seq", async () => {
+    const conversationId = freshId();
+    const optimistic = message(PENDING_SEQ, "sent");
+    seedCache(queryClient, conversationId, [optimistic]);
+    const persisted = message(5, "earlier");
+    scriptAttempts([{ events: [{ type: "message", message: persisted }] }]);
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    expect(
+      detail(queryClient, conversationId).messages.map((m) => m.id),
+    ).toEqual([persisted.id, optimistic.id]);
+  });
+
   test("a replayed row replaces the optimistic bubble it matches", async () => {
     const conversationId = freshId();
     const optimistic = message(PENDING_SEQ, "sent");

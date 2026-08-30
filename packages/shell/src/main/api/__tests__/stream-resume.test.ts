@@ -5,15 +5,21 @@ import { migrate } from "drizzle-orm/libsql/migrator";
 import { db } from "@/main/db";
 import { workspaces } from "@/main/api/schema";
 import type { Message, StreamEvent } from "@/main/api";
-import { conversationEvents } from "@/main/lib/conversation-store";
+import {
+  conversationEvents,
+  openHandle,
+  applyPartial,
+  releaseHandle,
+} from "@/main/lib/conversation-store";
+import { buildPrompt } from "@/main/api/claude-code-ops";
 
 // The backlog read is the only asynchronous step between attaching the
-// listener and flushing what it caught, so it is where the two interesting
-// interleavings live. The gate stops the route inside that step — `before` the
-// read, so a message written during the pause lands in BOTH the backlog and
-// the buffer; `after` it, so the same message lands ONLY in the buffer. The
-// second is the window that attaching-before-reading exists to cover: read
-// first and that message reaches nobody.
+// listener and sending the seeds, so it is where the interesting interleavings
+// live. The gate stops the route inside that step — `before` the read, so a
+// message written during the pause is BOTH in the backlog and sent live;
+// `after` it, so the same message is ONLY sent live. The second is the window
+// that attaching-before-reading exists to cover: read first and that message
+// reaches nobody.
 const h = vi.hoisted(() => ({
   gate: null as null | {
     when: "before" | "after";
@@ -265,7 +271,7 @@ describe("stream replay", () => {
     }
   });
 
-  test("a message written after the read still arrives — in order", async () => {
+  test("a message written after the read still arrives — ahead of the backlog", async () => {
     const conversationId = await newConversation();
     const a = await send(conversationId, "a");
     await send(conversationId, "b");
@@ -277,24 +283,25 @@ describe("stream replay", () => {
     try {
       await gate.reached;
       // The backlog is already read and does not contain this. Only the
-      // listener attached before the read can still be holding it.
+      // listener attached before the read can still deliver it — and it does
+      // so immediately, so it lands before the backlog the route is still
+      // waiting on. The renderer orders by seq; the wire does not.
       const missed = await send(conversationId, "missed");
       gate.release();
 
       const events = await stream.take(5);
-      expect(messageTexts(events)).toEqual(["b", "missed"]);
+      expect(messageTexts(events)).toEqual(["missed", "b"]);
       expect(events.map((e) => e.type)).toEqual([
         "message",
-        ...SEEDS,
         "message",
+        ...SEEDS,
       ]);
-      expect(events.at(-1)).toMatchObject({ message: { id: missed.id } });
     } finally {
       stream.close();
     }
   });
 
-  test("a message in both the backlog and the buffer is sent once", async () => {
+  test("a message in both the backlog and the live feed is sent twice, and nothing is dropped", async () => {
     const conversationId = await newConversation();
     const a = await send(conversationId, "a");
     const b = await send(conversationId, "b");
@@ -306,16 +313,20 @@ describe("stream replay", () => {
     try {
       await gate.reached;
       // Written before the read, so the backlog carries it; emitted after the
-      // attach, so the buffer carries it too.
+      // attach, so it goes out live too. The overlap is the accepted cost of
+      // never having a gap — the renderer dedups by id.
       conversationEvents.emit("message", conversationId, { message: b });
       gate.release();
 
-      const events = await stream.take(4);
-      expect(messageTexts(events)).toEqual(["b"]);
-      expect(events.map((e) => e.type)).toEqual(["message", ...SEEDS]);
+      const events = await stream.take(5);
+      expect(messageTexts(events)).toEqual(["b", "b"]);
+      expect(events.map((e) => e.type)).toEqual([
+        "message",
+        "message",
+        ...SEEDS,
+      ]);
 
-      // Nothing queued behind the seeds: the next frame is the new write, not
-      // a second copy of b.
+      // Nothing queued behind the seeds: the next frame is the new write.
       const after = await send(conversationId, "after");
       expect(await stream.next()).toMatchObject({
         type: "message",
@@ -323,6 +334,43 @@ describe("stream replay", () => {
       });
     } finally {
       stream.close();
+    }
+  });
+
+  test("the seeds describe the state at the end of the read, not the start", async () => {
+    const conversationId = await newConversation();
+    openHandle(conversationId, buildPrompt("hi", { uuid: crypto.randomUUID() }));
+
+    const gate = holdGate("after");
+    const stream = await openStream(
+      `/api/chat/${conversationId}/stream?afterSeq=0`,
+    );
+    try {
+      await gate.reached;
+      // A block starts streaming while the route is inside the read. Its
+      // delta goes out live, ahead of the seeds; the seed that follows must
+      // already contain it, or the renderer would overwrite the delta with an
+      // older, emptier fold.
+      const raw = {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "text", text: "mid-read" },
+      };
+      applyPartial(conversationId, { type: "stream_event", event: raw } as never);
+      conversationEvents.emit("partial", conversationId, {
+        partial: { type: "stream_event", event: raw } as never,
+      });
+      gate.release();
+
+      const events = await stream.take(4);
+      expect(events.map((e) => e.type)).toEqual(["partial", ...SEEDS]);
+      expect(events.at(-1)).toMatchObject({
+        type: "livePartial",
+        livePartial: { block: { type: "text", text: "mid-read" } },
+      });
+    } finally {
+      stream.close();
+      releaseHandle(conversationId);
     }
   });
 
