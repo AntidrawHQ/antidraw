@@ -569,3 +569,41 @@ describe("releasing", () => {
     expect(() => releaseStream(freshId())).not.toThrow();
   });
 });
+
+describe("the idle invalidate", () => {
+  test("a turn ending reconciles the transcript", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []); // streaming
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    scriptAttempts([{ events: [{ type: "state", state: "idle" }] }]);
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    // This is the only thing reconciling deletions, and a deletion can only
+    // have happened during the turn that just ended.
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: queryKeys.conversations.detail(conversationId),
+    });
+  });
+
+  test("attaching to a conversation that was already idle does not refetch", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    queryClient.setQueryData<ConversationWithMessages>(
+      queryKeys.conversations.detail(conversationId),
+      (old) => (old ? { ...old, streamStatus: "idle" } : old),
+    );
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    // Every attach seeds `state`, so an idle conversation seeds idle again.
+    // Now that the subscription is held for any open conversation rather than
+    // only a streaming one, this is the common case on opening one.
+    scriptAttempts([{ events: [{ type: "state", state: "idle" }] }]);
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    // The query that opened the conversation has just read these same rows.
+    expect(invalidate).not.toHaveBeenCalled();
+  });
+});

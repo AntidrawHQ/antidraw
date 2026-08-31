@@ -206,6 +206,11 @@ const handleStreamEvent = (
   // yet. The `queue` event above is the only thing that speaks for the
   // queue.
   if (event.type === "state") {
+    const wasStreaming =
+      queryClient.getQueryData<ConversationWithMessages>(
+        queryKeys.conversations.detail(conversationId),
+      )?.streamStatus === "streaming";
+
     queryClient.setQueryData<ConversationWithMessages>(
       queryKeys.conversations.detail(conversationId),
       (old) =>
@@ -215,11 +220,18 @@ const handleStreamEvent = (
     );
     if (event.state === "idle") {
       clearLive(conversationId, queryClient);
+      // Only where idle means a turn just ended. Every attach seeds `state`,
+      // and a conversation that was already idle seeds it again — refetching
+      // there would re-read rows the query that opened the conversation has
+      // just read. Reconciling deletions is what this is for, and a deletion
+      // can only have happened during a turn.
       // TODO: Rearchitect to a single stream endpoint that sends initial state + live events,
       // eliminating the race condition between initial fetch and stream subscription.
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.conversations.detail(conversationId),
-      });
+      if (wasStreaming) {
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.conversations.detail(conversationId),
+        });
+      }
     }
     return;
   }

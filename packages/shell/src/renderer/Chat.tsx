@@ -25,7 +25,6 @@ import {
   useCancelQueuedMessage,
   useCancelStream,
   useConversationMessages,
-  useConversationWithStream,
   useCreateConversation,
   useGenerateTitle,
   useLivePartial,
@@ -332,7 +331,7 @@ export function AppChat({ className, ...props }: AppChatProps) {
   const generateTitle = useGenerateTitle();
   const cancelStream = useCancelStream();
   const { data: conversation, isLoading: isConversationLoading } =
-    useConversationWithStream(activeConversationId);
+    useConversationMessages(activeConversationId);
 
   const isStreaming = conversation?.streamStatus === "streaming";
 

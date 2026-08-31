@@ -8,6 +8,7 @@ import type { ImageAttachment } from "@/shared/utils/message";
 import { createUserSDKMessage } from "@/shared/utils/message";
 import { queryOptions, useMutation, useQuery, useQueryClient, skipToken } from "@tanstack/react-query";
 import { useEffect, useMemo } from "react";
+import { useWorkspaceStore } from "@/renderer/store/workspace";
 import type { ToolPart } from "@/renderer/components/ui/tool";
 import { queryKeys } from "./query-keys";
 import {
@@ -50,35 +51,35 @@ export const useConversationMessages = (conversationId: string | null) => {
   return useQuery(conversationQueryOpts(conversationId));
 };
 
-// Hook that subscribes to stream events when conversation is streaming
-export const useConversationWithStream = (conversationId: string | null) => {
+// Owns the subscription for whichever conversation is open. Mounted once, at
+// the app root, because that is the only place with the right lifetime: the
+// subscription belongs to the open conversation, and no component that renders
+// the conversation lives exactly that long. AppChat is the cautionary case —
+// opening the conversation list or switching to the Components panel unmounts
+// it while the very same conversation is still open, and an owner that lets go
+// there drops a subscription on a conversation the user is still in.
+export const useConversationSubscription = () => {
+  const conversationId = useWorkspaceStore((s) => s.activeConversationId);
   const queryClient = useQueryClient();
 
-  // Main data query
-  const query = useQuery(conversationQueryOpts(conversationId));
-
-  const isStreaming = query.data?.streamStatus === "streaming";
-
-  // Opened on demand. Idempotent, so re-running it while one is already live
-  // costs nothing — this only has to make sure a turn in flight is watched.
-  useEffect(() => {
-    if (!conversationId || !isStreaming) return;
-    subscribeToStream(conversationId, queryClient);
-  }, [conversationId, isStreaming, queryClient]);
-
-  // Released when this stops being the open conversation, which is a different
-  // lifetime from the one above — hence a second effect rather than a cleanup
-  // on the first. Releasing when isStreaming goes false would tear the
-  // subscription down between turns, and the CLI reports idle while a message
-  // we handed it can still be un-acked; we would miss that ack and everything
-  // after it. Reopening later is cheap now that the stream resumes from a
-  // cursor, and the state seed corrects a status that went stale while away.
+  // One effect, because acquiring and releasing now share a lifetime: this is
+  // held because the conversation is open, not because a turn is running in
+  // it. Gating acquisition on streamStatus was the asymmetry — release ran on
+  // any close, but re-acquisition asked a status that is allowed to lie. The
+  // CLI reports idle while a message we handed it is still un-acked, so a
+  // conversation can read idle with its events still coming; a gate reading
+  // that declines to re-watch it, and with staleTime Infinity nothing refetches
+  // to correct the answer. Unconditional here, the status stops being an input
+  // at all, and the backend's `state` seed on attach is what fixes one that
+  // went stale while away.
+  //
+  // Re-attaching costs only what the gap contained, since the stream resumes
+  // from a cursor.
   useEffect(() => {
     if (!conversationId) return;
+    subscribeToStream(conversationId, queryClient);
     return () => releaseStream(conversationId);
-  }, [conversationId]);
-
-  return query;
+  }, [conversationId, queryClient]);
 };
 
 export const useWorkspaceConversations = (workspaceId: string | null) => {
@@ -259,13 +260,13 @@ onMutate: async ({ message, conversationId, userMessageId, images }) => {
     // The 202 means the backend has claimed the slot and registered this
     // send. The backend does not write streamStatus on send any more (the
     // CLI's `running` does, a moment later), so until then the row says
-    // whatever it said before. Re-asserting streaming here is what a crossing
-    // `complete` + refetch may have undone, and it is also what opens the
-    // subscription: onMutate already flipped the cache to streaming, so the
-    // subscribe effect has run by the time this 202 lands, and this write
-    // keeps it that way. The subscription is deliberately NOT opened from
-    // here — an unmounted conversation must not acquire one, and the effect
-    // is the single owner that can release it.
+    // whatever it said before. Re-asserting streaming here restores what a
+    // crossing `complete` + refetch may have undone, so the shimmer and Stop
+    // survive it. It no longer has anything to do with subscribing: the
+    // subscription is held for whichever conversation is open, so one is
+    // already running before this send was made. Opening one from here would
+    // also be wrong — it could acquire a subscription for a conversation that
+    // is no longer open, which nothing would then release.
     onSuccess: (_data, { conversationId, userMessageId }, context) => {
       queryClient.setQueryData<ConversationWithMessages>(
         queryKeys.conversations.detail(conversationId),
