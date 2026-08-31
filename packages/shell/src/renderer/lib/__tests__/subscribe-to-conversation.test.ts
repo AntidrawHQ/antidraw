@@ -31,6 +31,11 @@ beforeEach(() => {
   h.calls.length = 0;
 });
 
+// The call a test is asserting on has always been recorded by the time it
+// looks — the generator has been driven past its first flush. Asserted here
+// so the assertions below stay about behaviour rather than about indexing.
+const call = (i = 0) => h.calls[i]!;
+
 const drain = async (
   gen: AsyncGenerator<StreamEvent>,
   got: StreamEvent[],
@@ -53,8 +58,8 @@ describe("subscribeToConversation", () => {
     void drain(subscribeToConversation("abc"), []);
     await flush();
 
-    expect(h.calls[0].url).toBe("antidraw://app/api/chat/abc/stream?afterSeq=12");
-    expect(h.calls[1].url).toBe("antidraw://app/api/chat/abc/stream");
+    expect(call().url).toBe("antidraw://app/api/chat/abc/stream?afterSeq=12");
+    expect(call(1).url).toBe("antidraw://app/api/chat/abc/stream");
   });
 
   test("a release ends the iteration cleanly and aborts the fetch", async () => {
@@ -63,11 +68,11 @@ describe("subscribeToConversation", () => {
     const done = drain(subscribeToConversation("abc", 0, release.signal), got);
     await flush();
 
-    h.calls[0].onmessage({
+    call().onmessage({
       data: JSON.stringify({ type: "state", state: "running" }),
     });
     await flush();
-    expect(h.calls[0].signal.aborted).toBe(false);
+    expect(call().signal.aborted).toBe(false);
 
     release.abort();
     await flush();
@@ -77,7 +82,7 @@ describe("subscribeToConversation", () => {
     expect(got).toEqual([{ type: "state", state: "running" }]);
     // And the fetch is aborted, which is what fires the backend's request
     // abort and detaches its listeners.
-    expect(h.calls[0].signal.aborted).toBe(true);
+    expect(call().signal.aborted).toBe(true);
   });
 
   test("a release that arrives before the stream opens still ends it", async () => {
@@ -95,10 +100,10 @@ describe("subscribeToConversation", () => {
     const done = drain(subscribeToConversation("abc", 0), got);
     await flush();
 
-    h.calls[0].onmessage({
+    call().onmessage({
       data: JSON.stringify({ type: "state", state: "running" }),
     });
-    expect(() => h.calls[0].onerror(new Error("socket closed"))).toThrow();
+    expect(() => call().onerror(new Error("socket closed"))).toThrow();
     await flush();
 
     const e = await done;
@@ -118,7 +123,7 @@ describe("subscribeToConversation", () => {
       h.calls.length = 0;
       const done = drain(subscribeToConversation("abc", 0), []);
       await flush();
-      await h.calls[0].onopen({
+      await call().onopen({
         ok: false,
         status,
         statusText: "nope",
@@ -139,7 +144,7 @@ describe("subscribeToConversation", () => {
     const done = drain(subscribeToConversation("abc", 0), got);
     await flush();
 
-    h.calls[0].onmessage({
+    call().onmessage({
       data: JSON.stringify({ type: "error", error: "spawn failed" }),
     });
     await flush();

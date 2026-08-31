@@ -149,7 +149,7 @@ export const subscribeToStream = (
           // attempt is -1 when this attempt made progress before dying:
           // restart the ladder at its first step, not at BACKOFF_MS[-1] —
           // undefined, which setTimeout reads as a zero-delay retry.
-          await delay(BACKOFF_MS[attempt] ?? BACKOFF_MS[0], release.signal);
+          await delay(BACKOFF_MS[attempt] ?? BACKOFF_MS[0]!, release.signal);
         }
       }
     } finally {

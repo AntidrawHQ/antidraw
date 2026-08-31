@@ -355,7 +355,14 @@ export function AppChat({ className, ...props }: AppChatProps) {
       const reader = new FileReader();
       reader.onload = () => {
         const result = reader.result as string;
+        // A data URL is "<metadata>,<base64>". Anything without the comma is
+        // not one, and resolving with an undefined payload would put a broken
+        // image on the wire rather than failing where the mistake happened.
         const base64 = result.split(",")[1];
+        if (base64 === undefined) {
+          reject(new Error(`Could not read ${file.name} as a data URL`));
+          return;
+        }
         resolve({ data: base64, mediaType: file.type as SupportedImageMediaType });
       };
       reader.onerror = reject;

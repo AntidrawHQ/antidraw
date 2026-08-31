@@ -46,7 +46,7 @@ export const createConversation = async (
       })
       .returning();
 
-    return ok(withStreamStatus(conversation));
+    return ok(withStreamStatus(conversation!));
   } catch (_e) {
     return err({
       status: 500 as const,
@@ -237,7 +237,7 @@ export const addMessage = async (params: {
   const id = params.id ?? crypto.randomUUID();
 
   try {
-    const [message] = await db
+    const [inserted] = await db
       .insert(messages)
       .values({
         id,
@@ -246,6 +246,9 @@ export const addMessage = async (params: {
         sdkMessage: params.sdkMessage,
       })
       .returning();
+    // An insert of one row returns that row. Asserted here rather than at each
+    // use so the ok() below does not hand callers a `Message | undefined`.
+    const message = inserted!;
 
     // Emit after insert - automatic, can't forget
     conversationEvents.emit("message", params.conversationId, { message });

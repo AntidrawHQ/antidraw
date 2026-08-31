@@ -127,7 +127,8 @@ export function fixJson(input: string): string {
   }
 
   for (let i = 0; i < input.length; i++) {
-    const char = input[i];
+    // In bounds by the loop condition.
+    const char = input[i]!;
     const currentState = stack[stack.length - 1];
 
     switch (currentState) {
