@@ -257,17 +257,19 @@ describe("reconnecting", () => {
     expect(detail(queryClient, conversationId).streamStatus).toBe("error");
   });
 
-  test("a delivered event buys back the retry budget", async () => {
+  test("delivered progress buys back the retry budget", async () => {
     const conversationId = freshId();
     seedCache(queryClient, conversationId, []);
     const drop = { throws: new StreamDisconnectedError("flap", true) };
     const flap = {
-      events: [{ type: "state" as const, state: "running" as const }],
+      // A row, not a seed: progress is the cursor advancing, and only
+      // progress refunds the budget (see the test below for why).
+      events: [{ type: "message" as const, message: message(1, "b") }],
       throws: new StreamDisconnectedError("flap", true),
     };
     const cursors = scriptAttempts([
       ...Array.from({ length: 5 }, () => drop),
-      flap, // partway through the budget, but it delivers something
+      flap, // partway through the budget, but it makes progress
       ...Array.from({ length: 12 }, () => drop),
     ]);
 
@@ -277,6 +279,56 @@ describe("reconnecting", () => {
     // 6 attempts up to and including the flap, then a full budget of 8 after
     // it. Without the reset the run would have stopped at 8 in total.
     expect(cursors).toHaveLength(14);
+  });
+
+  test("seeds alone do not buy back the budget", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    // The backend sends its state/queue/livePartial seeds unconditionally on
+    // every successful attach. A link that accepts the stream and then drops
+    // the body — a main-process reload loop, a torn-down CLI handle — thus
+    // delivers events on every cycle without ever making progress.
+    const cursors = scriptAttempts(
+      Array.from({ length: 20 }, () => ({
+        events: [{ type: "state" as const, state: "running" as const }],
+        throws: new StreamDisconnectedError("dropped after attach", true),
+      })),
+    );
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    // The same budget as a link that never opens: the seeds cost the backend
+    // nothing and prove nothing about progress, so they must not refund the
+    // ceiling — otherwise this link reconnects forever behind a spinner.
+    expect(cursors.length).toBeLessThanOrEqual(8);
+    expect(detail(queryClient, conversationId).streamStatus).toBe("error");
+  });
+
+  test("the retry after a delivered event still backs off", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    const cursors = scriptAttempts([
+      {
+        events: [{ type: "state" as const, state: "running" as const }],
+        throws: new StreamDisconnectedError("dropped after attach", true),
+      },
+      {}, // the reconnect, ending cleanly
+    ]);
+
+    subscribeToStream(conversationId, queryClient);
+    await flush();
+    expect(cursors).toHaveLength(1); // dropped, now meant to be in backoff
+
+    // The refund sets attempt to -1, and BACKOFF_MS[-1] is undefined:
+    // setTimeout(done, undefined) fires immediately. A real first-step
+    // backoff holds through anything short of it.
+    await vi.advanceTimersByTimeAsync(249);
+    await flush();
+    expect(cursors).toHaveLength(1);
+
+    await settle(conversationId);
+    expect(cursors).toHaveLength(2);
   });
 
   test("does not retry a conversation the backend says is gone", async () => {

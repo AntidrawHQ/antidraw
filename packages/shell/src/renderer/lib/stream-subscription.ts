@@ -105,18 +105,23 @@ export const subscribeToStream = (
         try {
           // The cursor is read fresh on every attempt, so a reconnect asks for
           // exactly what the drop cost us and nothing we already rendered.
+          const cursor = cursorFor(conversationId, queryClient);
           const stream = subscribeToConversation(
             conversationId,
-            cursorFor(conversationId, queryClient),
+            cursor,
             release.signal,
           );
 
           for await (const event of stream) {
-            // Any delivered event proves the link works; a connection that
-            // flaps but keeps producing should not exhaust the budget meant
-            // for one that can never open. -1 so the loop's ++ lands on 0.
-            attempt = -1;
             handleStreamEvent(conversationId, event, queryClient);
+            // Progress, not delivery, buys back the retry budget: a
+            // connection that flaps but keeps producing rows should not
+            // exhaust the budget meant for one that can never open. Mere
+            // delivery must not count — the backend seeds every attach with
+            // state/queue/livePartial for free, so a link that accepts and
+            // immediately dies would refund itself forever. -1 so the
+            // loop's ++ lands on 0.
+            if (cursorFor(conversationId, queryClient) > cursor) attempt = -1;
           }
           // Ended cleanly: the backend sent a terminal event. Nothing to resume.
           return;
@@ -141,7 +146,10 @@ export const subscribeToStream = (
             );
             return;
           }
-          await delay(BACKOFF_MS[attempt], release.signal);
+          // attempt is -1 when this attempt made progress before dying:
+          // restart the ladder at its first step, not at BACKOFF_MS[-1] —
+          // undefined, which setTimeout reads as a zero-delay retry.
+          await delay(BACKOFF_MS[attempt] ?? BACKOFF_MS[0], release.signal);
         }
       }
     } finally {
