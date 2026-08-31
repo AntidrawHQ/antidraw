@@ -198,14 +198,43 @@ describe("the resume cursor", () => {
     expect(cursors).toEqual([4]);
   });
 
-  test("is 0 when the cache is empty", async () => {
+  test("is 0 for an empty conversation, absent when there is no cache", async () => {
+    const emptyConversation = freshId();
+    seedCache(queryClient, emptyConversation, []);
+    const emptyCursors = scriptAttempts([{}]);
+    subscribeToStream(emptyConversation, queryClient);
+    await settle(emptyConversation);
+    expect(emptyCursors).toEqual([0]);
+
+    // No cache at all — a cold open racing the detail query, or an entry the
+    // query client garbage-collected. There is no consumer for a replay (the
+    // message handler drops updates when the entry is gone), so asking for
+    // one from 0 would serialise the whole transcript into the void.
+    const uncached = freshId();
+    const uncachedCursors = scriptAttempts([{}]);
+    subscribeToStream(uncached, queryClient);
+    await settle(uncached);
+    expect(uncachedCursors).toEqual([undefined]);
+  });
+
+  test("pins on first sight once the cache lands", async () => {
     const conversationId = freshId();
-    const cursors = scriptAttempts([{}]);
+    const cursors = scriptAttempts([
+      { throws: new StreamDisconnectedError("cold open drop", true) },
+      { throws: new StreamDisconnectedError("dropped again", true) },
+      {},
+    ]);
 
     subscribeToStream(conversationId, queryClient);
+    await flush();
+    // The detail query lands while the loop sits in its first backoff.
+    seedCache(queryClient, conversationId, [message(5, "from the refetch")]);
     await settle(conversationId);
 
-    expect(cursors).toEqual([0]);
+    // Seed-only until the cache exists, then pinned at its first sighting —
+    // and a later drop keeps the pin rather than re-reading a cache a replay
+    // may have made non-contiguous.
+    expect(cursors).toEqual([undefined, 5, 5]);
   });
 });
 
@@ -285,14 +314,21 @@ describe("reconnecting", () => {
     seedCache(queryClient, conversationId, []);
     scriptAttempts([
       { throws: new StreamDisconnectedError("socket closed", true) },
-      { events: [{ type: "state", state: "running" }] },
+      {}, // ends cleanly without delivering anything
     ]);
 
     subscribeToStream(conversationId, queryClient);
-    await settle(conversationId);
 
-    // A blip is not a failed conversation: the spinner holds through the gap
-    // and the resumed stream's state seed settles it.
+    // Mid-gap: the first attempt has died and the loop is sitting in its
+    // backoff. This is the window the pre-cursor code flashed an error in.
+    await flush();
+    expect(detail(queryClient, conversationId).streamStatus).toBe("streaming");
+
+    await settle(conversationId);
+    // Still untouched — and because the second attempt delivered no events,
+    // nothing on the recovery path wrote this value: only the seeded one
+    // surviving can satisfy it. (A `state` event in attempt two would make
+    // this vacuous — the recovery write and the seed both say "streaming".)
     expect(detail(queryClient, conversationId).streamStatus).toBe("streaming");
   });
 

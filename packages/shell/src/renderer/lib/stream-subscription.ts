@@ -41,15 +41,20 @@ const BACKOFF_MS = [250, 500, 1000, 2000, 4000, 8000, 8000];
 
 // Where we are in the transcript: the highest seq the cache actually holds.
 // Optimistic rows are skipped — they carry PENDING_SEQ, not a real position.
-// 0 means "send me everything", which is the right answer for an empty cache.
+// 0 is an empty conversation: "everything after 0" is what we want, which is
+// nothing. undefined is no cache at all — a cold open racing the detail
+// query, or an unobserved entry the query client garbage-collected — and the
+// two must not collapse: a cursor of 0 there asks the route to serialise the
+// whole transcript into updates the renderer drops at its `if (!old)` guard.
+// No cache means no consumer for a replay, so the right ask is no replay.
 const cursorFor = (
   conversationId: string,
   queryClient: QueryClient,
-): number => {
+): number | undefined => {
   const data = queryClient.getQueryData<ConversationWithMessages>(
     queryKeys.conversations.detail(conversationId),
   );
-  if (!data) return 0;
+  if (!data) return undefined;
   return data.messages.reduce(
     (max, m) => (m.seq !== PENDING_SEQ && m.seq > max ? m.seq : max),
     0,
@@ -106,19 +111,25 @@ export const subscribeToStream = (
 
   void (async () => {
     try {
-      // What we knowingly hold, read once. The cache is a gap-free prefix
-      // when a subscription starts — it came from a DB read — so its max is
-      // a true "I have everything up to here". It stops being one the moment
-      // the stream delivers: the route sends live events ahead of the
-      // backlog, so after a dirty drop the cache max can name a row that
-      // arrived ahead of older rows that never did, and asking from there
-      // would skip them for good. Only a clean end proves the replay
-      // completed, and a clean end exits this loop entirely — so a retry
-      // re-asks from here, and the server's gt-filter plus the renderer's
-      // id-dedup absorb the overlap.
-      const cursor = cursorFor(conversationId, queryClient);
+      // What we knowingly hold, pinned the first time it is knowable. The
+      // cache is a gap-free prefix when it first appears — it came from a DB
+      // read — so its max is a true "I have everything up to here". It stops
+      // being one the moment a replay is in flight: the route sends live
+      // events ahead of the backlog, so after a dirty drop the cache max can
+      // name a row that arrived ahead of older rows that never did, and
+      // asking from there would skip them for good. Only a clean end proves
+      // the replay completed, and a clean end exits this loop entirely — so
+      // a retry re-asks from the pin, and the server's gt-filter plus the
+      // renderer's id-dedup absorb the overlap.
+      let cursor = cursorFor(conversationId, queryClient);
       for (let attempt = 0; !release.signal.aborted; attempt++) {
         try {
+          // Unpinned means the detail query has not landed yet: attempts go
+          // out seed-only, and the first defined read pins. That moment is
+          // safe to trust precisely because those attempts asked for no
+          // replay — with no backlog in flight, live delivery is monotone,
+          // and the cache is still the gap-free prefix the pin needs.
+          cursor ??= cursorFor(conversationId, queryClient);
           const stream = subscribeToConversation(
             conversationId,
             cursor,
@@ -138,8 +149,11 @@ export const subscribeToStream = (
             // delivery must not count — the backend seeds every attach with
             // state/queue/livePartial for free, so a link that accepts and
             // immediately dies would refund itself forever. -1 so the
-            // loop's ++ lands on 0.
-            if (cursorFor(conversationId, queryClient) > attemptBase)
+            // loop's ++ lands on 0. No baseline, no refund: a cache that
+            // appears mid-attempt is the detail query landing, not the link
+            // producing.
+            const now = cursorFor(conversationId, queryClient);
+            if (attemptBase !== undefined && now !== undefined && now > attemptBase)
               attempt = -1;
           }
           // Ended cleanly, which now means one of two things: the backend
