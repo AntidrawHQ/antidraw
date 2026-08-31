@@ -266,6 +266,10 @@ describe("stream replay", () => {
     try {
       const events = await stream.take(3);
       expect(events.map((e) => e.type)).toEqual([...SEEDS]);
+      // No CLI handle is open for this conversation, and getCliState's
+      // no-handle answer is the seed's payload: idle, not a crash and not a
+      // stale "running" from a turn that no longer exists.
+      expect(events[0]).toMatchObject({ type: "state", state: "idle" });
 
       // Live events still flow; it is only the backlog that is withheld.
       const written = await send(conversationId, "live");
@@ -390,6 +394,12 @@ describe("stream replay", () => {
 
       const events = await stream.take(4);
       expect(events.map((e) => e.type)).toEqual(["partial", ...SEEDS]);
+      // The payload, not just the type: this is the only test that reads the
+      // `state` seed while a handle exists, so it is what pins getCliState —
+      // an inverted fallback there reports idle mid-turn, and the renderer
+      // would clear the live block and stop the spinner while the CLI is
+      // still producing.
+      expect(events[1]).toMatchObject({ type: "state", state: "spawning" });
       expect(events.at(-1)).toMatchObject({
         type: "livePartial",
         livePartial: { block: { type: "text", text: "mid-read" } },
