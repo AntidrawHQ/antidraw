@@ -198,22 +198,46 @@ api.get(
       ctx.req.raw.signal.addEventListener("abort", unsubscribe);
       stream.onAbort(unsubscribe);
 
-      if (afterSeq !== undefined) {
-        const backlog = await getMessagesAfterSeq(conversationId, afterSeq);
-        for (const message of backlog) send({ type: "message", message });
+      // Both hooks answer a departure; the finally answers an unwind. A
+      // rejection below would be caught by Hono, which closes the stream —
+      // close, not abort, so neither hook fires: the body ends cleanly, the
+      // client sees a resumable drop, and the listeners would stay attached
+      // for the life of the process, serialising every later event into a
+      // dead writer whose failed writes Hono swallows. The park at the
+      // bottom never settles, so this finally cannot fire on the happy path
+      // — it exists for the throw that is not supposed to happen.
+      try {
+        if (afterSeq !== undefined) {
+          const backlog = await getMessagesAfterSeq(conversationId, afterSeq);
+          if (backlog.isErr()) {
+            // A failed replay is not a failed connection: the live half has
+            // no DB dependency, and the seeds below still describe the
+            // present. The client's cursor only advances on a clean end, so
+            // the rows this read owed it are owed by the next attach instead.
+            console.error(
+              `Backlog replay failed for ${conversationId}:`,
+              backlog.error.message,
+            );
+          } else {
+            for (const message of backlog.value)
+              send({ type: "message", message });
+          }
+        }
+
+        // Seeds go last and are read now, after the await, so everything ahead
+        // of them on the wire is older than they are. They are whole-state, so
+        // arriving last is what makes them right: an assistant message that
+        // came through before them — backlog or live — makes the renderer drop
+        // its live block, and the seed then installs whichever block is in
+        // flight now, or none.
+        send({ type: "state", state: getCliState(conversationId) });
+        send({ type: "queue", userMessageIds: getPending(conversationId) });
+        send({ type: "livePartial", livePartial: getPartial(conversationId) });
+
+        await new Promise(() => {});
+      } finally {
+        unsubscribe();
       }
-
-      // Seeds go last and are read now, after the await, so everything ahead
-      // of them on the wire is older than they are. They are whole-state, so
-      // arriving last is what makes them right: an assistant message that
-      // came through before them — backlog or live — makes the renderer drop
-      // its live block, and the seed then installs whichever block is in
-      // flight now, or none.
-      send({ type: "state", state: getCliState(conversationId) });
-      send({ type: "queue", userMessageIds: getPending(conversationId) });
-      send({ type: "livePartial", livePartial: getPartial(conversationId) });
-
-      await new Promise(() => {});
     });
   },
 );

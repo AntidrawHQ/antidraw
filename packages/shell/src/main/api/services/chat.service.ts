@@ -167,17 +167,35 @@ export const getConversation = async (
 // is exclusive: it is the last seq the caller already has, so a caller fully
 // caught up gets nothing back. Ordered by seq, and covered end to end by
 // idx_messages_conv_seq.
+//
+// A Result like its neighbours, and the caller depends on that: this is
+// awaited inside the SSE route ahead of every seed, where a rejection would
+// unwind the handler and strand the subscriber it just attached. An err lets
+// the route skip the replay and stay live instead.
 export const getMessagesAfterSeq = async (
   conversationId: string,
   afterSeq: number
-): Promise<Message[]> =>
-  db
-    .select()
-    .from(messages)
-    .where(
-      and(eq(messages.conversationId, conversationId), gt(messages.seq, afterSeq))
-    )
-    .orderBy(asc(messages.seq));
+) => {
+  try {
+    const rows = await db
+      .select()
+      .from(messages)
+      .where(
+        and(
+          eq(messages.conversationId, conversationId),
+          gt(messages.seq, afterSeq)
+        )
+      )
+      .orderBy(asc(messages.seq));
+    return ok(rows);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "DB_ERROR",
+      message: "Failed to read the transcript after the cursor",
+    });
+  }
+};
 
 // The persisted copy of a user prompt carries the frontend's userMessageId as
 // its SDK uuid — the same uuid stamped on the message pushed to the CLI, so

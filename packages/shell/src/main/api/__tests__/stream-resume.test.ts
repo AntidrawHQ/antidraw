@@ -26,14 +26,30 @@ const h = vi.hoisted(() => ({
     onEnter: () => void;
     wait: Promise<void>;
   },
+  // How the backlog read fails, when it should. "err" is the shape the real
+  // service produces on a DB error; "reject" is the shape it must never
+  // produce again — kept here so a test can pin what the route does if it
+  // ever does.
+  failure: null as null | "err" | "reject",
 }));
 
 vi.mock("@/main/api/services/chat.service", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("@/main/api/services/chat.service")>();
+  const { err } = await import("neverthrow");
   return {
     ...actual,
     getMessagesAfterSeq: async (conversationId: string, afterSeq: number) => {
+      if (h.failure === "reject") {
+        throw new Error("SQLITE_BUSY: database is locked");
+      }
+      if (h.failure === "err") {
+        return err({
+          status: 500 as const,
+          code: "DB_ERROR",
+          message: "Failed to read the transcript after the cursor",
+        });
+      }
       const gate = h.gate;
       if (gate?.when === "before") {
         gate.onEnter();
@@ -165,6 +181,16 @@ const holdGate = (when: "before" | "after") => {
   };
 };
 
+// The service returns a Result; these tests are about the query itself, so an
+// err is a test failure, not a case.
+const rowsAfter = async (conversationId: string, afterSeq: number) => {
+  const res = await getMessagesAfterSeq(conversationId, afterSeq);
+  if (res.isErr()) {
+    throw new Error(`getMessagesAfterSeq failed: ${res.error.code}`);
+  }
+  return res.value;
+};
+
 describe("getMessagesAfterSeq", () => {
   test("is exclusive: the caller's own last seq is not sent back", async () => {
     const conversationId = await newConversation();
@@ -173,12 +199,12 @@ describe("getMessagesAfterSeq", () => {
     const c = await send(conversationId, "c");
 
     expect(
-      (await getMessagesAfterSeq(conversationId, a.seq)).map(textOf),
+      (await rowsAfter(conversationId, a.seq)).map(textOf),
     ).toEqual(["b", "c"]);
     expect(
-      (await getMessagesAfterSeq(conversationId, c.seq)).map(textOf),
+      (await rowsAfter(conversationId, c.seq)).map(textOf),
     ).toEqual([]);
-    expect((await getMessagesAfterSeq(conversationId, 0)).map(textOf)).toEqual([
+    expect((await rowsAfter(conversationId, 0)).map(textOf)).toEqual([
       "a",
       "b",
       "c",
@@ -192,7 +218,7 @@ describe("getMessagesAfterSeq", () => {
     await send(mine, "mine");
     await send(theirs, "theirs");
 
-    expect((await getMessagesAfterSeq(mine, 0)).map(textOf)).toEqual(["mine"]);
+    expect((await rowsAfter(mine, 0)).map(textOf)).toEqual(["mine"]);
   });
 
   test("a withdrawn message leaves a gap rather than a repeat", async () => {
@@ -207,7 +233,7 @@ describe("getMessagesAfterSeq", () => {
     // its place, so resuming from it still means "everything after".
     expect(next.seq).toBeGreaterThan(cancelled.seq);
     expect(
-      (await getMessagesAfterSeq(conversationId, first.seq)).map(textOf),
+      (await rowsAfter(conversationId, first.seq)).map(textOf),
     ).toEqual(["next"]);
   });
 });
@@ -427,5 +453,57 @@ describe("stream teardown", () => {
     });
 
     await reader.cancel().catch(() => {});
+  });
+
+  test("a failed backlog read skips the replay and stays live", async () => {
+    const conversationId = await newConversation();
+    await send(conversationId, "unreachable backlog");
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    h.failure = "err";
+    const stream = await openStream(
+      `/api/chat/${conversationId}/stream?afterSeq=0`,
+    );
+    try {
+      // No message frames: the replay is skipped, not retried and not fatal.
+      // The seeds still describe the present, and the live half still works —
+      // the client's cursor only advances on a clean end, so the rows this
+      // read owed it are owed by the next attach instead.
+      const events = await stream.take(3);
+      expect(events.map((e) => e.type)).toEqual([...SEEDS]);
+
+      const after = await send(conversationId, "after the failure");
+      expect(await stream.next()).toMatchObject({
+        type: "message",
+        message: { id: after.id },
+      });
+    } finally {
+      h.failure = null;
+      errorLog.mockRestore();
+      stream.close();
+    }
+  });
+
+  test("a backlog read that rejects unwinds without leaking the subscriber", async () => {
+    const conversationId = await newConversation();
+    const before = conversationEvents.listenerCount("message");
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    h.failure = "reject";
+    try {
+      // The service contract says this cannot happen — getMessagesAfterSeq
+      // returns a Result — so this pins the finally, not the err branch: if
+      // a rejection ever does unwind the handler, Hono catches it and CLOSES
+      // the stream (close, not abort), so neither teardown hook fires and
+      // only the finally stands between the subscriber and a process-lifetime
+      // leak.
+      const res = await app.request(
+        `/api/chat/${conversationId}/stream?afterSeq=0`,
+      );
+      expect(await res.text()).toBe(""); // body ended cleanly, nothing sent
+
+      expect(conversationEvents.listenerCount("message")).toBe(before);
+    } finally {
+      h.failure = null;
+      errorLog.mockRestore();
+    }
   });
 });
