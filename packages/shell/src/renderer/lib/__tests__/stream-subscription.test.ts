@@ -19,8 +19,13 @@ vi.mock("../api", async (importOriginal) => {
 
 const { subscribeToConversation } = await import("../api");
 const { StreamDisconnectedError } = await import("../api");
-const { subscribeToStream, releaseStream, isSubscribed, PENDING_SEQ } =
-  await import("../stream-subscription");
+const {
+  subscribeToStream,
+  releaseStream,
+  retryStream,
+  isSubscribed,
+  PENDING_SEQ,
+} = await import("../stream-subscription");
 
 const mockSubscribe = vi.mocked(subscribeToConversation);
 
@@ -605,5 +610,70 @@ describe("the idle invalidate", () => {
 
     // The query that opened the conversation has just read these same rows.
     expect(invalidate).not.toHaveBeenCalled();
+  });
+});
+
+describe("giving up", () => {
+  const refuseAlways = () =>
+    Array.from({ length: 8 }, () => ({
+      throws: new StreamDisconnectedError("refused", true),
+    }));
+
+  test("the failure it writes is not erased by a refetch", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    scriptAttempts(refuseAlways());
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    expect(detail(queryClient, conversationId).streamStatus).toBe("error");
+    // getStreamStatus computes from the CLI handle, which is fine — it knows
+    // nothing about this side giving up. Invalidating here would refetch
+    // "streaming" straight over the top and leave a spinner with nothing
+    // behind it.
+    expect(invalidate).not.toHaveBeenCalled();
+  });
+
+  test("a turn that dies on the backend still reconciles", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    // The other caller of the error state: the backend records this one, so
+    // the refetch agrees with it and the invalidate is worth doing.
+    scriptAttempts([{ events: [{ type: "error", error: "spawn failed" }] }]);
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    expect(detail(queryClient, conversationId).streamStatus).toBe("error");
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: queryKeys.conversations.detail(conversationId),
+    });
+  });
+
+  test("a retry clears the failure and opens a new subscription", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    const cursors = scriptAttempts([
+      ...refuseAlways(),
+      { events: [{ type: "state", state: "running" }] },
+    ]);
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+    expect(cursors).toHaveLength(8);
+    expect(isSubscribed(conversationId)).toBe(false);
+
+    // Nothing reopens on its own: the owner effect is keyed on the
+    // conversation, and that has not changed.
+    retryStream(conversationId, queryClient);
+
+    expect(detail(queryClient, conversationId).streamStatus).toBe("streaming");
+    expect(isSubscribed(conversationId)).toBe(true);
+
+    await settle(conversationId);
+    expect(cursors).toHaveLength(9);
   });
 });

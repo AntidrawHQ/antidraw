@@ -20,6 +20,8 @@ import { Button } from "@/renderer/components/ui/button";
 import { cn } from "@/renderer/lib/utils";
 import { triggerClaudeLogin } from "@/renderer/lib/api";
 import { ArrowUp, ImageIcon, Paperclip, Square, X } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import { retryStream } from "./lib/stream-subscription";
 import { memo, useEffect, useMemo, useState } from "react";
 import {
   useCancelQueuedMessage,
@@ -35,6 +37,7 @@ import {
 import { Tool } from "@/renderer/components/ui/tool";
 import type { ToolPart } from "@/renderer/components/ui/tool";
 import { AuthError } from "@/renderer/components/auth-error";
+import { StreamError } from "@/renderer/components/stream-error";
 import { useWorkspaceStore } from "./store/workspace";
 import { ChatEmptyState } from "./components/ChatEmptyState";
 import ModelPicker from "@/renderer/components/ModelPicker";
@@ -330,10 +333,14 @@ export function AppChat({ className, ...props }: AppChatProps) {
   const sendMessage = useSendMessage();
   const generateTitle = useGenerateTitle();
   const cancelStream = useCancelStream();
+  const queryClient = useQueryClient();
   const { data: conversation, isLoading: isConversationLoading } =
     useConversationMessages(activeConversationId);
 
   const isStreaming = conversation?.streamStatus === "streaming";
+  // The retry budget ran out. Nothing reopens on its own from here, so this
+  // stays until the user acts on it or sends again.
+  const streamFailed = conversation?.streamStatus === "error";
 
   // Only an in-flight HTTP send blocks submitting. Streaming does not: a
   // mid-turn send is queued by the CLI and acked via message_accepted.
@@ -388,6 +395,13 @@ export function AppChat({ className, ...props }: AppChatProps) {
       return;
     }
 
+    // Sending while disconnected would otherwise post into a conversation
+    // nothing is watching: the owner effect is keyed on the conversation, and
+    // that has not changed, so only this reopens the stream.
+    if (streamFailed && activeConversationId) {
+      retryStream(activeConversationId, queryClient);
+    }
+
     setInput("");
     setAttachedImages([]);
 
@@ -437,6 +451,11 @@ export function AppChat({ className, ...props }: AppChatProps) {
     triggerClaudeLogin();
   };
 
+  const handleReconnect = () => {
+    if (!activeConversationId) return;
+    retryStream(activeConversationId, queryClient);
+  };
+
   const handleRetry = async () => {
     if (!activeWorkspaceId || !activeConversationId || isSendPending) return;
 
@@ -477,6 +496,7 @@ export function AppChat({ className, ...props }: AppChatProps) {
 
       <FileUpload onFilesAdded={handleFilesAdded} accept="image/*">
         <div className="p-4">
+          {streamFailed && <StreamError onReconnect={handleReconnect} />}
           <PromptInput
             value={input}
             onValueChange={setInput}

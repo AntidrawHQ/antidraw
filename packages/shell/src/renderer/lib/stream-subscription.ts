@@ -135,15 +135,7 @@ export const subscribeToStream = (
             e instanceof StreamDisconnectedError && e.retriable;
           if (!retriable || attempt >= BACKOFF_MS.length) {
             console.error("Stream subscription error:", e);
-            handleStreamEvent(
-              conversationId,
-              {
-                type: "error",
-                error:
-                  e instanceof Error ? e.message : "Stream connection failed",
-              },
-              queryClient,
-            );
+            reportTransportFailure(conversationId, queryClient);
             return;
           }
           // attempt is -1 when this attempt made progress before dying:
@@ -175,6 +167,42 @@ export const releaseStream = (conversationId: string): void => {
 
 export const isSubscribed = (conversationId: string): boolean => {
   return activeSubscriptions.has(conversationId);
+};
+
+// The retry budget ran out. Deliberately NOT routed through the `error` event
+// handler: that one invalidates, and this failure is a fact only this side
+// knows. getStreamStatus computes from the CLI handle, which is fine, so the
+// refetch would answer "streaming" straight over the top of this write and the
+// user would be left watching a spinner with nothing behind it. A backend
+// `error` event still takes that branch, where invalidating is right — the
+// backend records that failure and reports it back.
+const reportTransportFailure = (
+  conversationId: string,
+  queryClient: QueryClient,
+): void => {
+  clearLive(conversationId, queryClient);
+  queryClient.setQueryData<ConversationWithMessages>(
+    queryKeys.conversations.detail(conversationId),
+    (old) => (old ? { ...old, streamStatus: "error" } : old),
+  );
+};
+
+// Giving up is terminal: the loop is gone and the slot is free, so nothing
+// reopens on its own. This is the way back, and it is the only one — the owner
+// effect is keyed on the conversation, which has not changed.
+//
+// The status goes back to "streaming" first so the failure notice clears as
+// soon as the attempt starts rather than when it succeeds. The `state` seed on
+// attach corrects it within a round trip if the CLI is in fact idle.
+export const retryStream = (
+  conversationId: string,
+  queryClient: QueryClient,
+): void => {
+  queryClient.setQueryData<ConversationWithMessages>(
+    queryKeys.conversations.detail(conversationId),
+    (old) => (old ? { ...old, streamStatus: "streaming" } : old),
+  );
+  subscribeToStream(conversationId, queryClient);
 };
 
 const clearLive = (conversationId: string, queryClient: QueryClient): void => {
