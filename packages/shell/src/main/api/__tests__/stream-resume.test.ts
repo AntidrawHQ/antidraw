@@ -382,3 +382,50 @@ describe("stream replay", () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe("stream teardown", () => {
+  // The route hangs its detach on two endings because the one these tests can
+  // drive is not the one that fires in the app. Electron builds the
+  // protocol.handle request without a signal, so `req.signal` never aborts
+  // there; what a renderer-side fetch abort reaches is the response body.
+  // Both are pinned here — deleting either hook fails one of these.
+  test("cancelling the response body detaches the listeners", async () => {
+    const conversationId = await newConversation();
+    const before = conversationEvents.listenerCount("message");
+
+    // No AbortSignal in play at all: this is the shipped path, where the only
+    // thing that ever happens is the body being cancelled.
+    const res = await app.request(`/api/chat/${conversationId}/stream`);
+    const reader = res.body!.getReader();
+    await reader.read(); // a seed — proof the handler attached
+    expect(conversationEvents.listenerCount("message")).toBe(before + 1);
+
+    await reader.cancel();
+
+    expect(conversationEvents.listenerCount("message")).toBe(before);
+  });
+
+  test("aborting the request signal detaches them too", async () => {
+    const conversationId = await newConversation();
+    const before = conversationEvents.listenerCount("message");
+
+    const abort = new AbortController();
+    const res = await app.request(`/api/chat/${conversationId}/stream`, {
+      signal: abort.signal,
+    });
+    const reader = res.body!.getReader();
+    await reader.read();
+    expect(conversationEvents.listenerCount("message")).toBe(before + 1);
+
+    // The signal and nothing else. openStream's close() cancels the body too,
+    // which would let onAbort answer for this and leave the signal hook
+    // untested — the body is deliberately left alone here.
+    abort.abort();
+
+    await vi.waitFor(() => {
+      expect(conversationEvents.listenerCount("message")).toBe(before);
+    });
+
+    await reader.cancel().catch(() => {});
+  });
+});

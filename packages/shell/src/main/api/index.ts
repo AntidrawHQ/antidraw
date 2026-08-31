@@ -165,8 +165,8 @@ api.get(
       // Order on the wire is call order: writeSSE hands each frame to the
       // stream's writer in the order it was called, and the writer queues.
       // A write to a subscriber that has gone is swallowed inside Hono, so
-      // there is nothing to catch here — the abort listener below is what
-      // answers for a departure.
+      // there is nothing to catch here — the teardown hooks below are what
+      // answer for a departure.
       const send = (event: StreamEvent) => {
         void stream.writeSSE({ data: JSON.stringify(event) });
       };
@@ -177,7 +177,26 @@ api.get(
       // absorbs the overlap: messages dedup by id and sort by seq, so it does
       // not matter that a live message can land here ahead of older rows.
       const unsubscribe = subscribe(conversationId, send);
+
+      // Two hooks for one teardown, because the one that is easy to test is
+      // not the one that fires in the app. `req.signal` is the ending Hono
+      // gives a caller-supplied AbortSignal, which is how the tests drive
+      // this route. Under Electron's protocol.handle it is dead: the
+      // handler's Request is built as `new Request(url, { headers, method,
+      // referrer, body, duplex })` with no signal at all, so it owns one
+      // nothing holds a controller for — it stays unfired through a
+      // renderer-side fetch abort and even through destroying the renderer
+      // outright (verified against 39.2.7). What that abort does reach is the
+      // response body, which Hono cancels and surfaces as onAbort. That is
+      // the hop that detaches these listeners in production; without it every
+      // conversation opened keeps a live subscriber for the rest of the
+      // session, serialising each event into a dead stream whose failed
+      // writes Hono swallows.
+      //
+      // Both can fire for one request. Unsubscribing twice is a no-op:
+      // EventEmitter.off finds nothing the second time.
       ctx.req.raw.signal.addEventListener("abort", unsubscribe);
+      stream.onAbort(unsubscribe);
 
       if (afterSeq !== undefined) {
         const backlog = await getMessagesAfterSeq(conversationId, afterSeq);
