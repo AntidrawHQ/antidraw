@@ -131,8 +131,10 @@ const detail = (queryClient: QueryClient, conversationId: string) =>
 // Drives fake timers and the microtask queue until the subscription's loop has
 // run itself out. Backoff is real time in production; here it is skipped.
 // Drains unconditionally rather than while isSubscribed: release clears the
-// map entry up front, so looping on it would exit before anything the loop
-// still had to do — including writing an error — had a chance to happen.
+// map entry synchronously, so in a release test that condition is already
+// false and the loop would run zero times — driving nothing. (It is not that
+// an error write would be truncated: after a release the catch returns at its
+// aborted-guard without writing one.)
 const settle = async (conversationId: string) => {
   for (let i = 0; i < 40; i++) {
     await Promise.resolve();
@@ -540,8 +542,10 @@ describe("releasing", () => {
 
     subscribeToStream(conversationId, queryClient);
     await flush();
-    // The loop is parked inside the stream, not between attempts. Only the
-    // signal reaching the transport can end it — settle asserts it did.
+    // The loop is parked inside the stream, not between attempts, so only the
+    // signal reaching the transport can end it. settle does NOT assert that —
+    // its isSubscribed check is already true the moment releaseStream returns,
+    // because stop() vacates first. open.count below is what proves it.
     releaseStream(conversationId);
     await settle(conversationId);
 

@@ -111,7 +111,12 @@ describe("subscribeToConversation", () => {
     expect((e as InstanceType<typeof StreamDisconnectedError>).retriable).toBe(
       true,
     );
-    // Enqueued events drain before the throw — nothing already received is lost.
+    // An event delivered before the failure still reaches the consumer. Note
+    // what this does NOT show: drain-before-error. drain() has had a read
+    // pending since the flush above, so this event was handed straight to it
+    // and never entered the queue. Send a second one in the same burst and it
+    // is discarded — controller.error() resets the queue. The subscribe loop's
+    // cursor replay is what covers that, not anything here.
     expect(got).toEqual([{ type: "state", state: "running" }]);
   });
 

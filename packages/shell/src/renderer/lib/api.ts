@@ -504,13 +504,25 @@ export class StreamDisconnectedError extends Error {
 // each retry would re-attach a listener on the backend — a geometric leak.
 // That is a reason to keep retries out of THIS function, not out of the
 // caller: subscribeToStream reconnects by calling it again, and this abort
-// fires first, so the backend detaches before the replacement attaches.
+// fires first — cancelling the response body, which the route answers with
+// stream.onAbort — so the backend detaches before the replacement attaches.
 //
 // A non-clean close (transport error, backend crash, body ending before a
 // terminal event) errors the stream with StreamDisconnectedError rather than
-// synthesizing an `error` event. Enqueued events still drain first — the
-// ReadableStream contract — so nothing already received is lost, and the
-// caller decides between resuming and giving up.
+// synthesizing an `error` event, and the caller decides between resuming and
+// giving up.
+//
+// Anything still queued at that moment is DISCARDED: controller.error() resets
+// the queue, and only controller.close() drains it. The queue is non-empty
+// whenever a chunk carried more frames than the consumer had read — one chunk
+// fires onmessage once per frame, synchronously — so this is ordinary during a
+// busy turn, not a corner case.
+//
+// Nothing is lost by it, but this function is not what makes that true: the
+// caller reconnects from a cursor it derives from its own cache, so rows that
+// never arrived are simply asked for again. That replay is load-bearing. Do
+// not remove it on the belief that the transport delivers everything it
+// accepted — it does not.
 export const subscribeToConversation = async function* (
   conversationId: string,
   afterSeq?: number,
@@ -529,9 +541,17 @@ export const subscribeToConversation = async function* (
       // from going on to close the body. Whichever gets there first wins.
       let settled = false;
 
+      // `once: true` only detaches when the release actually fires. Every
+      // other ending leaves the listener on a signal that outlives this
+      // attempt — subscribeToStream passes the same one to every reconnect —
+      // so without this each dead attempt would pin its controller for the
+      // life of the conversation.
+      const detachRelease = () => release?.removeEventListener("abort", finish);
+
       const finish = () => {
         if (settled) return;
         settled = true;
+        detachRelease();
         controller.close();
         abort.abort();
       };
@@ -540,6 +560,7 @@ export const subscribeToConversation = async function* (
         if (settled) return;
         settled = true;
         receivedTerminal = true;
+        detachRelease();
         controller.error(new StreamDisconnectedError(message, retriable));
         abort.abort();
       };
@@ -548,8 +569,10 @@ export const subscribeToConversation = async function* (
       // return() on the generator would not do it: while it is suspended
       // awaiting the next chunk, the return request queues behind that read,
       // and a stream with nothing to say never resolves it. Closing the
-      // controller here ends the for-await AND aborts the fetch, which is
-      // what makes the backend drop its listeners.
+      // controller here ends the for-await AND aborts the fetch. The abort
+      // cancels the response body — not the backend's request signal, which
+      // under protocol.handle can never fire — and the route's stream.onAbort
+      // is what drops its listeners.
       if (release) {
         if (release.aborted) return finish();
         release.addEventListener("abort", finish, { once: true });

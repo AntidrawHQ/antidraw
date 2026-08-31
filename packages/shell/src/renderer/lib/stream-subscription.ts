@@ -13,7 +13,7 @@ import {
   type LivePartial,
 } from "@/shared/utils/live-partial";
 
-type Subscription = { readonly promise: Promise<void>; readonly stop: () => void };
+type Subscription = { readonly stop: () => void };
 
 // One entry per conversation, and exactly one owner: the open conversation.
 // Anything else that calls subscribeToStream is asserting "make sure this is
@@ -57,8 +57,10 @@ const cursorFor = (
 };
 
 // Resolves on the timer or on release, whichever comes first. Backoff is the
-// one place the loop sits idle for seconds at a time; without this a released
-// subscription would keep the conversation marked subscribed until it expired.
+// one place the loop sits idle for seconds at a time; without this the loop
+// would linger for up to 8s past a release, holding a pending timer and the
+// queryClient its closure captured. It is NOT what makes isSubscribed go
+// false — stop() vacates the map slot synchronously, before it aborts.
 const delay = (ms: number, signal: AbortSignal) =>
   new Promise<void>((resolve) => {
     const done = () => {
@@ -94,12 +96,15 @@ export const subscribeToStream = (
     // new subscription instead of finding a dying one and no-oping onto it.
     vacate();
     // The signal reaches the live stream, which closes its iteration and
-    // aborts the fetch, which fires the backend's request abort and detaches
-    // its listeners. That last hop is the whole point of releasing at all.
+    // aborts the fetch. Electron does not turn that into a request abort —
+    // protocol.handle builds the handler's Request without a signal, so the
+    // backend's `req.signal` never fires — it cancels the response body, and
+    // the route's stream.onAbort is what detaches the listeners. That last
+    // hop is the whole point of releasing at all.
     release.abort();
   };
 
-  const promise = (async () => {
+  void (async () => {
     try {
       for (let attempt = 0; !release.signal.aborted; attempt++) {
         try {
@@ -123,7 +128,11 @@ export const subscribeToStream = (
             // loop's ++ lands on 0.
             if (cursorFor(conversationId, queryClient) > cursor) attempt = -1;
           }
-          // Ended cleanly: the backend sent a terminal event. Nothing to resume.
+          // Ended cleanly, which now means one of two things: the backend
+          // sent a terminal event, or the owner released and the transport
+          // closed the iteration rather than throwing. Nothing to resume
+          // either way — note the release path never reaches the catch, so
+          // its aborted-guard covers only a throw racing the release.
           return;
         } catch (e) {
           // A released subscription is not a failed one. Reporting an error
@@ -149,7 +158,7 @@ export const subscribeToStream = (
     }
   })();
 
-  activeSubscriptions.set(conversationId, { promise, stop });
+  activeSubscriptions.set(conversationId, { stop });
 };
 
 // Ends the subscription and, through the abort, detaches the backend's
