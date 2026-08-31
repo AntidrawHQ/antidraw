@@ -106,17 +106,30 @@ export const subscribeToStream = (
 
   void (async () => {
     try {
+      // What we knowingly hold, read once. The cache is a gap-free prefix
+      // when a subscription starts — it came from a DB read — so its max is
+      // a true "I have everything up to here". It stops being one the moment
+      // the stream delivers: the route sends live events ahead of the
+      // backlog, so after a dirty drop the cache max can name a row that
+      // arrived ahead of older rows that never did, and asking from there
+      // would skip them for good. Only a clean end proves the replay
+      // completed, and a clean end exits this loop entirely — so a retry
+      // re-asks from here, and the server's gt-filter plus the renderer's
+      // id-dedup absorb the overlap.
+      const cursor = cursorFor(conversationId, queryClient);
       for (let attempt = 0; !release.signal.aborted; attempt++) {
         try {
-          // The cursor is read fresh on every attempt, so a reconnect asks for
-          // exactly what the drop cost us and nothing we already rendered.
-          const cursor = cursorFor(conversationId, queryClient);
           const stream = subscribeToConversation(
             conversationId,
             cursor,
             release.signal,
           );
 
+          // The refund baseline: where the cache stood when this attempt
+          // opened. Distinct from the request cursor above — a retry replays
+          // rows a previous attempt already put in the cache, and replayed
+          // rows are not progress.
+          const attemptBase = cursorFor(conversationId, queryClient);
           for await (const event of stream) {
             handleStreamEvent(conversationId, event, queryClient);
             // Progress, not delivery, buys back the retry budget: a
@@ -126,7 +139,8 @@ export const subscribeToStream = (
             // state/queue/livePartial for free, so a link that accepts and
             // immediately dies would refund itself forever. -1 so the
             // loop's ++ lands on 0.
-            if (cursorFor(conversationId, queryClient) > cursor) attempt = -1;
+            if (cursorFor(conversationId, queryClient) > attemptBase)
+              attempt = -1;
           }
           // Ended cleanly, which now means one of two things: the backend
           // sent a terminal event, or the owner released and the transport

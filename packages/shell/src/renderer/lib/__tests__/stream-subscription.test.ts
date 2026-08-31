@@ -210,25 +210,73 @@ describe("the resume cursor", () => {
 });
 
 describe("reconnecting", () => {
-  test("resumes from what the dropped attempt actually delivered", async () => {
+  test("a dirty drop retries from the cursor it opened with", async () => {
     const conversationId = freshId();
     seedCache(queryClient, conversationId, [message(1, "a")]);
+    const delivered = message(2, "b");
     const cursors = scriptAttempts([
       {
-        events: [{ type: "message", message: message(2, "b") }],
+        events: [{ type: "message", message: delivered }],
         throws: new StreamDisconnectedError("socket closed", true),
       },
-      { events: [{ type: "message", message: message(3, "c") }] },
+      {
+        // The retry replays what the dead attempt already delivered — the
+        // accepted cost of never trusting an incomplete attempt — and the
+        // renderer dedups it by id.
+        events: [
+          { type: "message", message: delivered },
+          { type: "message", message: message(3, "c") },
+        ],
+      },
     ]);
 
     subscribeToStream(conversationId, queryClient);
     await settle(conversationId);
 
-    // The second attempt asks for 2, not 1: the message the first attempt
-    // delivered before dying is not asked for again.
-    expect(cursors).toEqual([1, 2]);
+    // The second attempt asks for 1 again, not 2. A delivered row is not a
+    // confirmed row: only a clean end proves the server finished its replay,
+    // so a dirty drop may not advance the cursor past what the subscription
+    // opened with.
+    expect(cursors).toEqual([1, 1]);
     expect(detail(queryClient, conversationId).messages.map((m) => m.seq)).toEqual(
       [1, 2, 3],
+    );
+  });
+
+  test("a live row ahead of the backlog does not eat the rows behind it", async () => {
+    const conversationId = freshId();
+    // The cache holds through 3; rows 4 and 6 are on the server. The route
+    // attaches its listener before reading the backlog, so a row persisted
+    // during the read (6) goes out live, ahead of the older backlog rows.
+    seedCache(queryClient, conversationId, [
+      message(1, "a"),
+      message(2, "b"),
+      message(3, "c"),
+    ]);
+    const liveAhead = message(6, "live-ahead");
+    const backlogRow = message(4, "backlog");
+    const cursors = scriptAttempts([
+      {
+        // 6 arrives; the connection dies before the backlog frames land.
+        events: [{ type: "message", message: liveAhead }],
+        throws: new StreamDisconnectedError("socket closed", true),
+      },
+      {
+        events: [
+          { type: "message", message: backlogRow },
+          { type: "message", message: liveAhead },
+        ],
+      },
+    ]);
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    // Deriving the retry cursor from the cache max would ask for "after 6"
+    // and row 4 would never be sent by anyone. The retry must re-ask from 3.
+    expect(cursors).toEqual([3, 3]);
+    expect(detail(queryClient, conversationId).messages.map((m) => m.seq)).toEqual(
+      [1, 2, 3, 4, 6],
     );
   });
 
