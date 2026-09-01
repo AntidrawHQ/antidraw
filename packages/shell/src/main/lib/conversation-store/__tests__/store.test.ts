@@ -179,6 +179,27 @@ describe("getStreamStatus", () => {
     });
   });
 
+  test("an un-acked send does NOT hold the status — the CLI's idle passes through", () => {
+    const id = freshId();
+    openHandle(id, promptStream());
+    setCliState(id, "running");
+    addPending(id, "queued-send");
+    setCliState(id, "idle");
+
+    // Deliberate, and the test exists so nobody "fixes" it: the CLI reports
+    // idle for a push it has not parsed yet, and this reads idle for a beat
+    // until its `running` corrects it. Letting pending outrank cliState
+    // would reintroduce base's hold WITHOUT the 30s watchdog that bounded
+    // it — a push the CLI never acks would pin "streaming", and the
+    // spinner, forever. cliState speaks for the CLI; the queue event
+    // speaks for the queue.
+    expect(getStreamStatus(id)).toBe("idle");
+    expect(getPending(id)).toEqual(["queued-send"]);
+
+    resolvePending(id, "queued-send");
+    expect(getStreamStatus(id)).toBe("idle");
+  });
+
   test("a died-and-released conversation reads as error, not idle", () => {
     const id = freshId();
     openHandle(id, promptStream());
