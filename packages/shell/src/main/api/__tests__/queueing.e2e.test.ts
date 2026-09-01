@@ -71,9 +71,11 @@ const openStream = (conversationId: string) => {
     close: async () => {
       abort.abort();
       await reader?.cancel().catch(() => {});
-      // The route parks on `new Promise(() => {})`, so aborting is not
-      // guaranteed to end the body stream. Never block the test on it.
-      await Promise.race([pump, new Promise((r) => setTimeout(r, 2_000))]);
+      // Awaited outright. The route used to park on a promise with no
+      // resolver, so the body was not guaranteed to end and this had to race
+      // a timeout — which made the test tolerate a hang rather than fail on
+      // one. The park now resolves on the abort, so the pump ends.
+      await pump;
     },
   };
 };

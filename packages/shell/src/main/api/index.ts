@@ -234,7 +234,32 @@ api.get(
         send({ type: "queue", userMessageIds: getPending(conversationId) });
         send({ type: "livePartial", livePartial: getPartial(conversationId) });
 
-        await new Promise(() => {});
+        // Park until the subscriber leaves — and then RETURN. Returning is
+        // the point: it is what lets Hono's own `finally { stream.close() }`
+        // end the body, and what lets the finally below run on the ordinary
+        // path instead of only on a throw. A promise with no resolver left
+        // both unreachable and retained this frame for the life of the
+        // process, one per conversation ever streamed.
+        //
+        // Both hooks, because they answer in different runtimes: onAbort is
+        // the one that fires under Electron's protocol.handle, the request
+        // signal is the one that fires everywhere else. Same pair the detach
+        // above registers, for the same reason.
+        //
+        // The pre-check is not defensive noise. onAbort pushes onto a list
+        // that abort() drains exactly once, with no already-aborted check, so
+        // a listener registered afterwards is never called — and the backlog
+        // read above is an await the subscriber can leave during. Without
+        // this, the fix reinstates the hang it removes, on a narrower window.
+        await new Promise<void>((resolve) => {
+          if (stream.aborted || stream.closed || ctx.req.raw.signal.aborted) {
+            resolve();
+            return;
+          }
+          const leave = () => resolve();
+          stream.onAbort(leave);
+          ctx.req.raw.signal.addEventListener("abort", leave, { once: true });
+        });
       } finally {
         unsubscribe();
       }

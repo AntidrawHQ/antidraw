@@ -513,6 +513,65 @@ describe("stream teardown", () => {
     await reader.cancel().catch(() => {});
   });
 
+  test("the handler returns on departure, so the body ends", async () => {
+    const conversationId = await newConversation();
+    const abort = new AbortController();
+    const res = await app.request(`/api/chat/${conversationId}/stream`, {
+      signal: abort.signal,
+    });
+    const reader = res.body!.getReader();
+    await reader.read(); // the seeds
+
+    abort.abort();
+
+    // Not "the client stopped listening" — the server side has to finish.
+    // Parked on a promise that never settles, the handler never returns,
+    // Hono's own `finally { stream.close() }` never runs, and this read sees
+    // more frames instead of the end of the body.
+    const outcome = await Promise.race([
+      (async () => {
+        for (;;) {
+          const r = await reader.read();
+          if (r.done) return "done";
+        }
+      })().catch(() => "done"),
+      new Promise((r) => setTimeout(() => r("still open"), 1_000)),
+    ]);
+    expect(outcome).toBe("done");
+  });
+
+  test("leaving during the backlog read still ends the body", async () => {
+    const conversationId = await newConversation();
+    await send(conversationId, "a");
+
+    const gate = holdGate("before");
+    const abort = new AbortController();
+    const res = await app.request(
+      `/api/chat/${conversationId}/stream?afterSeq=0`,
+      { signal: abort.signal },
+    );
+    const reader = res.body!.getReader();
+
+    await gate.reached;
+    // The window the park's pre-check exists for. onAbort pushes onto a list
+    // abort() has already drained, so a hook registered after this point is
+    // never called — the park has to notice it missed the departure instead
+    // of waiting for a second one that will not come.
+    abort.abort();
+    gate.release();
+
+    const outcome = await Promise.race([
+      (async () => {
+        for (;;) {
+          const r = await reader.read();
+          if (r.done) return "done";
+        }
+      })().catch(() => "done"),
+      new Promise((r) => setTimeout(() => r("still open"), 1_000)),
+    ]);
+    expect(outcome).toBe("done");
+  });
+
   test("a failed backlog read skips the replay and stays live", async () => {
     const conversationId = await newConversation();
     await send(conversationId, "unreachable backlog");
