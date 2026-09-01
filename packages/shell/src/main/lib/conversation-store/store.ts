@@ -64,7 +64,10 @@ export const applyPartial = (
 ): void => {
   const handle = handles.get(conversationId);
   if (!handle) return;
-  handle.partial = foldPartial(handle.partial, partial.event);
+  // parse: false — nothing here renders. The fold only accumulates; the
+  // subscribe seed carries the raw json and the renderer materializes it
+  // once, at install (see materializePartial).
+  handle.partial = foldPartial(handle.partial, partial.event, { parse: false });
 };
 
 export const clearPartial = (conversationId: string): void => {

@@ -6,6 +6,7 @@ import { queryKeys } from "./query-keys";
 export const SEND_MESSAGE_MUTATION_KEY = "send-message";
 import {
   foldPartial,
+  materializePartial,
   type LivePartial,
 } from "@/shared/utils/live-partial";
 
@@ -118,7 +119,11 @@ const handleStreamEvent = (
   if (event.type === "livePartial") {
     queryClient.setQueryData<LivePartial | null>(
       queryKeys.conversations.livePartial(conversationId),
-      event.livePartial,
+      // Main folds without parsing, so the seed carries raw accumulated
+      // json. Parse it once here: a tool call must render its input on
+      // attach, not on the next delta — which never comes for a block
+      // that already finished streaming.
+      materializePartial(event.livePartial),
     );
     return;
   }

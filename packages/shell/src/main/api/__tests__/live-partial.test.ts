@@ -17,6 +17,7 @@ import {
   setCliState,
   releaseHandle,
 } from "@/main/lib/conversation-store";
+import { materializePartial } from "@/shared/utils/live-partial";
 
 const workspaceId = crypto.randomUUID();
 
@@ -66,7 +67,7 @@ describe("the in-flight block", () => {
     `);
   });
 
-  test("accumulates a tool_use's json and parses it while incomplete", () => {
+  test("accumulates a tool_use's json without parsing it — that's the reader's job", () => {
     const id = liveConversation();
     handleSdkMessageWithoutPersisting(
       id,
@@ -77,9 +78,26 @@ describe("the in-flight block", () => {
       delta({ type: "input_json_delta", partial_json: '{"file_path":"/a' }),
     );
 
-    // Parsed from truncated json — this is what makes a tool call render
-    // before its arguments have finished arriving.
+    // The store only concatenates: parsing the whole accumulation on every
+    // delta is display-grade work, and nothing here renders. `input` stays
+    // as the block started.
     expect(getPartial(id)).toMatchInlineSnapshot(`
+      {
+        "block": {
+          "id": "t1",
+          "input": {},
+          "name": "Read",
+          "type": "tool_use",
+        },
+        "index": 0,
+        "partialJson": "{"file_path":"/a",
+      }
+    `);
+
+    // Materializing — what the renderer does when this seeds it — parses
+    // the truncated json once. This is what makes a tool call render
+    // before its arguments have finished arriving.
+    expect(materializePartial(getPartial(id))).toMatchInlineSnapshot(`
       {
         "block": {
           "id": "t1",

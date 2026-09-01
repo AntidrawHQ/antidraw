@@ -21,6 +21,12 @@ type RawStreamEvent = SDKPartialAssistantMessage["event"];
 export const foldPartial = (
   prev: LivePartial | null,
   raw: RawStreamEvent,
+  // parse: false accumulates a tool_use's json without parsing it — three
+  // O(n) passes over the whole input per delta is display-grade work. Main
+  // folds only to seed late subscribers, so it defers the parse to
+  // materializePartial at read time; the renderer, which renders every
+  // delta, keeps the default.
+  opts?: { parse?: boolean },
 ): LivePartial | null => {
   // Only content_block_start and content_block_delta mutate live state.
   // message_start/delta/stop and content_block_stop are ignored:
@@ -52,9 +58,26 @@ export const foldPartial = (
   }
   if (delta.type === "input_json_delta" && b.type === "tool_use") {
     const partialJson = (prev.partialJson ?? "") + delta.partial_json;
+    if (opts?.parse === false) return { ...prev, partialJson };
     const parsed = parsePartialJson(partialJson);
     return { ...prev, partialJson, block: { ...b, input: parsed ?? b.input } };
   }
   // signature_delta and any unknown delta: ignored
   return prev;
+};
+
+// The read-time half of { parse: false }: parse the accumulated json once and
+// install it as the block's input. Folding lazily and then materializing
+// yields the same LivePartial an eager fold produces — and materializing an
+// eagerly-folded value is a no-op re-parse of the same string — so the two
+// sides stay interchangeable across the wire.
+export const materializePartial = (
+  partial: LivePartial | null,
+): LivePartial | null => {
+  if (!partial || partial.block.type !== "tool_use" || !partial.partialJson) {
+    return partial;
+  }
+  const parsed = parsePartialJson(partial.partialJson);
+  if (parsed === null) return partial;
+  return { ...partial, block: { ...partial.block, input: parsed } };
 };
