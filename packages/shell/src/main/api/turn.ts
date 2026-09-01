@@ -178,9 +178,13 @@ const runColdStart = async (
   } catch (e) {
     const errorMessage = e instanceof Error ? e.message : "Unknown error";
     markError(conversation.id);
+    // Before the emit: the renderer treats `error` as terminal and closes
+    // the stream, so a queue frame behind it is never delivered — and the
+    // follow-ups queued behind this turn would keep their "Queued" bubbles.
+    clearPending(conversation.id);
     conversationEvents.emit("error", conversation.id, { error: errorMessage });
   } finally {
-    clearPending(conversation.id);
+    clearPending(conversation.id); // no-op after the catch; covers the clean path
     releaseHandle(conversation.id);
   }
 };

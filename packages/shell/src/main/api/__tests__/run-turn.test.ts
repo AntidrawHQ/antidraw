@@ -14,6 +14,7 @@ import {
   getStreamStatus,
   openHandle,
   releaseHandle,
+  addPending,
 } from "@/main/lib/conversation-store";
 
 beforeAll(async () => {
@@ -116,5 +117,49 @@ describe("runTurn and the pending set", () => {
     expect(queues).toEqual([[userMessageId], []]);
     expect(errors).toHaveLength(1);
     releaseHandle(conversationId);
+  });
+
+  test("a dying turn clears the queue before the terminal error, not after", async () => {
+    // Real rows so the persist succeeds and the turn reaches runColdStart —
+    // but no workspace directory on disk, so the CLI spawn fails and the
+    // turn dies in the catch. No CLI runs.
+    const workspaceId = crypto.randomUUID();
+    const conversationId = crypto.randomUUID();
+    await db.insert(workspaces).values({ id: workspaceId, name: "run-turn" });
+    await db.insert(conversations).values({ id: conversationId, workspaceId });
+
+    // One ordered log: the renderer treats `error` as terminal and closes
+    // the stream, so anything emitted after it is never delivered.
+    const log: Array<{ type: string; ids?: string[] }> = [];
+    detach.push(
+      subscribe(conversationId, (event) => {
+        if (event.type === "queue")
+          log.push({ type: "queue", ids: [...event.userMessageIds] });
+        if (event.type === "error") log.push({ type: "error" });
+      }),
+    );
+
+    const turn = runTurn({
+      conversation: {
+        id: conversationId,
+        workspaceId,
+        claudeCodeSessionId: null,
+      } as Conversation,
+      workspaceId,
+      message: "doomed cold start",
+      userMessageId: crypto.randomUUID(),
+    });
+    // Queue a follow-up behind the dying turn, the way a second send would.
+    const followUpId = crypto.randomUUID();
+    addPending(conversationId, followUpId);
+    await turn;
+
+    // The follow-up was queued, then cleared — and the clear crossed the
+    // wire BEFORE the terminal error. If `error` is not the last event,
+    // the queue: [] snapshot was written to a stream nobody reads and the
+    // follow-up's bubble stays "Queued".
+    expect(log).toContainEqual({ type: "queue", ids: [followUpId] });
+    expect(log).toContainEqual({ type: "queue", ids: [] });
+    expect(log[log.length - 1]).toEqual({ type: "error" });
   });
 });
