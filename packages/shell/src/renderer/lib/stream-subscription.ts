@@ -91,8 +91,11 @@ const handleStreamEvent = (
         queryKeys.conversations.queuedMessageIds(conversationId),
       );
       if (!queued?.length) {
-        // TODO: Rearchitect to a single stream endpoint that sends initial state + live events,
-        // eliminating the race condition between initial fetch and stream subscription.
+        // This refetch is the transcript's reconciler: deletions never ride
+        // the stream, and events can slip between the conversation GET and
+        // the subscription attach. Once both ride the stream — deletion
+        // events in the vocabulary, a seq cursor covering the attach gap —
+        // it can go.
         queryClient.invalidateQueries({
           queryKey: queryKeys.conversations.detail(conversationId),
         });
