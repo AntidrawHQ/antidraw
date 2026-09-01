@@ -6,7 +6,8 @@ import type {
 } from "@/main/api";
 import type { ImageAttachment } from "@/shared/utils/message";
 import { createUserSDKMessage } from "@/shared/utils/message";
-import { queryOptions, useMutation, useQuery, useQueryClient, skipToken } from "@tanstack/react-query";
+import { mutationOptions, queryOptions, useMutation, useQuery, useQueryClient, skipToken } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo } from "react";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
 import type { ToolPart } from "@/renderer/components/ui/tool";
@@ -187,10 +188,12 @@ export const useCreateConversation = () => {
 export { PENDING_SEQ } from "./stream-subscription";
 
 // Send mutation with optimistic update
-export const useSendMessage = () => {
-  const queryClient = useQueryClient();
-
-  return useMutation({
+// The send's whole optimistic protocol, lifted out of the hook so it can be
+// executed without a renderer. Mirrors conversationQueryOpts above: the hook
+// becomes the React binding, and the behaviour is a plain value that a test
+// can build and run through the mutation cache.
+export const sendMessageMutationOptions = (queryClient: QueryClient) =>
+  mutationOptions({
     mutationKey: [SEND_MESSAGE_MUTATION_KEY],
     mutationFn: async (params: {
       message: string;
@@ -299,7 +302,9 @@ onMutate: async ({ message, conversationId, userMessageId, images }) => {
       );
     },
   });
-};
+
+export const useSendMessage = () =>
+  useMutation(sendMessageMutationOptions(useQueryClient()));
 
 // Withdraw a queued message. The backend relays the CLI's verdict:
 // cancelled=true → it never runs; drop the optimistic bubble and the mark.
