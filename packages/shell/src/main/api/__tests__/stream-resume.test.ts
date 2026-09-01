@@ -257,6 +257,39 @@ describe("stream replay", () => {
     }
   });
 
+  test("every message carries the seq the renderer orders by", async () => {
+    const conversationId = await newConversation();
+    const a = await send(conversationId, "a");
+    const b = await send(conversationId, "b");
+    const c = await send(conversationId, "c");
+
+    const stream = await openStream(
+      `/api/chat/${conversationId}/stream?afterSeq=${a.seq}`,
+    );
+    try {
+      const replayed = (await stream.take(5)).filter(
+        (e): e is Extract<StreamEvent, { type: "message" }> =>
+          e.type === "message",
+      );
+
+      // Since the buffer went, the wire is explicitly NOT in transcript order —
+      // a live message can precede the backlog it overlaps. seq is the only
+      // thing the renderer can place rows by, so it has to survive the trip
+      // intact. Serialising it as 0, or dropping it, leaves the renderer
+      // sorting on a constant.
+      expect(replayed.map((e) => e.message.seq)).toEqual([b.seq, c.seq]);
+      expect(replayed.every((e) => Number.isInteger(e.message.seq))).toBe(true);
+      expect(replayed.every((e) => e.message.seq > a.seq)).toBe(true);
+
+      // And a live one, which takes the other path out of the route.
+      const live = await send(conversationId, "d");
+      const event = await stream.next();
+      expect(event).toMatchObject({ type: "message", message: { seq: live.seq } });
+    } finally {
+      stream.close();
+    }
+  });
+
   test("no afterSeq means no replay — only the seeds", async () => {
     const conversationId = await newConversation();
     await send(conversationId, "a");
@@ -408,6 +441,21 @@ describe("stream replay", () => {
       stream.close();
       releaseHandle(conversationId);
     }
+  });
+
+  test("a conversation that does not exist is refused, not streamed", async () => {
+    const res = await app.request(
+      `/api/chat/${crypto.randomUUID()}/stream?afterSeq=0`,
+    );
+
+    // Without the guard the route opens an SSE stream for a row that is not
+    // there: 200, a live listener attached, and seeds describing a
+    // conversation that does not exist. The renderer would hold that open and
+    // wait forever rather than reporting anything.
+    expect(res.status).toBe(404);
+    expect(res.headers.get("content-type")).not.toContain("text/event-stream");
+    const body = (await res.json()) as { error?: { code?: string } };
+    expect(body.error?.code).toBe("NOT_FOUND");
   });
 
   test("rejects an afterSeq that is not a whole count", async () => {

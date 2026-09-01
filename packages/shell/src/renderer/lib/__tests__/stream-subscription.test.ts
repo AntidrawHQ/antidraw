@@ -7,6 +7,7 @@ import type {
   StreamEvent,
 } from "@/main/api";
 import { createUserSDKMessage } from "@/shared/utils/message";
+import type { LivePartial } from "@/shared/utils/live-partial";
 import { queryKeys } from "../query-keys";
 
 // Only the transport is faked. StreamDisconnectedError stays the real class —
@@ -772,5 +773,112 @@ describe("giving up", () => {
 
     await settle(conversationId);
     expect(cursors).toHaveLength(9);
+  });
+});
+
+describe("the branches that only the stream writes", () => {
+  // Each of these three was deletable with the whole suite green. They are the
+  // only writer of their cache key, so nothing else fails when they stop
+  // writing — the transcript still renders, and the omission shows up as a
+  // queue mark that never clears or a block that never streams.
+
+  test("queue replaces the pending marks wholesale", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    queryClient.setQueryData<string[]>(
+      queryKeys.conversations.queuedMessageIds(conversationId),
+      ["stale-a", "stale-b"],
+    );
+    scriptAttempts([
+      {
+        events: [
+          { type: "queue", userMessageIds: ["m1", "m2"] },
+          // Replaced, not merged: the backend sends its whole picture of what
+          // the CLI has not acked, so a mark it omits is one the CLI took.
+          { type: "queue", userMessageIds: ["m2"] },
+        ],
+      },
+    ]);
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    expect(
+      queryClient.getQueryData<string[]>(
+        queryKeys.conversations.queuedMessageIds(conversationId),
+      ),
+    ).toEqual(["m2"]);
+  });
+
+  test("partial folds deltas onto the live block", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    const streamEvent = (event: unknown) =>
+      ({ type: "partial", partial: { event } }) as unknown as StreamEvent;
+
+    scriptAttempts([
+      {
+        events: [
+          streamEvent({
+            type: "content_block_start",
+            index: 0,
+            content_block: { type: "text", text: "" },
+          }),
+          streamEvent({
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "text_delta", text: "Hel" },
+          }),
+          streamEvent({
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "text_delta", text: "lo" },
+          }),
+        ],
+      },
+    ]);
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    // Accumulated, not last-write-wins: this is the only thing that renders
+    // an assistant block while it is still being produced.
+    const live = queryClient.getQueryData<LivePartial | null>(
+      queryKeys.conversations.livePartial(conversationId),
+    );
+    expect((live?.block as { text?: string } | undefined)?.text).toBe("Hello");
+  });
+
+  test("livePartial seeds the block already in flight, and can clear it", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    const seeded = {
+      index: 0,
+      block: { type: "text", text: "mid-block" },
+    } as unknown as LivePartial;
+
+    scriptAttempts([{ events: [{ type: "livePartial", livePartial: seeded }] }]);
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    // Assigned wholesale — a subscriber arriving mid-block gets the text so
+    // far instead of a gap that only fills on the next delta.
+    expect(
+      queryClient.getQueryData<LivePartial | null>(
+        queryKeys.conversations.livePartial(conversationId),
+      ),
+    ).toEqual(seeded);
+
+    // And null is a real value here, not "no news": the route sends it when
+    // no block is in flight, which is what ends a stale one.
+    scriptAttempts([{ events: [{ type: "livePartial", livePartial: null }] }]);
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    expect(
+      queryClient.getQueryData<LivePartial | null>(
+        queryKeys.conversations.livePartial(conversationId),
+      ),
+    ).toBeNull();
   });
 });
