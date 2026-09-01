@@ -188,7 +188,10 @@ export const runTurn = async (req: TurnRequest): Promise<void> => {
   });
   const turnType = openHandle(conversation.id, promptStream);
   const handle = getHandle(conversation.id)!;
-  addPending(conversation.id, userMessageId);
+  // The cold-start prompt is the spawn prompt — the CLI reports `running`
+  // for it before anything else, so it is never "queued". Only a follow-up
+  // waits on an ack.
+  if (turnType === "follow-up") addPending(conversation.id, userMessageId);
 
   const persisted = await setConversationOptions(conversation.id, {
     selectedModel: options?.model ?? null,
