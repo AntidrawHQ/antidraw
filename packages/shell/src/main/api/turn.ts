@@ -124,11 +124,17 @@ const pushFollowUpTurn = async (
     if (pushed.isErr()) {
       console.error("Failed to push follow-up turn:", pushed.error);
       resolvePending(conversation.id, userMessageId);
+      conversationEvents.emit("error", conversation.id, {
+        error: "Failed to send your message — try again.",
+      });
       return;
     }
   } catch (e) {
     console.error("Unexpected error on the push path:", e);
     resolvePending(conversation.id, userMessageId);
+    conversationEvents.emit("error", conversation.id, {
+      error: "Failed to send your message — try again.",
+    });
     return;
   }
   if (handle.query) trackMessageSent({ query: handle.query });
@@ -214,11 +220,19 @@ export const runTurn = async (req: TurnRequest): Promise<void> => {
   if (recorded.isErr()) {
     console.error("Failed to persist the user prompt:", recorded.error);
     if (turnType === "cold-start") {
+      markError(conversation.id);
       clearPending(conversation.id);
       releaseHandle(conversation.id);
     } else {
       resolvePending(conversation.id, userMessageId);
     }
+    // Emitted last: the renderer treats `error` as terminal, so the queue
+    // frames above must cross the wire first. Without this the client never
+    // hears the turn ended — the POST already answered 202 and only `state`
+    // or `error` clears "streaming".
+    conversationEvents.emit("error", conversation.id, {
+      error: "Failed to save your message — it was not sent.",
+    });
     return;
   }
 
