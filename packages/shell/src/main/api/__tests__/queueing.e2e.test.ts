@@ -256,10 +256,10 @@ describe("a message sent mid-turn", () => {
         "SECOND",
       );
 
-      // seq orders the transcript, and the prompt precedes its own reply.
-      expect(conversation.messages.map((m) => m.seq)).toEqual(
-        [...conversation.messages.map((m) => m.seq)].sort((a, b) => a - b),
-      );
+      // The reply follows its own prompt in seq order. (A broader "the list
+      // is sorted by seq" assertion used to sit here — it compared the SQL-
+      // sorted response against its own sort, which cannot fail for any DB
+      // state; message-seq.test.ts owns real seq-order coverage.)
       const secondPromptSeq = prompts[1]!.seq;
       expect(
         assistants.some(

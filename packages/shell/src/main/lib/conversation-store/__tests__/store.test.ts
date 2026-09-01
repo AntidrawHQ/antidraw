@@ -64,11 +64,43 @@ const capture = (conversationId: string) => {
   detach.push(
     subscribe(conversationId, (event) => {
       if (event.type === "state") seen.push({ state: event.state });
-      if (event.type === "queue") seen.push({ queue: event.userMessageIds });
+      else if (event.type === "queue") seen.push({ queue: event.userMessageIds });
+      // Everything else is recorded too, so `[]` asserts silence.
+      else seen.push({ unexpected: event.type });
     }),
   );
   return seen;
 };
+
+describe("subscribe routing", () => {
+  // This filter is the routing layer for the entire event vocabulary — every
+  // consumer relies on it, and it lives in exactly one place. Both tests were
+  // added after a mutation run showed the suite stayed green with the filter
+  // deleted and with unsubscribe turned into a no-op.
+  test("events for another conversation do not cross the filter", () => {
+    const emitter = freshId();
+    const listener = freshId();
+    const seen = capture(listener);
+
+    conversationEvents.emit("state", emitter, { state: "running" });
+    conversationEvents.emit("queue", emitter, { userMessageIds: ["m1"] });
+
+    expect(seen).toEqual([]);
+  });
+
+  test("unsubscribe detaches every event name", () => {
+    const id = freshId();
+    const seen: unknown[] = [];
+    const off = subscribe(id, (event) => seen.push(event.type));
+    off();
+
+    conversationEvents.emit("state", id, { state: "running" });
+    conversationEvents.emit("queue", id, { userMessageIds: ["m1"] });
+    conversationEvents.emit("error", id, { error: "boom" });
+
+    expect(seen).toEqual([]);
+  });
+});
 
 describe("the error event", () => {
   // Node throws ERR_UNHANDLED_ERROR when "error" is emitted with no listener,

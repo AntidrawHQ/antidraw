@@ -46,8 +46,11 @@ const capture = (conversationId: string) => {
   detach.push(
     subscribe(conversationId, (event) => {
       if (event.type === "state") seen.push({ state: event.state });
-      if (event.type === "queue") seen.push({ queue: event.userMessageIds });
-      if (event.type === "partial") seen.push({ partial: true });
+      else if (event.type === "queue") seen.push({ queue: event.userMessageIds });
+      else if (event.type === "partial") seen.push({ partial: true });
+      // Everything else is recorded too, so `[]` asserts silence — not
+      // "none of the three event names this helper happened to know".
+      else seen.push({ unexpected: event.type });
     }),
   );
   return seen;
