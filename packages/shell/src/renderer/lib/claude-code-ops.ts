@@ -32,8 +32,10 @@ import {
 } from "./stream-subscription";
 import { selectToolMap } from "./tool-utils";
 
-// Shared query options for conversation data
-const conversationQueryOpts = (conversationId: string | null) =>
+// Shared query options for conversation data. Exported so a test can build an
+// observer from the real thing: a hand-written mirror would pin its own copy of
+// staleTime and the queryFn shape, and go on passing after production changed.
+export const conversationQueryOpts = (conversationId: string | null) =>
   queryOptions({
     queryKey: queryKeys.conversations.detail(conversationId),
     queryFn: conversationId
