@@ -629,6 +629,35 @@ describe("releasing", () => {
     await settle(conversationId);
   });
 
+  test("the released loop does not take the slot down with it", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    // Both attempts park, so the second is still live when the first unwinds:
+    // that ordering is the whole point, and a scripted end on either would
+    // hide it.
+    scriptAttempts([{ hangs: true }, { hangs: true }]);
+
+    subscribeToStream(conversationId, queryClient);
+    await flush();
+
+    // The cleanup-then-effect pair React runs on a re-mount.
+    releaseStream(conversationId);
+    subscribeToStream(conversationId, queryClient);
+    expect(open.count).toBe(2); // the dying one and its replacement
+
+    // Now let the released loop finish unwinding. Its `finally` calls vacate,
+    // and ownsSlot is what stops that deleting the entry the new subscription
+    // has already claimed — leaving a live stream nothing can release.
+    await flush();
+
+    expect(open.count).toBe(1);
+    expect(isSubscribed(conversationId)).toBe(true);
+
+    releaseStream(conversationId);
+    await settle(conversationId);
+    expect(open.count).toBe(0);
+  });
+
   test("ends a stream that is sitting idle with nothing to say", async () => {
     const conversationId = freshId();
     seedCache(queryClient, conversationId, []);

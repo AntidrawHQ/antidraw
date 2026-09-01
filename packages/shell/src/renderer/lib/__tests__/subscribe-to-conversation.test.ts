@@ -122,6 +122,41 @@ describe("subscribeToConversation", () => {
     expect(got).toEqual([{ type: "state", state: "running" }]);
   });
 
+  test("a body that ends without a terminal event is a retriable disconnect", async () => {
+    const got: StreamEvent[] = [];
+    const done = drain(subscribeToConversation("abc", 0), got);
+    await flush();
+
+    // The library closing the body on its own. Nothing said the turn was
+    // over, so the caller has something to resume from.
+    call().onclose();
+    await flush();
+
+    const e = await done;
+    expect(e).toBeInstanceOf(StreamDisconnectedError);
+    expect((e as InstanceType<typeof StreamDisconnectedError>).retriable).toBe(
+      true,
+    );
+  });
+
+  test("a body that ends after a terminal event ends cleanly", async () => {
+    const got: StreamEvent[] = [];
+    const done = drain(subscribeToConversation("abc", 0), got);
+    await flush();
+
+    call().onmessage({
+      data: JSON.stringify({ type: "error", error: "spawn failed" }),
+    });
+    await flush();
+    // The close that follows the terminal event must not be reported as a
+    // disconnect: there is nothing left to resume.
+    call().onclose();
+    await flush();
+
+    expect(await done).toBeNull();
+    expect(got).toEqual([{ type: "error", error: "spawn failed" }]);
+  });
+
   test("a 404 on open is not retriable; a 500 is", async () => {
     for (const [status, retriable] of [
       [404, false],

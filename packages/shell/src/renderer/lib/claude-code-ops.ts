@@ -78,11 +78,23 @@ export const useConversationSubscription = () => {
   //
   // Re-attaching costs only what the gap contained, since the stream resumes
   // from a cursor.
-  useEffect(() => {
-    if (!conversationId) return;
-    subscribeToStream(conversationId, queryClient);
-    return () => releaseStream(conversationId);
-  }, [conversationId, queryClient]);
+  useEffect(
+    () => openConversationSubscription(conversationId, queryClient),
+    [conversationId, queryClient],
+  );
+};
+
+// The effect body, lifted out of the hook so the ownership contract is
+// reachable without a renderer — the same move sendMessageMutationOptions
+// makes below. React supplies the sequence (run, cleanup, run again on a
+// changed id); this is what it runs at each step.
+export const openConversationSubscription = (
+  conversationId: string | null,
+  queryClient: QueryClient,
+): (() => void) | undefined => {
+  if (!conversationId) return;
+  subscribeToStream(conversationId, queryClient);
+  return () => releaseStream(conversationId);
 };
 
 export const useWorkspaceConversations = (workspaceId: string | null) => {
