@@ -93,6 +93,8 @@ describe("subscribeToConversation", () => {
     expect(await drain(subscribeToConversation("abc", 0, release.signal), got))
       .toBeNull();
     expect(got).toEqual([]);
+    // Ended before it began: no fetch was ever issued for it.
+    expect(h.calls).toHaveLength(0);
   });
 
   test("a transport error is a retriable disconnect, not an event", async () => {

@@ -574,12 +574,16 @@ describe("releasing", () => {
 
     subscribeToStream(conversationId, queryClient);
     await flush();
+    const parked = vi.getTimerCount(); // the backoff timer, plus cache housekeeping
 
     // Mid-backoff. Releasing has to interrupt the timer, not merely be
-    // noticed once it expires.
+    // noticed once it expires. The map cannot show this — release clears the
+    // entry synchronously either way — but the timer count can: the abort
+    // has to have cleared the pending backoff, not left it running to expiry.
     releaseStream(conversationId);
     await flush();
     expect(isSubscribed(conversationId)).toBe(false);
+    expect(vi.getTimerCount()).toBe(parked - 1);
   });
 
   test("is not reported as a failed conversation", async () => {
@@ -613,10 +617,15 @@ describe("releasing", () => {
     // the new subscription would be silently dropped on the floor.
     releaseStream(conversationId);
     subscribeToStream(conversationId, queryClient);
+    // The new attempt opening is what proves the slot was free: the map
+    // holds an entry either way — under a late vacate it is the dying
+    // subscription's — so isSubscribed alone cannot tell a resubscribe
+    // from a no-op onto a corpse. The second cursor can: the loop pushes
+    // it synchronously, before its first await.
+    expect(cursors).toHaveLength(2);
     expect(isSubscribed(conversationId)).toBe(true);
 
     await settle(conversationId);
-    expect(cursors).toHaveLength(2);
   });
 
   test("ends a stream that is sitting idle with nothing to say", async () => {
