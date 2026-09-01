@@ -79,11 +79,24 @@ const handleStreamEvent = (
     );
     if (event.state === "idle") {
       clearLive(conversationId, queryClient);
-      // TODO: Rearchitect to a single stream endpoint that sends initial state + live events,
-      // eliminating the race condition between initial fetch and stream subscription.
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.conversations.detail(conversationId),
-      });
+      // The CLI reports idle between chained turns — a queued follow-up it
+      // has not parsed yet emits `running` moments later. A refetch fired in
+      // that window reads a snapshot `running` contradicts, and its late
+      // resolve would revert the cache for the whole next turn: no shimmer,
+      // no Stop button, dropped rows. The queue event above is the authority
+      // on whether more is coming, so reconcile only at the idle that ends
+      // the chain. (A new send racing this refetch is already covered: the
+      // mutation's onMutate cancels in-flight detail fetches.)
+      const queued = queryClient.getQueryData<string[]>(
+        queryKeys.conversations.queuedMessageIds(conversationId),
+      );
+      if (!queued?.length) {
+        // TODO: Rearchitect to a single stream endpoint that sends initial state + live events,
+        // eliminating the race condition between initial fetch and stream subscription.
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.conversations.detail(conversationId),
+        });
+      }
     }
     return;
   }
