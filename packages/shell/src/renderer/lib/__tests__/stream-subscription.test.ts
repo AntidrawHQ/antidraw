@@ -98,6 +98,7 @@ const message = (seq: number, text: string): Message => {
     sdkMessage: createUserSDKMessage({ text, uuid: id as UUID }),
     seq,
     createdAt: new Date(0),
+    deliveredAt: null,
   };
 };
 
@@ -737,6 +738,52 @@ describe("the idle invalidate", () => {
 
     // The query that opened the conversation has just read these same rows.
     expect(invalidate).not.toHaveBeenCalled();
+  });
+});
+
+describe("the failed set", () => {
+  // Null delivered_at minus the live pending set — computed by the backend.
+  // It only grows, and only when the CLI fails, so `error` is the one live
+  // event that re-asks for it.
+  test("a turn that dies on the backend re-asks for it", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    scriptAttempts([{ events: [{ type: "error", error: "spawn failed" }] }]);
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: queryKeys.conversations.failedMessageIds(conversationId),
+    });
+  });
+
+  test("a queue change does not", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    // A send and its ack: the two `queue` events every message produces.
+    // Neither can change the failed set — the row is either still pending
+    // or now delivered — and refetching on the ack would also open a window
+    // during cancel where the row outlives its pending entry and reads as
+    // failed for a round trip.
+    scriptAttempts([
+      {
+        events: [
+          { type: "queue", userMessageIds: ["m1"] },
+          { type: "queue", userMessageIds: [] },
+        ],
+        hangs: true,
+      },
+    ]);
+
+    subscribeToStream(conversationId, queryClient);
+    await flush();
+
+    expect(invalidate).not.toHaveBeenCalled();
+    releaseStream(conversationId);
+    await flush();
   });
 });
 

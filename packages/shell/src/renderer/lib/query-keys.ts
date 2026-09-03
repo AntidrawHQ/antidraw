@@ -15,6 +15,9 @@ export const queryKeys = {
     // Renderer-only: userMessageIds sent mid-turn, not yet acked by the CLI.
     queuedMessageIds: (id: string | null) =>
       ["conversation", id, "queued-message-ids"] as const,
+    // userMessageIds the CLI never received, as the backend computes them.
+    failedMessageIds: (id: string | null) =>
+      ["conversation", id, "failed-message-ids"] as const,
   },
   userComponents: {
     byWorkspace: (workspaceId: string) =>

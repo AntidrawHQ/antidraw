@@ -659,6 +659,35 @@ export const cancelQueuedMessage = async (
   }
 };
 
+// Prompts the CLI never received. The backend computes it from the
+// delivered_at column and its live pending set; see useFailedMessageIds for
+// when it is asked.
+export const getFailedMessageIds = async (conversationId: string) => {
+  try {
+    const response = await fetch(
+      `antidraw://app/api/chat/${conversationId}/undelivered`,
+    );
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      return err({
+        status: response.status as 404 | 500,
+        code: errorBody?.error?.code ?? "FETCH_ERROR",
+        message: errorBody?.error?.message ?? response.statusText,
+      });
+    }
+
+    const data: { failedUserMessageIds: string[] } = await response.json();
+    return ok(data.failedUserMessageIds);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "NETWORK_ERROR",
+      message: "Failed to read undelivered prompts",
+    });
+  }
+};
+
 // Cancel an active stream
 export const cancelConversationStream = async (conversationId: string) => {
   try {

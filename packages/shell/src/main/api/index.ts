@@ -34,6 +34,7 @@ import {
   deleteMessage,
   getConversation,
   getMessagesAfterSeq,
+  getUndeliveredPromptIds,
 } from "./services/chat.service";
 import {
   subscribe,
@@ -319,6 +320,33 @@ api.delete(
     }
 
     return ctx.json({ cancelled: true });
+  },
+);
+
+// Prompts the CLI never received: persisted, never acked, and not held
+// pending by a live handle. Computed here, never stored. The set only grows,
+// and only when the CLI fails — the renderer asks once per open and again on
+// `error`, so this is not on any hot path.
+api.get(
+  "/chat/:conversationId/undelivered",
+  zValidator("param", z.object({ conversationId: z.uuid() })),
+  async (ctx) => {
+    const { conversationId } = ctx.req.valid("param");
+
+    // Pending first. Read the other way round, an ack landing between the
+    // two reads shows a null row that is no longer pending — reported
+    // failed, with nothing later to correct it. This order can only hide a
+    // failure, and a failure always emits `error`, which refetches.
+    const pending = new Set(getPending(conversationId));
+    const undelivered = await getUndeliveredPromptIds(conversationId);
+    if (undelivered.isErr()) {
+      const { status, code, message } = undelivered.error;
+      return ctx.json({ error: { code, message } }, status);
+    }
+
+    return ctx.json({
+      failedUserMessageIds: undelivered.value.filter((id) => !pending.has(id)),
+    });
   },
 );
 

@@ -59,6 +59,12 @@ export const messages = sqliteTable(
     createdAt: integer("created_at", { mode: "timestamp_ms" })
       .notNull()
       .default(sql`(unixepoch() * 1000)`),
+    // Set once, when the CLI replays the prompt — its acceptance ack, and the
+    // only one there is. Null on insert. A null row that no live handle holds
+    // pending is a prompt the CLI never received; that state is computed on
+    // request (GET /chat/:id/undelivered), never written. Only user_prompt
+    // rows use it; sdk_message rows stay null.
+    deliveredAt: integer("delivered_at", { mode: "timestamp_ms" }),
   },
   (table) => [index("idx_messages_conv_seq").on(table.conversationId, table.seq)]
 );

@@ -359,6 +359,11 @@ const handleStreamEvent = (
     queryClient.invalidateQueries({
       queryKey: queryKeys.conversations.detail(conversationId),
     });
+    // The one live moment the failed set can grow: a dying CLI drops every
+    // un-acked prompt it held.
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.conversations.failedMessageIds(conversationId),
+    });
     return;
   }
 

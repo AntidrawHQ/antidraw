@@ -26,7 +26,7 @@ const withStreamStatus = <T extends ConversationRow>(
 });
 import { createUserSDKMessage } from "@/shared/utils/message";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { eq, desc, and, gt, asc } from "drizzle-orm";
+import { eq, desc, and, gt, asc, isNull } from "drizzle-orm";
 import { ok, err } from "neverthrow";
 
 export const createConversation = async (
@@ -225,6 +225,51 @@ export const deleteMessage = async (messageId: string) => {
       status: 500 as const,
       code: "DB_ERROR",
       message: "Failed to delete message",
+    });
+  }
+};
+
+// The CLI's replay ack, made durable. Idempotent: a second ack for the same
+// id (a resumed session replays its history) rewrites the same column. A uuid
+// we never stamped — the CLI replays its own internal reminders too — matches
+// no row and is a no-op.
+export const markDelivered = async (messageId: string) => {
+  try {
+    await db
+      .update(messages)
+      .set({ deliveredAt: new Date() })
+      .where(eq(messages.id, messageId));
+    return ok(undefined);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "DB_ERROR",
+      message: "Failed to mark message delivered",
+    });
+  }
+};
+
+// Prompts with no ack on record. Whether each one is still queued or has
+// failed is the caller's question — it needs the live pending set to answer.
+export const getUndeliveredPromptIds = async (conversationId: string) => {
+  try {
+    const rows = await db
+      .select({ id: messages.id })
+      .from(messages)
+      .where(
+        and(
+          eq(messages.conversationId, conversationId),
+          eq(messages.messageType, "user_prompt"),
+          isNull(messages.deliveredAt)
+        )
+      )
+      .orderBy(asc(messages.seq));
+    return ok(rows.map((r) => r.id));
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "DB_ERROR",
+      message: "Failed to read undelivered prompts",
     });
   }
 };
