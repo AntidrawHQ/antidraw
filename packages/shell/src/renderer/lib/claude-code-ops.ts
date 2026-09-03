@@ -262,22 +262,31 @@ onMutate: async ({ message, conversationId, userMessageId, images }) => {
         createdAt: new Date(),
       };
 
+      // The bubble goes in now; the status does not. A bubble carries the id
+      // the backend will persist under, so the stream's `message` event
+      // replaces it in place and a failure can take back exactly it. A
+      // status written now has no such handle: once "streaming" is in the
+      // cache, nothing can tell a send's guess from the CLI's own `running`,
+      // and a rollback that restores a snapshot over it erases whatever the
+      // stream wrote in between. onSuccess writes it, after the 202, when it
+      // is no longer a guess.
       queryClient.setQueryData<ConversationWithMessages>(
         queryKeys.conversations.detail(conversationId),
         {
           ...previousChat,
-          streamStatus: "streaming",
           messages: [...previousChat.messages, userMessage],
         },
       );
 
-      return { previousChat, optimisticMessage: userMessage };
+      return { optimisticMessage: userMessage };
     },
 
     // The 202 means the backend has claimed the slot and registered this
-    // send. The backend does not write streamStatus on send any more (the
-    // CLI's `running` does, a moment later), so until then the row says
-    // whatever it said before. Re-asserting streaming here restores what a
+    // send. The backend does not write streamStatus on send (the CLI's
+    // `running` does, a moment later), so this is the one place a send says
+    // "streaming" — after the backend has accepted it, which is what makes
+    // it true rather than a guess, and what means it never needs rolling
+    // back. It covers the spawn gap before `running`, and restores what a
     // crossing `complete` + refetch may have undone, so the shimmer and Stop
     // survive it. It no longer has anything to do with subscribing: the
     // subscription is held for whichever conversation is open, so one is
@@ -303,13 +312,22 @@ onMutate: async ({ message, conversationId, userMessageId, images }) => {
       );
     },
 
-    onError: (_err, { conversationId, userMessageId }, context) => {
-      if (context?.previousChat) {
-        queryClient.setQueryData(
-          queryKeys.conversations.detail(conversationId),
-          context.previousChat,
-        );
-      }
+    // Undo this send, not the interval. Sends land mid-turn now, so by the
+    // time this runs the entry may hold rows the running turn streamed after
+    // onMutate — restoring a snapshot would wipe them until the next refetch.
+    // Take out exactly the bubble onMutate put in. The status is not touched:
+    // onMutate never wrote one, and whatever is there now is the stream's.
+    onError: (_err, { conversationId, userMessageId }) => {
+      queryClient.setQueryData<ConversationWithMessages>(
+        queryKeys.conversations.detail(conversationId),
+        (old) =>
+          old
+            ? {
+                ...old,
+                messages: old.messages.filter((m) => m.id !== userMessageId),
+              }
+            : old,
+      );
       queryClient.setQueryData<string[]>(
         queryKeys.conversations.queuedMessageIds(conversationId),
         (prev) => prev?.filter((id) => id !== userMessageId) ?? [],
