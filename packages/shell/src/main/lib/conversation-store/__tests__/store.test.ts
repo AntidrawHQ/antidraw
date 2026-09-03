@@ -33,6 +33,21 @@ const controllableQuery = (cancelVerdict = true) => {
   return query as unknown as Query & typeof query;
 };
 
+// A query whose control requests reject — what the SDK does for a write that
+// fails or for every request still pending when the process exits.
+const deadQuery = () => {
+  const failure = new Error("Query closed before response received");
+  const query = {
+    interrupt: vi.fn(async () => {
+      throw failure;
+    }),
+    cancelAsyncMessage: vi.fn(async () => {
+      throw failure;
+    }),
+  };
+  return query as unknown as Query & typeof query;
+};
+
 let counter = 0;
 const freshId = () => `conversation-${counter++}`;
 
@@ -441,6 +456,20 @@ describe("interrupt", () => {
     expect(seen).toMatchInlineSnapshot(`[]`);
     expect(getPending(id)).toEqual(["msg-a"]);
   });
+
+  test("a rejected control request is reported as not done, not thrown", async () => {
+    const id = freshId();
+    openHandle(id, promptStream());
+    attachQuery(id, deadQuery());
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(interrupt(id)).resolves.toBe(false);
+    expect(error).toHaveBeenCalledTimes(1);
+    // The handle is the loop's to release when it observes the exit; a
+    // failed Stop must not tear it down from underneath the loop.
+    expect(getHandle(id)).toBeDefined();
+    error.mockRestore();
+  });
 });
 
 describe("cancelQueued", () => {
@@ -488,5 +517,22 @@ describe("cancelQueued", () => {
 
   test("is a no-op for a conversation with no handle", async () => {
     expect(await cancelQueued(freshId(), "msg-a")).toBe(false);
+  });
+
+  test("a rejected control request answers false and leaves the queue alone", async () => {
+    const id = freshId();
+    openHandle(id, promptStream());
+    attachQuery(id, deadQuery());
+    addPending(id, "msg-a");
+    const seen = capture(id);
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    // Not a throw: the route maps this to its existing { cancelled: false },
+    // and the CLI's exit — what a rejection means — is the loop's to report.
+    await expect(cancelQueued(id, "msg-a")).resolves.toBe(false);
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(seen).toMatchInlineSnapshot(`[]`);
+    expect(getPending(id)).toEqual(["msg-a"]);
+    error.mockRestore();
   });
 });
