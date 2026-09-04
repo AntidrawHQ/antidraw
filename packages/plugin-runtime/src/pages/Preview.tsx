@@ -1,6 +1,7 @@
 import { Component, Suspense, lazy, useEffect, useMemo, useRef } from "react"
 import type { ReactNode } from "react"
 import { useSearch } from "@tanstack/react-router"
+import { InspectOverlay } from "../inspect/InspectOverlay"
 
 class LoadErrorBoundary extends Component<
   { children: ReactNode; fallback: ReactNode },
@@ -80,13 +81,16 @@ export const Preview = () => {
   )
 
   return (
-    <LoadErrorBoundary key={componentName} fallback={notFound}>
-      <Suspense fallback={null}>
-        <Frame componentName={componentName} fullscreen={!!fullscreen}>
-          <LazyComponent />
-        </Frame>
-      </Suspense>
-    </LoadErrorBoundary>
+    <>
+      <LoadErrorBoundary key={componentName} fallback={notFound}>
+        <Suspense fallback={null}>
+          <Frame componentName={componentName} fullscreen={!!fullscreen}>
+            <LazyComponent />
+          </Frame>
+        </Suspense>
+      </LoadErrorBoundary>
+      <InspectOverlay componentName={componentName} />
+    </>
   )
 }
 

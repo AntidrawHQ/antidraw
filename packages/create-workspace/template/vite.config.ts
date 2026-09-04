@@ -4,5 +4,7 @@ import tailwindcss from "@tailwindcss/vite"
 import { antidraw } from "@antidrawapp/runtime/plugin"
 
 export default defineConfig({
-  plugins: [react(), tailwindcss(), ...antidraw()],
+  // antidraw() must come before react(): its source tagging needs original
+  // column positions, which plugin-react's retainLines Babel pass discards
+  plugins: [...antidraw(), react(), tailwindcss()],
 })
