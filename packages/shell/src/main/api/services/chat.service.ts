@@ -313,6 +313,24 @@ export const addMessage = async (params: {
     // use so the ok() below does not hand callers a `Message | undefined`.
     const message = inserted!;
 
+    // A user prompt is the one thing that moves a conversation in the
+    // sidebar. The list orders by updatedAt, and only the user's own input
+    // counts as activity — a reply lands where the prompt already put it.
+    // It lives here, next to the insert every prompt passes through, so a
+    // rework of the send path cannot drop it the way removing the status
+    // write did. Its own try: a failed bump must not turn a persisted prompt
+    // into a reported failure.
+    if (params.messageType === "user_prompt") {
+      try {
+        await db
+          .update(conversations)
+          .set({ updatedAt: new Date() })
+          .where(eq(conversations.id, params.conversationId));
+      } catch (e) {
+        console.error("Failed to bump the conversation's updatedAt:", e);
+      }
+    }
+
     // Emit after insert - automatic, can't forget
     conversationEvents.emit("message", params.conversationId, { message });
 

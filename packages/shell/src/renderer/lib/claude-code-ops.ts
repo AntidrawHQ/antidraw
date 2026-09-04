@@ -103,6 +103,12 @@ export const openConversationSubscription = (
   return () => releaseStream(conversationId);
 };
 
+// No staleTime on purpose. The list view mounts only when the user opens it
+// (SidePanel swaps it in for the chat), and that mount is what refetches the
+// order a prompt changed in the meantime — addMessage bumps updatedAt on
+// every user prompt. Nothing mirrors the bump into this cache from the
+// stream; it does not need to, since the list is never on screen while a
+// prompt is sent.
 export const useWorkspaceConversations = (workspaceId: string | null) => {
   return useQuery({
     queryKey: queryKeys.conversations.byWorkspace(workspaceId),
