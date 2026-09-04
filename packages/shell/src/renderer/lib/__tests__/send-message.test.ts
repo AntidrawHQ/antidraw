@@ -41,6 +41,7 @@ const persisted = (seq: number, text: string): Message => {
     sdkMessage: createUserSDKMessage({ text, uuid: id as UUID }),
     seq,
     createdAt: new Date(0),
+    deliveredAt: null,
   };
 };
 

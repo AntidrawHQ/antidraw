@@ -28,6 +28,7 @@ import {
   useCancelStream,
   useConversationMessages,
   useCreateConversation,
+  useFailedMessageIds,
   useGenerateTitle,
   useLivePartial,
   useQueuedMessageIds,
@@ -88,6 +89,7 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
   const { data: toolMap } = useToolMap(conversationId);
   const { data: live } = useLivePartial(conversationId);
   const { data: queuedMessageIds } = useQueuedMessageIds(conversationId);
+  const { data: failedMessageIds } = useFailedMessageIds(conversationId);
   const cancelQueued = useCancelQueuedMessage();
   const messages = conversation?.messages ?? [];
   const isStreaming = conversation?.streamStatus === "streaming";
@@ -162,6 +164,14 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
         // labelled, and withdrawable until the ack lands.
         const isQueued =
           !isAssistant && (queuedMessageIds?.includes(msg.id) ?? false);
+        // Persisted, never acked, and no live handle holds it: the CLI never
+        // received this prompt. The backend decides (see useFailedMessageIds);
+        // a live Queued mark wins over a list that has not been refetched.
+        const isFailed =
+          !isAssistant &&
+          !isQueued &&
+          (failedMessageIds?.includes(msg.id) ?? false);
+
         // Only the message whose cancel is in flight waits on it. The mutation
         // is shared by every bubble, so reading isPending alone greyed out all
         // of them for the duration of one DELETE — and that wait is unbounded
@@ -212,7 +222,7 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
                       key={idx}
                       className={cn(
                         "bg-neutral-700 text-neutral-200 prose prose-sm prose-invert",
-                        isQueued && "opacity-60"
+                        (isQueued || isFailed) && "opacity-60"
                       )}
                     >
                       {block.text}
@@ -258,6 +268,11 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
                   >
                     <X className="size-3" />
                   </button>
+                </div>
+              )}
+              {isFailed && (
+                <div className="mt-0.5 self-end text-[10px] text-red-400">
+                  Not delivered
                 </div>
               )}
             </div>

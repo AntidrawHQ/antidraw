@@ -18,6 +18,7 @@ import {
   createConversation,
   generateConversationTitle,
   getConversationWithMessages,
+  getFailedMessageIds,
   getSupportedModels,
   listWorkspaceConversations,
   sendMessage,
@@ -93,6 +94,11 @@ export const openConversationSubscription = (
   queryClient: QueryClient,
 ): (() => void) | undefined => {
   if (!conversationId) return;
+  // Once per open. Anything can have happened while away or before launch,
+  // and the answer lives in the DB, not in the rows this cache holds.
+  queryClient.invalidateQueries({
+    queryKey: queryKeys.conversations.failedMessageIds(conversationId),
+  });
   subscribeToStream(conversationId, queryClient);
   return () => releaseStream(conversationId);
 };
@@ -166,6 +172,32 @@ export const useQueuedMessageIds = (conversationId: string | null) => {
     queryFn: () => [],
     enabled: false,
     initialData: [],
+    staleTime: Infinity,
+  });
+};
+
+// userMessageIds the CLI never received: persisted, never acked, and not held
+// pending by a live handle. The backend computes it on request, because the
+// renderer cannot: rows here are append-only — the detail query never goes
+// stale and a reattach catches up by seq — so a column that changes after
+// insert is invisible to a cache already holding the row.
+//
+// The set only grows, and only when the CLI fails. So it is fetched once per
+// open (openConversationSubscription) and again on `error`
+// (stream-subscription) — never on `queue`, which fires twice per message and
+// cannot tell an ack from a failure anyway.
+export const useFailedMessageIds = (conversationId: string | null) => {
+  return useQuery({
+    queryKey: queryKeys.conversations.failedMessageIds(conversationId),
+    queryFn: conversationId
+      ? async () => {
+          const result = await getFailedMessageIds(conversationId);
+          if (result.isErr()) {
+            throw new Error(result.error.message);
+          }
+          return result.value;
+        }
+      : skipToken,
     staleTime: Infinity,
   });
 };
@@ -260,6 +292,9 @@ onMutate: async ({ message, conversationId, userMessageId, images }) => {
         sdkMessage,
         seq: PENDING_SEQ,
         createdAt: new Date(),
+        // Nothing reads this on the renderer side — delivery is asked of the
+        // backend (useFailedMessageIds). It is here because the row has it.
+        deliveredAt: null,
       };
 
       // The bubble goes in now; the status does not. A bubble carries the id

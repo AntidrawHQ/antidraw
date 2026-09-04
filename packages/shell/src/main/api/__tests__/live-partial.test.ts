@@ -48,11 +48,11 @@ const liveConversation = () => {
 };
 
 describe("the in-flight block", () => {
-  test("accumulates text across deltas", () => {
+  test("accumulates text across deltas", async () => {
     const id = liveConversation();
-    handleSdkMessageWithoutPersisting(id, start({ type: "text", text: "" }));
-    handleSdkMessageWithoutPersisting(id, delta({ type: "text_delta", text: "Hel" }));
-    handleSdkMessageWithoutPersisting(id, delta({ type: "text_delta", text: "lo" }));
+    await handleSdkMessageWithoutPersisting(id, start({ type: "text", text: "" }));
+    await handleSdkMessageWithoutPersisting(id, delta({ type: "text_delta", text: "Hel" }));
+    await handleSdkMessageWithoutPersisting(id, delta({ type: "text_delta", text: "lo" }));
 
     expect(getPartial(id)).toMatchInlineSnapshot(`
       {
@@ -66,13 +66,13 @@ describe("the in-flight block", () => {
     `);
   });
 
-  test("accumulates a tool_use's json and parses it while incomplete", () => {
+  test("accumulates a tool_use's json and parses it while incomplete", async () => {
     const id = liveConversation();
-    handleSdkMessageWithoutPersisting(
+    await handleSdkMessageWithoutPersisting(
       id,
       start({ type: "tool_use", id: "t1", name: "Read", input: {} }),
     );
-    handleSdkMessageWithoutPersisting(
+    await handleSdkMessageWithoutPersisting(
       id,
       delta({ type: "input_json_delta", partial_json: '{"file_path":"/a' }),
     );
@@ -95,10 +95,10 @@ describe("the in-flight block", () => {
     `);
   });
 
-  test("ignores a delta aimed at a different block", () => {
+  test("ignores a delta aimed at a different block", async () => {
     const id = liveConversation();
-    handleSdkMessageWithoutPersisting(id, start({ type: "text", text: "keep" }));
-    handleSdkMessageWithoutPersisting(
+    await handleSdkMessageWithoutPersisting(id, start({ type: "text", text: "keep" }));
+    await handleSdkMessageWithoutPersisting(
       id,
       delta({ type: "text_delta", text: "dropped" }, 7),
     );
@@ -106,9 +106,9 @@ describe("the in-flight block", () => {
     expect(getPartial(id)?.block).toEqual({ type: "text", text: "keep" });
   });
 
-  test("is dropped when the CLI goes idle", () => {
+  test("is dropped when the CLI goes idle", async () => {
     const id = liveConversation();
-    handleSdkMessageWithoutPersisting(id, start({ type: "text", text: "x" }));
+    await handleSdkMessageWithoutPersisting(id, start({ type: "text", text: "x" }));
     expect(getPartial(id)).not.toBeNull();
 
     setCliState(id, "idle");
@@ -121,7 +121,7 @@ describe("the in-flight block", () => {
     const conversation = created.value;
     openHandle(conversation.id, buildPrompt("hi", { uuid: crypto.randomUUID() }));
 
-    handleSdkMessageWithoutPersisting(
+    await handleSdkMessageWithoutPersisting(
       conversation.id,
       start({ type: "text", text: "streaming" }),
     );
@@ -136,9 +136,9 @@ describe("the in-flight block", () => {
     releaseHandle(conversation.id);
   });
 
-  test("is null once the handle is gone", () => {
+  test("is null once the handle is gone", async () => {
     const id = liveConversation();
-    handleSdkMessageWithoutPersisting(id, start({ type: "text", text: "x" }));
+    await handleSdkMessageWithoutPersisting(id, start({ type: "text", text: "x" }));
     releaseHandle(id);
     expect(getPartial(id)).toBeNull();
   });

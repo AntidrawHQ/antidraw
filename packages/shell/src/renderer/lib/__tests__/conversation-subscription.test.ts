@@ -11,6 +11,7 @@ vi.mock("../api", async (importOriginal) => {
 const { subscribeToConversation } = await import("../api");
 const { openConversationSubscription } = await import("../claude-code-ops");
 const { isSubscribed } = await import("../stream-subscription");
+const { queryKeys } = await import("../query-keys");
 const mockSubscribe = vi.mocked(subscribeToConversation);
 
 // Streams still running. The map entry goes synchronously on release, so it
@@ -108,6 +109,22 @@ describe("the conversation subscription effect", () => {
     cleanupB!();
     await flush();
     expect(open.count).toBe(0);
+  });
+
+  test("opening asks the backend which prompts it never received", async () => {
+    const id = freshId();
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+
+    // Once per open, from here rather than from a component mount: AppChat
+    // remounts on panel switches while the conversation stays open, and the
+    // answer lives in the DB, not in the rows the cache holds.
+    const cleanup = openConversationSubscription(id, queryClient);
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: queryKeys.conversations.failedMessageIds(id),
+    });
+
+    cleanup!();
+    await flush();
   });
 
   test("is held for a conversation that is not streaming", async () => {
