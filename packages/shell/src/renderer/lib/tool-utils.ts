@@ -89,7 +89,7 @@ export function correlateTools(
 
 export const selectToolMap = (
   data: ConversationWithMessages,
-  live: LivePartial = null,
+  live: LivePartial | null = null,
 ): Map<string, ToolPart> => {
   const map = correlateTools(data.messages);
 

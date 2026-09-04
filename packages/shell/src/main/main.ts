@@ -25,7 +25,6 @@ import {
 } from "./services/dev-server.service";
 import { installNodeShim } from "./lib/node-shim";
 import { runMigrations } from "./db/migrate";
-import { resetStreamingConversations } from "./api/services/chat.service";
 import { shutdownPostHog } from "./lib/posthog";
 
 // Keep the renderer responsive when the window is unfocused or occluded.
@@ -121,11 +120,6 @@ app.whenReady().then(async () => {
     app.quit();
     return;
   }
-
-  // Crash recovery: any conversation persisted as "streaming" is stale
-  // (in-memory streams don't survive a process exit). Reset before the
-  // renderer queries. (Legacy "completed" rows are migrated once via 0001.)
-  await resetStreamingConversations();
 
   // Trust self-signed certs for localhost (enables HTTPS dev servers without warnings)
   session.defaultSession.setCertificateVerifyProc((request, callback) => {

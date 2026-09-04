@@ -18,8 +18,9 @@
     "db:migrate": "drizzle-kit migrate --config ./src/main/db/drizzle.config.ts",
     "db:push": "drizzle-kit push --config ./src/main/db/drizzle.config.ts",
     "db:studio": "drizzle-kit studio --config ./src/main/db/drizzle.config.ts",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "vitest run --exclude '**/*.e2e.test.ts'",
+    "test:watch": "vitest",
+    "test:e2e": "vitest run .e2e.test"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.102.0",

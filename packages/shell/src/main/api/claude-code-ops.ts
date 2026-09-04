@@ -1,5 +1,6 @@
 import { createRequire } from "node:module";
 import path from "node:path";
+import type { UUID } from "node:crypto";
 import type {
   EffortLevel,
   HookInput,
@@ -9,7 +10,7 @@ import type {
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
 export type { EffortLevel, ModelInfo };
-import { ok, err } from "neverthrow";
+import { ok, err, type Result } from "neverthrow";
 import { z } from "zod/v3";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { getWorkspaceSourcePath } from "@/main/api/init";
@@ -49,15 +50,32 @@ export const claudeCodeExecutablePath = ((): string | undefined => {
   return undefined;
 })();
 
+export type PromptPushOptions = {
+  // Stamped onto the SDKUserMessage as its uuid. With --replay-user-messages
+  // the CLI echoes it back (isReplay: true) when the message is folded into
+  // a turn — that echo is the acceptance ack the queueing UX correlates on,
+  // so callers pass the frontend's userMessageId here.
+  uuid?: UUID;
+  images?: ImageAttachment[];
+};
+
+// STREAM_CLOSED: end() has run. ENQUEUE_FAILED: the SDK errored the
+// underlying controller. Either way the message never reaches the CLI, so it
+// will never be acked — the caller must stop tracking it as queued.
+export type PushError = "STREAM_CLOSED" | "ENQUEUE_FAILED";
+
 export type PromptStream = {
   prompt: AsyncIterable<SDKUserMessage>;
-  push: (message: string, images?: ImageAttachment[]) => void;
+  push: (
+    message: string,
+    options?: PromptPushOptions
+  ) => Result<void, PushError>;
   end: () => void;
 };
 
 export const buildPrompt = (
   message: string,
-  images?: ImageAttachment[]
+  options?: PromptPushOptions
 ): PromptStream => {
   let closed = false;
   let controller!: ReadableStreamDefaultController<SDKUserMessage>;
@@ -65,18 +83,31 @@ export const buildPrompt = (
     start: (c) => (controller = c),
   });
 
-  const push = (text: string, imgs?: ImageAttachment[]) => {
-    if (closed) return;
-    controller.enqueue(
-      createUserSDKMessage({
-        text,
-        uuid: crypto.randomUUID(),
-        images: imgs,
-      })
-    );
+  // Reports failure instead of swallowing it: a push that does not reach the
+  // CLI is never acked, so a silent no-op would leave the message marked
+  // queued forever.
+  const push = (
+    text: string,
+    opts?: PromptPushOptions
+  ): Result<void, PushError> => {
+    if (closed) return err("STREAM_CLOSED" as const);
+    try {
+      controller.enqueue(
+        createUserSDKMessage({
+          text,
+          uuid: opts?.uuid ?? crypto.randomUUID(),
+          images: opts?.images,
+        })
+      );
+      return ok(undefined);
+    } catch (e) {
+      console.error("Failed to enqueue prompt:", e);
+      return err("ENQUEUE_FAILED" as const);
+    }
   };
 
-  push(message, images);
+  // Cannot fail: the stream was created two lines up and is not closed.
+  push(message, options);
 
   return {
     prompt,
@@ -255,6 +286,21 @@ Current workspace directory: ${workspacePath}
         },
         permissionMode: "bypassPermissions",
         includePartialMessages: true,
+        // Ask the CLI to re-emit each stdin user message once it is folded
+        // into a turn ({type:"user", isReplay:true, uuid}). That replay is the
+        // only acceptance signal there is for a pushed message — the SDK's
+        // streamInput just writes to stdin. Not a first-class SDK option,
+        // only the CLI flag (verified live: without it, no ack ever comes).
+        extraArgs: { "replay-user-messages": null },
+        // Make the CLI report its session state ({type:"system",
+        // subtype:"session_state_changed", state:"running"|"idle"|
+        // "requires_action"}). `idle` fires only when the turn AND the CLI's
+        // command queue are fully drained, which is the end-of-turn signal
+        // the stream lifecycle keys on — `result` is not one (a queued
+        // follow-up runs after it with no idle in between). Gated behind an
+        // env var rather than an option; the SDK merges this into the child
+        // env. Verified live against the pinned CLI.
+        env: { ...process.env, CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1" },
       },
     });
 
