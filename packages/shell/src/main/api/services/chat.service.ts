@@ -4,11 +4,15 @@ import {
   messages,
   type Conversation,
   type ConversationRow,
+  type Message,
 } from "@/main/api/models/chat.model";
 import type { EffortLevel } from "@anthropic-ai/claude-agent-sdk";
 import { db } from "@/main/db";
 import type { ImageAttachment } from "@/shared/utils/message";
-import { getStreamStatus, streamEvents } from "@/main/lib/stream-manager";
+import {
+  getStreamStatus,
+  conversationEvents,
+} from "@/main/lib/conversation-store";
 
 // Every conversation that leaves the service carries its live stream status,
 // read from memory at that moment. The status is not a column (see
@@ -22,7 +26,7 @@ const withStreamStatus = <T extends ConversationRow>(
 });
 import { createUserSDKMessage } from "@/shared/utils/message";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, and, gt, asc, isNull } from "drizzle-orm";
 import { ok, err } from "neverthrow";
 
 export const createConversation = async (
@@ -42,7 +46,7 @@ export const createConversation = async (
       })
       .returning();
 
-    return ok(withStreamStatus(conversation));
+    return ok(withStreamStatus(conversation!));
   } catch (_e) {
     return err({
       status: 500 as const,
@@ -130,7 +134,11 @@ export const getConversation = async (
         ? {
             with: {
               messages: {
-                orderBy: (messages, { asc }) => asc(messages.createdAt),
+                // seq, not createdAt: createdAt has second resolution, so a
+                // turn's messages share a timestamp and this ordering was a
+                // tie-break on nothing. Restored transcripts could disagree
+                // with what the renderer showed live.
+                orderBy: (messages, { asc }) => asc(messages.seq),
               },
             },
           }
@@ -151,6 +159,40 @@ export const getConversation = async (
       status: 500 as const,
       code: "DB_ERROR",
       message: "Failed to fetch conversation",
+    });
+  }
+};
+
+// The transcript after a point, for a subscriber that is resuming. `afterSeq`
+// is exclusive: it is the last seq the caller already has, so a caller fully
+// caught up gets nothing back. Ordered by seq, and covered end to end by
+// idx_messages_conv_seq.
+//
+// A Result like its neighbours, and the caller depends on that: this is
+// awaited inside the SSE route ahead of every seed, where a rejection would
+// unwind the handler and strand the subscriber it just attached. An err lets
+// the route skip the replay and stay live instead.
+export const getMessagesAfterSeq = async (
+  conversationId: string,
+  afterSeq: number
+) => {
+  try {
+    const rows = await db
+      .select()
+      .from(messages)
+      .where(
+        and(
+          eq(messages.conversationId, conversationId),
+          gt(messages.seq, afterSeq)
+        )
+      )
+      .orderBy(asc(messages.seq));
+    return ok(rows);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "DB_ERROR",
+      message: "Failed to read the transcript after the cursor",
     });
   }
 };
@@ -187,6 +229,68 @@ export const deleteMessage = async (messageId: string) => {
   }
 };
 
+// The CLI's replay ack, made durable. Idempotent: a second ack for the same
+// id (a resumed session replays its history) rewrites the same column. A uuid
+// we never stamped — the CLI replays its own internal reminders too — matches
+// no row and is a no-op.
+export const markDelivered = async (messageId: string) => {
+  try {
+    await db
+      .update(messages)
+      .set({ deliveredAt: new Date() })
+      .where(eq(messages.id, messageId));
+    return ok(undefined);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "DB_ERROR",
+      message: "Failed to mark message delivered",
+    });
+  }
+};
+
+// Prompts with no ack on record. Whether each one is still queued or has
+// failed is the caller's question — it needs the live pending set to answer.
+export const getUndeliveredPromptIds = async (conversationId: string) => {
+  try {
+    const rows = await db
+      .select({ id: messages.id })
+      .from(messages)
+      .where(
+        and(
+          eq(messages.conversationId, conversationId),
+          eq(messages.messageType, "user_prompt"),
+          isNull(messages.deliveredAt)
+        )
+      )
+      .orderBy(asc(messages.seq));
+    return ok(rows.map((r) => r.id));
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "DB_ERROR",
+      message: "Failed to read undelivered prompts",
+    });
+  }
+};
+
+// A duplicate message id. id is a UNIQUE column rather than the primary key
+// (seq took that role), so this is the constraint libsql reports — and it is
+// the only unique constraint on the table.
+//
+// Read through the cause chain rather than matching on e.message: drizzle
+// wraps driver errors in a DrizzleQueryError whose own message is only
+// "Failed query: ...". The driver error, with the constraint name on it, is
+// the cause.
+const isUniqueViolation = (e: unknown): boolean => {
+  for (let cause: unknown = e; cause instanceof Error; cause = cause.cause) {
+    if ((cause as { code?: string }).code === "SQLITE_CONSTRAINT_UNIQUE") {
+      return true;
+    }
+  }
+  return false;
+};
+
 export const addMessage = async (params: {
   id?: string; // Optional - frontend can provide for dedup
   conversationId: string;
@@ -196,7 +300,7 @@ export const addMessage = async (params: {
   const id = params.id ?? crypto.randomUUID();
 
   try {
-    const [message] = await db
+    const [inserted] = await db
       .insert(messages)
       .values({
         id,
@@ -205,17 +309,17 @@ export const addMessage = async (params: {
         sdkMessage: params.sdkMessage,
       })
       .returning();
+    // An insert of one row returns that row. Asserted here rather than at each
+    // use so the ok() below does not hand callers a `Message | undefined`.
+    const message = inserted!;
 
     // Emit after insert - automatic, can't forget
-    streamEvents.emit("message", params.conversationId, message);
+    conversationEvents.emit("message", params.conversationId, { message });
 
     return ok(message);
   } catch (e) {
     // Handle duplicate ID (essentially impossible with UUID v4, but be safe)
-    if (
-      e instanceof Error &&
-      e.message.includes("SQLITE_CONSTRAINT_PRIMARYKEY")
-    ) {
+    if (isUniqueViolation(e)) {
       return err({
         status: 409 as const,
         code: "DUPLICATE_ID",

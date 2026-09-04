@@ -1,0 +1,960 @@
+import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
+import { QueryClient } from "@tanstack/react-query";
+import type { UUID } from "node:crypto";
+import type {
+  ConversationWithMessages,
+  Message,
+  StreamEvent,
+} from "@/main/api";
+import { createUserSDKMessage } from "@/shared/utils/message";
+import type { LivePartial } from "@/shared/utils/live-partial";
+import { queryKeys } from "../query-keys";
+
+// Only the transport is faked. StreamDisconnectedError stays the real class —
+// the reconnect decision turns on `instanceof`, so a local stand-in would let
+// the two drift apart without a test noticing.
+vi.mock("../api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../api")>();
+  return { ...actual, subscribeToConversation: vi.fn() };
+});
+
+const { subscribeToConversation } = await import("../api");
+const { StreamDisconnectedError } = await import("../api");
+const {
+  subscribeToStream,
+  releaseStream,
+  retryStream,
+  isSubscribed,
+  PENDING_SEQ,
+} = await import("../stream-subscription");
+
+const mockSubscribe = vi.mocked(subscribeToConversation);
+
+// One attempt's worth of stream: some events, then either a clean end or a
+// throw. A clean end is what the backend sending a terminal event looks like.
+type Attempt = {
+  events?: StreamEvent[];
+  throws?: unknown;
+  // Stands in for a live stream with nothing to say — the state a
+  // subscription spends almost all of its time in. It ends only when the
+  // release signal reaches it, which is exactly what the real transport does.
+  hangs?: boolean;
+  // The transport failing at the same moment it is released: both endings are
+  // reachable from one teardown, and which wins is a race.
+  throwsOnRelease?: unknown;
+};
+
+// Streams still running. Release clears the map entry synchronously, so the
+// map says nothing about whether the loop actually unwound — this does.
+const open = { count: 0 };
+
+const scriptAttempts = (attempts: Attempt[]) => {
+  const cursors: (number | undefined)[] = [];
+  const remaining = [...attempts];
+  mockSubscribe.mockImplementation(((
+    _conversationId: string,
+    afterSeq?: number,
+    releaseSignal?: AbortSignal,
+  ) => {
+    cursors.push(afterSeq);
+    const attempt = remaining.shift() ?? {};
+    const released = () =>
+      new Promise<void>((resolve) => {
+        if (releaseSignal?.aborted) return resolve();
+        releaseSignal?.addEventListener("abort", () => resolve(), {
+          once: true,
+        });
+      });
+    open.count++;
+    return (async function* () {
+      try {
+        for (const event of attempt.events ?? []) yield event;
+        if (attempt.hangs) {
+          await released();
+          return;
+        }
+        if (attempt.throwsOnRelease !== undefined) {
+          await released();
+          throw attempt.throwsOnRelease;
+        }
+        if (attempt.throws !== undefined) throw attempt.throws;
+      } finally {
+        open.count--;
+      }
+    })();
+  }) as typeof subscribeToConversation);
+  return cursors;
+};
+
+let counter = 0;
+const freshId = () => `conversation-${counter++}`;
+
+const message = (seq: number, text: string): Message => {
+  const id = crypto.randomUUID();
+  return {
+    id,
+    conversationId: "unused",
+    messageType: "user_prompt",
+    sdkMessage: createUserSDKMessage({ text, uuid: id as UUID }),
+    seq,
+    createdAt: new Date(0),
+    deliveredAt: null,
+  };
+};
+
+const seedCache = (
+  queryClient: QueryClient,
+  conversationId: string,
+  messages: Message[],
+) => {
+  queryClient.setQueryData<ConversationWithMessages>(
+    queryKeys.conversations.detail(conversationId),
+    {
+      id: conversationId,
+      workspaceId: "w",
+      claudeCodeSessionId: null,
+      title: null,
+      summary: null,
+      selectedModel: null,
+      selectedEffort: null,
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+      streamStatus: "streaming",
+      messages,
+    },
+  );
+};
+
+const detail = (queryClient: QueryClient, conversationId: string) =>
+  queryClient.getQueryData<ConversationWithMessages>(
+    queryKeys.conversations.detail(conversationId),
+  )!;
+
+// Drives fake timers and the microtask queue until the subscription's loop has
+// run itself out. Backoff is real time in production; here it is skipped.
+// Drains unconditionally rather than while isSubscribed: release clears the
+// map entry synchronously, so in a release test that condition is already
+// false and the loop would run zero times — driving nothing. (It is not that
+// an error write would be truncated: after a release the catch returns at its
+// aborted-guard without writing one.)
+const settle = async (conversationId: string) => {
+  for (let i = 0; i < 40; i++) {
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(10_000);
+  }
+  expect(isSubscribed(conversationId)).toBe(false);
+};
+
+// Lets the loop advance without driving it to completion — used where the
+// subscription is meant to still be alive afterwards.
+const flush = async (ticks = 20) => {
+  for (let i = 0; i < ticks; i++) await Promise.resolve();
+};
+
+let queryClient: QueryClient;
+
+beforeEach(() => {
+  open.count = 0;
+  vi.useFakeTimers();
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+  mockSubscribe.mockReset();
+});
+
+describe("the resume cursor", () => {
+  test("is the highest seq the cache holds", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, [
+      message(4, "a"),
+      message(9, "b"),
+      message(7, "c"),
+    ]);
+    const cursors = scriptAttempts([{}]);
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    expect(cursors).toEqual([9]);
+  });
+
+  test("skips optimistic rows rather than reading MAX_SAFE_INTEGER", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, [
+      message(4, "a"),
+      message(PENDING_SEQ, "not persisted yet"),
+    ]);
+    const cursors = scriptAttempts([{}]);
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    // A cursor of PENDING_SEQ asks for everything after the largest number
+    // there is: nothing, forever, with no error to notice it by.
+    expect(cursors).toEqual([4]);
+  });
+
+  test("is 0 for an empty conversation, absent when there is no cache", async () => {
+    const emptyConversation = freshId();
+    seedCache(queryClient, emptyConversation, []);
+    const emptyCursors = scriptAttempts([{}]);
+    subscribeToStream(emptyConversation, queryClient);
+    await settle(emptyConversation);
+    expect(emptyCursors).toEqual([0]);
+
+    // No cache at all — a cold open racing the detail query, or an entry the
+    // query client garbage-collected. There is no consumer for a replay (the
+    // message handler drops updates when the entry is gone), so asking for
+    // one from 0 would serialise the whole transcript into the void.
+    const uncached = freshId();
+    const uncachedCursors = scriptAttempts([{}]);
+    subscribeToStream(uncached, queryClient);
+    await settle(uncached);
+    expect(uncachedCursors).toEqual([undefined]);
+  });
+
+  test("pins on first sight once the cache lands", async () => {
+    const conversationId = freshId();
+    const cursors = scriptAttempts([
+      { throws: new StreamDisconnectedError("cold open drop", true) },
+      { throws: new StreamDisconnectedError("dropped again", true) },
+      {},
+    ]);
+
+    subscribeToStream(conversationId, queryClient);
+    await flush();
+    // The detail query lands while the loop sits in its first backoff.
+    seedCache(queryClient, conversationId, [message(5, "from the refetch")]);
+    await settle(conversationId);
+
+    // Seed-only until the cache exists, then pinned at its first sighting —
+    // and a later drop keeps the pin rather than re-reading a cache a replay
+    // may have made non-contiguous.
+    expect(cursors).toEqual([undefined, 5, 5]);
+  });
+});
+
+describe("reconnecting", () => {
+  test("a dirty drop retries from the cursor it opened with", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, [message(1, "a")]);
+    const delivered = message(2, "b");
+    const cursors = scriptAttempts([
+      {
+        events: [{ type: "message", message: delivered }],
+        throws: new StreamDisconnectedError("socket closed", true),
+      },
+      {
+        // The retry replays what the dead attempt already delivered — the
+        // accepted cost of never trusting an incomplete attempt — and the
+        // renderer dedups it by id.
+        events: [
+          { type: "message", message: delivered },
+          { type: "message", message: message(3, "c") },
+        ],
+      },
+    ]);
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    // The second attempt asks for 1 again, not 2. A delivered row is not a
+    // confirmed row: only a clean end proves the server finished its replay,
+    // so a dirty drop may not advance the cursor past what the subscription
+    // opened with.
+    expect(cursors).toEqual([1, 1]);
+    expect(detail(queryClient, conversationId).messages.map((m) => m.seq)).toEqual(
+      [1, 2, 3],
+    );
+  });
+
+  test("a live row ahead of the backlog does not eat the rows behind it", async () => {
+    const conversationId = freshId();
+    // The cache holds through 3; rows 4 and 6 are on the server. The route
+    // attaches its listener before reading the backlog, so a row persisted
+    // during the read (6) goes out live, ahead of the older backlog rows.
+    seedCache(queryClient, conversationId, [
+      message(1, "a"),
+      message(2, "b"),
+      message(3, "c"),
+    ]);
+    const liveAhead = message(6, "live-ahead");
+    const backlogRow = message(4, "backlog");
+    const cursors = scriptAttempts([
+      {
+        // 6 arrives; the connection dies before the backlog frames land.
+        events: [{ type: "message", message: liveAhead }],
+        throws: new StreamDisconnectedError("socket closed", true),
+      },
+      {
+        events: [
+          { type: "message", message: backlogRow },
+          { type: "message", message: liveAhead },
+        ],
+      },
+    ]);
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    // Deriving the retry cursor from the cache max would ask for "after 6"
+    // and row 4 would never be sent by anyone. The retry must re-ask from 3.
+    expect(cursors).toEqual([3, 3]);
+    expect(detail(queryClient, conversationId).messages.map((m) => m.seq)).toEqual(
+      [1, 2, 3, 4, 6],
+    );
+  });
+
+  test("leaves the status alone while it retries", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    scriptAttempts([
+      { throws: new StreamDisconnectedError("socket closed", true) },
+      {}, // ends cleanly without delivering anything
+    ]);
+
+    subscribeToStream(conversationId, queryClient);
+
+    // Mid-gap: the first attempt has died and the loop is sitting in its
+    // backoff. This is the window the pre-cursor code flashed an error in.
+    await flush();
+    expect(detail(queryClient, conversationId).streamStatus).toBe("streaming");
+
+    await settle(conversationId);
+    // Still untouched — and because the second attempt delivered no events,
+    // nothing on the recovery path wrote this value: only the seeded one
+    // surviving can satisfy it. (A `state` event in attempt two would make
+    // this vacuous — the recovery write and the seed both say "streaming".)
+    expect(detail(queryClient, conversationId).streamStatus).toBe("streaming");
+  });
+
+  test("gives up after the budget and surfaces the failure", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    const cursors = scriptAttempts(
+      Array.from({ length: 20 }, () => ({
+        throws: new StreamDisconnectedError("refused", true),
+      })),
+    );
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    expect(cursors).toHaveLength(8); // the first try plus one per backoff step
+    expect(detail(queryClient, conversationId).streamStatus).toBe("error");
+  });
+
+  test("delivered progress buys back the retry budget", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    const drop = { throws: new StreamDisconnectedError("flap", true) };
+    const flap = {
+      // A row, not a seed: progress is the cursor advancing, and only
+      // progress refunds the budget (see the test below for why).
+      events: [{ type: "message" as const, message: message(1, "b") }],
+      throws: new StreamDisconnectedError("flap", true),
+    };
+    const cursors = scriptAttempts([
+      ...Array.from({ length: 5 }, () => drop),
+      flap, // partway through the budget, but it makes progress
+      ...Array.from({ length: 12 }, () => drop),
+    ]);
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    // 6 attempts up to and including the flap, then a full budget of 8 after
+    // it. Without the reset the run would have stopped at 8 in total.
+    expect(cursors).toHaveLength(14);
+  });
+
+  test("seeds alone do not buy back the budget", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    // The backend sends its state/queue/livePartial seeds unconditionally on
+    // every successful attach. A link that accepts the stream and then drops
+    // the body — a main-process reload loop, a torn-down CLI handle — thus
+    // delivers events on every cycle without ever making progress.
+    const cursors = scriptAttempts(
+      Array.from({ length: 20 }, () => ({
+        events: [{ type: "state" as const, state: "running" as const }],
+        throws: new StreamDisconnectedError("dropped after attach", true),
+      })),
+    );
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    // The same budget as a link that never opens: the seeds cost the backend
+    // nothing and prove nothing about progress, so they must not refund the
+    // ceiling — otherwise this link reconnects forever behind a spinner.
+    expect(cursors.length).toBeLessThanOrEqual(8);
+    expect(detail(queryClient, conversationId).streamStatus).toBe("error");
+  });
+
+  test("the retry after a delivered event still backs off", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    const cursors = scriptAttempts([
+      {
+        events: [{ type: "state" as const, state: "running" as const }],
+        throws: new StreamDisconnectedError("dropped after attach", true),
+      },
+      {}, // the reconnect, ending cleanly
+    ]);
+
+    subscribeToStream(conversationId, queryClient);
+    await flush();
+    expect(cursors).toHaveLength(1); // dropped, now meant to be in backoff
+
+    // The refund sets attempt to -1, and BACKOFF_MS[-1] is undefined:
+    // setTimeout(done, undefined) fires immediately. A real first-step
+    // backoff holds through anything short of it.
+    await vi.advanceTimersByTimeAsync(249);
+    await flush();
+    expect(cursors).toHaveLength(1);
+
+    await settle(conversationId);
+    expect(cursors).toHaveLength(2);
+  });
+
+  test("does not retry a conversation the backend says is gone", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    const cursors = scriptAttempts([
+      { throws: new StreamDisconnectedError("Conversation not found", false) },
+      { events: [{ type: "state", state: "running" }] },
+    ]);
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    expect(cursors).toHaveLength(1);
+    expect(detail(queryClient, conversationId).streamStatus).toBe("error");
+  });
+
+  test("does not retry a turn that failed", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    const cursors = scriptAttempts([
+      // A backend `error` event is the turn dying, not the link. The stream
+      // ends cleanly after it, and resuming would only replay the same death.
+      { events: [{ type: "error", error: "spawn failed" }] },
+      { events: [{ type: "state", state: "running" }] },
+    ]);
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    expect(cursors).toHaveLength(1);
+    expect(detail(queryClient, conversationId).streamStatus).toBe("error");
+  });
+
+  test("an unexpected throw is not treated as a dropped link", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    const cursors = scriptAttempts([
+      { throws: new TypeError("bug in the reducer") },
+      { events: [{ type: "state", state: "running" }] },
+    ]);
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    expect(cursors).toHaveLength(1);
+  });
+});
+
+describe("replayed events", () => {
+  test("a message delivered twice lands once", async () => {
+    const conversationId = freshId();
+    const existing = message(1, "a");
+    seedCache(queryClient, conversationId, [existing]);
+    const replayed = message(2, "b");
+    scriptAttempts([
+      {
+        events: [
+          { type: "message", message: replayed },
+          { type: "message", message: replayed },
+        ],
+      },
+    ]);
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    expect(detail(queryClient, conversationId).messages.map((m) => m.id)).toEqual(
+      [existing.id, replayed.id],
+    );
+  });
+
+  test("a message arriving ahead of older rows is placed by seq", async () => {
+    const conversationId = freshId();
+    const existing = message(1, "a");
+    seedCache(queryClient, conversationId, [existing]);
+    // The stream sends live events straight through while the backlog is
+    // still being read, so the newer row can land first.
+    const live = message(3, "live");
+    const backlog = message(2, "backlog");
+    scriptAttempts([
+      {
+        events: [
+          { type: "message", message: live },
+          { type: "message", message: backlog },
+        ],
+      },
+    ]);
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    expect(
+      detail(queryClient, conversationId).messages.map((m) => m.seq),
+    ).toEqual([1, 2, 3]);
+  });
+
+  test("an optimistic bubble stays at the tail of rows placed by seq", async () => {
+    const conversationId = freshId();
+    const optimistic = message(PENDING_SEQ, "sent");
+    seedCache(queryClient, conversationId, [optimistic]);
+    const persisted = message(5, "earlier");
+    scriptAttempts([{ events: [{ type: "message", message: persisted }] }]);
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    expect(
+      detail(queryClient, conversationId).messages.map((m) => m.id),
+    ).toEqual([persisted.id, optimistic.id]);
+  });
+
+  test("a replayed row replaces the optimistic bubble it matches", async () => {
+    const conversationId = freshId();
+    const optimistic = message(PENDING_SEQ, "sent");
+    seedCache(queryClient, conversationId, [optimistic]);
+    const persisted = { ...optimistic, seq: 12 };
+    scriptAttempts([{ events: [{ type: "message", message: persisted }] }]);
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    // Both halves matter: one row, and its seq is real — a lingering
+    // PENDING_SEQ would poison the next cursor.
+    expect(detail(queryClient, conversationId).messages).toEqual([persisted]);
+  });
+});
+
+describe("releasing", () => {
+  test("ends the loop and stops reconnecting", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    const cursors = scriptAttempts([
+      { throws: new StreamDisconnectedError("dropped", true) },
+      { events: [{ type: "state", state: "running" }] },
+    ]);
+
+    subscribeToStream(conversationId, queryClient);
+    await flush();
+    releaseStream(conversationId);
+    await settle(conversationId);
+
+    // The drop was retriable, so without the release a second attempt would
+    // have followed it.
+    expect(cursors).toHaveLength(1);
+  });
+
+  test("does not wait out a backoff it is sitting in", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    scriptAttempts([{ throws: new StreamDisconnectedError("dropped", true) }]);
+
+    subscribeToStream(conversationId, queryClient);
+    await flush();
+    const parked = vi.getTimerCount(); // the backoff timer, plus cache housekeeping
+
+    // Mid-backoff. Releasing has to interrupt the timer, not merely be
+    // noticed once it expires. The map cannot show this — release clears the
+    // entry synchronously either way — but the timer count can: the abort
+    // has to have cleared the pending backoff, not left it running to expiry.
+    releaseStream(conversationId);
+    await flush();
+    expect(isSubscribed(conversationId)).toBe(false);
+    expect(vi.getTimerCount()).toBe(parked - 1);
+  });
+
+  test("is not reported as a failed conversation", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    scriptAttempts([{ throws: new StreamDisconnectedError("dropped", true) }]);
+
+    subscribeToStream(conversationId, queryClient);
+    await flush();
+    releaseStream(conversationId);
+    await settle(conversationId);
+
+    // Navigating away is not an error, and the cache it would be written to
+    // is one nothing is watching any more.
+    expect(detail(queryClient, conversationId).streamStatus).toBe("streaming");
+  });
+
+  test("frees the slot immediately, so a resubscribe takes hold", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    const cursors = scriptAttempts([
+      { throws: new StreamDisconnectedError("dropped", true) },
+      { events: [{ type: "state", state: "running" }] },
+    ]);
+
+    subscribeToStream(conversationId, queryClient);
+    await flush();
+
+    // React runs a cleanup and then the effect again. The releasing loop is
+    // still unwinding at this point; if its exit cleared the map afterwards,
+    // the new subscription would be silently dropped on the floor.
+    releaseStream(conversationId);
+    subscribeToStream(conversationId, queryClient);
+    // The new attempt opening is what proves the slot was free: the map
+    // holds an entry either way — under a late vacate it is the dying
+    // subscription's — so isSubscribed alone cannot tell a resubscribe
+    // from a no-op onto a corpse. The second cursor can: the loop pushes
+    // it synchronously, before its first await.
+    expect(cursors).toHaveLength(2);
+    expect(isSubscribed(conversationId)).toBe(true);
+
+    await settle(conversationId);
+  });
+
+  test("the released loop does not take the slot down with it", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    // Both attempts park, so the second is still live when the first unwinds:
+    // that ordering is the whole point, and a scripted end on either would
+    // hide it.
+    scriptAttempts([{ hangs: true }, { hangs: true }]);
+
+    subscribeToStream(conversationId, queryClient);
+    await flush();
+
+    // The cleanup-then-effect pair React runs on a re-mount.
+    releaseStream(conversationId);
+    subscribeToStream(conversationId, queryClient);
+    expect(open.count).toBe(2); // the dying one and its replacement
+
+    // Now let the released loop finish unwinding. Its `finally` calls vacate,
+    // and ownsSlot is what stops that deleting the entry the new subscription
+    // has already claimed — leaving a live stream nothing can release.
+    await flush();
+
+    expect(open.count).toBe(1);
+    expect(isSubscribed(conversationId)).toBe(true);
+
+    releaseStream(conversationId);
+    await settle(conversationId);
+    expect(open.count).toBe(0);
+  });
+
+  test("ends a stream that is sitting idle with nothing to say", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    const cursors = scriptAttempts([{ hangs: true }]);
+
+    subscribeToStream(conversationId, queryClient);
+    await flush();
+    // The loop is parked inside the stream, not between attempts, so only the
+    // signal reaching the transport can end it. settle does NOT assert that —
+    // its isSubscribed check is already true the moment releaseStream returns,
+    // because stop() vacates first. open.count below is what proves it.
+    releaseStream(conversationId);
+    await settle(conversationId);
+
+    expect(cursors).toHaveLength(1);
+    // The map entry goes synchronously either way; this is the assertion that
+    // distinguishes a released stream from one still sitting open forever.
+    expect(open.count).toBe(0);
+    expect(detail(queryClient, conversationId).streamStatus).toBe("streaming");
+  });
+
+  test("a transport failure racing the release is still not an error", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    // Non-retriable, so without the released-check this takes the give-up
+    // branch and paints the conversation red on the way out.
+    scriptAttempts([
+      { throwsOnRelease: new StreamDisconnectedError("gone", false) },
+    ]);
+
+    subscribeToStream(conversationId, queryClient);
+    await flush();
+    releaseStream(conversationId);
+    await settle(conversationId);
+
+    expect(detail(queryClient, conversationId).streamStatus).toBe("streaming");
+    expect(open.count).toBe(0);
+  });
+
+  test("is a no-op for a conversation that was never subscribed", () => {
+    expect(() => releaseStream(freshId())).not.toThrow();
+  });
+});
+
+describe("the idle invalidate", () => {
+  test("a turn ending reconciles the transcript", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []); // streaming
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    scriptAttempts([{ events: [{ type: "state", state: "idle" }] }]);
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    // This is the only thing reconciling deletions, and a deletion can only
+    // have happened during the turn that just ended.
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: queryKeys.conversations.detail(conversationId),
+    });
+  });
+
+  test("attaching to a conversation that was already idle does not refetch", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    queryClient.setQueryData<ConversationWithMessages>(
+      queryKeys.conversations.detail(conversationId),
+      (old) => (old ? { ...old, streamStatus: "idle" } : old),
+    );
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    // Every attach seeds `state`, so an idle conversation seeds idle again.
+    // Now that the subscription is held for any open conversation rather than
+    // only a streaming one, this is the common case on opening one.
+    scriptAttempts([{ events: [{ type: "state", state: "idle" }] }]);
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    // The query that opened the conversation has just read these same rows.
+    expect(invalidate).not.toHaveBeenCalled();
+  });
+});
+
+describe("the failed set", () => {
+  // Null delivered_at minus the live pending set — computed by the backend.
+  // It only grows, and only when the CLI fails, so `error` is the one live
+  // event that re-asks for it.
+  test("a turn that dies on the backend re-asks for it", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    scriptAttempts([{ events: [{ type: "error", error: "spawn failed" }] }]);
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: queryKeys.conversations.failedMessageIds(conversationId),
+    });
+  });
+
+  test("a queue change does not", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    // A send and its ack: the two `queue` events every message produces.
+    // Neither can change the failed set — the row is either still pending
+    // or now delivered — and refetching on the ack would also open a window
+    // during cancel where the row outlives its pending entry and reads as
+    // failed for a round trip.
+    scriptAttempts([
+      {
+        events: [
+          { type: "queue", userMessageIds: ["m1"] },
+          { type: "queue", userMessageIds: [] },
+        ],
+        hangs: true,
+      },
+    ]);
+
+    subscribeToStream(conversationId, queryClient);
+    await flush();
+
+    expect(invalidate).not.toHaveBeenCalled();
+    releaseStream(conversationId);
+    await flush();
+  });
+});
+
+describe("giving up", () => {
+  const refuseAlways = () =>
+    Array.from({ length: 8 }, () => ({
+      throws: new StreamDisconnectedError("refused", true),
+    }));
+
+  test("the failure it writes is not erased by a refetch", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    scriptAttempts(refuseAlways());
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    expect(detail(queryClient, conversationId).streamStatus).toBe("error");
+    // getStreamStatus computes from the CLI handle, which is fine — it knows
+    // nothing about this side giving up. Invalidating here would refetch
+    // "streaming" straight over the top and leave a spinner with nothing
+    // behind it.
+    expect(invalidate).not.toHaveBeenCalled();
+  });
+
+  test("a turn that dies on the backend still reconciles", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    // The other caller of the error state: the backend records this one, so
+    // the refetch agrees with it and the invalidate is worth doing.
+    scriptAttempts([{ events: [{ type: "error", error: "spawn failed" }] }]);
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    expect(detail(queryClient, conversationId).streamStatus).toBe("error");
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: queryKeys.conversations.detail(conversationId),
+    });
+  });
+
+  test("a retry clears the failure and opens a new subscription", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    const cursors = scriptAttempts([
+      ...refuseAlways(),
+      { events: [{ type: "state", state: "running" }] },
+    ]);
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+    expect(cursors).toHaveLength(8);
+    expect(isSubscribed(conversationId)).toBe(false);
+
+    // Nothing reopens on its own: the owner effect is keyed on the
+    // conversation, and that has not changed.
+    retryStream(conversationId, queryClient);
+
+    expect(detail(queryClient, conversationId).streamStatus).toBe("streaming");
+    expect(isSubscribed(conversationId)).toBe(true);
+
+    await settle(conversationId);
+    expect(cursors).toHaveLength(9);
+  });
+});
+
+describe("the branches that only the stream writes", () => {
+  // Each of these three was deletable with the whole suite green. They are the
+  // only writer of their cache key, so nothing else fails when they stop
+  // writing — the transcript still renders, and the omission shows up as a
+  // queue mark that never clears or a block that never streams.
+
+  test("queue replaces the pending marks wholesale", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    queryClient.setQueryData<string[]>(
+      queryKeys.conversations.queuedMessageIds(conversationId),
+      ["stale-a", "stale-b"],
+    );
+    scriptAttempts([
+      {
+        events: [
+          { type: "queue", userMessageIds: ["m1", "m2"] },
+          // Replaced, not merged: the backend sends its whole picture of what
+          // the CLI has not acked, so a mark it omits is one the CLI took.
+          { type: "queue", userMessageIds: ["m2"] },
+        ],
+      },
+    ]);
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    expect(
+      queryClient.getQueryData<string[]>(
+        queryKeys.conversations.queuedMessageIds(conversationId),
+      ),
+    ).toEqual(["m2"]);
+  });
+
+  test("partial folds deltas onto the live block", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    const streamEvent = (event: unknown) =>
+      ({ type: "partial", partial: { event } }) as unknown as StreamEvent;
+
+    scriptAttempts([
+      {
+        events: [
+          streamEvent({
+            type: "content_block_start",
+            index: 0,
+            content_block: { type: "text", text: "" },
+          }),
+          streamEvent({
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "text_delta", text: "Hel" },
+          }),
+          streamEvent({
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "text_delta", text: "lo" },
+          }),
+        ],
+      },
+    ]);
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    // Accumulated, not last-write-wins: this is the only thing that renders
+    // an assistant block while it is still being produced.
+    const live = queryClient.getQueryData<LivePartial | null>(
+      queryKeys.conversations.livePartial(conversationId),
+    );
+    expect((live?.block as { text?: string } | undefined)?.text).toBe("Hello");
+  });
+
+  test("livePartial seeds the block already in flight, and can clear it", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    const seeded = {
+      index: 0,
+      block: { type: "text", text: "mid-block" },
+    } as unknown as LivePartial;
+
+    scriptAttempts([{ events: [{ type: "livePartial", livePartial: seeded }] }]);
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    // Assigned wholesale — a subscriber arriving mid-block gets the text so
+    // far instead of a gap that only fills on the next delta.
+    expect(
+      queryClient.getQueryData<LivePartial | null>(
+        queryKeys.conversations.livePartial(conversationId),
+      ),
+    ).toEqual(seeded);
+
+    // And null is a real value here, not "no news": the route sends it when
+    // no block is in flight, which is what ends a stale one.
+    scriptAttempts([{ events: [{ type: "livePartial", livePartial: null }] }]);
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    expect(
+      queryClient.getQueryData<LivePartial | null>(
+        queryKeys.conversations.livePartial(conversationId),
+      ),
+    ).toBeNull();
+  });
+});

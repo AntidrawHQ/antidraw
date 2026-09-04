@@ -469,7 +469,31 @@ export const sendMessage = async (params: {
   }
 };
 
+// The link died, not the conversation. Thrown out of subscribeToConversation
+// so the caller can tell a transport failure — which resuming fixes — from a
+// backend `error` event, which is the turn itself failing and is terminal.
+// `retriable` is false only when reconnecting cannot help: a 4xx on open means
+// the conversation is gone, and no amount of retrying brings it back.
+export class StreamDisconnectedError extends Error {
+  readonly retriable: boolean;
+
+  constructor(message: string, retriable: boolean) {
+    super(message);
+    this.name = "StreamDisconnectedError";
+    this.retriable = retriable;
+  }
+}
+
 // Subscribe to conversation stream events via SSE.
+//
+// `afterSeq`, when given, asks the backend to replay the transcript past that
+// point before live events start. That is what makes a reconnect lossless, and
+// it also closes the gap between the initial GET reading the DB and this
+// subscription attaching its listener.
+//
+// `release` ends the subscription from the outside — the open conversation
+// closing. It completes the iteration rather than throwing: the caller asked
+// for this, so there is nothing to report.
 //
 // The AbortController is the single kill switch: aborting it cancels the
 // underlying fetch (which makes the backend's request abort signal fire and
@@ -478,51 +502,102 @@ export const sendMessage = async (params: {
 // controller would still see the underlying HTTP stay open; the next event
 // from the server would throw on enqueue, the library would auto-retry, and
 // each retry would re-attach a listener on the backend — a geometric leak.
+// That is a reason to keep retries out of THIS function, not out of the
+// caller: subscribeToStream reconnects by calling it again, and this abort
+// fires first — cancelling the response body, which the route answers with
+// stream.onAbort — so the backend detaches before the replacement attaches.
 //
-// `onerror` throws to make the no-retry intent explicit even though the
-// signal abort would already prevent retries. Any non-clean close
-// (transport error, backend crash, body ending before a terminal event) is
-// surfaced as a synthetic `error` event so the consumer's existing error
-// path runs — invalidating the conversation query and flipping status to
-// `"error"` — instead of silently completing.
+// A non-clean close (transport error, backend crash, body ending before a
+// terminal event) errors the stream with StreamDisconnectedError rather than
+// synthesizing an `error` event, and the caller decides between resuming and
+// giving up.
+//
+// Anything still queued at that moment is DISCARDED: controller.error() resets
+// the queue, and only controller.close() drains it. The queue is non-empty
+// whenever a chunk carried more frames than the consumer had read — one chunk
+// fires onmessage once per frame, synchronously — so this is ordinary during a
+// busy turn, not a corner case.
+//
+// Nothing is lost by it, but this function is not what makes that true: the
+// caller reconnects from a cursor it derives from its own cache, so rows that
+// never arrived are simply asked for again. That replay is load-bearing. Do
+// not remove it on the belief that the transport delivers everything it
+// accepted — it does not.
 export const subscribeToConversation = async function* (
   conversationId: string,
+  afterSeq?: number,
+  release?: AbortSignal,
 ): AsyncGenerator<StreamEvent> {
   const abort = new AbortController();
   let receivedTerminal = false;
 
+  const url = new URL(`antidraw://app/api/chat/${conversationId}/stream`);
+  if (afterSeq !== undefined) url.searchParams.set("afterSeq", String(afterSeq));
+
   const stream = new ReadableStream<StreamEvent>({
     start(controller) {
+      // A controller can only be ended once, and both endings are reachable
+      // from the same failure: onopen rejecting does not stop fetchEventSource
+      // from going on to close the body. Whichever gets there first wins.
+      let settled = false;
+
+      // `once: true` only detaches when the release actually fires. Every
+      // other ending leaves the listener on a signal that outlives this
+      // attempt — subscribeToStream passes the same one to every reconnect —
+      // so without this each dead attempt would pin its controller for the
+      // life of the conversation.
+      const detachRelease = () => release?.removeEventListener("abort", finish);
+
       const finish = () => {
+        if (settled) return;
+        settled = true;
+        detachRelease();
         controller.close();
         abort.abort();
       };
 
-      const failClosed = (message: string) => {
-        if (!receivedTerminal) {
-          receivedTerminal = true;
-          controller.enqueue({
-            type: "error",
-            error: message,
-          } satisfies StreamEvent);
-        }
-        finish();
+      const failClosed = (message: string, retriable: boolean) => {
+        if (settled) return;
+        settled = true;
+        receivedTerminal = true;
+        detachRelease();
+        controller.error(new StreamDisconnectedError(message, retriable));
+        abort.abort();
       };
 
-      fetchEventSource(`antidraw://app/api/chat/${conversationId}/stream`, {
+      // Ending the iteration is the caller's only reliable exit. Calling
+      // return() on the generator would not do it: while it is suspended
+      // awaiting the next chunk, the return request queues behind that read,
+      // and a stream with nothing to say never resolves it. Closing the
+      // controller here ends the for-await AND aborts the fetch. The abort
+      // cancels the response body — not the backend's request signal, which
+      // under protocol.handle can never fire — and the route's stream.onAbort
+      // is what drops its listeners.
+      if (release) {
+        if (release.aborted) return finish();
+        release.addEventListener("abort", finish, { once: true });
+      }
+
+      fetchEventSource(url.toString(), {
         signal: abort.signal,
         onopen: async (response) => {
           if (!response.ok) {
             const errorBody = await response.json().catch(() => ({}));
             const errorMessage =
               errorBody?.error?.message ?? response.statusText;
-            failClosed(errorMessage);
+            // 4xx is a verdict about the conversation; 5xx is the backend
+            // having a bad moment, which a retry can outlast.
+            failClosed(errorMessage, response.status >= 500);
           }
         },
         onmessage: (ev) => {
           const event = JSON.parse(ev.data) as StreamEvent;
           controller.enqueue(event);
-          if (event.type === "complete" || event.type === "error") {
+          // Only a dead owning loop ends the subscription. `state: "idle"`
+          // does NOT: the CLI goes idle between turns, and it can report
+          // idle while a message we handed it is still un-acked — closing
+          // there would miss that message's ack and every event after it.
+          if (event.type === "error") {
             receivedTerminal = true;
             finish();
           }
@@ -530,12 +605,12 @@ export const subscribeToConversation = async function* (
         onerror: (error) => {
           const message =
             error instanceof Error ? error.message : "Stream connection failed";
-          failClosed(message);
+          failClosed(message, true);
           throw error;
         },
         onclose: () => {
           if (!receivedTerminal) {
-            failClosed("Stream ended unexpectedly");
+            failClosed("Stream ended unexpectedly", true);
           } else {
             finish();
           }
@@ -580,6 +655,35 @@ export const cancelQueuedMessage = async (
       status: 500 as const,
       code: "NETWORK_ERROR",
       message: "Failed to cancel queued message",
+    });
+  }
+};
+
+// Prompts the CLI never received. The backend computes it from the
+// delivered_at column and its live pending set; see useFailedMessageIds for
+// when it is asked.
+export const getFailedMessageIds = async (conversationId: string) => {
+  try {
+    const response = await fetch(
+      `antidraw://app/api/chat/${conversationId}/undelivered`,
+    );
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      return err({
+        status: response.status as 404 | 500,
+        code: errorBody?.error?.code ?? "FETCH_ERROR",
+        message: errorBody?.error?.message ?? response.statusText,
+      });
+    }
+
+    const data: { failedUserMessageIds: string[] } = await response.json();
+    return ok(data.failedUserMessageIds);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "NETWORK_ERROR",
+      message: "Failed to read undelivered prompts",
     });
   }
 };

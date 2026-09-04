@@ -5,7 +5,7 @@ export type {
   ConversationWithMessages,
   StreamStatus,
 } from "./models/chat.model";
-import type { Conversation, Message } from "./models/chat.model";
+import type { Message } from "./models/chat.model";
 export type { Workspace } from "./models/workspace.model";
 export type { CreateWorkspaceResponse } from "./controllers/workspace.controller";
 export type { CreateWorkspaceStatusCode } from "./services/workspace.service";
@@ -17,45 +17,40 @@ export type {
   ComponentSource,
   ComponentStreamEvent,
 } from "./services/component.service";
-import type { UUID } from "node:crypto";
 import { zValidator } from "@hono/zod-validator";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
-import type { SDKPartialAssistantMessage } from "@anthropic-ai/claude-agent-sdk";
+import type {
+  SDKPartialAssistantMessage,
+} from "@anthropic-ai/claude-agent-sdk";
 import {
-  sendMessage,
   generateTitle,
-  buildPrompt,
   getSupportedModels,
-  type EffortLevel,
 } from "@/main/api/claude-code-ops";
 import {
   createConversation,
   resolveOrCreateConversation,
-  addMessage,
-  updateConversationSession,
   updateConversationTitleAndSummary,
-  convertUserPromptToSDKMessage,
   deleteMessage,
   getConversation,
-  setConversationOptions,
+  getMessagesAfterSeq,
+  getUndeliveredPromptIds,
 } from "./services/chat.service";
 import {
-  streamEvents,
-  activeStreams,
-  claimStream,
-  attachQuery,
-  unregisterStream,
-  cancelStream as cancelActiveStream,
-  cancelQueuedMessage,
-  markStreamError,
-  type ActiveStream,
-} from "@/main/lib/stream-manager";
+  subscribe,
+  getPending,
+  getAwaitingAck,
+  getPartial,
+  getCliState,
+  interrupt,
+  cancelQueued,
+  type StreamEvent,
+} from "@/main/lib/conversation-store";
+export type { StreamEvent } from "@/main/lib/conversation-store";
+import { runTurn } from "./turn";
 import { workspaceController } from "./controllers/workspace.controller";
 import { preferenceController } from "./controllers/preference.controller";
 import { claudeCliInteractionsController } from "./controllers/claude-cli-interactions.controller";
-import type { ImageAttachment } from "@/shared/utils/message";
-import { trackMessageSent } from "@/main/lib/posthog";
 
 const api = new Hono();
 
@@ -80,351 +75,13 @@ const chatMessageSchema = z.object({
   message: z.string().min(1),
   workspaceId: z.uuid(),
   conversationId: z.string().uuid().optional(),
-  userMessageId: z.string().uuid(), // Frontend-generated, used for dedup
+  userMessageId: z.string().uuid(),
   images: z.array(imageAttachmentSchema).optional(),
-  // The composer's model/effort selection, snapshotted at send time. This is
-  // the ONLY write path for a conversation's options: the send persists the
-  // snapshot on the row (the picker's default next time) and applies it to
-  // the CLI. Absent = CLI defaults.
   model: z.string().min(1).optional(),
   effort: effortLevelSchema.optional(),
 });
 
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
-
-// Stream event types for SSE
-export type StreamEvent =
-  | { type: "message"; message: Message }
-  | { type: "partial"; partial: SDKPartialAssistantMessage }
-  // The CLI folded a mid-turn send into a turn (replay ack). The renderer
-  // drops its "Queued" mark for that userMessageId.
-  | { type: "message_accepted"; userMessageId: string }
-  // The CLI reported `running`: a turn is in flight. Counterpart of
-  // `complete`; the renderer flips to streaming and keeps listening.
-  | { type: "streaming" }
-  // Sent once on every SSE subscribe: the un-acked queued messages right
-  // now, so a (re)subscribing renderer rebuilds its "Queued" marks from the
-  // truth instead of client memory.
-  | { type: "queue_state"; userMessageIds: string[] }
-  | { type: "complete" }
-  | { type: "error"; error: string }
-  // Actual per-turn effort echoed by the CLI's Stop hook. Transport only —
-  // no renderer consumer yet; reserved for deviation-feedback UI.
-  | { type: "effort"; level: string };
-
-// End of turn = the CLI said `idle` AND nothing we pushed is still
-// un-acked. The owning loop calls this on `idle`; it is also called from
-// the two places that can empty the pending set while the CLI is already
-// idle — a successful cancel, a failed push — because the CLI will say
-// nothing more in that case. Idempotent per idle (idleSettled), reset by
-// the next `running`. No-op while the CLI is running or spawning.
-const settleIdle = async (conversationId: string) => {
-  const stream = activeStreams.get(conversationId);
-  if (!stream || stream.cliState !== "idle" || stream.idleSettled) return;
-  if (stream.pendingUserMessageIds.size > 0) return;
-  stream.idleSettled = true;
-  disarmIdleWatchdog(stream);
-  streamEvents.emit("complete", conversationId);
-};
-
-// `idle` arrived with a push still in flight on stdin. The CLI's `running`
-// for it follows within milliseconds; if it never comes the push was lost
-// (dead input, CLI ignored it) and the hold must not last forever. On
-// expiry the lost ids are forgotten (their rows remain — the renderer's
-// marks clear on complete) and the turn closes.
-const IDLE_WATCHDOG_MS = 30_000;
-
-const disarmIdleWatchdog = (stream: ActiveStream) => {
-  if (stream.idleWatchdog) clearTimeout(stream.idleWatchdog);
-  stream.idleWatchdog = null;
-};
-
-const armIdleWatchdog = (conversationId: string, stream: ActiveStream) => {
-  disarmIdleWatchdog(stream);
-  stream.idleWatchdog = setTimeout(() => {
-    stream.idleWatchdog = null;
-    if (stream.cliState !== "idle" || stream.idleSettled) return;
-    console.error(
-      "CLI idle but pushes never acked after",
-      IDLE_WATCHDOG_MS,
-      "ms; releasing",
-      [...stream.pendingUserMessageIds],
-    );
-    stream.pendingUserMessageIds.clear();
-    void settleIdle(conversationId);
-  }, IDLE_WATCHDOG_MS);
-};
-
-// Background processor for streaming messages
-const processStream = async (
-  conversation: Conversation,
-  message: string,
-  workspaceId: string,
-  userMessageId: string,
-  images?: ImageAttachment[],
-  options?: { model?: string; effort?: EffortLevel },
-) => {
-  // Model/effort travel WITH the message: the composer snapshots its
-  // selection into the send request, and this is the only moment options
-  // exist server-side — persisted to the row (the picker's default next
-  // time) and applied to the CLI via spawn options (cold start) or control
-  // requests (push path). No other writer exists, so there is nothing to
-  // race and nothing to re-read.
-
-  // Claim the conversation's stream slot. This single synchronous call is the
-  // fork: win it and we cold-start and own the lifecycle below; lose it and a
-  // stream is already live (or spawning), so this turn is a follow-up push.
-  // Deciding both outcomes in one uninterruptible step is what stops two
-  // concurrent sends from each cold-starting and clobbering the other.
-  const promptStream = buildPrompt(message, {
-    uuid: userMessageId as UUID,
-    images,
-  });
-  const owned = claimStream(conversation.id, promptStream);
-  // Win or lose, the slot exists now and nothing has awaited since the
-  // claim, so this lookup cannot miss. A follow-up is tracked as pending
-  // from here, BEFORE the first await: if the CLI's `idle` for the current
-  // turn lands while we are still persisting, the owning loop sees the
-  // pending id and holds instead of closing the turn under us. The owner's
-  // own first message is not tracked — it is the spawn prompt, never
-  // "queued", and the CLI reports `running` for it before anything else.
-  const stream = activeStreams.get(conversation.id)!;
-  if (!owned) stream.pendingUserMessageIds.add(userMessageId);
-
-  // Persist the snapshot. Model is a full overwrite (absent = the "Default"
-  // pick, i.e. CLI default); effort is preserved when absent — the composer
-  // omits it only for models with no effort levels, and a Haiku turn must
-  // not erase the effort the user chose for this conversation. Failure only
-  // costs the persisted default (the CLI still gets the options below).
-  const persisted = await setConversationOptions(conversation.id, {
-    selectedModel: options?.model ?? null,
-    ...(options?.effort !== undefined ? { selectedEffort: options.effort } : {}),
-  });
-  if (persisted.isErr()) {
-    console.error("Failed to persist options snapshot:", persisted.error);
-  }
-
-  // Push path. Persist the user message with the frontend-assigned id (dedup
-  // contract) then push into the owner's input stream. This invocation owns NO
-  // stream lifecycle, so it stays out of the try/finally below and never
-  // unregisters — the owning loop picks up the pushed turn's SDK messages and
-  // persists them.
-  if (!owned) {
-    try {
-      const userMsg = convertUserPromptToSDKMessage(
-        message,
-        userMessageId as UUID,
-        images,
-      );
-      await addMessage({
-        id: userMessageId,
-        conversationId: conversation.id,
-        messageType: "user_prompt",
-        sdkMessage: userMsg,
-      });
-      // Apply this send's options before the push. setModel applies at the
-      // next turn boundary — exactly the turn being pushed (verified: an
-      // in-flight turn is unaffected); effortLevel applies immediately.
-      // applyFlagSettings accepts "max" at runtime — the SDK's
-      // Settings.effortLevel type omits it, hence the cast. No query yet =
-      // the owner's CLI is still spawning; its spawn already carries that
-      // send's options, so this turn just inherits them (the row snapshot
-      // above keeps the record straight either way).
-      if (stream.query) {
-        try {
-          await stream.query.setModel(options?.model ?? undefined);
-          await stream.query.applyFlagSettings({
-            effortLevel: (options?.effort ?? null) as Exclude<
-              EffortLevel,
-              "max"
-            > | null,
-          });
-        } catch (e) {
-          // Best-effort, log only — nothing to tear down (a dead process
-          // throws out of the owning loop within ~10ms and its finally
-          // cleans up; a wedged one never settles this await at all). The
-          // snapshot is persisted above, so the selection rides the next
-          // send's cold start.
-          console.error(
-            "Pre-push option apply failed; applies next cold start:",
-            e,
-          );
-        }
-      }
-      // Enqueue is valid before the owner's CLI exists — the message waits in
-      // the ReadableStream and is consumed once the query attaches. The CLI
-      // queues it and folds it into the live turn at its next tool boundary
-      // (or starts a fresh turn if the current one already finalized); the
-      // replay ack tells us which.
-      stream.promptStream.push(message, {
-        uuid: userMessageId as UUID,
-        images,
-      });
-      if (stream.query) trackMessageSent({ query: stream.query });
-    } catch (e) {
-      // Don't tear down the live stream or emit a terminal "error" — the
-      // owning loop is still running. Just log; the failed push leaves the
-      // optimistic message unconfirmed, which a refetch reconciles. It will
-      // never be acked, so stop tracking it — and if the loop was holding a
-      // turn open only for it, close that turn.
-      console.error("Failed to push follow-up turn:", e);
-      stream.pendingUserMessageIds.delete(userMessageId);
-      await settleIdle(conversation.id);
-    }
-    return;
-  }
-
-  // Cold-start path: spawn a fresh query and own its lifecycle. The
-  // try/finally below is scoped to THIS invocation's stream — the finally
-  // unregisters only because we claimed above.
-  try {
-    const claudeCodeSessionID = conversation.claudeCodeSessionId ?? undefined;
-
-    const res = sendMessage({
-      promptStream,
-      workspaceId,
-      claudeCodeSessionID,
-      model: options?.model,
-      effort: options?.effort,
-      onEffortLevel: (level) =>
-        streamEvents.emit("effort", conversation.id, level),
-    });
-
-    if (res.isErr()) {
-      throw new Error("Failed to init Claude Code");
-    }
-
-    // Slot is already ours; fill in the query so cancel/option-apply can
-    // reach it.
-    attachQuery(conversation.id, res.value);
-
-    trackMessageSent({ query: res.value });
-
-    let sessionId = claudeCodeSessionID;
-
-    // For RESUMED conversations: persist user message immediately with frontend's ID
-    if (sessionId) {
-      const userMsg = convertUserPromptToSDKMessage(
-        message,
-        userMessageId as UUID,
-        images,
-      );
-      await addMessage({
-        id: userMessageId, // Use frontend-generated ID for dedup
-        conversationId: conversation.id,
-        messageType: "user_prompt",
-        sdkMessage: userMsg,
-      });
-    }
-
-    for await (const sdkMessage of res.value) {
-
-      // Partials: relay to subscribers but do not persist.
-      if (sdkMessage.type === "stream_event") {
-        streamEvents.emit("partial", conversation.id, sdkMessage);
-        continue;
-      }
-
-      // The CLI's session state — the lifecycle authority. `running` (and
-      // `requires_action`, a parked prompt inside a turn) = streaming.
-      // `idle` = the turn and the CLI's own command queue are fully drained
-      // (verified: it is NOT emitted between a turn's result and a queued
-      // follow-up; it survives interrupt; a later push re-emits `running`).
-      // The one thing the CLI cannot know about is a push still on stdin
-      // that it has not parsed yet — that is what pendingUserMessageIds
-      // guards: idle with un-acked pushes holds (its `running` follows in
-      // milliseconds, watchdog otherwise). Not persisted.
-      if (
-        sdkMessage.type === "system" &&
-        sdkMessage.subtype === "session_state_changed"
-      ) {
-        if (sdkMessage.state === "idle") {
-          stream.cliState = "idle";
-          if (stream.pendingUserMessageIds.size === 0) {
-            await settleIdle(conversation.id);
-          } else {
-            armIdleWatchdog(conversation.id, stream);
-          }
-        } else {
-          stream.cliState = sdkMessage.state;
-          stream.idleSettled = false;
-          disarmIdleWatchdog(stream);
-          streamEvents.emit("streaming", conversation.id);
-        }
-        continue;
-      }
-
-      // Replay ack (--replay-user-messages): the CLI re-emits a stdin user
-      // message once it is folded into a turn, carrying the uuid we stamped
-      // — i.e. the userMessageId. This is acceptance. Relay it and do NOT
-      // persist: the send-time user_prompt row is the single stored copy.
-      // (Replays of messages we never pushed — CLI-internal reminders —
-      // are likewise not persisted; they never were before the flag.)
-      if (
-        sdkMessage.type === "user" &&
-        "isReplay" in sdkMessage &&
-        sdkMessage.isReplay
-      ) {
-        stream.pendingUserMessageIds.delete(sdkMessage.uuid);
-        streamEvents.emit("accepted", conversation.id, sdkMessage.uuid);
-        continue;
-      }
-
-      // For NEW conversations: wait for init message to get session_id
-      if (
-        !sessionId &&
-        sdkMessage.type === "system" &&
-        sdkMessage.subtype === "init"
-      ) {
-        const initSessionId: string | undefined = sdkMessage.session_id;
-        if (initSessionId) {
-          sessionId = initSessionId;
-          await updateConversationSession(conversation.id, initSessionId);
-        }
-
-        const userMsg = convertUserPromptToSDKMessage(
-          message,
-          userMessageId as UUID,
-          images,
-        );
-        await addMessage({
-          id: userMessageId, // Use frontend-generated ID for dedup
-          conversationId: conversation.id,
-          messageType: "user_prompt",
-          sdkMessage: userMsg,
-        });
-      }
-
-      // SDK messages use server-generated IDs
-      await addMessage({
-        conversationId: conversation.id,
-        messageType: "sdk_message",
-        sdkMessage,
-      });
-
-      // `result` is persisted like any other message but is NOT an
-      // end-of-turn signal: a queued follow-up runs straight after it with
-      // no idle in between. The CLI's `session_state_changed: idle` above
-      // is the only thing that closes a turn.
-    }
-
-    // Reached only if the input stream is closed (end()) or the SDK tears
-    // down. In the keep-alive model this is the absolute end of the
-    // conversation, not a per-turn signal. We hold the slot from the claim
-    // until the finally below, so this loop is unambiguously the owner and
-    // reports unconditionally. (Status flips to idle by itself: the finally
-    // unregisters the stream, and status is derived from the registry.)
-    streamEvents.emit("complete", conversation.id);
-  } catch (e) {
-    const errorMessage = e instanceof Error ? e.message : "Unknown error";
-    // Remembered in memory so a fresh load still reads "error" until the
-    // next send claims a new stream.
-    markStreamError(conversation.id);
-    streamEvents.emit("error", conversation.id, errorMessage);
-  } finally {
-    unregisterStream(conversation.id);
-  }
-};
 
 api.post(
   "/chat/message",
@@ -445,21 +102,13 @@ api.post(
 
     const conversation = conversationRes.value;
 
-    // Mid-turn sends are accepted: processStream's claimStream() fork routes
-    // them as pushes into the live stream, the CLI queues them, and the
-    // replay ack (message_accepted) reports when each is folded into a
-    // turn.
-    //
-    // No status write here — there is no status to write. streamStatus is
-    // derived from the stream registry + the CLI's session state whenever a
-    // conversation is read, so it can never disagree with reality. The
-    // renderer covers the spawn window with its optimistic state and
-    // subscribes on the 202.
-
-    // Fire and forget - inner try/catch handles errors, this prevents unhandled rejections
-    processStream(conversation, message, workspaceId, userMessageId, images, {
-      model,
-      effort,
+    runTurn({
+      conversation,
+      workspaceId,
+      message,
+      userMessageId,
+      images,
+      options: { model, effort },
     }).catch(console.error);
 
     return ctx.json({ conversationId: conversation.id }, 202);
@@ -490,14 +139,24 @@ api.get(
   },
 );
 
-// SSE endpoint for subscribing to stream events
+// `afterSeq` is the last message seq the subscriber already has. Present, it
+// asks for the transcript after that point to be replayed before live events
+// start; absent, there is no replay. A resuming client passes it so a drop
+// costs it nothing, and a first-time subscriber passes it too — the gap
+// between GET /chat/:id reading the DB and this route attaching its listener
+// is the same gap, just a smaller one.
+const streamQuerySchema = z.object({
+  afterSeq: z.coerce.number().int().nonnegative().optional(),
+});
+
 api.get(
   "/chat/:conversationId/stream",
   zValidator("param", z.object({ conversationId: z.uuid() })),
+  zValidator("query", streamQuerySchema),
   async (ctx) => {
     const { conversationId } = ctx.req.valid("param");
+    const { afterSeq } = ctx.req.valid("query");
 
-    // Validate conversation exists before opening stream
     const conversation = await getConversation(conversationId);
     if (conversation.isErr()) {
       const { status, code, message } = conversation.error;
@@ -505,105 +164,111 @@ api.get(
     }
 
     return streamSSE(ctx, async (stream) => {
-      // Seed the subscriber with the truth about the queue before any live
-      // event can race it.
-      stream.writeSSE({
-        data: JSON.stringify({
-          type: "queue_state",
-          userMessageIds: [
-            ...(activeStreams.get(conversationId)?.pendingUserMessageIds ?? []),
-          ],
-        } satisfies StreamEvent),
-      });
-
-      const onMessage = (convId: string, message: Message) => {
-        if (convId !== conversationId) return;
-        stream.writeSSE({
-          data: JSON.stringify({
-            type: "message",
-            message,
-          } satisfies StreamEvent),
-        });
+      // Order on the wire is call order: writeSSE hands each frame to the
+      // stream's writer in the order it was called, and the writer queues.
+      // A write to a subscriber that has gone is swallowed inside Hono, so
+      // there is nothing to catch here — the teardown hooks below are what
+      // answer for a departure.
+      const send = (event: StreamEvent) => {
+        void stream.writeSSE({ data: JSON.stringify(event) });
       };
 
-      const onPartial = (
-        convId: string,
-        partial: SDKPartialAssistantMessage,
-      ) => {
-        if (convId !== conversationId) return;
-        stream.writeSSE({
-          data: JSON.stringify({
-            type: "partial",
-            partial,
-          } satisfies StreamEvent),
+      // Attach first, and let live events straight through. Reading the
+      // backlog before attaching would lose anything emitted in between;
+      // attaching first turns that gap into an overlap, and the renderer
+      // absorbs the overlap: messages dedup by id and sort by seq, so it does
+      // not matter that a live message can land here ahead of older rows.
+      const unsubscribe = subscribe(conversationId, send);
+
+      // Two hooks for one teardown, because the one that is easy to test is
+      // not the one that fires in the app. `req.signal` is the ending Hono
+      // gives a caller-supplied AbortSignal, which is how the tests drive
+      // this route. Under Electron's protocol.handle it is dead: the
+      // handler's Request is built as `new Request(url, { headers, method,
+      // referrer, body, duplex })` with no signal at all, so it owns one
+      // nothing holds a controller for — it stays unfired through a
+      // renderer-side fetch abort and even through destroying the renderer
+      // outright (verified against 39.2.7). What that abort does reach is the
+      // response body, which Hono cancels and surfaces as onAbort. That is
+      // the hop that detaches these listeners in production; without it every
+      // conversation opened keeps a live subscriber for the rest of the
+      // session, serialising each event into a dead stream whose failed
+      // writes Hono swallows.
+      //
+      // Both can fire for one request. Unsubscribing twice is a no-op:
+      // EventEmitter.off finds nothing the second time.
+      ctx.req.raw.signal.addEventListener("abort", unsubscribe);
+      stream.onAbort(unsubscribe);
+
+      // Both hooks answer a departure; the finally answers an unwind. A
+      // rejection below would be caught by Hono, which closes the stream —
+      // close, not abort, so neither hook fires: the body ends cleanly, the
+      // client sees a resumable drop, and the listeners would stay attached
+      // for the life of the process, serialising every later event into a
+      // dead writer whose failed writes Hono swallows. The park at the
+      // bottom never settles, so this finally cannot fire on the happy path
+      // — it exists for the throw that is not supposed to happen.
+      try {
+        if (afterSeq !== undefined) {
+          const backlog = await getMessagesAfterSeq(conversationId, afterSeq);
+          if (backlog.isErr()) {
+            // A failed replay is not a failed connection: the live half has
+            // no DB dependency, and the seeds below still describe the
+            // present. The client's cursor only advances on a clean end, so
+            // the rows this read owed it are owed by the next attach instead.
+            console.error(
+              `Backlog replay failed for ${conversationId}:`,
+              backlog.error.message,
+            );
+          } else {
+            for (const message of backlog.value)
+              send({ type: "message", message });
+          }
+        }
+
+        // Seeds go last and are read now, after the await, so everything ahead
+        // of them on the wire is older than they are. They are whole-state, so
+        // arriving last is what makes them right: an assistant message that
+        // came through before them — backlog or live — makes the renderer drop
+        // its live block, and the seed then installs whichever block is in
+        // flight now, or none.
+        send({ type: "state", state: getCliState(conversationId) });
+        send({ type: "queue", userMessageIds: getPending(conversationId) });
+        send({ type: "livePartial", livePartial: getPartial(conversationId) });
+
+        // Park until the subscriber leaves — and then RETURN. Returning is
+        // the point: it is what lets Hono's own `finally { stream.close() }`
+        // end the body, and what lets the finally below run on the ordinary
+        // path instead of only on a throw. A promise with no resolver left
+        // both unreachable and retained this frame for the life of the
+        // process, one per conversation ever streamed.
+        //
+        // Both hooks, because they answer in different runtimes: onAbort is
+        // the one that fires under Electron's protocol.handle, the request
+        // signal is the one that fires everywhere else. Same pair the detach
+        // above registers, for the same reason.
+        //
+        // The pre-check is not defensive noise. onAbort pushes onto a list
+        // that abort() drains exactly once, with no already-aborted check, so
+        // a listener registered afterwards is never called — and the backlog
+        // read above is an await the subscriber can leave during. Without
+        // this, the fix reinstates the hang it removes, on a narrower window.
+        await new Promise<void>((resolve) => {
+          if (stream.aborted || stream.closed || ctx.req.raw.signal.aborted) {
+            resolve();
+            return;
+          }
+          const leave = () => resolve();
+          stream.onAbort(leave);
+          ctx.req.raw.signal.addEventListener("abort", leave, { once: true });
         });
-      };
-
-      const onAccepted = (convId: string, userMessageId: string) => {
-        if (convId !== conversationId) return;
-        stream.writeSSE({
-          data: JSON.stringify({
-            type: "message_accepted",
-            userMessageId,
-          } satisfies StreamEvent),
-        });
-      };
-
-      const onStreaming = (convId: string) => {
-        if (convId !== conversationId) return;
-        stream.writeSSE({
-          data: JSON.stringify({ type: "streaming" } satisfies StreamEvent),
-        });
-      };
-
-      const onComplete = (convId: string) => {
-        if (convId !== conversationId) return;
-        stream.writeSSE({
-          data: JSON.stringify({ type: "complete" } satisfies StreamEvent),
-        });
-      };
-
-      const onError = (convId: string, error: string) => {
-        if (convId !== conversationId) return;
-        stream.writeSSE({
-          data: JSON.stringify({ type: "error", error } satisfies StreamEvent),
-        });
-      };
-
-      const onEffort = (convId: string, level: string) => {
-        if (convId !== conversationId) return;
-        stream.writeSSE({
-          data: JSON.stringify({ type: "effort", level } satisfies StreamEvent),
-        });
-      };
-
-      streamEvents.on("message", onMessage);
-      streamEvents.on("partial", onPartial);
-      streamEvents.on("accepted", onAccepted);
-      streamEvents.on("streaming", onStreaming);
-      streamEvents.on("complete", onComplete);
-      streamEvents.on("error", onError);
-      streamEvents.on("effort", onEffort);
-
-      ctx.req.raw.signal.addEventListener("abort", () => {
-        streamEvents.off("message", onMessage);
-        streamEvents.off("partial", onPartial);
-        streamEvents.off("accepted", onAccepted);
-        streamEvents.off("streaming", onStreaming);
-        streamEvents.off("complete", onComplete);
-        streamEvents.off("error", onError);
-        streamEvents.off("effort", onEffort);
-      });
-
-      // Keep alive until client disconnects
-      await new Promise(() => {});
+      } finally {
+        unsubscribe();
+      }
     });
   },
 );
 
-// The CLI's live model catalog (names, ids, supported effort levels). Served
-// from a session-lifetime cache in main — see getSupportedModels; the first
-// request pays one short-lived CLI spawn (~1.5s), no turn ever runs.
 api.get("/models", async (ctx) => {
   try {
     const models = await getSupportedModels();
@@ -622,15 +287,13 @@ api.get("/models", async (ctx) => {
   }
 });
 
-// Cancel an active stream
 api.delete(
   "/chat/:conversationId/stream",
   zValidator("param", z.object({ conversationId: z.uuid() })),
   async (ctx) => {
     const { conversationId } = ctx.req.valid("param");
 
-    // Just trigger interrupt - stream will end naturally via processStream
-    if (await cancelActiveStream(conversationId)) {
+    if (await interrupt(conversationId)) {
       return ctx.json({ cancelled: true });
     }
 
@@ -638,12 +301,6 @@ api.delete(
   },
 );
 
-// Withdraw a queued (sent mid-turn, not yet accepted) message. The CLI is
-// the authority on whether it was still queued: `cancelled: true` means it
-// is dropped and will never run or be acked, so its user_prompt row goes
-// too; `false` means it already folded into a turn (the ack has arrived or
-// is imminent) or never reached the CLI — either way it runs, and the
-// renderer just drops its "Queued" mark and waits for the ack.
 api.delete(
   "/chat/:conversationId/message/:userMessageId",
   zValidator(
@@ -653,22 +310,44 @@ api.delete(
   async (ctx) => {
     const { conversationId, userMessageId } = ctx.req.valid("param");
 
-    const cancelled = await cancelQueuedMessage(conversationId, userMessageId);
+    const cancelled = await cancelQueued(conversationId, userMessageId);
     if (!cancelled) {
       return ctx.json({ cancelled: false });
     }
 
     const deleted = await deleteMessage(userMessageId);
     if (deleted.isErr()) {
-      // The CLI already dropped it; a stray row is the lesser evil. Log only.
       console.error("Failed to delete cancelled message row:", deleted.error);
     }
 
-    // If the CLI is already idle and this was the last un-acked push, it
-    // will say nothing more — close the turn.
-    await settleIdle(conversationId);
-
     return ctx.json({ cancelled: true });
+  },
+);
+
+// Prompts the CLI never received: persisted, never acked, and not held
+// pending by a live handle. Computed here, never stored. The set only grows,
+// and only when the CLI fails — the renderer asks once per open and again on
+// `error`, so this is not on any hot path.
+api.get(
+  "/chat/:conversationId/undelivered",
+  zValidator("param", z.object({ conversationId: z.uuid() })),
+  async (ctx) => {
+    const { conversationId } = ctx.req.valid("param");
+
+    // Held first. Read the other way round, an ack landing between the
+    // two reads shows a null row that is no longer held — reported
+    // failed, with nothing later to correct it. This order can only hide a
+    // failure, and a failure always emits `error`, which refetches.
+    const pending = new Set(getAwaitingAck(conversationId));
+    const undelivered = await getUndeliveredPromptIds(conversationId);
+    if (undelivered.isErr()) {
+      const { status, code, message } = undelivered.error;
+      return ctx.json({ error: { code, message } }, status);
+    }
+
+    return ctx.json({
+      failedUserMessageIds: undelivered.value.filter((id) => !pending.has(id)),
+    });
   },
 );
 
@@ -729,8 +408,5 @@ api.post(
   },
 );
 
-// Mount the API under /api so the renderer can be served same-origin from
-// antidraw://app/ and reach the API at antidraw://app/api/*. Same origin
-// avoids CORS preflights and lets SSE/fetch behave like a normal web app.
 export const app = new Hono();
 app.route("/api", api);

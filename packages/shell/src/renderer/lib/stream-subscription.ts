@@ -1,25 +1,82 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type { ConversationWithMessages } from "@/main/api";
-import type { BetaContentBlock } from "@anthropic-ai/sdk/resources/beta/messages";
-import { subscribeToConversation, type StreamEvent } from "./api";
+import {
+  subscribeToConversation,
+  StreamDisconnectedError,
+  type StreamEvent,
+} from "./api";
 import { queryKeys } from "./query-keys";
 
-// Mutation key of useSendMessage — referenced here so queue_state can spare
-// the marks of sends whose POST is still in flight (the backend cannot know
-// about those yet).
 export const SEND_MESSAGE_MUTATION_KEY = "send-message";
-import { parsePartialJson } from "@/shared/utils/parse-partial-json";
+import {
+  foldPartial,
+  materializePartial,
+  type LivePartial,
+} from "@/shared/utils/live-partial";
 
-const activeSubscriptions = new Map<string, Promise<void>>();
+type Subscription = { readonly stop: () => void };
 
-// The in-flight content block — stored as the SDK's own BetaContentBlock,
-// with `partialJson` as a sibling string accumulator for tool_use blocks
-// (the SDK doesn't expose this — it parses internally on content_block_stop).
-export type LivePartial = {
-  index: number;
-  block: BetaContentBlock;
-  partialJson?: string;
-} | null;
+// One entry per conversation, and exactly one owner: the open conversation.
+// Anything else that calls subscribeToStream is asserting "make sure this is
+// running", not taking ownership — releasing is the owner's job alone.
+const activeSubscriptions = new Map<string, Subscription>();
+
+export type { LivePartial } from "@/shared/utils/live-partial";
+
+// seq is assigned by SQLite on insert, so a bubble that has not been persisted
+// yet has no real one. This stands in until the persisted row arrives over the
+// SSE and replaces it (see the "message" handler below). It sorts last, which
+// is true — an optimistic message is always the newest thing in the transcript.
+// It lives here, next to the one thing that derives a cursor from seq, because
+// forgetting to skip it there means asking the backend to replay everything
+// after MAX_SAFE_INTEGER: nothing, silently, forever.
+export const PENDING_SEQ = Number.MAX_SAFE_INTEGER;
+
+// Retries are bounded because streamStatus stays "streaming" throughout them:
+// the spinner holds, which is right for a blip and wrong forever. Giving up is
+// what turns a hung spinner into a reported error. An abandoned subscription
+// resurrecting itself used to be the binding reason for the ceiling and is not
+// any more — releaseStream ends the loop — so the budget is now set by how long
+// a user should be left watching a spinner, which is about half a minute.
+const BACKOFF_MS = [250, 500, 1000, 2000, 4000, 8000, 8000];
+
+// Where we are in the transcript: the highest seq the cache actually holds.
+// Optimistic rows are skipped — they carry PENDING_SEQ, not a real position.
+// 0 is an empty conversation: "everything after 0" is what we want, which is
+// nothing. undefined is no cache at all — a cold open racing the detail
+// query, or an unobserved entry the query client garbage-collected — and the
+// two must not collapse: a cursor of 0 there asks the route to serialise the
+// whole transcript into updates the renderer drops at its `if (!old)` guard.
+// No cache means no consumer for a replay, so the right ask is no replay.
+const cursorFor = (
+  conversationId: string,
+  queryClient: QueryClient,
+): number | undefined => {
+  const data = queryClient.getQueryData<ConversationWithMessages>(
+    queryKeys.conversations.detail(conversationId),
+  );
+  if (!data) return undefined;
+  return data.messages.reduce(
+    (max, m) => (m.seq !== PENDING_SEQ && m.seq > max ? m.seq : max),
+    0,
+  );
+};
+
+// Resolves on the timer or on release, whichever comes first. Backoff is the
+// one place the loop sits idle for seconds at a time; without this the loop
+// would linger for up to 8s past a release, holding a pending timer and the
+// queryClient its closure captured. It is NOT what makes isSubscribed go
+// false — stop() vacates the map slot synchronously, before it aborts.
+const delay = (ms: number, signal: AbortSignal) =>
+  new Promise<void>((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done);
+  });
 
 export const subscribeToStream = (
   conversationId: string,
@@ -28,150 +85,260 @@ export const subscribeToStream = (
   // Already subscribed - no-op
   if (activeSubscriptions.has(conversationId)) return;
 
-  const promise = (async () => {
-    try {
-      const stream = subscribeToConversation(conversationId);
+  const release = new AbortController();
+  // Whether this loop is still the one the map points at. Guards both exits
+  // from deleting a slot a later subscription has already claimed.
+  let ownsSlot = true;
 
-      for await (const event of stream) {
-        handleStreamEvent(conversationId, event, queryClient);
+  const vacate = () => {
+    if (!ownsSlot) return;
+    ownsSlot = false;
+    activeSubscriptions.delete(conversationId);
+  };
+
+  const stop = () => {
+    // Vacated first and synchronously, so a subscribe that follows this
+    // release — React running a cleanup and then the effect again — starts a
+    // new subscription instead of finding a dying one and no-oping onto it.
+    vacate();
+    // The signal reaches the live stream, which closes its iteration and
+    // aborts the fetch. Electron does not turn that into a request abort —
+    // protocol.handle builds the handler's Request without a signal, so the
+    // backend's `req.signal` never fires — it cancels the response body, and
+    // the route's stream.onAbort is what detaches the listeners. That last
+    // hop is the whole point of releasing at all.
+    release.abort();
+  };
+
+  void (async () => {
+    try {
+      // What we knowingly hold, pinned the first time it is knowable. The
+      // cache is a gap-free prefix when it first appears — it came from a DB
+      // read — so its max is a true "I have everything up to here". It stops
+      // being one the moment a replay is in flight: the route sends live
+      // events ahead of the backlog, so after a dirty drop the cache max can
+      // name a row that arrived ahead of older rows that never did, and
+      // asking from there would skip them for good. Only a clean end proves
+      // the replay completed, and a clean end exits this loop entirely — so
+      // a retry re-asks from the pin, and the server's gt-filter plus the
+      // renderer's id-dedup absorb the overlap.
+      let cursor = cursorFor(conversationId, queryClient);
+      for (let attempt = 0; !release.signal.aborted; attempt++) {
+        try {
+          // Unpinned means the detail query has not landed yet: attempts go
+          // out seed-only, and the first defined read pins. That moment is
+          // safe to trust precisely because those attempts asked for no
+          // replay — with no backlog in flight, live delivery is monotone,
+          // and the cache is still the gap-free prefix the pin needs.
+          cursor ??= cursorFor(conversationId, queryClient);
+          const stream = subscribeToConversation(
+            conversationId,
+            cursor,
+            release.signal,
+          );
+
+          // The refund baseline: where the cache stood when this attempt
+          // opened. Distinct from the request cursor above — a retry replays
+          // rows a previous attempt already put in the cache, and replayed
+          // rows are not progress.
+          const attemptBase = cursorFor(conversationId, queryClient);
+          for await (const event of stream) {
+            handleStreamEvent(conversationId, event, queryClient);
+            // Progress, not delivery, buys back the retry budget: a
+            // connection that flaps but keeps producing rows should not
+            // exhaust the budget meant for one that can never open. Mere
+            // delivery must not count — the backend seeds every attach with
+            // state/queue/livePartial for free, so a link that accepts and
+            // immediately dies would refund itself forever. -1 so the
+            // loop's ++ lands on 0. No baseline, no refund: a cache that
+            // appears mid-attempt is the detail query landing, not the link
+            // producing.
+            const now = cursorFor(conversationId, queryClient);
+            if (attemptBase !== undefined && now !== undefined && now > attemptBase)
+              attempt = -1;
+          }
+          // Ended cleanly, which now means one of two things: the backend
+          // sent a terminal event, or the owner released and the transport
+          // closed the iteration rather than throwing. Nothing to resume
+          // either way — note the release path never reaches the catch, so
+          // its aborted-guard covers only a throw racing the release.
+          return;
+        } catch (e) {
+          // A released subscription is not a failed one. Reporting an error
+          // here would mark a conversation the user simply navigated away
+          // from, and would write it into a cache nothing is watching.
+          if (release.signal.aborted) return;
+
+          const retriable =
+            e instanceof StreamDisconnectedError && e.retriable;
+          if (!retriable || attempt >= BACKOFF_MS.length) {
+            console.error("Stream subscription error:", e);
+            reportTransportFailure(conversationId, queryClient);
+            return;
+          }
+          // attempt is -1 when this attempt made progress before dying:
+          // restart the ladder at its first step, not at BACKOFF_MS[-1] —
+          // undefined, which setTimeout reads as a zero-delay retry.
+          await delay(BACKOFF_MS[attempt] ?? BACKOFF_MS[0]!, release.signal);
+        }
       }
-    } catch (e) {
-      console.error("Stream subscription error:", e);
     } finally {
-      activeSubscriptions.delete(conversationId);
+      vacate();
     }
   })();
 
-  activeSubscriptions.set(conversationId, promise);
+  activeSubscriptions.set(conversationId, { stop });
+};
+
+// Ends the subscription and, through the abort, detaches the backend's
+// listeners with it. Keyed on the conversation because there is only ever one
+// owner of one subscription.
+//
+// Deliberately NOT called when a turn ends. The CLI reports idle between turns
+// while the session stays alive, and it can report idle with a message we
+// handed it still un-acked — releasing there would miss that ack and every
+// event after it. The subscription belongs to the open conversation, not to
+// the turn that happens to be running in it.
+export const releaseStream = (conversationId: string): void => {
+  activeSubscriptions.get(conversationId)?.stop();
 };
 
 export const isSubscribed = (conversationId: string): boolean => {
   return activeSubscriptions.has(conversationId);
 };
 
+// The retry budget ran out. Deliberately NOT routed through the `error` event
+// handler: that one invalidates, and this failure is a fact only this side
+// knows. getStreamStatus computes from the CLI handle, which is fine, so the
+// refetch would answer "streaming" straight over the top of this write and the
+// user would be left watching a spinner with nothing behind it. A backend
+// `error` event still takes that branch, where invalidating is right — the
+// backend records that failure and reports it back.
+const reportTransportFailure = (
+  conversationId: string,
+  queryClient: QueryClient,
+): void => {
+  clearLive(conversationId, queryClient);
+  queryClient.setQueryData<ConversationWithMessages>(
+    queryKeys.conversations.detail(conversationId),
+    (old) => (old ? { ...old, streamStatus: "error" } : old),
+  );
+};
+
+// Giving up is terminal: the loop is gone and the slot is free, so nothing
+// reopens on its own. This is the way back, and it is the only one — the owner
+// effect is keyed on the conversation, which has not changed.
+//
+// The status goes back to "streaming" first so the failure notice clears as
+// soon as the attempt starts rather than when it succeeds. The `state` seed on
+// attach corrects it within a round trip if the CLI is in fact idle.
+export const retryStream = (
+  conversationId: string,
+  queryClient: QueryClient,
+): void => {
+  queryClient.setQueryData<ConversationWithMessages>(
+    queryKeys.conversations.detail(conversationId),
+    (old) => (old ? { ...old, streamStatus: "streaming" } : old),
+  );
+  subscribeToStream(conversationId, queryClient);
+};
+
 const clearLive = (conversationId: string, queryClient: QueryClient): void => {
-  queryClient.setQueryData<LivePartial>(
+  queryClient.setQueryData<LivePartial | null>(
     queryKeys.conversations.livePartial(conversationId),
     null,
   );
 };
-
-const clearQueued = (
-  conversationId: string,
-  queryClient: QueryClient,
-): void => {
-  queryClient.setQueryData<string[]>(
-    queryKeys.conversations.queuedMessageIds(conversationId),
-    [],
-  );
-};
-
-const inFlightSendIds = (queryClient: QueryClient): string[] =>
-  queryClient
-    .getMutationCache()
-    .getAll()
-    .filter(
-      (m) =>
-        m.options.mutationKey?.[0] === SEND_MESSAGE_MUTATION_KEY &&
-        m.state.status === "pending",
-    )
-    .map((m) => (m.state.variables as { userMessageId?: string })?.userMessageId)
-    .filter((id): id is string => typeof id === "string");
 
 const handleStreamEvent = (
   conversationId: string,
   event: StreamEvent,
   queryClient: QueryClient,
 ): void => {
-  // Authoritative queue snapshot on (re)subscribe: rebuild the marks from
-  // it, keeping only the sends the backend cannot know about yet.
-  if (event.type === "queue_state") {
-    const inFlight = inFlightSendIds(queryClient);
+  // The backend's complete picture of what is queued behind a turn: pushed
+  // to the CLI and not yet folded into one. Not every un-acked prompt — the
+  // spawn prompt is un-acked while the CLI boots but is the turn, so it is
+  // held apart and never listed here. Replaces whatever we held — it is
+  // sent on subscribe and on every change, and the backend records a send
+  // before it answers the POST, so there is nothing of ours it can be
+  // missing.
+  if (event.type === "queue") {
     queryClient.setQueryData<string[]>(
       queryKeys.conversations.queuedMessageIds(conversationId),
-      (prev) => [
-        ...event.userMessageIds,
-        ...(prev ?? []).filter(
-          (id) => inFlight.includes(id) && !event.userMessageIds.includes(id),
-        ),
-      ],
+      event.userMessageIds,
     );
     return;
   }
 
-  // The CLI reported a turn in flight. The only thing that can have made
-  // the cache say otherwise is a refetch that raced the CLI's own report
-  // (the backend writes the row on `running`, not on send), so re-assert.
-  if (event.type === "streaming") {
+  // The CLI's own session state, verbatim. Note idle does NOT imply the
+  // queue is empty: the CLI reports idle for a message it has not parsed
+  // yet. The `queue` event above is the only thing that speaks for the
+  // queue.
+  if (event.type === "state") {
+    const wasStreaming =
+      queryClient.getQueryData<ConversationWithMessages>(
+        queryKeys.conversations.detail(conversationId),
+      )?.streamStatus === "streaming";
+
     queryClient.setQueryData<ConversationWithMessages>(
       queryKeys.conversations.detail(conversationId),
-      (old) => (old ? { ...old, streamStatus: "streaming" } : old),
+      (old) =>
+        old
+          ? { ...old, streamStatus: event.state === "idle" ? "idle" : "streaming" }
+          : old,
     );
-    return;
-  }
-
-  // The CLI folded a mid-turn send into a turn — it is no longer "queued".
-  if (event.type === "message_accepted") {
-    queryClient.setQueryData<string[]>(
-      queryKeys.conversations.queuedMessageIds(conversationId),
-      (prev) => prev?.filter((id) => id !== event.userMessageId) ?? [],
-    );
+    if (event.state === "idle") {
+      clearLive(conversationId, queryClient);
+      // Only where idle means a turn just ended, and only at the idle that
+      // ends the chain.
+      //
+      // Every attach seeds `state`, and a conversation that was already idle
+      // seeds it again — refetching there would re-read rows the query that
+      // opened the conversation has just read. Reconciling deletions is what
+      // this is for, and a deletion can only have happened during a turn.
+      //
+      // The CLI reports idle between chained turns — a queued follow-up it
+      // has not parsed yet emits `running` moments later. A refetch fired in
+      // that window reads a snapshot `running` contradicts, and its late
+      // resolve would revert the cache for the whole next turn: no shimmer,
+      // no Stop button, dropped rows. The queue event above is the authority
+      // on whether more is coming. (A new send racing this refetch is already
+      // covered: the mutation's onMutate cancels in-flight detail fetches.)
+      const queued = queryClient.getQueryData<string[]>(
+        queryKeys.conversations.queuedMessageIds(conversationId),
+      );
+      if (wasStreaming && !queued?.length) {
+        // Deletions never ride the stream, so this refetch is still the
+        // transcript's reconciler for them. The attach gap it also used to
+        // cover is now closed by the seq cursor; once deletion events are in
+        // the vocabulary, it can go.
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.conversations.detail(conversationId),
+        });
+      }
+    }
     return;
   }
 
   if (event.type === "partial") {
-    const raw = event.partial.event;
-
-    // Only content_block_start and content_block_delta mutate live state.
-    // message_start/delta/stop and content_block_stop are ignored:
-    // - content_block_stop is redundant; persisted assistant messages clear live state.
-    // - message_* events carry no per-block info we render.
-    if (
-      raw.type !== "content_block_start" &&
-      raw.type !== "content_block_delta"
-    ) {
-      return;
-    }
-
-    queryClient.setQueryData<LivePartial>(
+    queryClient.setQueryData<LivePartial | null>(
       queryKeys.conversations.livePartial(conversationId),
-      (prev) => {
-        // SEED: store the SDK's content_block as-is; init partialJson only for tool_use.
-        if (raw.type === "content_block_start") {
-          return {
-            index: raw.index,
-            block: raw.content_block as BetaContentBlock,
-            partialJson:
-              raw.content_block.type === "tool_use" ? "" : undefined,
-          };
-        }
+      (prev) => foldPartial(prev ?? null, event.partial.event),
+    );
+    return;
+  }
 
-        // APPEND: mutate the single in-flight block.
-        if (!prev || prev.index !== raw.index) return prev;
-        const b = prev.block;
-        const delta = raw.delta;
-
-        if (delta.type === "text_delta" && b.type === "text") {
-          return { ...prev, block: { ...b, text: b.text + delta.text } };
-        }
-        if (delta.type === "thinking_delta" && b.type === "thinking") {
-          return {
-            ...prev,
-            block: { ...b, thinking: b.thinking + delta.thinking },
-          };
-        }
-        if (delta.type === "input_json_delta" && b.type === "tool_use") {
-          const partialJson = (prev.partialJson ?? "") + delta.partial_json;
-          const parsed = parsePartialJson(partialJson);
-          return {
-            ...prev,
-            partialJson,
-            block: { ...b, input: parsed ?? b.input },
-          };
-        }
-        // signature_delta and any unknown delta: ignored
-        return prev;
-      },
+  // The backend's fold of the block already in flight, sent once on subscribe.
+  // Assigned wholesale: it is the same fold this handler would have produced
+  // had we been connected for every delta.
+  if (event.type === "livePartial") {
+    queryClient.setQueryData<LivePartial | null>(
+      queryKeys.conversations.livePartial(conversationId),
+      // Main folds without parsing, so the seed carries raw accumulated
+      // json. Parse it once here: a tool call must render its input on
+      // attach, not on the next delta — which never comes for a block
+      // that already finished streaming.
+      materializePartial(event.livePartial),
     );
     return;
   }
@@ -181,9 +348,20 @@ const handleStreamEvent = (
       queryKeys.conversations.detail(conversationId),
       (old) => {
         if (!old) return old;
-        // Dedup by ID
-        if (old.messages.some((m) => m.id === event.message.id)) return old;
-        return { ...old, messages: [...old.messages, event.message] };
+        // Placed by seq, not appended: the stream promises nothing about the
+        // order between a replayed backlog and live events, so a live message
+        // can arrive ahead of older rows. Optimistic rows carry PENDING_SEQ
+        // and so stay at the tail.
+        //
+        // A row already present is replaced rather than skipped. That is the
+        // optimistic bubble for this send, holding PENDING_SEQ and a client
+        // clock; the persisted row has the same id and content but the seq
+        // the DB actually assigned — leave the placeholder and the cursor
+        // never advances past it.
+        const messages = old.messages.filter((m) => m.id !== event.message.id);
+        const at = messages.findIndex((m) => m.seq > event.message.seq);
+        messages.splice(at === -1 ? messages.length : at, 0, event.message);
+        return { ...old, messages };
       },
     );
 
@@ -195,32 +373,19 @@ const handleStreamEvent = (
     return;
   }
 
-  if (event.type === "complete") {
-    clearLive(conversationId, queryClient);
-    // A turn can only complete with nothing left un-acked (the backend holds
-    // the turn open otherwise), so any leftover mark is stale.
-    clearQueued(conversationId, queryClient);
-    queryClient.setQueryData<ConversationWithMessages>(
-      queryKeys.conversations.detail(conversationId),
-      (old) => (old ? { ...old, streamStatus: "idle" } : old),
-    );
-    // TODO: Rearchitect to a single stream endpoint that sends initial state + live events,
-    // eliminating the race condition between initial fetch and stream subscription.
-    queryClient.invalidateQueries({
-      queryKey: queryKeys.conversations.detail(conversationId),
-    });
-    return;
-  }
-
   if (event.type === "error") {
     clearLive(conversationId, queryClient);
-    clearQueued(conversationId, queryClient);
     queryClient.setQueryData<ConversationWithMessages>(
       queryKeys.conversations.detail(conversationId),
       (old) => (old ? { ...old, streamStatus: "error" } : old),
     );
     queryClient.invalidateQueries({
       queryKey: queryKeys.conversations.detail(conversationId),
+    });
+    // The one live moment the failed set can grow: a dying CLI drops every
+    // un-acked prompt it held.
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.conversations.failedMessageIds(conversationId),
     });
     return;
   }

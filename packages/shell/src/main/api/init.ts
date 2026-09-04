@@ -2,7 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
-export const antidrawRoot = path.join(os.homedir(), ".antidraw");
+// Overridable for tests / alternate profiles: point ANTIDRAW_ROOT at any
+// directory to relocate the DB and workspaces (e2e tests use a tmp dir).
+export const antidrawRoot =
+  process.env.ANTIDRAW_ROOT ?? path.join(os.homedir(), ".antidraw");
 
 // Ensure root directory exists on module import
 if (!fs.existsSync(antidrawRoot)) {

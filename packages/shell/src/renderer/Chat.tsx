@@ -20,13 +20,15 @@ import { Button } from "@/renderer/components/ui/button";
 import { cn } from "@/renderer/lib/utils";
 import { triggerClaudeLogin } from "@/renderer/lib/api";
 import { ArrowUp, ImageIcon, Paperclip, Square, X } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import { retryStream } from "./lib/stream-subscription";
 import { memo, useEffect, useMemo, useState } from "react";
 import {
   useCancelQueuedMessage,
   useCancelStream,
   useConversationMessages,
-  useConversationWithStream,
   useCreateConversation,
+  useFailedMessageIds,
   useGenerateTitle,
   useLivePartial,
   useQueuedMessageIds,
@@ -36,6 +38,7 @@ import {
 import { Tool } from "@/renderer/components/ui/tool";
 import type { ToolPart } from "@/renderer/components/ui/tool";
 import { AuthError } from "@/renderer/components/auth-error";
+import { StreamError } from "@/renderer/components/stream-error";
 import { useWorkspaceStore } from "./store/workspace";
 import { ChatEmptyState } from "./components/ChatEmptyState";
 import ModelPicker from "@/renderer/components/ModelPicker";
@@ -86,6 +89,7 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
   const { data: toolMap } = useToolMap(conversationId);
   const { data: live } = useLivePartial(conversationId);
   const { data: queuedMessageIds } = useQueuedMessageIds(conversationId);
+  const { data: failedMessageIds } = useFailedMessageIds(conversationId);
   const cancelQueued = useCancelQueuedMessage();
   const messages = conversation?.messages ?? [];
   const isStreaming = conversation?.streamStatus === "streaming";
@@ -160,6 +164,22 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
         // labelled, and withdrawable until the ack lands.
         const isQueued =
           !isAssistant && (queuedMessageIds?.includes(msg.id) ?? false);
+        // Persisted, never acked, and no live handle holds it: the CLI never
+        // received this prompt. The backend decides (see useFailedMessageIds);
+        // a live Queued mark wins over a list that has not been refetched.
+        const isFailed =
+          !isAssistant &&
+          !isQueued &&
+          (failedMessageIds?.includes(msg.id) ?? false);
+
+        // Only the message whose cancel is in flight waits on it. The mutation
+        // is shared by every bubble, so reading isPending alone greyed out all
+        // of them for the duration of one DELETE — and that wait is unbounded
+        // by design (see cancelQueued in the conversation store).
+        const isCancelling =
+          isQueued &&
+          cancelQueued.isPending &&
+          cancelQueued.variables?.userMessageId === msg.id;
 
         return (
           <Message
@@ -202,7 +222,7 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
                       key={idx}
                       className={cn(
                         "bg-neutral-700 text-neutral-200 prose prose-sm prose-invert",
-                        isQueued && "opacity-60"
+                        (isQueued || isFailed) && "opacity-60"
                       )}
                     >
                       {block.text}
@@ -233,12 +253,12 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
               })}
               {isQueued && conversationId && (
                 <div className="mt-0.5 flex items-center gap-1 self-end text-[10px] text-neutral-400">
-                  <span>Queued</span>
+                  <span>{isCancelling ? "Cancelling" : "Queued"}</span>
                   <button
                     type="button"
                     aria-label="Cancel queued message"
                     className="rounded-full p-0.5 hover:bg-neutral-600 hover:text-neutral-200 disabled:opacity-50"
-                    disabled={cancelQueued.isPending}
+                    disabled={isCancelling}
                     onClick={() =>
                       cancelQueued.mutate({
                         conversationId,
@@ -248,6 +268,11 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
                   >
                     <X className="size-3" />
                   </button>
+                </div>
+              )}
+              {isFailed && (
+                <div className="mt-0.5 self-end text-[10px] text-red-400">
+                  Not delivered
                 </div>
               )}
             </div>
@@ -331,10 +356,14 @@ export function AppChat({ className, ...props }: AppChatProps) {
   const sendMessage = useSendMessage();
   const generateTitle = useGenerateTitle();
   const cancelStream = useCancelStream();
+  const queryClient = useQueryClient();
   const { data: conversation, isLoading: isConversationLoading } =
-    useConversationWithStream(activeConversationId);
+    useConversationMessages(activeConversationId);
 
   const isStreaming = conversation?.streamStatus === "streaming";
+  // The retry budget ran out. Nothing reopens on its own from here, so this
+  // stays until the user acts on it or sends again.
+  const streamFailed = conversation?.streamStatus === "error";
 
   // Only an in-flight HTTP send blocks submitting. Streaming does not: a
   // mid-turn send is queued by the CLI and acked via message_accepted.
@@ -356,7 +385,14 @@ export function AppChat({ className, ...props }: AppChatProps) {
       const reader = new FileReader();
       reader.onload = () => {
         const result = reader.result as string;
+        // A data URL is "<metadata>,<base64>". Anything without the comma is
+        // not one, and resolving with an undefined payload would put a broken
+        // image on the wire rather than failing where the mistake happened.
         const base64 = result.split(",")[1];
+        if (base64 === undefined) {
+          reject(new Error(`Could not read ${file.name} as a data URL`));
+          return;
+        }
         resolve({ data: base64, mediaType: file.type as SupportedImageMediaType });
       };
       reader.onerror = reject;
@@ -380,6 +416,13 @@ export function AppChat({ className, ...props }: AppChatProps) {
       // TODO: show toast if toast system exists
       alert("Failed to process attached images. Please try again.");
       return;
+    }
+
+    // Sending while disconnected would otherwise post into a conversation
+    // nothing is watching: the owner effect is keyed on the conversation, and
+    // that has not changed, so only this reopens the stream.
+    if (streamFailed && activeConversationId) {
+      retryStream(activeConversationId, queryClient);
     }
 
     setInput("");
@@ -431,6 +474,11 @@ export function AppChat({ className, ...props }: AppChatProps) {
     triggerClaudeLogin();
   };
 
+  const handleReconnect = () => {
+    if (!activeConversationId) return;
+    retryStream(activeConversationId, queryClient);
+  };
+
   const handleRetry = async () => {
     if (!activeWorkspaceId || !activeConversationId || isSendPending) return;
 
@@ -471,6 +519,7 @@ export function AppChat({ className, ...props }: AppChatProps) {
 
       <FileUpload onFilesAdded={handleFilesAdded} accept="image/*">
         <div className="p-4">
+          {streamFailed && <StreamError onReconnect={handleReconnect} />}
           <PromptInput
             value={input}
             onValueChange={setInput}
