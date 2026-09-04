@@ -79,11 +79,43 @@ const capture = (conversationId: string) => {
   detach.push(
     subscribe(conversationId, (event) => {
       if (event.type === "state") seen.push({ state: event.state });
-      if (event.type === "queue") seen.push({ queue: event.userMessageIds });
+      else if (event.type === "queue") seen.push({ queue: event.userMessageIds });
+      // Everything else is recorded too, so `[]` asserts silence.
+      else seen.push({ unexpected: event.type });
     }),
   );
   return seen;
 };
+
+describe("subscribe routing", () => {
+  // This filter is the routing layer for the entire event vocabulary — every
+  // consumer relies on it, and it lives in exactly one place. Both tests were
+  // added after a mutation run showed the suite stayed green with the filter
+  // deleted and with unsubscribe turned into a no-op.
+  test("events for another conversation do not cross the filter", () => {
+    const emitter = freshId();
+    const listener = freshId();
+    const seen = capture(listener);
+
+    conversationEvents.emit("state", emitter, { state: "running" });
+    conversationEvents.emit("queue", emitter, { userMessageIds: ["m1"] });
+
+    expect(seen).toEqual([]);
+  });
+
+  test("unsubscribe detaches every event name", () => {
+    const id = freshId();
+    const seen: unknown[] = [];
+    const off = subscribe(id, (event) => seen.push(event.type));
+    off();
+
+    conversationEvents.emit("state", id, { state: "running" });
+    conversationEvents.emit("queue", id, { userMessageIds: ["m1"] });
+    conversationEvents.emit("error", id, { error: "boom" });
+
+    expect(seen).toEqual([]);
+  });
+});
 
 describe("the error event", () => {
   // Node throws ERR_UNHANDLED_ERROR when "error" is emitted with no listener,
@@ -192,6 +224,27 @@ describe("getStreamStatus", () => {
       requires_action: "streaming",
       idle: "idle",
     });
+  });
+
+  test("an un-acked send does NOT hold the status — the CLI's idle passes through", () => {
+    const id = freshId();
+    openHandle(id, promptStream());
+    setCliState(id, "running");
+    addPending(id, "queued-send");
+    setCliState(id, "idle");
+
+    // Deliberate, and the test exists so nobody "fixes" it: the CLI reports
+    // idle for a push it has not parsed yet, and this reads idle for a beat
+    // until its `running` corrects it. Letting pending outrank cliState
+    // would reintroduce base's hold WITHOUT the 30s watchdog that bounded
+    // it — a push the CLI never acks would pin "streaming", and the
+    // spinner, forever. cliState speaks for the CLI; the queue event
+    // speaks for the queue.
+    expect(getStreamStatus(id)).toBe("idle");
+    expect(getPending(id)).toEqual(["queued-send"]);
+
+    resolvePending(id, "queued-send");
+    expect(getStreamStatus(id)).toBe("idle");
   });
 
   test("a died-and-released conversation reads as error, not idle", () => {

@@ -1,8 +1,8 @@
 import "./e2e-env"; // must stay the first import — see e2e-env.ts
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, test, expect, beforeAll, afterAll } from "vitest";
+import { describe, test, expect, beforeAll } from "vitest";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { app } from "@/main/api";
 import type { ConversationWithMessages } from "@/main/api";
@@ -46,9 +46,9 @@ beforeAll(async () => {
   mkdirSync(path.join(ROOT, "workspaces", workspaceId, "source"), { recursive: true });
 });
 
-afterAll(() => {
-  rmSync(ROOT, { recursive: true, force: true });
-});
+// Root cleanup lives in e2e-env.ts (an exit handler, gated on whether the
+// harness minted the directory) — never here, where a preset ANTIDRAW_ROOT
+// pointing at a real profile would be deleted.
 
 describe("POST /api/chat/message", () => {
   test("a message travels end to end: POST → CLI → DB → GET", { timeout: 120_000 }, async () => {

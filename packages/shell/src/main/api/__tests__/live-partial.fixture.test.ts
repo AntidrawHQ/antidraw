@@ -3,7 +3,11 @@ import { fileURLToPath } from "node:url";
 import { describe, test, expect } from "vitest";
 import type { SDKMessage, SDKPartialAssistantMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { BetaContentBlock } from "@anthropic-ai/sdk/resources/beta/messages";
-import { foldPartial, type LivePartial } from "@/shared/utils/live-partial";
+import {
+  foldPartial,
+  materializePartial,
+  type LivePartial,
+} from "@/shared/utils/live-partial";
 
 // A real turn, recorded off the real CLI by fixtures/record.test.ts — a tool
 // call plus prose, so the stream carries thinking, tool_use and text blocks.
@@ -168,5 +172,61 @@ describe("foldPartial against a recorded stream", () => {
   test("a delta with no block in flight is dropped", () => {
     const delta = streamEvents.find((e) => e.type === "content_block_delta")!;
     expect(foldPartial(null, delta)).toBeNull();
+  });
+});
+
+// Main folds with { parse: false } and the renderer materializes the seed —
+// this is the contract that lets the store skip a whole-input re-parse per
+// delta. Equality is checked at every completed block over the real recorded
+// stream: if the lazy path could ever hand a subscriber something the eager
+// path would not have, this replay catches it.
+describe("a lazy fold materializes to the eager result", () => {
+  test("at every completed block of the recorded stream", () => {
+    const eager: LivePartial[] = [];
+    const lazy: LivePartial[] = [];
+    let e: LivePartial | null = null;
+    let l: LivePartial | null = null;
+    for (const event of streamEvents) {
+      if (event.type === "content_block_stop") {
+        if (e) eager.push(e);
+        if (l) lazy.push(materializePartial(l)!);
+      }
+      e = foldPartial(e, event);
+      l = foldPartial(l, event, { parse: false });
+    }
+    expect(lazy.length).toBe(eager.length);
+    expect(lazy.length).toBeGreaterThan(0);
+    expect(lazy).toEqual(eager);
+    // The recording must actually exercise the lazy branch.
+    expect(eager.some((b) => b.block.type === "tool_use")).toBe(true);
+  });
+
+  test("mid-block too: the interrupted tool_use materializes identically", () => {
+    // Same truncation point the mid-block test above uses — an attach in the
+    // middle of a tool call is exactly when the seed matters.
+    const midToolCall = (() => {
+      let count = 0;
+      for (let i = 0; i < streamEvents.length; i++) {
+        const e = streamEvents[i]!;
+        if (
+          e.type === "content_block_delta" &&
+          e.delta.type === "input_json_delta" &&
+          ++count === 3
+        )
+          return i + 1;
+      }
+      throw new Error("fixture has no tool_use deltas");
+    })();
+
+    let e: LivePartial | null = null;
+    let l: LivePartial | null = null;
+    for (const event of streamEvents.slice(0, midToolCall)) {
+      e = foldPartial(e, event);
+      l = foldPartial(l, event, { parse: false });
+    }
+    expect(l!.block.type).toBe("tool_use");
+    // Lazy really was lazy: the input is untouched until materialize.
+    expect((l!.block as { input: unknown }).input).toEqual({});
+    expect(materializePartial(l)).toEqual(e);
   });
 });

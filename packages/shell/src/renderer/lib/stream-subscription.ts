@@ -10,6 +10,7 @@ import { queryKeys } from "./query-keys";
 export const SEND_MESSAGE_MUTATION_KEY = "send-message";
 import {
   foldPartial,
+  materializePartial,
   type LivePartial,
 } from "@/shared/utils/live-partial";
 
@@ -285,14 +286,29 @@ const handleStreamEvent = (
     );
     if (event.state === "idle") {
       clearLive(conversationId, queryClient);
-      // Only where idle means a turn just ended. Every attach seeds `state`,
-      // and a conversation that was already idle seeds it again — refetching
-      // there would re-read rows the query that opened the conversation has
-      // just read. Reconciling deletions is what this is for, and a deletion
-      // can only have happened during a turn.
-      // TODO: Rearchitect to a single stream endpoint that sends initial state + live events,
-      // eliminating the race condition between initial fetch and stream subscription.
-      if (wasStreaming) {
+      // Only where idle means a turn just ended, and only at the idle that
+      // ends the chain.
+      //
+      // Every attach seeds `state`, and a conversation that was already idle
+      // seeds it again — refetching there would re-read rows the query that
+      // opened the conversation has just read. Reconciling deletions is what
+      // this is for, and a deletion can only have happened during a turn.
+      //
+      // The CLI reports idle between chained turns — a queued follow-up it
+      // has not parsed yet emits `running` moments later. A refetch fired in
+      // that window reads a snapshot `running` contradicts, and its late
+      // resolve would revert the cache for the whole next turn: no shimmer,
+      // no Stop button, dropped rows. The queue event above is the authority
+      // on whether more is coming. (A new send racing this refetch is already
+      // covered: the mutation's onMutate cancels in-flight detail fetches.)
+      const queued = queryClient.getQueryData<string[]>(
+        queryKeys.conversations.queuedMessageIds(conversationId),
+      );
+      if (wasStreaming && !queued?.length) {
+        // Deletions never ride the stream, so this refetch is still the
+        // transcript's reconciler for them. The attach gap it also used to
+        // cover is now closed by the seq cursor; once deletion events are in
+        // the vocabulary, it can go.
         queryClient.invalidateQueries({
           queryKey: queryKeys.conversations.detail(conversationId),
         });
@@ -315,7 +331,11 @@ const handleStreamEvent = (
   if (event.type === "livePartial") {
     queryClient.setQueryData<LivePartial | null>(
       queryKeys.conversations.livePartial(conversationId),
-      event.livePartial,
+      // Main folds without parsing, so the seed carries raw accumulated
+      // json. Parse it once here: a tool call must render its input on
+      // attach, not on the next delta — which never comes for a block
+      // that already finished streaming.
+      materializePartial(event.livePartial),
     );
     return;
   }

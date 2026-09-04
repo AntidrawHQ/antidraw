@@ -134,16 +134,18 @@ const pushFollowUpTurn = async (
       console.error("Failed to push follow-up turn:", pushed.error);
       resolvePending(conversation.id, userMessageId);
       // Only reachable once the SDK has cancelled the prompt stream: the CLI
-      // is gone. The renderer refetches the failed set on `error`, and this
-      // was the one failure path that never emitted it.
+      // is gone. The renderer refetches the failed set on `error`.
       conversationEvents.emit("error", conversation.id, {
-        error: "The CLI did not accept the message",
+        error: "Failed to send your message — try again.",
       });
       return;
     }
   } catch (e) {
     console.error("Unexpected error on the push path:", e);
     resolvePending(conversation.id, userMessageId);
+    conversationEvents.emit("error", conversation.id, {
+      error: "Failed to send your message — try again.",
+    });
     return;
   }
   if (handle.query) trackMessageSent({ query: handle.query });
@@ -187,9 +189,13 @@ const runColdStart = async (
   } catch (e) {
     const errorMessage = e instanceof Error ? e.message : "Unknown error";
     markError(conversation.id);
+    // Before the emit: the renderer treats `error` as terminal and closes
+    // the stream, so a queue frame behind it is never delivered — and the
+    // follow-ups queued behind this turn would keep their "Queued" bubbles.
+    clearPending(conversation.id);
     conversationEvents.emit("error", conversation.id, { error: errorMessage });
   } finally {
-    clearPending(conversation.id);
+    clearPending(conversation.id); // no-op after the catch; covers the clean path
     releaseHandle(conversation.id);
   }
 };
@@ -203,7 +209,10 @@ export const runTurn = async (req: TurnRequest): Promise<void> => {
   });
   const turnType = openHandle(conversation.id, promptStream);
   const handle = getHandle(conversation.id)!;
-  addPending(conversation.id, userMessageId);
+  // The cold-start prompt is the spawn prompt — the CLI reports `running`
+  // for it before anything else, so it is never "queued". Only a follow-up
+  // waits on an ack.
+  if (turnType === "follow-up") addPending(conversation.id, userMessageId);
 
   const persisted = await setConversationOptions(conversation.id, {
     selectedModel: options?.model ?? null,
@@ -226,11 +235,19 @@ export const runTurn = async (req: TurnRequest): Promise<void> => {
   if (recorded.isErr()) {
     console.error("Failed to persist the user prompt:", recorded.error);
     if (turnType === "cold-start") {
+      markError(conversation.id);
       clearPending(conversation.id);
       releaseHandle(conversation.id);
     } else {
       resolvePending(conversation.id, userMessageId);
     }
+    // Emitted last: the renderer treats `error` as terminal, so the queue
+    // frames above must cross the wire first. Without this the client never
+    // hears the turn ended — the POST already answered 202 and only `state`
+    // or `error` clears "streaming".
+    conversationEvents.emit("error", conversation.id, {
+      error: "Failed to save your message — it was not sent.",
+    });
     return;
   }
 

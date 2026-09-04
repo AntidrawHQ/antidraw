@@ -1,4 +1,4 @@
-import "../e2e-env"; // must stay the first import — see e2e-env.ts
+import { OWNS_ROOT } from "../e2e-env"; // must stay the first import — see e2e-env.ts
 import { mkdirSync, writeFileSync, rmSync, readdirSync, existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -71,8 +71,9 @@ test.skipIf(!process.env.RECORD_FIXTURES)(
     // Leave nothing behind. The workspace is a throwaway temp dir, and the CLI
     // writes a session transcript under ~/.claude/projects keyed by that cwd —
     // which is pure garbage once the cwd is gone. Only directories this run
-    // created are removed.
-    rmSync(root, { recursive: true, force: true });
+    // created are removed: a preset ANTIDRAW_ROOT is someone's real profile,
+    // and only the harness-minted kind may be deleted.
+    if (OWNS_ROOT) rmSync(root, { recursive: true, force: true });
     const stale = (existsSync(CLAUDE_PROJECTS) ? readdirSync(CLAUDE_PROJECTS) : [])
       .filter((name) => !before.has(name) && name.includes(path.basename(root)));
     for (const name of stale) {

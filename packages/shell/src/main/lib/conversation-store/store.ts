@@ -49,6 +49,13 @@ export const markError = (conversationId: string): void => {
 export const getStreamStatus = (conversationId: string): StreamStatus => {
   const handle = handles.get(conversationId);
   if (!handle) return errored.has(conversationId) ? "error" : "idle";
+  // cliState verbatim — deliberately NOT outranked by the pending set. The
+  // CLI reports idle for a push it has not parsed yet, so a read landing in
+  // that flicker calls the conversation idle a beat early; its `running`
+  // follows in ms and corrects every consumer. Holding "streaming" on
+  // pending instead would need base's 30s watchdog back: a push the CLI
+  // never acks would otherwise pin the status — and the spinner — forever.
+  // The queue event speaks for the queue; this speaks only for the CLI.
   return handle.cliState === "idle" ? "idle" : "streaming";
 };
 
@@ -71,7 +78,10 @@ export const applyPartial = (
 ): void => {
   const handle = handles.get(conversationId);
   if (!handle) return;
-  handle.partial = foldPartial(handle.partial, partial.event);
+  // parse: false — nothing here renders. The fold only accumulates; the
+  // subscribe seed carries the raw json and the renderer materializes it
+  // once, at install (see materializePartial).
+  handle.partial = foldPartial(handle.partial, partial.event, { parse: false });
 };
 
 export const clearPartial = (conversationId: string): void => {

@@ -85,8 +85,12 @@ describe("stopping a turn mid-block", () => {
       const persisted = conversation.messages
         .filter((m) => m.sdkMessage.type === "assistant")
         .map((m) => JSON.stringify(m.sdkMessage));
-      const abandoned = (midBlock!.block as { text?: string }).text ?? "";
-      const wasPersisted = persisted.some((p) => p.includes(abandoned.slice(0, 30)));
+      // Same accessor as the probe above — a thinking block would otherwise
+      // read as "" and make includes("") true for any assistant row.
+      const b = midBlock!.block as { text?: string; thinking?: string };
+      const abandoned = b.text ?? b.thinking ?? "";
+      const wasPersisted =
+        abandoned !== "" && persisted.some((p) => p.includes(abandoned.slice(0, 30)));
       console.error(
         `[interrupt] abandoned block persisted as an assistant message? ${wasPersisted}` +
           ` (assistant rows: ${persisted.length})`,

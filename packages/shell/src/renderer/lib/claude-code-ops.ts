@@ -395,11 +395,14 @@ export const useCancelQueuedMessage = () => {
       return result.value;
     },
     onSuccess: ({ cancelled }, { conversationId, userMessageId }) => {
+      // Nothing to write on a failed cancel: the backend still holds the
+      // message as pending, and its queue event owns that cache — filtering
+      // here would un-dim a bubble that is, in fact, still queued.
+      if (!cancelled) return;
       queryClient.setQueryData<string[]>(
         queryKeys.conversations.queuedMessageIds(conversationId),
         (prev) => prev?.filter((id) => id !== userMessageId) ?? [],
       );
-      if (!cancelled) return;
       queryClient.setQueryData<ConversationWithMessages>(
         queryKeys.conversations.detail(conversationId),
         (old) =>
