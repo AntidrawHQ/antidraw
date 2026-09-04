@@ -231,3 +231,37 @@ pre.shiki {
   scrollbar-width: thin;
   scrollbar-color: #525252 transparent;
 }
+
+/* Toasts slide in and out from the right edge instead of sonner's default
+   vertical fade. Overrides sonner's --y transform on mount/remove. */
+@keyframes toast-slide-in-right {
+  from {
+    transform: translateX(calc(100% + 2rem));
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+@keyframes toast-slide-out-right {
+  from {
+    transform: translateX(0);
+    opacity: 1;
+  }
+  to {
+    transform: translateX(calc(100% + 2rem));
+    opacity: 0;
+  }
+}
+
+[data-sonner-toast][data-x-position="right"][data-mounted="true"] {
+  animation: toast-slide-in-right 320ms cubic-bezier(0.21, 1.02, 0.73, 1)
+    forwards;
+}
+
+[data-sonner-toast][data-x-position="right"][data-removed="true"] {
+  animation: toast-slide-out-right 240ms cubic-bezier(0.55, 0, 0.55, 0.2)
+    forwards;
+}
