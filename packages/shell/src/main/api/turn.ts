@@ -10,6 +10,7 @@ import {
 } from "@/main/api/claude-code-ops";
 import {
   addMessage,
+  markDelivered,
   updateConversationSession,
   convertUserPromptToSDKMessage,
   setConversationOptions,
@@ -23,6 +24,7 @@ import {
   markError,
   setCliState,
   addPending,
+  markSpawnPrompt,
   applyPartial,
   clearPartial,
   resolvePending,
@@ -31,10 +33,10 @@ import {
 } from "@/main/lib/conversation-store";
 import { trackMessageSent } from "@/main/lib/posthog";
 
-export const handleSdkMessageWithoutPersisting = (
+export const handleSdkMessageWithoutPersisting = async (
   conversationId: string,
   sdkMessage: SDKMessage,
-): boolean => {
+): Promise<boolean> => {
   if (sdkMessage.type === "stream_event") {
     applyPartial(conversationId, sdkMessage);
     conversationEvents.emit("partial", conversationId, { partial: sdkMessage });
@@ -54,6 +56,14 @@ export const handleSdkMessageWithoutPersisting = (
     "isReplay" in sdkMessage &&
     sdkMessage.isReplay
   ) {
+    // Column first, pending set second. The undelivered endpoint snapshots
+    // pending and then reads null rows; the other order here would let it
+    // see a null row that is no longer pending — reported failed, and no
+    // later event corrects it.
+    const marked = await markDelivered(sdkMessage.uuid);
+    if (marked.isErr()) {
+      console.error("Failed to record the CLI's ack:", marked.error);
+    }
     resolvePending(conversationId, sdkMessage.uuid);
     return true;
   }
@@ -124,6 +134,8 @@ const pushFollowUpTurn = async (
     if (pushed.isErr()) {
       console.error("Failed to push follow-up turn:", pushed.error);
       resolvePending(conversation.id, userMessageId);
+      // Only reachable once the SDK has cancelled the prompt stream: the CLI
+      // is gone. The renderer refetches the failed set on `error`.
       conversationEvents.emit("error", conversation.id, {
         error: "Failed to send your message — try again.",
       });
@@ -168,7 +180,7 @@ const runColdStart = async (
     const ctx = { conversation, sessionId: claudeCodeSessionID };
 
     for await (const sdkMessage of res.value) {
-      if (handleSdkMessageWithoutPersisting(conversation.id, sdkMessage)) {
+      if (await handleSdkMessageWithoutPersisting(conversation.id, sdkMessage)) {
         continue;
       }
       await handleAndPersistSdkMessage(ctx, sdkMessage);
@@ -200,8 +212,10 @@ export const runTurn = async (req: TurnRequest): Promise<void> => {
   const handle = getHandle(conversation.id)!;
   // The cold-start prompt is the spawn prompt — the CLI reports `running`
   // for it before anything else, so it is never "queued". Only a follow-up
-  // waits on an ack.
+  // waits on an ack in the queue; the spawn prompt is held apart so the
+  // failed set does not count it while the CLI boots.
   if (turnType === "follow-up") addPending(conversation.id, userMessageId);
+  else markSpawnPrompt(conversation.id, userMessageId);
 
   const persisted = await setConversationOptions(conversation.id, {
     selectedModel: options?.model ?? null,

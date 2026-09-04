@@ -9,7 +9,9 @@ import {
   openHandle,
   clearPending,
   getPending,
+  getAwaitingAck,
   getHandle,
+  markSpawnPrompt,
   getStreamStatus,
   interrupt,
   markError,
@@ -29,6 +31,21 @@ const controllableQuery = (cancelVerdict = true) => {
   const query = {
     interrupt: vi.fn(async () => {}),
     cancelAsyncMessage: vi.fn(async () => cancelVerdict),
+  };
+  return query as unknown as Query & typeof query;
+};
+
+// A query whose control requests reject — what the SDK does for a write that
+// fails or for every request still pending when the process exits.
+const deadQuery = () => {
+  const failure = new Error("Query closed before response received");
+  const query = {
+    interrupt: vi.fn(async () => {
+      throw failure;
+    }),
+    cancelAsyncMessage: vi.fn(async () => {
+      throw failure;
+    }),
   };
   return query as unknown as Query & typeof query;
 };
@@ -494,6 +511,57 @@ describe("interrupt", () => {
     expect(seen).toMatchInlineSnapshot(`[]`);
     expect(getPending(id)).toEqual(["msg-a"]);
   });
+
+  test("a rejected control request is reported as not done, not thrown", async () => {
+    const id = freshId();
+    openHandle(id, promptStream());
+    attachQuery(id, deadQuery());
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(interrupt(id)).resolves.toBe(false);
+    expect(error).toHaveBeenCalledTimes(1);
+    // The handle is the loop's to release when it observes the exit; a
+    // failed Stop must not tear it down from underneath the loop.
+    expect(getHandle(id)).toBeDefined();
+    error.mockRestore();
+  });
+});
+
+describe("the spawn prompt", () => {
+  test("is held for the failed set but never enters the queue", () => {
+    const id = freshId();
+    openHandle(id, promptStream());
+    const seen = capture(id);
+    markSpawnPrompt(id, "spawn");
+    addPending(id, "msg-a");
+
+    expect(getPending(id)).toEqual(["msg-a"]);
+    expect(getAwaitingAck(id)).toEqual(["msg-a", "spawn"]);
+    expect(seen).toMatchInlineSnapshot(`
+      [
+        {
+          "queue": [
+            "msg-a",
+          ],
+        },
+      ]
+    `);
+  });
+
+  test("its ack releases it silently; a clear drops it with the queue", () => {
+    const id = freshId();
+    openHandle(id, promptStream());
+    markSpawnPrompt(id, "spawn");
+    const seen = capture(id);
+
+    expect(resolvePending(id, "spawn")).toBe(true);
+    expect(getAwaitingAck(id)).toEqual([]);
+    expect(seen).toMatchInlineSnapshot(`[]`);
+
+    markSpawnPrompt(id, "spawn-again");
+    clearPending(id);
+    expect(getAwaitingAck(id)).toEqual([]);
+  });
 });
 
 describe("cancelQueued", () => {
@@ -541,5 +609,22 @@ describe("cancelQueued", () => {
 
   test("is a no-op for a conversation with no handle", async () => {
     expect(await cancelQueued(freshId(), "msg-a")).toBe(false);
+  });
+
+  test("a rejected control request answers false and leaves the queue alone", async () => {
+    const id = freshId();
+    openHandle(id, promptStream());
+    attachQuery(id, deadQuery());
+    addPending(id, "msg-a");
+    const seen = capture(id);
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    // Not a throw: the route maps this to its existing { cancelled: false },
+    // and the CLI's exit — what a rejection means — is the loop's to report.
+    await expect(cancelQueued(id, "msg-a")).resolves.toBe(false);
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(seen).toMatchInlineSnapshot(`[]`);
+    expect(getPending(id)).toEqual(["msg-a"]);
+    error.mockRestore();
   });
 });

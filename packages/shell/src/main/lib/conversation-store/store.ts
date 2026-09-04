@@ -28,6 +28,7 @@ export const openHandle = (
     promptStream,
     cliState: "spawning",
     pendingUserMessageIds: new Set(),
+    spawnPromptId: null,
     partial: null,
   });
   return "cold-start";
@@ -58,6 +59,13 @@ export const getStreamStatus = (conversationId: string): StreamStatus => {
   // The queue event speaks for the queue; this speaks only for the CLI.
   return handle.cliState === "idle" ? "idle" : "streaming";
 };
+
+// The CLI's own session state, for seeding a subscriber. No handle means no
+// CLI, which is exactly what "idle" reports — the same collapse getStreamStatus
+// makes, kept in the CLI's vocabulary because that is what the `state` event
+// carries.
+export const getCliState = (conversationId: string): CliSessionState =>
+  handles.get(conversationId)?.cliState ?? "idle";
 
 // The in-flight content block, kept so a subscriber that connects mid-block
 // can be handed the text so far instead of a gap that only fills on the next
@@ -105,6 +113,26 @@ export const getPending = (conversationId: string): string[] => [
   ...(handles.get(conversationId)?.pendingUserMessageIds ?? []),
 ];
 
+export const markSpawnPrompt = (
+  conversationId: string,
+  userMessageId: string,
+): void => {
+  const handle = handles.get(conversationId);
+  if (handle) handle.spawnPromptId = userMessageId;
+};
+
+// Everything handed to the CLI with no ack yet: the queue, plus the spawn
+// prompt. This is what the undelivered route subtracts from the null rows.
+// The queue event keeps reporting only the queue.
+export const getAwaitingAck = (conversationId: string): string[] => {
+  const handle = handles.get(conversationId);
+  if (!handle) return [];
+  return [
+    ...handle.pendingUserMessageIds,
+    ...(handle.spawnPromptId ? [handle.spawnPromptId] : []),
+  ];
+};
+
 export const addPending = (
   conversationId: string,
   userMessageId: string,
@@ -120,6 +148,11 @@ export const resolvePending = (
   userMessageId: string,
 ): boolean => {
   const handle = handles.get(conversationId);
+  if (handle?.spawnPromptId === userMessageId) {
+    // The spawn's ack. Nothing to broadcast: it was never in the queue.
+    handle.spawnPromptId = null;
+    return true;
+  }
   if (!handle?.pendingUserMessageIds.delete(userMessageId)) return false;
   emitQueue(handle);
   return true;
@@ -127,7 +160,9 @@ export const resolvePending = (
 
 export const clearPending = (conversationId: string): void => {
   const handle = handles.get(conversationId);
-  if (!handle || handle.pendingUserMessageIds.size === 0) return;
+  if (!handle) return;
+  handle.spawnPromptId = null;
+  if (handle.pendingUserMessageIds.size === 0) return;
   handle.pendingUserMessageIds.clear();
   emitQueue(handle);
 };
@@ -139,13 +174,31 @@ type QueryWithCancelAsyncMessage = Query & {
   cancelAsyncMessage?: (messageUuid: string) => Promise<boolean>;
 };
 
+// A control request is a write to the CLI's stdin plus a wait for the matching
+// response. The SDK bounds the wait itself: a failed write rejects at once,
+// and when the process exits it rejects every request still pending. What it
+// does not bound is a CLI that is alive and simply slow to answer — and that
+// is deliberate here too. An interrupt can legitimately take a while to
+// settle, and a cancel answered after we gave up would leave the CLI's verdict
+// applied on its side and unknown on ours. So: no timeout, but the rejection
+// is caught, because letting it escape turns a dead CLI into an unhandled 500
+// on a route that already has a word for "could not do it".
+const controlRequestFailed = (what: string, e: unknown): false => {
+  console.error(`${what} control request failed:`, e);
+  return false;
+};
+
 // Aborts the in-flight turn. The process, the query and the pipe all survive,
 // so the handle deliberately stays open — releasing it here would strand a
 // live CLI with nothing left to reach it by.
 export const interrupt = async (conversationId: string): Promise<boolean> => {
   const handle = handles.get(conversationId);
   if (!handle?.query) return false;
-  await handle.query.interrupt();
+  try {
+    await handle.query.interrupt();
+  } catch (e) {
+    return controlRequestFailed("interrupt", e);
+  }
   return true;
 };
 
@@ -156,7 +209,15 @@ export const cancelQueued = async (
   const handle = handles.get(conversationId);
   const query = handle?.query as QueryWithCancelAsyncMessage | undefined;
   if (!query?.cancelAsyncMessage) return false;
-  const cancelled = await query.cancelAsyncMessage(userMessageId);
+  let cancelled: boolean;
+  try {
+    cancelled = await query.cancelAsyncMessage(userMessageId);
+  } catch (e) {
+    // False is the endpoint's existing answer for "the CLI did not withdraw
+    // it": the bubble stays, only the mark drops. Whether the message runs is
+    // now the loop's to report — a dead CLI clears pending on its way out.
+    return controlRequestFailed("cancel_async_message", e);
+  }
   if (cancelled) resolvePending(conversationId, userMessageId);
   return cancelled;
 };
