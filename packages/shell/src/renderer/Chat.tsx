@@ -172,6 +172,15 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
           !isQueued &&
           (failedMessageIds?.includes(msg.id) ?? false);
 
+        // Only the message whose cancel is in flight waits on it. The mutation
+        // is shared by every bubble, so reading isPending alone greyed out all
+        // of them for the duration of one DELETE — and that wait is unbounded
+        // by design (see cancelQueued in the conversation store).
+        const isCancelling =
+          isQueued &&
+          cancelQueued.isPending &&
+          cancelQueued.variables?.userMessageId === msg.id;
+
         return (
           <Message
             key={msg.id}
@@ -244,12 +253,12 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
               })}
               {isQueued && conversationId && (
                 <div className="mt-0.5 flex items-center gap-1 self-end text-[10px] text-neutral-400">
-                  <span>Queued</span>
+                  <span>{isCancelling ? "Cancelling" : "Queued"}</span>
                   <button
                     type="button"
                     aria-label="Cancel queued message"
                     className="rounded-full p-0.5 hover:bg-neutral-600 hover:text-neutral-200 disabled:opacity-50"
-                    disabled={cancelQueued.isPending}
+                    disabled={isCancelling}
                     onClick={() =>
                       cancelQueued.mutate({
                         conversationId,

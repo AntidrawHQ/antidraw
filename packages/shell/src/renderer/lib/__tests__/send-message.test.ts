@@ -82,12 +82,14 @@ describe("the send's optimistic protocol", () => {
     const running = executeMutation(qc, sendMessageMutationOptions(qc), vars);
     await vi.waitFor(() => expect(detail(qc, id)!.messages).toHaveLength(2));
 
-    // The bubble is there, marked streaming, and carries the id the backend
-    // will use so the persisted row replaces it rather than doubling it.
+    // The bubble is there and carries the id the backend will use, so the
+    // persisted row replaces it rather than doubling it. The status is not
+    // touched yet: a send says "streaming" only once the backend has
+    // accepted it (onSuccess), never on a guess it might have to take back.
     const bubble = detail(qc, id)!.messages[1]!;
     expect(bubble.id).toBe(vars.userMessageId);
     expect(bubble.seq).toBe(PENDING_SEQ);
-    expect(detail(qc, id)!.streamStatus).toBe("streaming");
+    expect(detail(qc, id)!.streamStatus).toBe("idle");
 
     release();
     await running;
@@ -100,7 +102,7 @@ describe("the send's optimistic protocol", () => {
     const vars = send(id);
     qc.setQueryData<string[]>(
       queryKeys.conversations.queuedMessageIds(id),
-      [vars.userMessageId, "someone-else"],
+      [vars.userMessageId],
     );
     mockSend.mockResolvedValue(
       err({ status: 500 as const, code: "NETWORK_ERROR", message: "offline" }),
@@ -112,10 +114,88 @@ describe("the send's optimistic protocol", () => {
 
     expect(detail(qc, id)!.messages).toEqual(before);
     expect(detail(qc, id)!.streamStatus).toBe("idle");
-    // Only this send's mark goes; a concurrent one must survive.
     expect(
       qc.getQueryData<string[]>(queryKeys.conversations.queuedMessageIds(id)),
-    ).toEqual(["someone-else"]);
+    ).toEqual([]);
+  });
+
+  test("a failed send takes back only its own bubble, not what the turn streamed meanwhile", async () => {
+    const id = freshId();
+    const before = [persisted(1, "earlier")];
+    seedCache(qc, id, before);
+    qc.setQueryData<ConversationWithMessages>(
+      queryKeys.conversations.detail(id),
+      (old) => ({ ...old!, streamStatus: "streaming" }),
+    );
+    const vars = send(id);
+
+    // The interleaving the snapshot restore got wrong: a turn is running,
+    // and while this POST is out it persists a row. That lands after
+    // onMutate's snapshot and before onError.
+    const streamed = persisted(2, "arrived while the POST was out");
+    mockSend.mockImplementation(async () => {
+      qc.setQueryData<ConversationWithMessages>(
+        queryKeys.conversations.detail(id),
+        (old) => ({ ...old!, messages: [...old!.messages, streamed] }),
+      );
+      return err({ status: 500 as const, code: "NETWORK_ERROR", message: "offline" });
+    });
+
+    await expect(
+      executeMutation(qc, sendMessageMutationOptions(qc), vars),
+    ).rejects.toThrow("offline");
+
+    const after = detail(qc, id)!;
+    expect(after.messages.map((m) => m.id)).toEqual([before[0]!.id, streamed.id]);
+    expect(after.streamStatus).toBe("streaming");
+  });
+
+  test("a failed send leaves the status to the stream", async () => {
+    const id = freshId();
+    seedCache(qc, id, [persisted(1, "earlier")]);
+    const vars = send(id);
+    // The loop died while the POST was out. That is the stream's word; a
+    // send never wrote a status of its own, so it has nothing to restore.
+    mockSend.mockImplementation(async () => {
+      qc.setQueryData<ConversationWithMessages>(
+        queryKeys.conversations.detail(id),
+        (old) => ({ ...old!, streamStatus: "error" }),
+      );
+      return err({ status: 500 as const, code: "NETWORK_ERROR", message: "offline" });
+    });
+
+    await expect(
+      executeMutation(qc, sendMessageMutationOptions(qc), vars),
+    ).rejects.toThrow("offline");
+
+    expect(detail(qc, id)!.streamStatus).toBe("error");
+    expect(detail(qc, id)!.messages.map((m) => m.seq)).toEqual([1]);
+  });
+
+  test("a failed send does not take back a running the CLI reported meanwhile", async () => {
+    const id = freshId();
+    seedCache(qc, id, [persisted(1, "earlier")]);
+    const vars = send(id);
+    // Idle with an earlier send un-acked: the CLI reports idle for a message
+    // it has not parsed yet, then starts that turn while this POST is out.
+    // Had onMutate written "streaming" itself, this `running` would be
+    // indistinguishable from it and a snapshot restore would write idle over
+    // a live turn — and the idle handler would then skip its reconciling
+    // refetch at the end of that turn, having never seen it streaming.
+    mockSend.mockImplementation(async () => {
+      qc.setQueryData<ConversationWithMessages>(
+        queryKeys.conversations.detail(id),
+        (old) => ({ ...old!, streamStatus: "streaming" }),
+      );
+      return err({ status: 500 as const, code: "NETWORK_ERROR", message: "offline" });
+    });
+
+    await expect(
+      executeMutation(qc, sendMessageMutationOptions(qc), vars),
+    ).rejects.toThrow("offline");
+
+    expect(detail(qc, id)!.streamStatus).toBe("streaming");
+    expect(detail(qc, id)!.messages.map((m) => m.seq)).toEqual([1]);
   });
 
   test("a bubble the stream already replaced is not re-appended on success", async () => {
