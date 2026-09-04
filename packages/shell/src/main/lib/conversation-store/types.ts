@@ -18,5 +18,11 @@ export type CliHandle = {
   readonly promptStream: PromptStream;
   cliState: CliSessionState;
   readonly pendingUserMessageIds: Set<string>;
+  // The spawn prompt while its ack is outstanding. It goes to the CLI as the
+  // first stdin message and is replayed like any other, but it is never
+  // "queued" — the CLI reports `running` for it before anything else — so it
+  // stays out of the queue event. It is still held, though: the failed set
+  // must not count it while the spawn is in flight.
+  spawnPromptId: string | null;
   partial: LivePartial | null;
 };

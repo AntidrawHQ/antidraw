@@ -255,10 +255,13 @@ const handleStreamEvent = (
   event: StreamEvent,
   queryClient: QueryClient,
 ): void => {
-  // The backend's complete picture of what it has handed the CLI but the
-  // CLI has not acked. Replaces whatever we held — it is sent on subscribe
-  // and on every change, and the backend records a send before it answers
-  // the POST, so there is nothing of ours it can be missing.
+  // The backend's complete picture of what is queued behind a turn: pushed
+  // to the CLI and not yet folded into one. Not every un-acked prompt — the
+  // spawn prompt is un-acked while the CLI boots but is the turn, so it is
+  // held apart and never listed here. Replaces whatever we held — it is
+  // sent on subscribe and on every change, and the backend records a send
+  // before it answers the POST, so there is nothing of ours it can be
+  // missing.
   if (event.type === "queue") {
     queryClient.setQueryData<string[]>(
       queryKeys.conversations.queuedMessageIds(conversationId),

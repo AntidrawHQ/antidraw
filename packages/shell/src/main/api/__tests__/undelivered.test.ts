@@ -21,6 +21,7 @@ import {
 import {
   addPending,
   clearPending,
+  markSpawnPrompt,
   openHandle,
   releaseHandle,
   resolvePending,
@@ -95,6 +96,35 @@ describe("GET /chat/:conversationId/undelivered", () => {
     clearPending(id);
     releaseHandle(id);
     expect(await failed(id)).toEqual([b, d]);
+  });
+
+  test("the spawn prompt is held, not failed, while the CLI boots", async () => {
+    const id = await newConversation();
+    openHandle(id, buildPrompt("hello", { uuid: crypto.randomUUID() }));
+    const spawn = await persistPrompt(id);
+    markSpawnPrompt(id, spawn);
+
+    // Un-acked and never queued: a conversation opened mid-spawn must not
+    // read it as failed, because nothing later would correct that.
+    expect(await failed(id)).toEqual([]);
+
+    // The spawn dies before its ack: the turn clears pending and drops the
+    // handle on the way out, and the prompt is failed like any other.
+    clearPending(id);
+    releaseHandle(id);
+    expect(await failed(id)).toEqual([spawn]);
+  });
+
+  test("an acked spawn prompt outlives its handle as delivered", async () => {
+    const id = await newConversation();
+    openHandle(id, buildPrompt("hello", { uuid: crypto.randomUUID() }));
+    const spawn = await persistPrompt(id);
+    markSpawnPrompt(id, spawn);
+    await ack(id, spawn);
+    expect(await failed(id)).toEqual([]);
+
+    releaseHandle(id);
+    expect(await failed(id)).toEqual([]);
   });
 
   test("with no handle at all, every un-acked prompt is failed", async () => {

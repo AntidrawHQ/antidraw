@@ -28,6 +28,7 @@ export const openHandle = (
     promptStream,
     cliState: "spawning",
     pendingUserMessageIds: new Set(),
+    spawnPromptId: null,
     partial: null,
   });
   return "cold-start";
@@ -112,6 +113,26 @@ export const getPending = (conversationId: string): string[] => [
   ...(handles.get(conversationId)?.pendingUserMessageIds ?? []),
 ];
 
+export const markSpawnPrompt = (
+  conversationId: string,
+  userMessageId: string,
+): void => {
+  const handle = handles.get(conversationId);
+  if (handle) handle.spawnPromptId = userMessageId;
+};
+
+// Everything handed to the CLI with no ack yet: the queue, plus the spawn
+// prompt. This is what the undelivered route subtracts from the null rows.
+// The queue event keeps reporting only the queue.
+export const getAwaitingAck = (conversationId: string): string[] => {
+  const handle = handles.get(conversationId);
+  if (!handle) return [];
+  return [
+    ...handle.pendingUserMessageIds,
+    ...(handle.spawnPromptId ? [handle.spawnPromptId] : []),
+  ];
+};
+
 export const addPending = (
   conversationId: string,
   userMessageId: string,
@@ -127,6 +148,11 @@ export const resolvePending = (
   userMessageId: string,
 ): boolean => {
   const handle = handles.get(conversationId);
+  if (handle?.spawnPromptId === userMessageId) {
+    // The spawn's ack. Nothing to broadcast: it was never in the queue.
+    handle.spawnPromptId = null;
+    return true;
+  }
   if (!handle?.pendingUserMessageIds.delete(userMessageId)) return false;
   emitQueue(handle);
   return true;
@@ -134,7 +160,9 @@ export const resolvePending = (
 
 export const clearPending = (conversationId: string): void => {
   const handle = handles.get(conversationId);
-  if (!handle || handle.pendingUserMessageIds.size === 0) return;
+  if (!handle) return;
+  handle.spawnPromptId = null;
+  if (handle.pendingUserMessageIds.size === 0) return;
   handle.pendingUserMessageIds.clear();
   emitQueue(handle);
 };

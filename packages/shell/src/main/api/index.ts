@@ -39,6 +39,7 @@ import {
 import {
   subscribe,
   getPending,
+  getAwaitingAck,
   getPartial,
   getCliState,
   interrupt,
@@ -333,11 +334,11 @@ api.get(
   async (ctx) => {
     const { conversationId } = ctx.req.valid("param");
 
-    // Pending first. Read the other way round, an ack landing between the
-    // two reads shows a null row that is no longer pending — reported
+    // Held first. Read the other way round, an ack landing between the
+    // two reads shows a null row that is no longer held — reported
     // failed, with nothing later to correct it. This order can only hide a
     // failure, and a failure always emits `error`, which refetches.
-    const pending = new Set(getPending(conversationId));
+    const pending = new Set(getAwaitingAck(conversationId));
     const undelivered = await getUndeliveredPromptIds(conversationId);
     if (undelivered.isErr()) {
       const { status, code, message } = undelivered.error;

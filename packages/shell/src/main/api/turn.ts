@@ -24,6 +24,7 @@ import {
   markError,
   setCliState,
   addPending,
+  markSpawnPrompt,
   applyPartial,
   clearPartial,
   resolvePending,
@@ -211,8 +212,10 @@ export const runTurn = async (req: TurnRequest): Promise<void> => {
   const handle = getHandle(conversation.id)!;
   // The cold-start prompt is the spawn prompt — the CLI reports `running`
   // for it before anything else, so it is never "queued". Only a follow-up
-  // waits on an ack.
+  // waits on an ack in the queue; the spawn prompt is held apart so the
+  // failed set does not count it while the CLI boots.
   if (turnType === "follow-up") addPending(conversation.id, userMessageId);
+  else markSpawnPrompt(conversation.id, userMessageId);
 
   const persisted = await setConversationOptions(conversation.id, {
     selectedModel: options?.model ?? null,
