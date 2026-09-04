@@ -10,6 +10,7 @@ import {
 } from "@/main/api/claude-code-ops";
 import {
   addMessage,
+  markDelivered,
   updateConversationSession,
   convertUserPromptToSDKMessage,
   setConversationOptions,
@@ -31,10 +32,10 @@ import {
 } from "@/main/lib/conversation-store";
 import { trackMessageSent } from "@/main/lib/posthog";
 
-export const handleSdkMessageWithoutPersisting = (
+export const handleSdkMessageWithoutPersisting = async (
   conversationId: string,
   sdkMessage: SDKMessage,
-): boolean => {
+): Promise<boolean> => {
   if (sdkMessage.type === "stream_event") {
     applyPartial(conversationId, sdkMessage);
     conversationEvents.emit("partial", conversationId, { partial: sdkMessage });
@@ -54,6 +55,14 @@ export const handleSdkMessageWithoutPersisting = (
     "isReplay" in sdkMessage &&
     sdkMessage.isReplay
   ) {
+    // Column first, pending set second. The undelivered endpoint snapshots
+    // pending and then reads null rows; the other order here would let it
+    // see a null row that is no longer pending — reported failed, and no
+    // later event corrects it.
+    const marked = await markDelivered(sdkMessage.uuid);
+    if (marked.isErr()) {
+      console.error("Failed to record the CLI's ack:", marked.error);
+    }
     resolvePending(conversationId, sdkMessage.uuid);
     return true;
   }
@@ -124,6 +133,12 @@ const pushFollowUpTurn = async (
     if (pushed.isErr()) {
       console.error("Failed to push follow-up turn:", pushed.error);
       resolvePending(conversation.id, userMessageId);
+      // Only reachable once the SDK has cancelled the prompt stream: the CLI
+      // is gone. The renderer refetches the failed set on `error`, and this
+      // was the one failure path that never emitted it.
+      conversationEvents.emit("error", conversation.id, {
+        error: "The CLI did not accept the message",
+      });
       return;
     }
   } catch (e) {
@@ -162,7 +177,7 @@ const runColdStart = async (
     const ctx = { conversation, sessionId: claudeCodeSessionID };
 
     for await (const sdkMessage of res.value) {
-      if (handleSdkMessageWithoutPersisting(conversation.id, sdkMessage)) {
+      if (await handleSdkMessageWithoutPersisting(conversation.id, sdkMessage)) {
         continue;
       }
       await handleAndPersistSdkMessage(ctx, sdkMessage);

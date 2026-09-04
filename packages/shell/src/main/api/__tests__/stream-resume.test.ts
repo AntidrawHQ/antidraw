@@ -26,14 +26,30 @@ const h = vi.hoisted(() => ({
     onEnter: () => void;
     wait: Promise<void>;
   },
+  // How the backlog read fails, when it should. "err" is the shape the real
+  // service produces on a DB error; "reject" is the shape it must never
+  // produce again — kept here so a test can pin what the route does if it
+  // ever does.
+  failure: null as null | "err" | "reject",
 }));
 
 vi.mock("@/main/api/services/chat.service", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("@/main/api/services/chat.service")>();
+  const { err } = await import("neverthrow");
   return {
     ...actual,
     getMessagesAfterSeq: async (conversationId: string, afterSeq: number) => {
+      if (h.failure === "reject") {
+        throw new Error("SQLITE_BUSY: database is locked");
+      }
+      if (h.failure === "err") {
+        return err({
+          status: 500 as const,
+          code: "DB_ERROR",
+          message: "Failed to read the transcript after the cursor",
+        });
+      }
       const gate = h.gate;
       if (gate?.when === "before") {
         gate.onEnter();
@@ -165,6 +181,16 @@ const holdGate = (when: "before" | "after") => {
   };
 };
 
+// The service returns a Result; these tests are about the query itself, so an
+// err is a test failure, not a case.
+const rowsAfter = async (conversationId: string, afterSeq: number) => {
+  const res = await getMessagesAfterSeq(conversationId, afterSeq);
+  if (res.isErr()) {
+    throw new Error(`getMessagesAfterSeq failed: ${res.error.code}`);
+  }
+  return res.value;
+};
+
 describe("getMessagesAfterSeq", () => {
   test("is exclusive: the caller's own last seq is not sent back", async () => {
     const conversationId = await newConversation();
@@ -173,12 +199,12 @@ describe("getMessagesAfterSeq", () => {
     const c = await send(conversationId, "c");
 
     expect(
-      (await getMessagesAfterSeq(conversationId, a.seq)).map(textOf),
+      (await rowsAfter(conversationId, a.seq)).map(textOf),
     ).toEqual(["b", "c"]);
     expect(
-      (await getMessagesAfterSeq(conversationId, c.seq)).map(textOf),
+      (await rowsAfter(conversationId, c.seq)).map(textOf),
     ).toEqual([]);
-    expect((await getMessagesAfterSeq(conversationId, 0)).map(textOf)).toEqual([
+    expect((await rowsAfter(conversationId, 0)).map(textOf)).toEqual([
       "a",
       "b",
       "c",
@@ -192,7 +218,7 @@ describe("getMessagesAfterSeq", () => {
     await send(mine, "mine");
     await send(theirs, "theirs");
 
-    expect((await getMessagesAfterSeq(mine, 0)).map(textOf)).toEqual(["mine"]);
+    expect((await rowsAfter(mine, 0)).map(textOf)).toEqual(["mine"]);
   });
 
   test("a withdrawn message leaves a gap rather than a repeat", async () => {
@@ -207,7 +233,7 @@ describe("getMessagesAfterSeq", () => {
     // its place, so resuming from it still means "everything after".
     expect(next.seq).toBeGreaterThan(cancelled.seq);
     expect(
-      (await getMessagesAfterSeq(conversationId, first.seq)).map(textOf),
+      (await rowsAfter(conversationId, first.seq)).map(textOf),
     ).toEqual(["next"]);
   });
 });
@@ -231,6 +257,39 @@ describe("stream replay", () => {
     }
   });
 
+  test("every message carries the seq the renderer orders by", async () => {
+    const conversationId = await newConversation();
+    const a = await send(conversationId, "a");
+    const b = await send(conversationId, "b");
+    const c = await send(conversationId, "c");
+
+    const stream = await openStream(
+      `/api/chat/${conversationId}/stream?afterSeq=${a.seq}`,
+    );
+    try {
+      const replayed = (await stream.take(5)).filter(
+        (e): e is Extract<StreamEvent, { type: "message" }> =>
+          e.type === "message",
+      );
+
+      // Since the buffer went, the wire is explicitly NOT in transcript order —
+      // a live message can precede the backlog it overlaps. seq is the only
+      // thing the renderer can place rows by, so it has to survive the trip
+      // intact. Serialising it as 0, or dropping it, leaves the renderer
+      // sorting on a constant.
+      expect(replayed.map((e) => e.message.seq)).toEqual([b.seq, c.seq]);
+      expect(replayed.every((e) => Number.isInteger(e.message.seq))).toBe(true);
+      expect(replayed.every((e) => e.message.seq > a.seq)).toBe(true);
+
+      // And a live one, which takes the other path out of the route.
+      const live = await send(conversationId, "d");
+      const event = await stream.next();
+      expect(event).toMatchObject({ type: "message", message: { seq: live.seq } });
+    } finally {
+      stream.close();
+    }
+  });
+
   test("no afterSeq means no replay — only the seeds", async () => {
     const conversationId = await newConversation();
     await send(conversationId, "a");
@@ -240,6 +299,10 @@ describe("stream replay", () => {
     try {
       const events = await stream.take(3);
       expect(events.map((e) => e.type)).toEqual([...SEEDS]);
+      // No CLI handle is open for this conversation, and getCliState's
+      // no-handle answer is the seed's payload: idle, not a crash and not a
+      // stale "running" from a turn that no longer exists.
+      expect(events[0]).toMatchObject({ type: "state", state: "idle" });
 
       // Live events still flow; it is only the backlog that is withheld.
       const written = await send(conversationId, "live");
@@ -364,6 +427,12 @@ describe("stream replay", () => {
 
       const events = await stream.take(4);
       expect(events.map((e) => e.type)).toEqual(["partial", ...SEEDS]);
+      // The payload, not just the type: this is the only test that reads the
+      // `state` seed while a handle exists, so it is what pins getCliState —
+      // an inverted fallback there reports idle mid-turn, and the renderer
+      // would clear the live block and stop the spinner while the CLI is
+      // still producing.
+      expect(events[1]).toMatchObject({ type: "state", state: "spawning" });
       expect(events.at(-1)).toMatchObject({
         type: "livePartial",
         livePartial: { block: { type: "text", text: "mid-read" } },
@@ -374,11 +443,184 @@ describe("stream replay", () => {
     }
   });
 
+  test("a conversation that does not exist is refused, not streamed", async () => {
+    const res = await app.request(
+      `/api/chat/${crypto.randomUUID()}/stream?afterSeq=0`,
+    );
+
+    // Without the guard the route opens an SSE stream for a row that is not
+    // there: 200, a live listener attached, and seeds describing a
+    // conversation that does not exist. The renderer would hold that open and
+    // wait forever rather than reporting anything.
+    expect(res.status).toBe(404);
+    expect(res.headers.get("content-type")).not.toContain("text/event-stream");
+    const body = (await res.json()) as { error?: { code?: string } };
+    expect(body.error?.code).toBe("NOT_FOUND");
+  });
+
   test("rejects an afterSeq that is not a whole count", async () => {
     const conversationId = await newConversation();
     const res = await app.request(
       `/api/chat/${conversationId}/stream?afterSeq=-1`,
     );
     expect(res.status).toBe(400);
+  });
+});
+
+describe("stream teardown", () => {
+  // The route hangs its detach on two endings because the one these tests can
+  // drive is not the one that fires in the app. Electron builds the
+  // protocol.handle request without a signal, so `req.signal` never aborts
+  // there; what a renderer-side fetch abort reaches is the response body.
+  // Both are pinned here — deleting either hook fails one of these.
+  test("cancelling the response body detaches the listeners", async () => {
+    const conversationId = await newConversation();
+    const before = conversationEvents.listenerCount("message");
+
+    // No AbortSignal in play at all: this is the shipped path, where the only
+    // thing that ever happens is the body being cancelled.
+    const res = await app.request(`/api/chat/${conversationId}/stream`);
+    const reader = res.body!.getReader();
+    await reader.read(); // a seed — proof the handler attached
+    expect(conversationEvents.listenerCount("message")).toBe(before + 1);
+
+    await reader.cancel();
+
+    expect(conversationEvents.listenerCount("message")).toBe(before);
+  });
+
+  test("aborting the request signal detaches them too", async () => {
+    const conversationId = await newConversation();
+    const before = conversationEvents.listenerCount("message");
+
+    const abort = new AbortController();
+    const res = await app.request(`/api/chat/${conversationId}/stream`, {
+      signal: abort.signal,
+    });
+    const reader = res.body!.getReader();
+    await reader.read();
+    expect(conversationEvents.listenerCount("message")).toBe(before + 1);
+
+    // The signal and nothing else. openStream's close() cancels the body too,
+    // which would let onAbort answer for this and leave the signal hook
+    // untested — the body is deliberately left alone here.
+    abort.abort();
+
+    await vi.waitFor(() => {
+      expect(conversationEvents.listenerCount("message")).toBe(before);
+    });
+
+    await reader.cancel().catch(() => {});
+  });
+
+  test("the handler returns on departure, so the body ends", async () => {
+    const conversationId = await newConversation();
+    const abort = new AbortController();
+    const res = await app.request(`/api/chat/${conversationId}/stream`, {
+      signal: abort.signal,
+    });
+    const reader = res.body!.getReader();
+    await reader.read(); // the seeds
+
+    abort.abort();
+
+    // Not "the client stopped listening" — the server side has to finish.
+    // Parked on a promise that never settles, the handler never returns,
+    // Hono's own `finally { stream.close() }` never runs, and this read sees
+    // more frames instead of the end of the body.
+    const outcome = await Promise.race([
+      (async () => {
+        for (;;) {
+          const r = await reader.read();
+          if (r.done) return "done";
+        }
+      })().catch(() => "done"),
+      new Promise((r) => setTimeout(() => r("still open"), 1_000)),
+    ]);
+    expect(outcome).toBe("done");
+  });
+
+  test("leaving during the backlog read still ends the body", async () => {
+    const conversationId = await newConversation();
+    await send(conversationId, "a");
+
+    const gate = holdGate("before");
+    const abort = new AbortController();
+    const res = await app.request(
+      `/api/chat/${conversationId}/stream?afterSeq=0`,
+      { signal: abort.signal },
+    );
+    const reader = res.body!.getReader();
+
+    await gate.reached;
+    // The window the park's pre-check exists for. onAbort pushes onto a list
+    // abort() has already drained, so a hook registered after this point is
+    // never called — the park has to notice it missed the departure instead
+    // of waiting for a second one that will not come.
+    abort.abort();
+    gate.release();
+
+    const outcome = await Promise.race([
+      (async () => {
+        for (;;) {
+          const r = await reader.read();
+          if (r.done) return "done";
+        }
+      })().catch(() => "done"),
+      new Promise((r) => setTimeout(() => r("still open"), 1_000)),
+    ]);
+    expect(outcome).toBe("done");
+  });
+
+  test("a failed backlog read skips the replay and stays live", async () => {
+    const conversationId = await newConversation();
+    await send(conversationId, "unreachable backlog");
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    h.failure = "err";
+    const stream = await openStream(
+      `/api/chat/${conversationId}/stream?afterSeq=0`,
+    );
+    try {
+      // No message frames: the replay is skipped, not retried and not fatal.
+      // The seeds still describe the present, and the live half still works —
+      // the client's cursor only advances on a clean end, so the rows this
+      // read owed it are owed by the next attach instead.
+      const events = await stream.take(3);
+      expect(events.map((e) => e.type)).toEqual([...SEEDS]);
+
+      const after = await send(conversationId, "after the failure");
+      expect(await stream.next()).toMatchObject({
+        type: "message",
+        message: { id: after.id },
+      });
+    } finally {
+      h.failure = null;
+      errorLog.mockRestore();
+      stream.close();
+    }
+  });
+
+  test("a backlog read that rejects unwinds without leaking the subscriber", async () => {
+    const conversationId = await newConversation();
+    const before = conversationEvents.listenerCount("message");
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    h.failure = "reject";
+    try {
+      // The service contract says this cannot happen — getMessagesAfterSeq
+      // returns a Result — so this pins the finally, not the err branch: if
+      // a rejection ever does unwind the handler, Hono catches it and CLOSES
+      // the stream (close, not abort), so neither teardown hook fires and
+      // only the finally stands between the subscriber and a process-lifetime
+      // leak.
+      const res = await app.request(
+        `/api/chat/${conversationId}/stream?afterSeq=0`,
+      );
+      expect(await res.text()).toBe(""); // body ended cleanly, nothing sent
+
+      expect(conversationEvents.listenerCount("message")).toBe(before);
+    } finally {
+      h.failure = null;
+      errorLog.mockRestore();
+    }
   });
 });

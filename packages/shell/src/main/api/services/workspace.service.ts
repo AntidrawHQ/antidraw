@@ -108,7 +108,7 @@ export const createWorkspace = async function* (
       .values({ id, name })
       .returning();
 
-    yield { type: "done", workspace };
+    yield { type: "done", workspace: workspace! };
   } catch (e) {
     await fs.rm(workspacePath, { recursive: true, force: true });
 

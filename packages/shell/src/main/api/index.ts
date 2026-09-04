@@ -34,6 +34,7 @@ import {
   deleteMessage,
   getConversation,
   getMessagesAfterSeq,
+  getUndeliveredPromptIds,
 } from "./services/chat.service";
 import {
   subscribe,
@@ -165,8 +166,8 @@ api.get(
       // Order on the wire is call order: writeSSE hands each frame to the
       // stream's writer in the order it was called, and the writer queues.
       // A write to a subscriber that has gone is swallowed inside Hono, so
-      // there is nothing to catch here — the abort listener below is what
-      // answers for a departure.
+      // there is nothing to catch here — the teardown hooks below are what
+      // answer for a departure.
       const send = (event: StreamEvent) => {
         void stream.writeSSE({ data: JSON.stringify(event) });
       };
@@ -177,24 +178,92 @@ api.get(
       // absorbs the overlap: messages dedup by id and sort by seq, so it does
       // not matter that a live message can land here ahead of older rows.
       const unsubscribe = subscribe(conversationId, send);
+
+      // Two hooks for one teardown, because the one that is easy to test is
+      // not the one that fires in the app. `req.signal` is the ending Hono
+      // gives a caller-supplied AbortSignal, which is how the tests drive
+      // this route. Under Electron's protocol.handle it is dead: the
+      // handler's Request is built as `new Request(url, { headers, method,
+      // referrer, body, duplex })` with no signal at all, so it owns one
+      // nothing holds a controller for — it stays unfired through a
+      // renderer-side fetch abort and even through destroying the renderer
+      // outright (verified against 39.2.7). What that abort does reach is the
+      // response body, which Hono cancels and surfaces as onAbort. That is
+      // the hop that detaches these listeners in production; without it every
+      // conversation opened keeps a live subscriber for the rest of the
+      // session, serialising each event into a dead stream whose failed
+      // writes Hono swallows.
+      //
+      // Both can fire for one request. Unsubscribing twice is a no-op:
+      // EventEmitter.off finds nothing the second time.
       ctx.req.raw.signal.addEventListener("abort", unsubscribe);
+      stream.onAbort(unsubscribe);
 
-      if (afterSeq !== undefined) {
-        const backlog = await getMessagesAfterSeq(conversationId, afterSeq);
-        for (const message of backlog) send({ type: "message", message });
+      // Both hooks answer a departure; the finally answers an unwind. A
+      // rejection below would be caught by Hono, which closes the stream —
+      // close, not abort, so neither hook fires: the body ends cleanly, the
+      // client sees a resumable drop, and the listeners would stay attached
+      // for the life of the process, serialising every later event into a
+      // dead writer whose failed writes Hono swallows. The park at the
+      // bottom never settles, so this finally cannot fire on the happy path
+      // — it exists for the throw that is not supposed to happen.
+      try {
+        if (afterSeq !== undefined) {
+          const backlog = await getMessagesAfterSeq(conversationId, afterSeq);
+          if (backlog.isErr()) {
+            // A failed replay is not a failed connection: the live half has
+            // no DB dependency, and the seeds below still describe the
+            // present. The client's cursor only advances on a clean end, so
+            // the rows this read owed it are owed by the next attach instead.
+            console.error(
+              `Backlog replay failed for ${conversationId}:`,
+              backlog.error.message,
+            );
+          } else {
+            for (const message of backlog.value)
+              send({ type: "message", message });
+          }
+        }
+
+        // Seeds go last and are read now, after the await, so everything ahead
+        // of them on the wire is older than they are. They are whole-state, so
+        // arriving last is what makes them right: an assistant message that
+        // came through before them — backlog or live — makes the renderer drop
+        // its live block, and the seed then installs whichever block is in
+        // flight now, or none.
+        send({ type: "state", state: getCliState(conversationId) });
+        send({ type: "queue", userMessageIds: getPending(conversationId) });
+        send({ type: "livePartial", livePartial: getPartial(conversationId) });
+
+        // Park until the subscriber leaves — and then RETURN. Returning is
+        // the point: it is what lets Hono's own `finally { stream.close() }`
+        // end the body, and what lets the finally below run on the ordinary
+        // path instead of only on a throw. A promise with no resolver left
+        // both unreachable and retained this frame for the life of the
+        // process, one per conversation ever streamed.
+        //
+        // Both hooks, because they answer in different runtimes: onAbort is
+        // the one that fires under Electron's protocol.handle, the request
+        // signal is the one that fires everywhere else. Same pair the detach
+        // above registers, for the same reason.
+        //
+        // The pre-check is not defensive noise. onAbort pushes onto a list
+        // that abort() drains exactly once, with no already-aborted check, so
+        // a listener registered afterwards is never called — and the backlog
+        // read above is an await the subscriber can leave during. Without
+        // this, the fix reinstates the hang it removes, on a narrower window.
+        await new Promise<void>((resolve) => {
+          if (stream.aborted || stream.closed || ctx.req.raw.signal.aborted) {
+            resolve();
+            return;
+          }
+          const leave = () => resolve();
+          stream.onAbort(leave);
+          ctx.req.raw.signal.addEventListener("abort", leave, { once: true });
+        });
+      } finally {
+        unsubscribe();
       }
-
-      // Seeds go last and are read now, after the await, so everything ahead
-      // of them on the wire is older than they are. They are whole-state, so
-      // arriving last is what makes them right: an assistant message that
-      // came through before them — backlog or live — makes the renderer drop
-      // its live block, and the seed then installs whichever block is in
-      // flight now, or none.
-      send({ type: "state", state: getCliState(conversationId) });
-      send({ type: "queue", userMessageIds: getPending(conversationId) });
-      send({ type: "livePartial", livePartial: getPartial(conversationId) });
-
-      await new Promise(() => {});
     });
   },
 );
@@ -251,6 +320,33 @@ api.delete(
     }
 
     return ctx.json({ cancelled: true });
+  },
+);
+
+// Prompts the CLI never received: persisted, never acked, and not held
+// pending by a live handle. Computed here, never stored. The set only grows,
+// and only when the CLI fails — the renderer asks once per open and again on
+// `error`, so this is not on any hot path.
+api.get(
+  "/chat/:conversationId/undelivered",
+  zValidator("param", z.object({ conversationId: z.uuid() })),
+  async (ctx) => {
+    const { conversationId } = ctx.req.valid("param");
+
+    // Pending first. Read the other way round, an ack landing between the
+    // two reads shows a null row that is no longer pending — reported
+    // failed, with nothing later to correct it. This order can only hide a
+    // failure, and a failure always emits `error`, which refetches.
+    const pending = new Set(getPending(conversationId));
+    const undelivered = await getUndeliveredPromptIds(conversationId);
+    if (undelivered.isErr()) {
+      const { status, code, message } = undelivered.error;
+      return ctx.json({ error: { code, message } }, status);
+    }
+
+    return ctx.json({
+      failedUserMessageIds: undelivered.value.filter((id) => !pending.has(id)),
+    });
   },
 );
 
