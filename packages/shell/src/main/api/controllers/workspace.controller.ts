@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
+import { isComponentName } from "@/shared/utils/component-name";
 import {
   createWorkspace,
   listWorkspaces,
@@ -38,7 +39,7 @@ const workspaceIdParamSchema = z.object({
 
 const componentNameParamSchema = z.object({
   workspaceId: z.uuid(),
-  componentName: z.string().regex(/^[a-zA-Z0-9_-]+$/),
+  componentName: z.string().refine(isComponentName, "invalid component name"),
 });
 
 export type { CreateWorkspaceEvent as CreateWorkspaceResponse };

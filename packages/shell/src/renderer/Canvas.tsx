@@ -250,7 +250,7 @@ const CanvasContent = ({
             height: clampNodeSize(saved.height),
           },
           data: {
-            url: `https://localhost:${port}/preview?componentName=${component.name}`,
+            url: `https://localhost:${port}/preview?componentName=${encodeURIComponent(component.name)}`,
             componentName: component.name,
           },
         });
@@ -274,7 +274,7 @@ const CanvasContent = ({
       position: { x: baseX + 500 + index * 600, y: baseY },
       style: { width: 400, height: 300 },
       data: {
-        url: `https://localhost:${port}/preview?componentName=${component.name}`,
+        url: `https://localhost:${port}/preview?componentName=${encodeURIComponent(component.name)}`,
         componentName: component.name,
       },
     }));
@@ -373,7 +373,7 @@ const CanvasContent = ({
           position: { x: maxX + 500 + index * 600, y: 100 },
           style: { width: 400, height: 300 },
           data: {
-            url: `https://localhost:${port}/preview?componentName=${component.name}`,
+            url: `https://localhost:${port}/preview?componentName=${encodeURIComponent(component.name)}`,
             componentName: component.name,
           },
         })),

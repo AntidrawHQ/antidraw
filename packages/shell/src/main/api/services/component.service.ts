@@ -59,6 +59,15 @@ export const getComponentSource = async (
   try {
     const dir = getComponentsDir(workspaceId);
     const filePath = path.resolve(dir, `${name}.tsx`);
+    // The route validates the name, but this is the read: never leave the
+    // components directory whatever the caller passed.
+    if (path.dirname(filePath) !== dir) {
+      return err({
+        status: 404 as const,
+        code: "NOT_FOUND",
+        message: "Component not found",
+      });
+    }
     const source = await fs.readFile(filePath, "utf-8");
 
     return ok({
