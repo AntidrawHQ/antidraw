@@ -171,9 +171,32 @@ const tolerateUnparsableSource = (): Plugin => {
   }
 }
 
+// Vite decodes request paths with decodeURI, which leaves URL-reserved
+// characters (& ; : @ = + $ ,) percent-encoded, so a source file whose name
+// contains one cannot be requested: the lookup misses and the SPA fallback
+// answers instead. The Preview page requests components by their
+// percent-encoded name, so decode those characters for workspace source
+// requests. "/", "?" and "#" stay impossible: decoded, they would change the
+// URL's meaning.
+const RESERVED_ESCAPE_RE = /%(26|3B|3A|40|3D|2B|24|2C)/gi
+
+const decodeReservedInSourcePaths = (): Plugin => ({
+  name: "antidraw:decode-reserved-in-source-paths",
+  apply: "serve",
+  configureServer(server) {
+    server.middlewares.use((req, _res, next) => {
+      if (req.url?.startsWith("/src/") && RESERVED_ESCAPE_RE.test(req.url)) {
+        req.url = req.url.replace(RESERVED_ESCAPE_RE, (m) => decodeURIComponent(m))
+      }
+      next()
+    })
+  },
+})
+
 export const antidraw = (): Plugin[] => {
   return [
     cssInvalidateOnFileAdd(),
+    decodeReservedInSourcePaths(),
     tolerateUnresolvedImports(),
     tolerateUnparsableSource(),
     {

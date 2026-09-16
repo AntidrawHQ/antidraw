@@ -50,6 +50,16 @@ const Frame = ({
   )
 }
 
+// A component name is one file-name segment: Preview appends ".tsx" and loads
+// it from src/components/user-components/. "/" and ".." could leave that
+// directory, and "/", "?" and "#" cannot be carried in a URL path at all, so
+// those are refused with a message. Everything else a file name can hold is
+// previewable (see the plugin's reserved-character middleware for & ; : @ = +
+// $ , which Vite would otherwise leave encoded).
+const UNUSABLE_NAME_RE = /[/\\?#\0]/
+const isPreviewableName = (name: string) =>
+  name !== "." && name !== ".." && !UNUSABLE_NAME_RE.test(name)
+
 export const Preview = () => {
   const { componentName, fullscreen } = useSearch({ strict: false }) as {
     componentName?: string
@@ -57,18 +67,28 @@ export const Preview = () => {
   }
 
   const LazyComponent = useMemo(() => {
-    if (!componentName) return null
+    if (!componentName || !isPreviewableName(componentName)) return null
     return lazy(() =>
       import(
-        /* @vite-ignore */ `/src/components/user-components/${componentName}.tsx`
+        /* @vite-ignore */ `/src/components/user-components/${encodeURIComponent(componentName)}.tsx`
       ),
     )
   }, [componentName])
 
-  if (!componentName || !LazyComponent) {
+  if (!componentName) {
     return (
       <div className="flex items-center justify-center h-screen text-neutral-400">
         <h1 className="text-xl">No component selected for preview</h1>
+      </div>
+    )
+  }
+
+  if (!LazyComponent) {
+    return (
+      <div className="flex items-center justify-center h-screen text-red-400">
+        <h1 className="text-xl">
+          Component &quot;{componentName}&quot; cannot be previewed: names cannot contain / \ ? or #
+        </h1>
       </div>
     )
   }
