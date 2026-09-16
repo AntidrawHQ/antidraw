@@ -77,8 +77,11 @@ const isWorkspaceSource = (root: string, file: string) => {
 // source: an import Vite could not resolve is handed back unchanged, which
 // the scanner treats as external. The pre-bundle stays complete and only the
 // previews that load that file fail, with Vite's usual "Failed to resolve
-// import" error. Relative imports and "@/…" aliases to files not written yet
-// never reach here: the scanner externalises those on its own.
+// import" error. Relative imports never reach here: the scanner externalises
+// unresolved ones on its own. Nor do "@/…" aliases: the alias plugin returns
+// the rewritten absolute path even when no file exists there, so an
+// extensionless miss is externalised as non-scannable and a miss with a
+// JS/TS extension is handed to the loader, where the hook below catches it.
 const tolerateUnresolvedImports = (): Plugin => {
   let config: ResolvedConfig
   const warned = new Set<string>()
@@ -109,14 +112,16 @@ const tolerateUnresolvedImports = (): Plugin => {
   }
 }
 
-// The other way a workspace source file can abort the dependency scan: esbuild
-// cannot parse it. The scanner runs `optimizeDeps.esbuildOptions.plugins`
-// ahead of its own loader, so this onLoad parses each workspace source file
-// first and, if that fails, hands the scanner an empty module (with a warning
-// naming the file) so the rest of the workspace is still pre-bundled. Only the
-// previews that load that file fail, with Vite's usual transform error. The
-// same plugin list is used when the optimizer bundles dependencies, where no
-// workspace source is loaded, so the prefix check makes it a no-op there.
+// The other ways a workspace source file can abort the dependency scan:
+// esbuild cannot parse it, or it does not exist (an "@/…" alias with an
+// extension to a file not written yet resolves to a path all the same). The
+// scanner runs `optimizeDeps.esbuildOptions.plugins` ahead of its own loader,
+// so this onLoad reads and parses each workspace source file first and, if
+// either fails, hands the scanner an empty module (with a warning naming the
+// file) so the rest of the workspace is still pre-bundled. Only the previews
+// that load that file fail, with Vite's usual error. The same plugin list is
+// used when the optimizer bundles dependencies, where no workspace source is
+// loaded, so the prefix check makes it a no-op there.
 const tolerateUnparsableSource = (): Plugin => {
   let config: ResolvedConfig
 
@@ -135,18 +140,24 @@ const tolerateUnparsableSource = (): Plugin => {
               setup(build) {
                 build.onLoad({ filter: SCANNABLE_FILE_RE }, async (args) => {
                   if (!isWorkspaceSource(config.root, args.path)) return undefined
-                  const code = await fs.promises.readFile(args.path, "utf8")
+                  const file = path.relative(config.root, args.path)
                   try {
+                    const code = await fs.promises.readFile(args.path, "utf8")
                     await transformWithEsbuild(code, args.path)
                     return undefined
                   } catch (e) {
-                    // esbuild's message is a count line followed by one
-                    // "file:line:col: ERROR: …" line per error; show the first.
-                    const lines = (e as Error).message.split("\n")
-                    const reason = lines[1]?.trim() || lines[0]
+                    const err = e as NodeJS.ErrnoException
+                    let reason: string
+                    if (err.code === "ENOENT") {
+                      reason = `${file} does not exist`
+                    } else {
+                      // esbuild's message is a count line followed by one
+                      // "file:line:col: ERROR: …" line per error; show the first.
+                      const lines = err.message.split("\n")
+                      reason = `${file} could not be parsed: ${lines[1]?.trim() || lines[0]}`
+                    }
                     config.logger.warn(
-                      `[antidraw] ${path.relative(config.root, args.path)} could not be parsed ` +
-                        `and was left out of the dependency scan: ${reason}`,
+                      `[antidraw] ${reason} — left out of the dependency scan`,
                     )
                     return { contents: "", loader: "js" }
                   }
