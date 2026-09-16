@@ -2,8 +2,6 @@ import {
   createRouter,
   createRootRoute,
   createRoute,
-  parseSearchWith,
-  stringifySearchWith,
 } from "@tanstack/react-router"
 import { Preview } from "./pages/Preview"
 
@@ -14,9 +12,13 @@ const previewRoute = createRoute({
   path: "/preview",
   component: Preview,
   validateSearch: (search: Record<string, unknown>) => {
-    const name = typeof search.componentName === "string" ? search.componentName : ""
+    // The search decoder turns "404", "true" and "false" into a number or a
+    // boolean before any parser runs (router-core's qss toValue), and only
+    // strings that round-trip exactly are converted, so String() restores
+    // the name as written. Validity is decided by the Preview page, which
+    // can say why a name is unusable.
+    const name = search.componentName == null ? "" : String(search.componentName)
     return {
-      // Validated by the Preview page, which can say why a name is unusable.
       componentName: name || undefined,
       fullscreen: search.fullscreen === "true" || search.fullscreen === true,
     }
@@ -25,11 +27,4 @@ const previewRoute = createRoute({
 
 const routeTree = rootRoute.addChildren([previewRoute])
 
-export const router = createRouter({
-  routeTree,
-  // Keep search values as the strings the URL carries. The default parser
-  // JSON-parses each value, which turns a component named "404", "true" or
-  // "null" into a number, a boolean or null.
-  parseSearch: parseSearchWith((value) => value),
-  stringifySearch: stringifySearchWith(String),
-})
+export const router = createRouter({ routeTree })
