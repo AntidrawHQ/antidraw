@@ -213,7 +213,7 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
                   return isAssistant ? (
                     <Markdown
                       key={idx}
-                      className="bg-secondary text-foreground prose prose-sm prose-invert rounded-lg"
+                      className="bg-secondary text-foreground prose prose-sm prose-invert max-w-none rounded-lg"
                     >
                       {block.text}
                     </Markdown>
@@ -221,7 +221,7 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
                     <MessageContent
                       key={idx}
                       className={cn(
-                        "bg-neutral-700 text-neutral-200 prose prose-sm prose-invert",
+                        "bg-neutral-700 text-neutral-200 prose prose-sm prose-invert max-w-none",
                         (isQueued || isFailed) && "opacity-60"
                       )}
                     >
@@ -282,7 +282,7 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
       {liveText && (
         <Message data-role="assistant" className="justify-start">
           <div className="flex flex-col overflow-auto w-full">
-            <Markdown className="bg-secondary text-foreground prose prose-sm prose-invert rounded-lg">
+            <Markdown className="bg-secondary text-foreground prose prose-sm prose-invert max-w-none rounded-lg">
               {liveText}
             </Markdown>
           </div>
