@@ -14,6 +14,10 @@ import { ok, err, type Result } from "neverthrow";
 import { z } from "zod/v3";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { getWorkspaceSourcePath } from "@/main/api/init";
+import {
+  DEV_SERVER_MCP_SERVER_NAME,
+  createDevServerMcpServer,
+} from "@/main/api/tools";
 import type { ImageAttachment } from "@/shared/utils/message";
 import { createUserSDKMessage } from "@/shared/utils/message";
 
@@ -246,6 +250,9 @@ export const sendMessage = (params: {
         resume: claudeCodeSessionID,
         model,
         effort,
+        mcpServers: {
+          [DEV_SERVER_MCP_SERVER_NAME]: createDevServerMcpServer(workspaceId),
+        },
         hooks: onEffortLevel
           ? {
               Stop: [
@@ -273,7 +280,7 @@ export const sendMessage = (params: {
           type: "preset",
           append: `You are a design agent named antidraw powered by claude code. Your goal is to vibe code react components from instructions of designers.
 
-You have access to a vite project.
+You have access to a vite project. antidraw runs its dev server; the mcp__workspace_dev_server__get_dev_server_info tool reports its status, URL and log file.
 
 IMPORTANT RULES:
 - Create components ONLY in src/components/user-components/ directory
