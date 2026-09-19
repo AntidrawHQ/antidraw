@@ -46,6 +46,15 @@ type DevServerError = {
   message: string;
 };
 
+const spawnFailed = (cause: unknown) =>
+  err({
+    status: 500,
+    code: DevServerErrorCode.SPAWN_FAILED,
+    message: `Failed to start dev server: ${
+      cause instanceof Error ? cause.message : String(cause)
+    }`,
+  } satisfies DevServerError);
+
 const killProcessTree = (pid: number): void => {
   try {
     if (process.platform === "win32") {
@@ -108,26 +117,41 @@ export const startDevServer = async (
     } satisfies DevServerError);
   }
 
-  const port = await getPort();
+  let port: number;
+  let proc: ChildProcess;
 
-  const proc = spawnNpm(
-    ["run", "dev", "--", "--port", port.toString()],
-    workspacePath,
-    {
-      detached: process.platform !== "win32",
-      stdio: ["ignore", "pipe", "pipe"],
-      // Output goes to a log file, not a terminal; keep colour codes out of
-      // it even if the user's shell exports FORCE_COLOR.
-      env: { NO_COLOR: "1" },
-    },
-  );
+  try {
+    port = await getPort();
+    proc = spawnNpm(
+      ["run", "dev", "--", "--port", port.toString()],
+      workspacePath,
+      {
+        detached: process.platform !== "win32",
+        stdio: ["ignore", "pipe", "pipe"],
+        // Output goes to a log file, not a terminal; keep colour codes out of
+        // it even if the user's shell exports FORCE_COLOR.
+        env: { NO_COLOR: "1" },
+      },
+    );
+  } catch (error) {
+    return spawnFailed(error);
+  }
+
+  // A spawn that fails asynchronously (missing or non-executable binary)
+  // reports through an `error` event, which is an uncaught exception in the
+  // main process if nothing listens.
+  const spawnError = new Promise<Error>((resolve) => {
+    proc.on("error", (error) => {
+      console.error(`Dev server process error for ${workspaceId}:`, error);
+      resolve(error);
+    });
+  });
 
   if (!proc.pid) {
-    return err({
-      status: 500,
-      code: DevServerErrorCode.SPAWN_FAILED,
-      message: "Failed to start dev server: no PID assigned",
-    } satisfies DevServerError);
+    const noPid = new Promise<string>((resolve) =>
+      setTimeout(() => resolve("no PID assigned"), 1000),
+    );
+    return spawnFailed(await Promise.race([spawnError, noPid]));
   }
 
   const state = {

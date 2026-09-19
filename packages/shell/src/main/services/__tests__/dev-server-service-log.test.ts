@@ -6,7 +6,11 @@ import path from "node:path";
 
 // Real child processes and a real log file; only the Electron-bound edges
 // (paths under $HOME, electron-store, npm, the component watcher) are mocked.
-const h = vi.hoisted(() => ({ root: "", script: "" }));
+const h = vi.hoisted(() => ({
+  root: "",
+  script: "",
+  spawn: null as null | (() => unknown),
+}));
 
 vi.mock("@/main/api/init", () => ({
   getWorkspaceSourcePath: () => h.root,
@@ -30,6 +34,7 @@ vi.mock("@/main/api/services/component.service", () => ({
 }));
 vi.mock("@/main/lib/package-manager", () => ({
   spawnNpm: (_args: string[], cwd: string, options: SpawnOptions) =>
+    h.spawn?.() ??
     spawn(process.execPath, ["-e", h.script], { ...options, cwd, env: process.env }),
 }));
 
@@ -52,6 +57,7 @@ describe("dev server run log", () => {
   beforeEach(() => {
     h.root = fs.mkdtempSync(path.join(os.tmpdir(), "antidraw-svc-"));
     h.script = VITE;
+    h.spawn = null;
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
   });
@@ -131,6 +137,32 @@ describe("dev server run log", () => {
       === dev server started pid=<pid> port=<port> <ts> ===
       VITE ready in 1 ms
       "
+    `);
+  });
+
+  test("a spawn that throws comes back as SPAWN_FAILED", async () => {
+    h.spawn = () => {
+      throw new Error("spawn EAGAIN");
+    };
+
+    expect((await startDevServer("ws"))._unsafeUnwrapErr()).toMatchInlineSnapshot(`
+      {
+        "code": "SPAWN_FAILED",
+        "message": "Failed to start dev server: spawn EAGAIN",
+        "status": 500,
+      }
+    `);
+  });
+
+  test("a spawn that fails asynchronously comes back as SPAWN_FAILED", async () => {
+    h.spawn = () => spawn("/nonexistent/antidraw-node", [], { stdio: "pipe" });
+
+    expect((await startDevServer("ws"))._unsafeUnwrapErr()).toMatchInlineSnapshot(`
+      {
+        "code": "SPAWN_FAILED",
+        "message": "Failed to start dev server: spawn /nonexistent/antidraw-node ENOENT",
+        "status": 500,
+      }
     `);
   });
 });
