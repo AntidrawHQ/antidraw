@@ -16,12 +16,12 @@ const npmCli = join(npmDir, "bin", "npm-cli.js");
 export const spawnNpm = (
   args: string[],
   cwd: string,
-  options: Omit<SpawnOptions, "cwd" | "env"> = {},
+  options: Omit<SpawnOptions, "cwd" | "env"> & { env?: NodeJS.ProcessEnv } = {},
 ): ChildProcess =>
   spawn(getNodeElectronPath(), [npmCli, ...args], {
     ...options,
     cwd,
-    env: getShimmedSpawnEnv(),
+    env: getShimmedSpawnEnv(options.env),
   });
 
 export async function* runNpm(args: string[], cwd: string): AsyncGenerator<NpmOutput> {

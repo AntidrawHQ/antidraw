@@ -2,94 +2,35 @@ import { describe, test, expect, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { PassThrough } from "node:stream";
-import {
-  createLineSplitter,
-  formatLogLine,
-  openDevServerLog,
-  stripAnsi,
-} from "@/main/services/dev-server-log";
+import { logMarker, openDevServerLog } from "@/main/services/dev-server-log";
 
-describe("createLineSplitter", () => {
-  test("joins partial chunks and emits whole lines only", () => {
-    const lines: string[] = [];
-    const s = createLineSplitter((l) => lines.push(l));
-    s.push("ready in ");
-    s.push("120 ms\n  ➜  Local: http://loc");
-    expect(lines).toMatchInlineSnapshot(`
-      [
-        "ready in 120 ms",
-      ]
-    `);
-    s.push("alhost:5173/\n");
-    expect(lines).toMatchInlineSnapshot(`
-      [
-        "ready in 120 ms",
-        "  ➜  Local: http://localhost:5173/",
-      ]
-    `);
-  });
+const readLog = (p: string) =>
+  fs
+    .readFileSync(p, "utf8")
+    .replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/g, "<ts>");
 
-  test("flush emits the trailing partial line once", () => {
-    const lines: string[] = [];
-    const s = createLineSplitter((l) => lines.push(l));
-    s.push("no newline");
-    s.flush();
-    s.flush();
-    expect(lines).toMatchInlineSnapshot(`
-      [
-        "no newline",
-      ]
-    `);
-  });
-});
-
-describe("formatLogLine", () => {
-  test("stamps, tags, strips ANSI and CR", () => {
-    const ts = new Date("2026-09-19T10:00:00.000Z");
-    expect(
-      formatLogLine("err", "\x1b[31mError\x1b[0m: boom\r", ts)
-    ).toMatchInlineSnapshot(`
-      "2026-09-19T10:00:00.000Z [err] Error: boom
-      "
-    `);
-  });
-
-  test("stripAnsi handles cursor/format sequences", () => {
-    expect(stripAnsi("\x1b[2K\x1b[1G\x1b[36mvite\x1b[39m")).toMatchInlineSnapshot(`"vite"`);
-  });
-});
+const endLog = (log: fs.WriteStream, tail: string) =>
+  new Promise<void>((resolve) => log.end(tail, resolve));
 
 describe("openDevServerLog", () => {
   let dir: string;
   afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
-  const readLog = (p: string) =>
-    fs
-      .readFileSync(p, "utf8")
-      .replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/g, "<ts>");
-
-  test("appends across runs with markers, tagged lines; creates the logs dir", async () => {
+  test("appends across runs with markers; creates the logs dir", async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), "antidraw-log-"));
     const p = path.join(dir, "logs", "dev-server.log");
 
     const run1 = openDevServerLog(p);
-    const out = new PassThrough();
-    run1.marker("dev server started pid=1 port=5173");
-    run1.attach(out, "out");
-    out.write("VITE ready\n");
-    out.end();
-    await new Promise((r) => out.on("end", r));
-    run1.marker("dev server exited code=0");
-    await run1.close();
+    run1.write(logMarker("dev server started pid=1 port=5173"));
+    run1.write("VITE ready\n");
+    await endLog(run1, logMarker("dev server exited code=0"));
 
     const run2 = openDevServerLog(p);
-    run2.marker("dev server started pid=2 port=5174");
-    await run2.close();
+    await endLog(run2, logMarker("dev server started pid=2 port=5174"));
 
     expect(readLog(p)).toMatchInlineSnapshot(`
       "=== dev server started pid=1 port=5173 <ts> ===
-      <ts> [out] VITE ready
+      VITE ready
       === dev server exited code=0 <ts> ===
       === dev server started pid=2 port=5174 <ts> ===
       "
@@ -102,8 +43,7 @@ describe("openDevServerLog", () => {
     fs.writeFileSync(p, "x".repeat(5 * 1024 * 1024 + 1));
 
     const log = openDevServerLog(p);
-    log.marker("dev server started pid=3 port=1");
-    await log.close();
+    await endLog(log, logMarker("dev server started pid=3 port=1"));
 
     expect(fs.statSync(`${p}.1`).size).toBe(5 * 1024 * 1024 + 1);
     expect(readLog(p)).toMatchInlineSnapshot(`
