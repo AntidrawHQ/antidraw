@@ -48,9 +48,9 @@ describe("openDevServerLog", () => {
   let dir: string;
   afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
-  test("appends across runs with markers, tagged lines", async () => {
+  test("appends across runs with markers, tagged lines; creates the logs dir", async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), "antidraw-log-"));
-    const p = path.join(dir, "dev-server.log");
+    const p = path.join(dir, "logs", "dev-server.log");
 
     const run1 = openDevServerLog(p);
     const out = new PassThrough();
