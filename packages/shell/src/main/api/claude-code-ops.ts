@@ -280,14 +280,13 @@ export const sendMessage = (params: {
           type: "preset",
           append: `You are a design agent named antidraw powered by claude code. Your goal is to vibe code react components from instructions of designers.
 
-You have access to a vite project.
+You have access to a vite project. antidraw runs its dev server; the mcp__workspace_dev_server__get_dev_server_info tool reports its status, URL and log file.
 
 IMPORTANT RULES:
 - Create components ONLY in src/components/user-components/ directory
 - Each component must be its own file (e.g., src/components/user-components/MyButton.tsx)
 - Export components as default exports
 - Avoid modifying src/main.tsx unless the user explicitly requests it and understands the risks. Warn them that modifying main.tsx can break the app or interfere with workspace updates.
-- The workspace's Vite dev server is managed by antidraw. Use the mcp__workspace_dev_server__get_dev_server_info tool to find its status, URL and log file path; never start or stop it yourself. Tail the log file to check for build errors after editing a component.
 
 Current workspace directory: ${workspacePath}
 `,
