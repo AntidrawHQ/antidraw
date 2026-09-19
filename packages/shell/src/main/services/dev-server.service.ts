@@ -2,7 +2,11 @@ import { exec, type ChildProcess, execSync } from "child_process";
 import { access } from "fs/promises";
 import getPort from "get-port";
 import { ok, err, type Result } from "neverthrow";
-import { getWorkspaceSourcePath } from "@/main/api/init";
+import {
+  getWorkspaceDevServerLogPath,
+  getWorkspaceSourcePath,
+} from "@/main/api/init";
+import { logMarker, openDevServerLog } from "@/main/services/dev-server-log";
 import { devServerStore, type DevServerState } from "@/main/lib/runtime-store";
 import { spawnNpm } from "@/main/lib/package-manager";
 import {
@@ -105,6 +109,9 @@ export const startDevServer = async (
     {
       detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
+      // Output goes to a log file, not a terminal; keep colour codes out of
+      // it even if the user's shell exports FORCE_COLOR.
+      env: { NO_COLOR: "1" },
     },
   );
 
@@ -128,6 +135,13 @@ export const startDevServer = async (
 
   // Persist for crash recovery
   devServerStore.set(state);
+
+  // Append-only run log; the agent reads it via the path from
+  // get_dev_server_info. Raw output, bracketed by start/exit markers.
+  const log = openDevServerLog(getWorkspaceDevServerLogPath(workspaceId));
+  log.write(logMarker(`dev server started pid=${proc.pid} port=${port}`));
+  proc.stdout!.pipe(log, { end: false });
+  proc.stderr!.pipe(log, { end: false });
 
   // Wait for Vite to signal it's ready via stdout
   const readyPromise = new Promise<boolean>((resolve) => {
@@ -158,6 +172,13 @@ export const startDevServer = async (
   });
 
   // Cleanup on exit (after ready check)
+  // `close` (not `exit`): it fires once stdout/stderr have drained, so the
+  // exit marker lands after the last output line and nothing is written to
+  // an already-ended log stream.
+  proc.on("close", (code) => {
+    log.end(logMarker(`dev server exited code=${code}`));
+  });
+
   proc.on("exit", (code) => {
     console.log(`Dev server for ${workspaceId} exited with code ${code}`);
     runningProcesses.delete(workspaceId);
