@@ -26,7 +26,7 @@ describe("getDevServerInfo", () => {
     );
     expect(getDevServerInfo("ws")).toEqual({
       status: "running",
-      url: "http://localhost:5173",
+      url: "https://localhost:5173",
       port: 5173,
       startedAt: 42,
       logPath,

@@ -29,9 +29,10 @@ export const getDevServerInfo = (workspaceId: string): DevServerToolInfo => {
     return { status: "stopped", url: null, logPath };
   }
   const { port, startedAt } = result.value;
+  // https: the runtime's Vite plugin serves with a self-signed localhost cert.
   return {
     status: "running",
-    url: `http://localhost:${port}`,
+    url: `https://localhost:${port}`,
     port,
     startedAt,
     logPath,
@@ -42,7 +43,8 @@ export const devServerTool = (workspaceId: string) =>
   tool(
     "get_dev_server",
     "Get the status, URL and log file of the Vite dev server for the current " +
-      "workspace. Returns status 'running' with url, port and startedAt, or " +
+      "workspace. Returns status 'running' with url (https, self-signed cert: " +
+      "use curl -k), port and startedAt, or " +
       "status 'stopped' with url null. logPath is the server's append-only " +
       "log (stdout/stderr, one timestamped line each, with start/exit markers " +
       "per run); read or tail it to see build errors and HMR output. It is " +
