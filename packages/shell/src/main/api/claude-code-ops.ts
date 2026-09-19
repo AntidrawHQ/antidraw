@@ -14,6 +14,10 @@ import { ok, err, type Result } from "neverthrow";
 import { z } from "zod/v3";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { getWorkspaceSourcePath } from "@/main/api/init";
+import {
+  ANTIDRAW_MCP_SERVER_NAME,
+  createAntidrawMcpServer,
+} from "@/main/api/tools";
 import type { ImageAttachment } from "@/shared/utils/message";
 import { createUserSDKMessage } from "@/shared/utils/message";
 
@@ -246,6 +250,9 @@ export const sendMessage = (params: {
         resume: claudeCodeSessionID,
         model,
         effort,
+        mcpServers: {
+          [ANTIDRAW_MCP_SERVER_NAME]: createAntidrawMcpServer(workspaceId),
+        },
         hooks: onEffortLevel
           ? {
               Stop: [
@@ -280,6 +287,7 @@ IMPORTANT RULES:
 - Each component must be its own file (e.g., src/components/user-components/MyButton.tsx)
 - Export components as default exports
 - Avoid modifying src/main.tsx unless the user explicitly requests it and understands the risks. Warn them that modifying main.tsx can break the app or interfere with workspace updates.
+- The workspace's Vite dev server is managed by antidraw. Use the mcp__antidraw__get_dev_server tool to find its status and URL; never start or stop it yourself.
 
 Current workspace directory: ${workspacePath}
 `,
