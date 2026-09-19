@@ -26,9 +26,9 @@ export const getDevServerInfo = (workspaceId: string): DevServerToolInfo => {
   };
 };
 
-export const devServerTool = (workspaceId: string) =>
+export const devServerInfoTool = (workspaceId: string) =>
   tool(
-    "get_dev_server",
+    "get_info",
     "Get the state of the Vite dev server for the current workspace. " +
       "`running` is a live check of the server process. When a server has " +
       "been started you also get its pid, port, startedAt and url (https, " +
