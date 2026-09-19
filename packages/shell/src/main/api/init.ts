@@ -26,4 +26,8 @@ export const getWorkspaceClaudePath = (id: string) =>
 export const getWorkspaceSourcePath = (id: string) =>
   path.join(getWorkspacePath(id), "source");
 
+// Outside `source/` so it never shows up in the Vite project or git status.
+export const getWorkspaceDevServerLogPath = (id: string) =>
+  path.join(getWorkspacePath(id), "dev-server.log");
+
 export const getDbPath = () => path.join(antidrawRoot, "antidraw.db");
