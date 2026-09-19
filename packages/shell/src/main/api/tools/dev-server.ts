@@ -1,40 +1,27 @@
 import fs from "node:fs";
 import { tool } from "@anthropic-ai/claude-agent-sdk";
 import { getWorkspaceDevServerLogPath } from "@/main/api/init";
-import { getDevServerStatus } from "@/main/services/dev-server.service";
+import {
+  getDevServerStatus,
+  type DevServerInfo,
+} from "@/main/services/dev-server.service";
 
+// The service's ground state, plus two derived fields. No reinterpretation:
+// a stale entry (pid dead) comes through as running:false with its old
+// port/url still attached, and the agent can reason about the disparity.
 export type DevServerToolInfo =
-  | {
-      status: "running";
-      url: string;
-      port: number;
-      startedAt: number;
-      logPath: string | null;
-    }
-  | { status: "stopped"; url: null; logPath: string | null };
+  | (DevServerInfo & { url: string; logPath: string | null })
+  | { running: false; logPath: string | null };
 
-// The log persists across runs, so it is reported for a stopped server too:
-// its tail is how the agent finds out why the server went away.
-const existingLogPath = (workspaceId: string): string | null => {
-  const p = getWorkspaceDevServerLogPath(workspaceId);
-  return fs.existsSync(p) ? p : null;
-};
-
-// A stale entry in the runtime store (the pid died without a clean stop)
-// reports as stopped rather than leaking a port nothing listens on.
 export const getDevServerInfo = (workspaceId: string): DevServerToolInfo => {
   const result = getDevServerStatus(workspaceId);
-  const logPath = existingLogPath(workspaceId);
-  if (result.isErr() || !result.value.running) {
-    return { status: "stopped", url: null, logPath };
-  }
-  const { port, startedAt } = result.value;
+  const p = getWorkspaceDevServerLogPath(workspaceId);
+  const logPath = fs.existsSync(p) ? p : null;
+  if (result.isErr()) return { running: false, logPath };
   // https: the runtime's Vite plugin serves with a self-signed localhost cert.
   return {
-    status: "running",
-    url: `https://localhost:${port}`,
-    port,
-    startedAt,
+    ...result.value,
+    url: `https://localhost:${result.value.port}`,
     logPath,
   };
 };
@@ -42,11 +29,12 @@ export const getDevServerInfo = (workspaceId: string): DevServerToolInfo => {
 export const devServerTool = (workspaceId: string) =>
   tool(
     "get_dev_server",
-    "Get the status, URL and log file of the Vite dev server for the current " +
-      "workspace. Returns status 'running' with url (https, self-signed cert: " +
-      "use curl -k), port and startedAt, or " +
-      "status 'stopped' with url null. logPath is the server's append-only " +
-      "log (stdout/stderr, one timestamped line each, with start/exit markers " +
+    "Get the state of the Vite dev server for the current workspace. " +
+      "`running` is a live check of the server process. When a server has " +
+      "been started you also get its pid, port, startedAt and url (https, " +
+      "self-signed cert: use curl -k); running:false alongside those means " +
+      "the process died. logPath is the server's append-only log " +
+      "(stdout/stderr, one timestamped line each, with start/exit markers " +
       "per run); read or tail it to see build errors and HMR output. It is " +
       "null if the server has never been started.",
     {},

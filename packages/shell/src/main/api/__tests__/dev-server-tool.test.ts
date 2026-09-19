@@ -13,6 +13,7 @@ import { getDevServerInfo } from "@/main/api/tools/dev-server";
 const mockStatus = vi.mocked(getDevServerStatus);
 const existsSpy = vi.spyOn(fs, "existsSync");
 const logPath = getWorkspaceDevServerLogPath("ws");
+const stored = { workspaceId: "ws", pid: 1, port: 5173, startedAt: 42 };
 
 describe("getDevServerInfo", () => {
   beforeEach(() => {
@@ -20,36 +21,32 @@ describe("getDevServerInfo", () => {
     existsSpy.mockReset().mockReturnValue(true);
   });
 
-  test("running server reports url built from the stored port", () => {
-    mockStatus.mockReturnValue(
-      ok({ workspaceId: "ws", pid: 1, port: 5173, startedAt: 42, running: true })
-    );
+  test("passes the service state through, adding url and logPath", () => {
+    mockStatus.mockReturnValue(ok({ ...stored, running: true }));
     expect(getDevServerInfo("ws")).toEqual({
-      status: "running",
+      ...stored,
+      running: true,
       url: "https://localhost:5173",
-      port: 5173,
-      startedAt: 42,
       logPath,
     });
     expect(mockStatus).toHaveBeenCalledWith("ws");
   });
 
-  test("no stored server reports stopped, still with the log path", () => {
-    mockStatus.mockReturnValue(
-      err({ status: 404, code: "NOT_RUNNING", message: "" })
-    );
+  test("stale entry (pid dead) keeps its port/url so the disparity is visible", () => {
+    mockStatus.mockReturnValue(ok({ ...stored, running: false }));
     expect(getDevServerInfo("ws")).toEqual({
-      status: "stopped",
-      url: null,
+      ...stored,
+      running: false,
+      url: "https://localhost:5173",
       logPath,
     });
   });
 
-  test("stale entry (pid dead) reports stopped without leaking the port", () => {
+  test("no stored server: running false, log path still reported", () => {
     mockStatus.mockReturnValue(
-      ok({ workspaceId: "ws", pid: 1, port: 5173, startedAt: 42, running: false })
+      err({ status: 404, code: "NOT_RUNNING", message: "" })
     );
-    expect(getDevServerInfo("ws")).toMatchObject({ status: "stopped", url: null });
+    expect(getDevServerInfo("ws")).toEqual({ running: false, logPath });
   });
 
   test("logPath is null when the server has never been started", () => {
@@ -57,6 +54,6 @@ describe("getDevServerInfo", () => {
     mockStatus.mockReturnValue(
       err({ status: 404, code: "NOT_RUNNING", message: "" })
     );
-    expect(getDevServerInfo("ws").logPath).toBeNull();
+    expect(getDevServerInfo("ws")).toEqual({ running: false, logPath: null });
   });
 });
