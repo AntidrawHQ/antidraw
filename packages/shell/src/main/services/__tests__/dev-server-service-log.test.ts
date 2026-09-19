@@ -104,12 +104,12 @@ describe("dev server run log", () => {
   });
 
   test("a restart supersedes the previous run's still-open log", async () => {
-    // Lingers after SIGTERM and keeps printing, so its `close` lands well
-    // after the next run has started.
+    // Lingers after SIGTERM, printing and then closing well after the next
+    // run has started (the delay keeps that ordering deterministic).
     h.script = `
       console.log("VITE ready in 1 ms");
       process.on("SIGTERM", () => {
-        console.log("run 1 shutting down");
+        setTimeout(() => console.log("run 1 shutting down"), 150);
         setTimeout(() => process.exit(0), 300);
       });
       setInterval(() => {}, 1000);`;
@@ -120,7 +120,8 @@ describe("dev server run log", () => {
     h.script = VITE;
     await startDevServer("ws");
     await vi.waitFor(() => expect(readLog().match(/VITE ready/g)).toHaveLength(2));
-    // Let run 1 exit; nothing of it may land inside run 2's section.
+    // Let run 1 exit: neither its late output nor its exit marker may land
+    // inside run 2's section.
     await new Promise((resolve) => setTimeout(resolve, 500));
 
     expect(readLog()).toMatchInlineSnapshot(`
