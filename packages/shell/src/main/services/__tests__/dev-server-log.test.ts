@@ -16,37 +16,58 @@ describe("createLineSplitter", () => {
     const s = createLineSplitter((l) => lines.push(l));
     s.push("ready in ");
     s.push("120 ms\n  ➜  Local: http://loc");
-    expect(lines).toEqual(["ready in 120 ms"]);
+    expect(lines).toMatchInlineSnapshot(`
+      [
+        "ready in 120 ms",
+      ]
+    `);
     s.push("alhost:5173/\n");
-    expect(lines).toEqual(["ready in 120 ms", "  ➜  Local: http://localhost:5173/"]);
+    expect(lines).toMatchInlineSnapshot(`
+      [
+        "ready in 120 ms",
+        "  ➜  Local: http://localhost:5173/",
+      ]
+    `);
   });
 
-  test("flush emits the trailing partial line", () => {
+  test("flush emits the trailing partial line once", () => {
     const lines: string[] = [];
     const s = createLineSplitter((l) => lines.push(l));
     s.push("no newline");
     s.flush();
     s.flush();
-    expect(lines).toEqual(["no newline"]);
+    expect(lines).toMatchInlineSnapshot(`
+      [
+        "no newline",
+      ]
+    `);
   });
 });
 
 describe("formatLogLine", () => {
   test("stamps, tags, strips ANSI and CR", () => {
     const ts = new Date("2026-09-19T10:00:00.000Z");
-    expect(formatLogLine("err", "\x1b[31mError\x1b[0m: boom\r", ts)).toBe(
-      "2026-09-19T10:00:00.000Z [err] Error: boom\n"
-    );
+    expect(
+      formatLogLine("err", "\x1b[31mError\x1b[0m: boom\r", ts)
+    ).toMatchInlineSnapshot(`
+      "2026-09-19T10:00:00.000Z [err] Error: boom
+      "
+    `);
   });
 
   test("stripAnsi handles cursor/format sequences", () => {
-    expect(stripAnsi("\x1b[2K\x1b[1G\x1b[36mvite\x1b[39m")).toBe("vite");
+    expect(stripAnsi("\x1b[2K\x1b[1G\x1b[36mvite\x1b[39m")).toMatchInlineSnapshot(`"vite"`);
   });
 });
 
 describe("openDevServerLog", () => {
   let dir: string;
   afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  const readLog = (p: string) =>
+    fs
+      .readFileSync(p, "utf8")
+      .replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/g, "<ts>");
 
   test("appends across runs with markers, tagged lines; creates the logs dir", async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), "antidraw-log-"));
@@ -66,12 +87,13 @@ describe("openDevServerLog", () => {
     run2.marker("dev server started pid=2 port=5174");
     await run2.close();
 
-    const text = fs.readFileSync(p, "utf8");
-    const lines = text.trimEnd().split("\n");
-    expect(lines[0]).toMatch(/^=== dev server started pid=1 port=5173 .* ===$/);
-    expect(lines[1]).toMatch(/^\S+ \[out\] VITE ready$/);
-    expect(lines[2]).toMatch(/^=== dev server exited code=0 /);
-    expect(lines[3]).toMatch(/^=== dev server started pid=2 port=5174 /);
+    expect(readLog(p)).toMatchInlineSnapshot(`
+      "=== dev server started pid=1 port=5173 <ts> ===
+      <ts> [out] VITE ready
+      === dev server exited code=0 <ts> ===
+      === dev server started pid=2 port=5174 <ts> ===
+      "
+    `);
   });
 
   test("rotates a large log to .1 on open", async () => {
@@ -84,6 +106,9 @@ describe("openDevServerLog", () => {
     await log.close();
 
     expect(fs.statSync(`${p}.1`).size).toBe(5 * 1024 * 1024 + 1);
-    expect(fs.readFileSync(p, "utf8")).toMatch(/^=== dev server started pid=3/);
+    expect(readLog(p)).toMatchInlineSnapshot(`
+      "=== dev server started pid=3 port=1 <ts> ===
+      "
+    `);
   });
 });
