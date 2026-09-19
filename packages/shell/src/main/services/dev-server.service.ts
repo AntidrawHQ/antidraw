@@ -6,7 +6,11 @@ import {
   getWorkspaceDevServerLogPath,
   getWorkspaceSourcePath,
 } from "@/main/api/init";
-import { logMarker, openDevServerLog } from "@/main/services/dev-server-log";
+import {
+  logMarker,
+  openDevServerLog,
+  type DevServerLog,
+} from "@/main/services/dev-server-log";
 import { devServerStore, type DevServerState } from "@/main/lib/runtime-store";
 import { spawnNpm } from "@/main/lib/package-manager";
 import {
@@ -16,6 +20,9 @@ import {
 
 // In-memory map for ChildProcess handles (can't be serialized to electron-store)
 const runningProcesses = new Map<string, ChildProcess>();
+
+// Open run logs, keyed like runningProcesses
+const runningLogs = new Map<string, DevServerLog>();
 
 // Status response includes runtime check
 export type DevServerInfo = DevServerState & {
@@ -138,10 +145,19 @@ export const startDevServer = async (
 
   // Append-only run log; the agent reads it via the path from
   // get_dev_server_info. Raw output, bracketed by start/exit markers.
+  // A previous run whose `close` hasn't fired yet still holds the file;
+  // end it first so a rotation can't carry its output off into `.1`.
+  void runningLogs
+    .get(workspaceId)
+    ?.end(logMarker("dev server log superseded by a new run"));
   const log = openDevServerLog(getWorkspaceDevServerLogPath(workspaceId));
+  runningLogs.set(workspaceId, log);
   log.write(logMarker(`dev server started pid=${proc.pid} port=${port}`));
-  proc.stdout!.pipe(log, { end: false });
-  proc.stderr!.pipe(log, { end: false });
+  // Written from `data` listeners rather than pipe(): a pipe pauses its
+  // source when the destination errors, which would stall the ready check
+  // below and leave the child's output undrained.
+  proc.stdout!.on("data", (data: Buffer) => log.write(data));
+  proc.stderr!.on("data", (data: Buffer) => log.write(data));
 
   // Wait for Vite to signal it's ready via stdout
   const readyPromise = new Promise<boolean>((resolve) => {
@@ -176,7 +192,10 @@ export const startDevServer = async (
   // exit marker lands after the last output line and nothing is written to
   // an already-ended log stream.
   proc.on("close", (code) => {
-    log.end(logMarker(`dev server exited code=${code}`));
+    void log.end(logMarker(`dev server exited code=${code}`));
+    if (runningLogs.get(workspaceId) === log) {
+      runningLogs.delete(workspaceId);
+    }
   });
 
   proc.on("exit", (code) => {
@@ -274,6 +293,13 @@ export const stopAllDevServers = (): void => {
       console.error(`Failed to stop component watcher for ${workspaceId}:`, error);
     });
   }
+
+  // This runs on app quit: the process is gone before the children's
+  // `close` events fire, so their exit markers would never be written.
+  for (const log of runningLogs.values()) {
+    log.endSync(logMarker("dev server stopped (app quit)"));
+  }
+  runningLogs.clear();
 
   devServerStore.clear();
 };
