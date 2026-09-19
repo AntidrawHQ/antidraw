@@ -28,15 +28,15 @@ export const getDevServerInfo = (workspaceId: string): DevServerToolInfo => {
 
 export const devServerInfoTool = (workspaceId: string) =>
   tool(
-    "get_info",
+    "get_dev_server_info",
     "Get the state of the Vite dev server for the current workspace. " +
       "`running` is a live check of the server process. When a server has " +
       "been started you also get its pid, port, startedAt and url (https, " +
       "self-signed cert: use curl -k); running:false alongside those means " +
-      "the process died. logPath is the server's append-only log " +
-      "(stdout/stderr, one timestamped line each, with start/exit markers " +
-      "per run); read or tail it to see build errors and HMR output. It is " +
-      "null if the server has never been started.",
+      "the process died. logPath is the server's append-only log: raw " +
+      "stdout/stderr with a start/exit marker line per run. Read or tail " +
+      "it to see build errors and HMR output. It is null if the server has " +
+      "never been started.",
     {},
     async () => ({
       content: [
