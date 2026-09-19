@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import type { Readable } from "node:stream";
 
 // Rotate once the log passes this size: the current file becomes `.1`
@@ -65,6 +66,7 @@ export type DevServerLog = {
  * the current run.
  */
 export const openDevServerLog = (logPath: string): DevServerLog => {
+  fs.mkdirSync(path.dirname(logPath), { recursive: true });
   rotateIfLarge(logPath);
   const out = fs.createWriteStream(logPath, { flags: "a" });
   // A write error (disk full, permissions) must not take down the main
