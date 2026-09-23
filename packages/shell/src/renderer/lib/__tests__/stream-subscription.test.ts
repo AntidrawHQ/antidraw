@@ -99,6 +99,7 @@ const message = (seq: number, text: string): Message => {
     seq,
     createdAt: new Date(0),
     deliveredAt: null,
+    acceptedAfterSeq: null,
   };
 };
 
@@ -956,5 +957,91 @@ describe("the branches that only the stream writes", () => {
         queryKeys.conversations.livePartial(conversationId),
       ),
     ).toBeNull();
+  });
+});
+
+describe("a prompt accepted from the queue", () => {
+  const textOf = (m: Message) => {
+    const content = (m.sdkMessage as { message: { content: unknown } }).message.content;
+    return ((Array.isArray(content) ? content[0] : content) as { text: string }).text;
+  };
+  const transcript = (conversationId: string) =>
+    detail(queryClient, conversationId).messages.map((m) => textOf(m));
+
+  test("moves to where the backend placed it, ahead of the reply to it", async () => {
+    const conversationId = freshId();
+    const queued = message(1, "queued");
+    seedCache(queryClient, conversationId, [queued, message(2, "turn, still going")]);
+    scriptAttempts([
+      {
+        events: [
+          // The ack re-emits the row with its placement.
+          { type: "message", message: { ...queued, acceptedAfterSeq: 2 } },
+          { type: "message", message: message(3, "reply to queued") },
+        ],
+      },
+    ]);
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    expect(transcript(conversationId)).toMatchInlineSnapshot(`
+      [
+        "turn, still going",
+        "queued",
+        "reply to queued",
+      ]
+    `);
+  });
+
+  test("two accepted behind the same row keep their send order", async () => {
+    const conversationId = freshId();
+    const a = message(1, "a");
+    const b = message(2, "b");
+    seedCache(queryClient, conversationId, [a, b, message(3, "turn")]);
+    scriptAttempts([
+      {
+        events: [
+          // b's placement arrives first — order must not depend on arrival.
+          { type: "message", message: { ...b, acceptedAfterSeq: 3 } },
+          { type: "message", message: { ...a, acceptedAfterSeq: 3 } },
+        ],
+      },
+    ]);
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    expect(transcript(conversationId)).toMatchInlineSnapshot(`
+      [
+        "turn",
+        "a",
+        "b",
+      ]
+    `);
+  });
+
+  test("an optimistic bubble stays last", async () => {
+    const conversationId = freshId();
+    const queued = message(1, "queued");
+    seedCache(queryClient, conversationId, [
+      queued,
+      message(2, "turn"),
+      message(PENDING_SEQ, "just sent"),
+    ]);
+    scriptAttempts([
+      { events: [{ type: "message", message: { ...queued, acceptedAfterSeq: 2 } }] },
+    ]);
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+
+    expect(transcript(conversationId)).toMatchInlineSnapshot(`
+      [
+        "turn",
+        "queued",
+        "just sent",
+      ]
+    `);
   });
 });

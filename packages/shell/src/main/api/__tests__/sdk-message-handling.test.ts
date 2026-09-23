@@ -6,13 +6,16 @@ import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { eq } from "drizzle-orm";
 import { db } from "@/main/db";
-import { messages, workspaces } from "@/main/api/schema";
+import { messages, workspaces, type Message } from "@/main/api/schema";
+import type { ConversationWithMessages } from "@/main/api";
 import { handleSdkMessageWithoutPersisting } from "@/main/api/turn";
 import { buildPrompt } from "@/main/api/claude-code-ops";
 import {
   addMessage,
   convertUserPromptToSDKMessage,
   createConversation,
+  getConversation,
+  getMessagesAfterSeq,
 } from "@/main/api/services/chat.service";
 import {
   addPending,
@@ -21,6 +24,7 @@ import {
   getPending,
   getHandle,
   releaseHandle,
+  markSpawnPrompt,
 } from "@/main/lib/conversation-store";
 
 // The replay-ack branch writes the DB (delivered_at), so this runs against
@@ -290,6 +294,212 @@ describe("the replay ack, on the row", () => {
 
     expect(await deliveredAtOf(id)).toEqual({ [a]: false });
     expect(getPending(id)).toEqual([a]);
+    releaseHandle(id);
+  });
+});
+
+describe("the replay ack places a prompt it was waiting on", () => {
+  const persistedConversation = async () => {
+    const created = await createConversation(workspaceId);
+    if (created.isErr()) throw new Error("failed to create conversation");
+    const id = created.value.id;
+    openHandle(id, buildPrompt("hello", { uuid: crypto.randomUUID() }));
+    return id;
+  };
+
+  const persistPrompt = async (conversationId: string, text: string) => {
+    const id = crypto.randomUUID();
+    const added = await addMessage({
+      id,
+      conversationId,
+      messageType: "user_prompt",
+      sdkMessage: convertUserPromptToSDKMessage(text, id as UUID),
+    });
+    if (added.isErr()) throw new Error(`addMessage failed: ${added.error.code}`);
+    return added.value;
+  };
+
+  const persistReply = async (conversationId: string, text: string) => {
+    const added = await addMessage({
+      conversationId,
+      messageType: "sdk_message",
+      sdkMessage: {
+        type: "assistant",
+        uuid: crypto.randomUUID(),
+        message: { content: [{ type: "text", text }] },
+      } as never,
+    });
+    if (added.isErr()) throw new Error(`addMessage failed: ${added.error.code}`);
+    return added.value;
+  };
+
+  const textOf = (m: Message) => {
+    const content = (m.sdkMessage as { message: { content: unknown } }).message.content;
+    return ((Array.isArray(content) ? content[0] : content) as { text: string }).text;
+  };
+
+  // Rows as a reader would check them: in order, by text. seq numbers are
+  // shared with every other test in this DB, so a placement names the row
+  // it sits after instead of the number.
+  const view = (rows: Message[], all: Message[] = rows) => {
+    const bySeq = new Map(all.map((m) => [m.seq, textOf(m)]));
+    return rows.map((m) => {
+      const role = m.messageType === "user_prompt" ? "user     " : "assistant";
+      const placed =
+        m.acceptedAfterSeq == null
+          ? ""
+          : m.acceptedAfterSeq === m.seq
+            ? "  ← placed after itself"
+            : `  ← placed after "${bySeq.get(m.acceptedAfterSeq)}"`;
+      return `${role} ${textOf(m)}${placed}`;
+    });
+  };
+
+  const transcript = async (conversationId: string) => {
+    const loaded = await getConversation(conversationId, { includeMessages: true });
+    if (loaded.isErr()) throw new Error("getConversation failed");
+    // getConversation's return type does not narrow on includeMessages.
+    return (loaded.value as ConversationWithMessages).messages;
+  };
+
+  test("sorts after what the turn wrote while it waited, ahead of the reply to it", async () => {
+    const id = await persistedConversation();
+    const prompt = await persistPrompt(id, "queued");
+    addPending(id, prompt.id);
+    await persistReply(id, "turn, still going");
+
+    await handleSdkMessageWithoutPersisting(id, replayAck(prompt.id));
+    await persistReply(id, "reply to queued");
+
+    expect(view(await transcript(id))).toMatchInlineSnapshot(`
+      [
+        "assistant turn, still going",
+        "user      queued  ← placed after "turn, still going"",
+        "assistant reply to queued",
+      ]
+    `);
+    releaseHandle(id);
+  });
+
+  test("two accepted back to back keep the order they were sent in", async () => {
+    const id = await persistedConversation();
+    const a = await persistPrompt(id, "a");
+    const b = await persistPrompt(id, "b");
+    addPending(id, a.id);
+    addPending(id, b.id);
+    await persistReply(id, "turn");
+
+    await handleSdkMessageWithoutPersisting(id, replayAck(a.id));
+    await handleSdkMessageWithoutPersisting(id, replayAck(b.id));
+    await persistReply(id, "reply to a and b");
+
+    expect(view(await transcript(id))).toMatchInlineSnapshot(`
+      [
+        "assistant turn",
+        "user      a  ← placed after "turn"",
+        "user      b  ← placed after "turn"",
+        "assistant reply to a and b",
+      ]
+    `);
+    releaseHandle(id);
+  });
+
+  test("the spawn prompt is placed too", async () => {
+    // A send made mid-turn that lands after the turn ended starts a fresh
+    // CLI instead of queueing. The deck still waits on this ack for it.
+    const id = await persistedConversation();
+    const prompt = await persistPrompt(id, "spawned");
+    markSpawnPrompt(id, prompt.id);
+
+    await handleSdkMessageWithoutPersisting(id, replayAck(prompt.id));
+
+    expect(view(await transcript(id))).toMatchInlineSnapshot(`
+      [
+        "user      spawned  ← placed after itself",
+      ]
+    `);
+    releaseHandle(id);
+  });
+
+  test("a replayed history is delivered but not moved", async () => {
+    const id = await persistedConversation();
+    // Not awaited: this is a resumed session replaying a prompt it already ran.
+    const prompt = await persistPrompt(id, "old prompt");
+    await persistReply(id, "old reply");
+
+    await handleSdkMessageWithoutPersisting(id, replayAck(prompt.id));
+
+    expect(await deliveredAtOf(id)).toMatchInlineSnapshot(`
+      [
+        "old prompt: delivered",
+        "old reply: -",
+      ]
+    `);
+    expect(view(await transcript(id))).toMatchInlineSnapshot(`
+      [
+        "user      old prompt",
+        "assistant old reply",
+      ]
+    `);
+    releaseHandle(id);
+
+    async function deliveredAtOf(conversationId: string) {
+      const rows = await transcript(conversationId);
+      return rows.map((m) => `${textOf(m)}: ${m.deliveredAt ? "delivered" : "-"}`);
+    }
+  });
+
+  test("the placed row is emitted, so an open transcript moves it", async () => {
+    const id = await persistedConversation();
+    const prompt = await persistPrompt(id, "queued");
+    addPending(id, prompt.id);
+    await persistReply(id, "turn");
+
+    const emitted: Message[] = [];
+    const seen: string[] = [];
+    detach.push(
+      subscribe(id, (event) => {
+        seen.push(event.type);
+        if (event.type === "message") emitted.push(event.message);
+      }),
+    );
+    await handleSdkMessageWithoutPersisting(id, replayAck(prompt.id));
+
+    // The row first, the queue second: by the time the renderer hears the
+    // prompt left the queue, it already knows where it goes.
+    expect(seen).toMatchInlineSnapshot(`
+      [
+        "message",
+        "queue",
+      ]
+    `);
+    expect(view(emitted, await transcript(id))).toMatchInlineSnapshot(`
+      [
+        "user      queued  ← placed after "turn"",
+      ]
+    `);
+    releaseHandle(id);
+  });
+
+  test("catch-up resends a placement made after the cursor", async () => {
+    const id = await persistedConversation();
+    const prompt = await persistPrompt(id, "queued");
+    addPending(id, prompt.id);
+    const reply = await persistReply(id, "turn");
+    // Caught up to here, then disconnected — the ack lands unseen.
+    const cursor = reply.seq;
+
+    await handleSdkMessageWithoutPersisting(id, replayAck(prompt.id));
+    await persistReply(id, "reply to queued");
+
+    const after = await getMessagesAfterSeq(id, cursor);
+    if (after.isErr()) throw new Error("getMessagesAfterSeq failed");
+    expect(view(after.value, await transcript(id))).toMatchInlineSnapshot(`
+      [
+        "user      queued  ← placed after "turn"",
+        "assistant reply to queued",
+      ]
+    `);
     releaseHandle(id);
   });
 });

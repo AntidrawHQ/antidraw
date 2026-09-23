@@ -28,6 +28,7 @@ import {
   applyPartial,
   clearPartial,
   resolvePending,
+  getAwaitingAck,
   clearPending,
   type CliHandle,
 } from "@/main/lib/conversation-store";
@@ -60,7 +61,18 @@ export const handleSdkMessageWithoutPersisting = async (
     // pending and then reads null rows; the other order here would let it
     // see a null row that is no longer pending — reported failed, and no
     // later event corrects it.
-    const marked = await markDelivered(sdkMessage.uuid);
+    //
+    // Only an ack we were waiting on places the prompt in the transcript:
+    // the queue, and the spawn prompt — a send the renderer made mid-turn
+    // can become one if the turn ends first, and it waits on this ack to
+    // leave the queued deck either way. A resumed session replays its
+    // history as acks too, and placing those would move every old prompt
+    // to the bottom.
+    const awaited = getAwaitingAck(conversationId).includes(sdkMessage.uuid);
+    const marked = await markDelivered(
+      sdkMessage.uuid,
+      awaited ? { conversationId } : undefined,
+    );
     if (marked.isErr()) {
       console.error("Failed to record the CLI's ack:", marked.error);
     }

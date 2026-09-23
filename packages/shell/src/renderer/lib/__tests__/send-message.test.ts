@@ -42,6 +42,7 @@ const persisted = (seq: number, text: string): Message => {
     seq,
     createdAt: new Date(0),
     deliveredAt: null,
+    acceptedAfterSeq: null,
   };
 };
 
@@ -228,5 +229,92 @@ describe("the send's optimistic protocol", () => {
       executeMutation(qc, sendMessageMutationOptions(qc), send(id)),
     ).rejects.toThrow("Conversation not found in cache");
     expect(mockSend).not.toHaveBeenCalled();
+  });
+});
+
+describe("the send intent the queued deck reads", () => {
+  const intents = (id: string, labels: Record<string, string>) =>
+    Object.fromEntries(
+      Object.entries(
+        qc.getQueryData<Record<string, string>>(
+          queryKeys.conversations.sendIntents(id),
+        ) ?? {},
+      ).map(([userMessageId, intent]) => [labels[userMessageId], intent]),
+    );
+
+  const setStatus = (id: string, streamStatus: "idle" | "streaming") =>
+    qc.setQueryData<ConversationWithMessages>(
+      queryKeys.conversations.detail(id),
+      (old) => ({ ...old!, streamStatus }),
+    );
+
+  test("records whether each send went out mid-turn", async () => {
+    const id = freshId();
+    seedCache(qc, id, []);
+    mockSend.mockResolvedValue(ok({ conversationId: id }));
+
+    const idle = send(id);
+    await executeMutation(qc, sendMessageMutationOptions(qc), idle);
+    // onSuccess wrote "streaming" — the next send is mid-turn.
+    const midTurn = send(id);
+    await executeMutation(qc, sendMessageMutationOptions(qc), midTurn);
+
+    expect(
+      intents(id, { [idle.userMessageId]: "idle send", [midTurn.userMessageId]: "mid-turn send" }),
+    ).toMatchInlineSnapshot(`
+      {
+        "idle send": "direct",
+        "mid-turn send": "queue",
+      }
+    `);
+  });
+
+  test("is recorded before the bubble goes in", async () => {
+    const id = freshId();
+    seedCache(qc, id, []);
+    setStatus(id, "streaming");
+    const vars = send(id);
+    // Read at the first moment the bubble exists: the deck must already know
+    // it owns it, or the transcript renders it for a frame.
+    let atBubble: string | undefined;
+    const off = qc.getQueryCache().subscribe(() => {
+      if (atBubble === undefined && detail(qc, id)!.messages.length === 1) {
+        atBubble =
+          qc.getQueryData<Record<string, string>>(
+            queryKeys.conversations.sendIntents(id),
+          )?.[vars.userMessageId] ?? "none";
+      }
+    });
+    mockSend.mockResolvedValue(ok({ conversationId: id }));
+
+    await executeMutation(qc, sendMessageMutationOptions(qc), vars);
+    off();
+
+    expect(atBubble).toMatchInlineSnapshot(`"queue"`);
+  });
+
+  test("a failed send drops its intent", async () => {
+    const id = freshId();
+    seedCache(qc, id, []);
+    setStatus(id, "streaming");
+    const kept = send(id);
+    mockSend.mockResolvedValueOnce(ok({ conversationId: id }));
+    await executeMutation(qc, sendMessageMutationOptions(qc), kept);
+    const failed = send(id);
+    mockSend.mockResolvedValueOnce(
+      err({ status: 500 as const, code: "NETWORK_ERROR", message: "offline" }),
+    );
+
+    await expect(
+      executeMutation(qc, sendMessageMutationOptions(qc), failed),
+    ).rejects.toThrow("offline");
+
+    expect(
+      intents(id, { [kept.userMessageId]: "kept", [failed.userMessageId]: "failed" }),
+    ).toMatchInlineSnapshot(`
+      {
+        "kept": "queue",
+      }
+    `);
   });
 });

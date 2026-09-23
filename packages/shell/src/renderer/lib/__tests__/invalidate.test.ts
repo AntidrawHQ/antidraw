@@ -41,6 +41,7 @@ const row = (seq: number, text: string): Message => {
     seq,
     createdAt: new Date(0),
     deliveredAt: null,
+    acceptedAfterSeq: null,
   };
 };
 

@@ -1,0 +1,1 @@
+ALTER TABLE `messages` ADD `accepted_after_seq` integer;
