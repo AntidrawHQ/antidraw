@@ -31,9 +31,12 @@ type QueuedRowProps = {
 const QueuedRow = ({ row, cancelling, onCancel }: QueuedRowProps) => {
   const ref = useRef<HTMLDivElement>(null);
   // In the same commit that applies the leaving classes, so the height and
-  // the fade/translate run together.
+  // the fade/translate run together. A row can come back mid-exit (a refetch
+  // drops an optimistic bubble the send then restores) and React reuses this
+  // node, so the pinned height is released when it stops leaving.
   useLayoutEffect(() => {
     if (row.leaving) collapseHeight(ref.current);
+    else if (ref.current) ref.current.style.height = "";
   }, [row.leaving]);
 
   return (

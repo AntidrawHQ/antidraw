@@ -278,8 +278,14 @@ export const sendMessageMutationOptions = (queryClient: QueryClient) =>
       // options are ever set.
       model?: string;
       effort?: EffortLevel;
+      // Whether the conversation was streaming when the user sent, as the
+      // caller saw it. Overrides the cache read in onMutate: a send from the
+      // error state reopens the stream first, and that writes "streaming"
+      // before onMutate runs — an idle send would be recorded mid-turn.
+      sentMidTurn?: boolean;
     }) => {
-      const result = await sendMessage(params);
+      const { sentMidTurn: _renderOnly, ...request } = params;
+      const result = await sendMessage(request);
 
       if (result.isErr()) {
         throw new Error(result.error.message);
@@ -288,7 +294,7 @@ export const sendMessageMutationOptions = (queryClient: QueryClient) =>
       return result.value;
     },
 
-onMutate: async ({ message, conversationId, userMessageId, images }) => {
+onMutate: async ({ message, conversationId, userMessageId, images, sentMidTurn }) => {
       // Cancel any outgoing refetches
       await queryClient.cancelQueries({
         queryKey: queryKeys.conversations.detail(conversationId),
@@ -334,7 +340,9 @@ onMutate: async ({ message, conversationId, userMessageId, images }) => {
         (prev) => ({
           ...prev,
           [userMessageId]:
-            previousChat.streamStatus === "streaming" ? "queue" : "direct",
+            (sentMidTurn ?? previousChat.streamStatus === "streaming")
+              ? "queue"
+              : "direct",
         }),
       );
 

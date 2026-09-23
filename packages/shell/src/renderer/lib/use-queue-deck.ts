@@ -109,6 +109,14 @@ export const useQueueDeck = (conversationId: string | null) => {
   );
   const timers = useRef(new Map<string, number>());
   useEffect(() => {
+    // A row that came back mid-exit keeps no timer: a stale one would end
+    // its next exit early, with the first exit's `leaving`.
+    const stillLeaving = new Set(leaving.map((r) => r.message.id));
+    for (const [id, timer] of timers.current) {
+      if (stillLeaving.has(id)) continue;
+      window.clearTimeout(timer);
+      timers.current.delete(id);
+    }
     for (const row of leaving) {
       const id = row.message.id;
       if (timers.current.has(id)) continue;

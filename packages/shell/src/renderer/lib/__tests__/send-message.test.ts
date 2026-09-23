@@ -293,6 +293,27 @@ describe("the send intent the queued deck reads", () => {
     expect(atBubble).toMatchInlineSnapshot(`"queue"`);
   });
 
+  test("the caller's status wins over the cache's", async () => {
+    // Sending from the error state reopens the stream first, and retryStream
+    // writes "streaming" before onMutate runs. The caller saw "error".
+    const id = freshId();
+    seedCache(qc, id, []);
+    setStatus(id, "streaming");
+    mockSend.mockResolvedValue(ok({ conversationId: id }));
+    const fromError = { ...send(id), sentMidTurn: false };
+
+    await executeMutation(qc, sendMessageMutationOptions(qc), fromError);
+
+    expect(intents(id, { [fromError.userMessageId]: "sent from the error state" }))
+      .toMatchInlineSnapshot(`
+        {
+          "sent from the error state": "direct",
+        }
+      `);
+    // Renderer-only: it never goes out on the wire.
+    expect(mockSend.mock.calls[0]![0]).not.toHaveProperty("sentMidTurn");
+  });
+
   test("a failed send drops its intent", async () => {
     const id = freshId();
     seedCache(qc, id, []);

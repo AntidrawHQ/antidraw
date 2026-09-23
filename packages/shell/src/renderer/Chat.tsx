@@ -431,6 +431,9 @@ export function AppChat({ className, ...props }: AppChatProps) {
       images: imagesToSend,
       model: composer.selectedModelId,
       effort: composer.effort,
+      // This render's status, not the cache's: retryStream above has already
+      // written "streaming" into the cache when the stream had failed.
+      sentMidTurn: isStreaming,
     });
 
     // Fire-and-forget title generation if conversation has no title/summary yet
