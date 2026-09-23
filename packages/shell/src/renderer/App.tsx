@@ -15,7 +15,7 @@ const App = () => {
     <div className="flex h-full overflow-hidden">
       <IconStrip />
       <SidePanel />
-      <AppCanvas className="flex-1 border-l border-[#2d2d2d]" />
+      <AppCanvas className="flex-1 border-l border-[#333]" />
       <CodeSidePanel />
     </div>
   );

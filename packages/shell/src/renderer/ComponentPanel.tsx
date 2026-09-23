@@ -26,8 +26,8 @@ export const ComponentPanel = () => {
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       {/* Header */}
-      <div className="p-2 border-b border-[#2d2d2d] flex items-center">
-        <span className="text-[13px] font-medium text-neutral-200 px-2.5 py-0.5">
+      <div className="p-2 border-b border-[#333] flex items-center">
+        <span className="text-[13px] font-medium text-neutral-400 px-2.5 py-0.5">
           Components
         </span>
       </div>
