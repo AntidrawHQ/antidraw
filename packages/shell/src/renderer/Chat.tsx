@@ -40,6 +40,8 @@ import type { ToolPart } from "@/renderer/components/ui/tool";
 import { AuthError } from "@/renderer/components/auth-error";
 import { StreamError } from "@/renderer/components/stream-error";
 import { useWorkspaceStore } from "./store/workspace";
+import { useUserComponents } from "./store/userComponents";
+import { viewableComponent } from "./lib/tool-utils";
 import { ChatEmptyState } from "./components/ChatEmptyState";
 import ModelPicker from "@/renderer/components/ModelPicker";
 import EffortDropdown from "@/renderer/components/EffortDropdown";
@@ -59,25 +61,6 @@ type Base64ImageBlock = {
   };
 };
 
-const getToolTitle = (toolPart: ToolPart): string => {
-  const { type, input } = toolPart;
-
-  if (typeof input?.description === "string" && input.description) return input.description;
-
-  if (typeof input?.file_path === "string" && input.file_path) {
-    const name = input.file_path.split("/").pop() ?? input.file_path;
-    if (input.file_path.includes("/user-components/")) {
-      const verb = type === "Write" ? "Crafting" : type === "Edit" ? "Refining" : type;
-      return `${verb} ${name.replace(/\.\w+$/, "")}`;
-    }
-    return `${type} ${name}`;
-  }
-
-  if (typeof input?.pattern === "string" && input.pattern) return `${type} ${input.pattern}`;
-
-  return type;
-};
-
 type MessageListProps = {
   conversationId: string | null;
   onSignIn: () => void;
@@ -91,7 +74,19 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
   const { data: queuedMessageIds } = useQueuedMessageIds(conversationId);
   const { data: failedMessageIds } = useFailedMessageIds(conversationId);
   const cancelQueued = useCancelQueuedMessage();
+  const workspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
+  const setFocusComponentName = useWorkspaceStore((s) => s.setFocusComponentName);
+  const { data: userComponents } = useUserComponents(workspaceId);
   const messages = conversation?.messages ?? [];
+
+  // View is only offered for components that are still on the canvas: one the
+  // agent later deleted or renamed would leave a button that does nothing.
+  const viewHandlerFor = (toolPart: ToolPart) => {
+    const name = viewableComponent(toolPart);
+    const onCanvas = name && userComponents?.some((c) => c.name === name);
+    return onCanvas ? setFocusComponentName : undefined;
+  };
+
   const isStreaming = conversation?.streamStatus === "streaming";
 
   const liveText =
@@ -237,7 +232,7 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
                       <Tool
                         key={idx}
                         toolPart={toolPart}
-                        title={getToolTitle(toolPart)}
+                        onViewComponent={viewHandlerFor(toolPart)}
                         className="mt-1 w-full"
                       />
                     );
@@ -297,7 +292,6 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
           <div className="flex flex-col overflow-auto w-full">
             <Tool
               toolPart={liveTool}
-              title={getToolTitle(liveTool)}
               className="mt-1 w-full"
             />
           </div>
