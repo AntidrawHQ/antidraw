@@ -104,3 +104,23 @@ export const selectToolMap = (
 
   return map;
 };
+
+// Matches ".../user-components/Card.tsx" and captures "Card". Files in a
+// subfolder don't match: only top-level files are components on the canvas.
+const COMPONENT_FILE_RE = /user-components\/([^\s"'`/\\]+)\.tsx\b/;
+
+/**
+ * The component a finished tool call touched, if any. Write, Edit and Read
+ * name the file in `file_path`; Bash names it somewhere in `command` (sed -i,
+ * a heredoc, a python script…). Calls that are still running or failed return
+ * null: the component isn't on disk yet, or never made it.
+ */
+export const viewableComponent = (toolPart: ToolPart): string | null => {
+  if (toolPart.state !== "output-available") return null;
+  const { file_path, command } = toolPart.input ?? {};
+  const text =
+    typeof file_path === "string" ? file_path
+    : typeof command === "string" ? command
+    : null;
+  return text?.match(COMPONENT_FILE_RE)?.[1] ?? null;
+};
