@@ -176,19 +176,24 @@ export default {
       }
 
       let object = await env.SITES.get(key, { onlyIf, ...(range ? { range } : {}) });
+      // A get whose precondition failed returns the object without a body.
+      // R2 compares dates to the millisecond, where HTTP (and HEAD and Range
+      // requests here) go by the second: when this check passes where R2's
+      // did not, the answer is the object after all.
+      if (object && !("body" in object)) {
+        const failed = failedPrecondition(onlyIf, object);
+        if (failed) return preconditionFailed(failed, object);
+        object = await env.SITES.get(key, range ? { range } : {});
+      }
       // Republished between the head and the get: the range was worked out
-      // for another version, so the answer is the whole of this one.
+      // for another version, so the answer is the whole of this one (its
+      // preconditions were checked against the head).
       if (object && range && rangeOf && object.etag !== rangeOf.etag) {
         range = null;
-        object = await env.SITES.get(key, { onlyIf });
+        object = await env.SITES.get(key);
       }
-      if (!object) return text(404, "Not found");
+      if (!object || !("body" in object)) return text(404, "Not found");
       const headers = headersFor(object);
-
-      // A get whose precondition failed returns the object without a body.
-      if (!("body" in object)) {
-        return preconditionFailed(failedPrecondition(onlyIf, object) ?? 412, object);
-      }
 
       if (range) {
         const end = range.offset + range.length - 1;
