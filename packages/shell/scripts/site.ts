@@ -53,6 +53,7 @@ const BUILD_MANIFEST = ".vite/manifest.json";
 // The workspace build's content-hashed files, which upload caches for a year.
 // Only upload reads it; it is not uploaded.
 const HASHED_FILES = ".hashed-files.json";
+const HASHED_NAME_RE = /[-.][A-Za-z0-9_-]{8}\.[A-Za-z0-9]+$/;
 
 const fail = (message: string): never => {
   console.error(`error: ${message}`);
@@ -158,6 +159,8 @@ const build = (target: string, out: string | undefined) => {
   for (const name of ["preview.html", "canvas.json", HASHED_FILES, ...fs.readdirSync(viewerDir)]) {
     if (name === "index.html") continue;
     if (fs.existsSync(path.join(outDir, name))) {
+      // Not left half-built: the next build would refuse it as not a site.
+      fs.rmSync(outDir, { recursive: true, force: true });
       fail(`the workspace build has its own ${name} (from public/?), which the site needs`);
     }
   }
@@ -167,10 +170,13 @@ const build = (target: string, out: string | undefined) => {
   const manifest = JSON.parse(
     fs.readFileSync(path.join(outDir, BUILD_MANIFEST), "utf8"),
   ) as Record<string, { file: string; css?: string[]; assets?: string[] }>;
+  // Vite's default names carry an 8-character hash; a workspace config that
+  // names its output otherwise gets the short cache instead.
   const hashed = new Set(
-    Object.values(manifest).flatMap((c) => [c.file, ...(c.css ?? []), ...(c.assets ?? [])]),
+    Object.values(manifest)
+      .flatMap((c) => [c.file, ...(c.css ?? []), ...(c.assets ?? [])])
+      .filter((f) => HASHED_NAME_RE.test(f)),
   );
-  hashed.delete("index.html");
   fs.rmSync(path.join(outDir, ".vite"), { recursive: true, force: true });
   fs.writeFileSync(path.join(outDir, HASHED_FILES), JSON.stringify([...hashed].sort(), null, 2));
   fs.cpSync(viewerDir, outDir, { recursive: true });
