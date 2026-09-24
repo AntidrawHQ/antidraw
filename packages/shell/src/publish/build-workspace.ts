@@ -12,7 +12,7 @@
 import path from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
-import { publishPlugins } from "./vite-plugins.ts";
+import { failedWorkspaceFile, publishPlugins, type BrokenFiles } from "./vite-plugins.ts";
 
 const [outDir, runtimeSrc] = process.argv.slice(2);
 if (!outDir || !runtimeSrc) {
@@ -32,10 +32,37 @@ const vite: typeof import("vite") = await import(
 // to find); its plugins come first and these are added after them. outDir is
 // outside the workspace, so Vite would not empty it on its own; site.ts checks
 // it is a site built before, or new. The manifest tells site.ts which files
-// the build emitted (content-hashed) and which came from public/.
-await vite.build({
-  root,
-  mode: "production",
-  plugins: publishPlugins(vite, path.resolve(runtimeSrc)),
-  build: { outDir: path.resolve(outDir), emptyOutDir: true, manifest: ".vite/manifest.json" },
-});
+// the build emitted (content-hashed) and which came from public/. No source
+// maps: they would publish this machine's paths (the app's runtime copy, the
+// workspace's own location).
+//
+// A build that fails in one workspace file is built again with that file
+// stubbed (see tolerateBrokenSource), up to a point.
+const MAX_BROKEN_FILES = 25;
+const broken: BrokenFiles = new Map();
+for (;;) {
+  try {
+    await vite.build({
+      root,
+      mode: "production",
+      plugins: publishPlugins(vite, path.resolve(runtimeSrc), broken),
+      build: {
+        outDir: path.resolve(outDir),
+        emptyOutDir: true,
+        manifest: ".vite/manifest.json",
+        sourcemap: false,
+      },
+    });
+    break;
+  } catch (error) {
+    const file = failedWorkspaceFile(vite, root, error, broken);
+    if (!file || broken.size >= MAX_BROKEN_FILES) throw error;
+    const message = (error as Error).message.split("\n")[0]!;
+    const relative = path.relative(root, file);
+    broken.set(
+      file,
+      `${relative} could not be built: ${message.split(vite.normalizePath(root) + "/").join("")}`,
+    );
+    console.warn(`\n[antidraw] building again without ${relative}\n`);
+  }
+}

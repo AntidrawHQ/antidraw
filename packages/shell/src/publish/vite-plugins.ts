@@ -134,6 +134,12 @@ const componentsForBuild = (vite: ViteApi, runtimeSrc: string): Plugin => {
 // package whose API changed) is the same story: shimMissingExports binds it
 // to undefined with a warning instead of failing the build, matching dev,
 // where only that preview fails.
+//
+// What fails later than resolving and loading (a CSS file Tailwind cannot
+// build, a web worker's own bundle) fails the build; build-workspace.ts then
+// adds the failing file to `broken` and builds again, and imports of it get a
+// stub like the rest. Not from the page's own entry (main.tsx), though: a stub
+// there would fail every preview, so that build fails as it should.
 const STUB_PREFIX = "\0antidraw-broken:";
 
 const throwingModule = (reason: string) => ({
@@ -141,9 +147,14 @@ const throwingModule = (reason: string) => ({
   syntheticNamedExports: true,
 });
 
-const tolerateBrokenSource = (vite: ViteApi): Plugin => {
+// Files a previous attempt failed on, by normalized path, with the reason.
+export type BrokenFiles = Map<string, string>;
+
+const tolerateBrokenSource = (vite: ViteApi, broken: BrokenFiles): Plugin => {
   let config: ResolvedConfig;
   const stubs = new Map<string, string>();
+  // What index.html loads directly (main.tsx).
+  const entryModules = new Set<string>();
 
   // Reasons end up in the published bundle, so they name files relative to
   // the workspace, never by their path on this machine.
@@ -160,7 +171,8 @@ const tolerateBrokenSource = (vite: ViteApi): Plugin => {
 
   const brokenJson = (file: string) => {
     try {
-      JSON.parse(fs.readFileSync(file, "utf8"));
+      // vite:json drops a byte order mark too.
+      JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, ""));
       return null;
     } catch (e) {
       return `${path.relative(config.root, file)} could not be parsed: ${(e as Error).message}`;
@@ -183,6 +195,9 @@ const tolerateBrokenSource = (vite: ViteApi): Plugin => {
       async handler(id, importer, options) {
         if (!importer || !isWorkspaceSource(vite, config.root, importer)) return null;
         if (id.startsWith("\0")) return null;
+        // runtimeFromApp stops the build on the old template's import, and
+        // should not become a stub.
+        if (id === "@antidrawapp/runtime") return null;
         // Other plugins probe with this.resolve and cope with a miss
         // themselves: import.meta.glob resolves its pattern ("@/assets/*")
         // through the alias. A stub would read as a match.
@@ -190,7 +205,11 @@ const tolerateBrokenSource = (vite: ViteApi): Plugin => {
         // index.html's <link>s and <script>s: Vite leaves one it cannot
         // resolve in the page as it is, and a stub there would be bundled
         // into the entry chunk and fail every preview.
-        if (importer.endsWith(".html")) return null;
+        if (importer.endsWith(".html")) {
+          const resolved = await this.resolve(id, importer, { ...options, skipSelf: true });
+          if (resolved) entryModules.add(vite.normalizePath(resolved.id.split("?")[0]!));
+          return resolved;
+        }
 
         const unresolved = `"${id}" (imported by ${path.relative(config.root, importer)}) could not be resolved`;
         let resolved;
@@ -200,11 +219,18 @@ const tolerateBrokenSource = (vite: ViteApi): Plugin => {
           return stub(`${unresolved}: ${(e as Error).message}`);
         }
         if (!resolved) return stub(unresolved);
+        if (resolved.external) return resolved;
 
+        const [file, query] = resolved.id.split("?") as [string, string | undefined];
+        const normalized = vite.normalizePath(file);
+        const reason = broken.get(normalized);
+        if (reason !== undefined && !entryModules.has(vite.normalizePath(importer))) {
+          return stub(reason);
+        }
         // A JSON file that does not parse fails vite:json's transform, which
         // load (below) cannot catch: it has to be swapped before it loads.
-        const file = resolved.id.split("?")[0]!;
-        if (!resolved.external && file.endsWith(".json") && isWorkspaceSource(vite, config.root, file)) {
+        // With a query (?raw, ?url) it is not parsed at all.
+        if (!query && file.endsWith(".json") && isWorkspaceSource(vite, config.root, file)) {
           const reason = brokenJson(file);
           if (reason) return stub(reason);
         }
@@ -233,8 +259,36 @@ const tolerateBrokenSource = (vite: ViteApi): Plugin => {
   };
 };
 
-export const publishPlugins = (vite: ViteApi, runtimeSrc: string): Plugin[] => [
+export const publishPlugins = (
+  vite: ViteApi,
+  runtimeSrc: string,
+  broken: BrokenFiles,
+): Plugin[] => [
   runtimeFromApp(runtimeSrc),
   componentsForBuild(vite, runtimeSrc),
-  tolerateBrokenSource(vite),
+  tolerateBrokenSource(vite, broken),
 ];
+
+// The workspace file a failed build failed on, if the build could go on
+// without it: a workspace source file (not a dependency, not the app's
+// runtime) that is not already stubbed.
+export const failedWorkspaceFile = (
+  vite: ViteApi,
+  root: string,
+  error: unknown,
+  broken: BrokenFiles,
+) => {
+  // Rollup names the module an error came from, except when loading it
+  // failed (a web worker's own bundle), which only its message says.
+  const { id: errorId, message } = error as { id?: unknown; message?: unknown };
+  const id =
+    typeof errorId === "string"
+      ? errorId
+      : typeof message === "string"
+        ? /^(?:\[[^\]]+\] )?Could not load (.+?) \(imported by /.exec(message)?.[1]
+        : undefined;
+  if (!id || id.startsWith("\0")) return null;
+  const file = vite.normalizePath(id.split("?")[0]!);
+  if (!isWorkspaceSource(vite, root, file) || file.endsWith(".html") || broken.has(file)) return null;
+  return file;
+};
