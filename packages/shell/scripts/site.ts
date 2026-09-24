@@ -414,10 +414,19 @@ const upload = async (
   if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(id)) fail(`"${id}" cannot be a publish id`);
 
   const { bucket, put } = via === "s3" ? r2Put() : wranglerPut(via);
+  const hashedFile = path.join(root, HASHED_FILES);
+  const hashed = new Set<string>(
+    fs.existsSync(hashedFile) ? JSON.parse(fs.readFileSync(hashedFile, "utf8")) : [],
+  );
   // Dotfiles are not the site's (a Finder .DS_Store, a stray .env in
-  // public/), except .well-known/, which is there to be served.
+  // public/), except .well-known/ itself, which is there to be served, and
+  // what the build emitted (a component named .Dot.tsx).
   const hidden = (f: string) =>
-    f.split("/").some((part) => part.startsWith(".")) && !f.startsWith(".well-known/");
+    !hashed.has(f) &&
+    f
+      .split("/")
+      .slice(f.startsWith(".well-known/") ? 1 : 0)
+      .some((part) => part.startsWith("."));
   const listed = listFiles(root).filter((f) => f !== HASHED_FILES);
   const skipped = listed.filter(hidden);
   if (skipped.length) console.log(`Skipping hidden files:\n  ${skipped.join("\n  ")}`);
@@ -434,10 +443,6 @@ const upload = async (
       fail(`these file names cannot go through wrangler (upload without --local or --wrangler):\n  ${unsafe.join("\n  ")}`);
     }
   }
-  const hashedFile = path.join(root, HASHED_FILES);
-  const hashed = new Set<string>(
-    fs.existsSync(hashedFile) ? JSON.parse(fs.readFileSync(hashedFile, "utf8")) : [],
-  );
 
   const total = [...sizes.values()].reduce((a, b) => a + b, 0);
   console.log(`Uploading ${files.length} files (${formatBytes(total)}) to ${bucket}/${id}/`);
