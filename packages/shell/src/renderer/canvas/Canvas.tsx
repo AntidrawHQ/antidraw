@@ -133,7 +133,12 @@ const HoldToBoxSelect = ({
     };
 
     const onPointerDown = (e: PointerEvent) => {
-      if (e.pointerType !== "touch" || !e.isPrimary) return;
+      if (e.pointerType !== "touch") return;
+      // A second finger is a pinch, never a selection box.
+      if (!e.isPrimary) {
+        if (start) reset();
+        return;
+      }
       if (!(e.target instanceof Element) || !e.target.classList.contains("react-flow__pane")) return;
       start = { x: e.clientX, y: e.clientY, pointerId: e.pointerId };
       timer = setTimeout(() => {
@@ -522,7 +527,10 @@ export const Canvas = ({
   onLayoutsChangeRef.current = onLayoutsChange;
 
   const scheduleSave = useCallback(() => {
-    if (!onLayoutsChangeRef.current) return;
+    // The callback as of the change, not as of the save: a host that swaps it
+    // (the shell, for another workspace) must not get the old one's layout.
+    const onLayoutsChange = onLayoutsChangeRef.current;
+    if (!onLayoutsChange) return;
     clearTimeout(saveTimeoutRef.current);
     saveTimeoutRef.current = setTimeout(() => {
       const layouts = nodesRef.current.map((n) => ({
@@ -532,7 +540,7 @@ export const Canvas = ({
         width: typeof n.style?.width === "number" ? n.style.width : 400,
         height: typeof n.style?.height === "number" ? n.style.height : 300,
       }));
-      onLayoutsChangeRef.current?.(layouts);
+      onLayoutsChange(layouts);
     }, 500);
   }, []);
 

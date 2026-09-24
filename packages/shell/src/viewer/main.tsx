@@ -1,4 +1,4 @@
-import { StrictMode, Suspense, use } from "react";
+import { Component, StrictMode, Suspense, use, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { ReactFlowProvider } from "@xyflow/react";
 import { Canvas, GridPattern, useFocusComponent } from "@/renderer/canvas/Canvas";
@@ -65,10 +65,23 @@ const Viewer = () => {
   );
 };
 
+// canvas.json that does not load or parse leaves a message, not a blank page.
+class LoadError extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  render() {
+    return this.state.failed ? <Message text="This canvas could not be loaded" /> : this.props.children;
+  }
+}
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <Suspense fallback={<Message text="Loading…" />}>
-      <Viewer />
-    </Suspense>
+    <LoadError>
+      <Suspense fallback={<Message text="Loading…" />}>
+        <Viewer />
+      </Suspense>
+    </LoadError>
   </StrictMode>,
 );
