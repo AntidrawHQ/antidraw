@@ -120,6 +120,10 @@ const HoldToBoxSelect = ({
     let timer: ReturnType<typeof setTimeout> | undefined;
     let start: { x: number; y: number; pointerId: number } | null = null;
     let drawing = false;
+    // Fingers on the canvas; after a box, touchmove stays stopped until all
+    // are lifted, or React Flow would pan from where another finger landed.
+    const touches = new Set<number>();
+    let blocking = false;
 
     const toRoot = (p: { x: number; y: number }) => {
       const bounds = root.getBoundingClientRect();
@@ -134,6 +138,7 @@ const HoldToBoxSelect = ({
 
     const onPointerDown = (e: PointerEvent) => {
       if (e.pointerType !== "touch") return;
+      touches.add(e.pointerId);
       // A second finger before the hold completes is a pinch, never a
       // selection box. Once the box is drawn it is ignored: React Flow has
       // not seen the first finger move, and would jump to catch up.
@@ -161,7 +166,13 @@ const HoldToBoxSelect = ({
       setBox(rectBetween(toRoot(start), toRoot(point)));
     };
 
+    const lifted = (e: PointerEvent) => {
+      touches.delete(e.pointerId);
+      if (touches.size === 0) blocking = false;
+    };
+
     const onPointerUp = (e: PointerEvent) => {
+      lifted(e);
       if (!start || e.pointerId !== start.pointerId) return;
       const r = rectBetween(start, { x: e.clientX, y: e.clientY });
       // A box with no area (a hold released in place, a drag along one axis)
@@ -187,15 +198,17 @@ const HoldToBoxSelect = ({
         // Several frames get the group rectangle a mouse selection leaves.
         store.setState({ nodesSelectionActive: ids.length > 1 });
       }
+      if (drawing && touches.size > 0) blocking = true;
       reset();
     };
 
     const onPointerCancel = (e: PointerEvent) => {
+      lifted(e);
       if (start && e.pointerId === start.pointerId) reset();
     };
 
     const onTouchMove = (e: TouchEvent) => {
-      if (!drawing) return;
+      if (!drawing && !blocking) return;
       e.stopPropagation();
       e.preventDefault();
     };
