@@ -46,6 +46,38 @@ const conditionalHeaders = (request: Request) => {
   return headers;
 };
 
+// The status a request's preconditions give against `object`, or null when
+// they pass, in RFC 9110's order: If-Match (or else If-Unmodified-Since)
+// failing is a 412; If-None-Match (or else If-Modified-Since) matching is a
+// 304. Takes the headers conditionalHeaders kept.
+const etagsIn = (value: string) => value.split(",").map((tag) => tag.trim());
+const weak = (tag: string) => tag.replace(/^W\//, "");
+const uploadedSecond = (object: R2Object) => Math.floor(object.uploaded.getTime() / 1000);
+const dateSecond = (value: string) => Math.floor(Date.parse(value) / 1000);
+
+const failedPrecondition = (conditions: Headers, object: R2Object): 304 | 412 | null => {
+  const ifMatch = conditions.get("If-Match");
+  const ifUnmodifiedSince = conditions.get("If-Unmodified-Since");
+  if (ifMatch !== null) {
+    // A strong comparison: a weak tag never matches.
+    if (ifMatch.trim() !== "*" && !etagsIn(ifMatch).includes(object.httpEtag)) return 412;
+  } else if (ifUnmodifiedSince !== null && uploadedSecond(object) > dateSecond(ifUnmodifiedSince)) {
+    return 412;
+  }
+
+  const ifNoneMatch = conditions.get("If-None-Match");
+  const ifModifiedSince = conditions.get("If-Modified-Since");
+  if (ifNoneMatch !== null) {
+    const matches =
+      ifNoneMatch.trim() === "*" ||
+      etagsIn(ifNoneMatch).some((tag) => weak(tag) === weak(object.httpEtag));
+    if (matches) return 304;
+  } else if (ifModifiedSince !== null && uploadedSecond(object) <= dateSecond(ifModifiedSince)) {
+    return 304;
+  }
+  return null;
+};
+
 type ByteRange = { offset: number; length: number };
 
 // A Range header, against an object of `size` bytes: the one byte range it
@@ -106,10 +138,16 @@ export default {
       return headers;
     };
 
+    const onlyIf = conditionalHeaders(request);
+    const preconditionFailed = (status: 304 | 412, object: R2Object) =>
+      new Response(null, { status, headers: headersFor(object) });
+
     try {
       if (request.method === "HEAD") {
         const object = await env.SITES.head(key);
         if (!object) return text(404, "Not found");
+        const failed = failedPrecondition(onlyIf, object);
+        if (failed) return preconditionFailed(failed, object);
         const headers = headersFor(object);
         headers.set("Content-Length", String(object.size));
         return new Response(null, { headers });
@@ -118,13 +156,15 @@ export default {
       // The range is worked out here against the object's size, rather than
       // handed to R2 as the request's headers: R2 answers a range it cannot
       // serve with the whole object, which would go out as a 206.
-      const onlyIf = conditionalHeaders(request);
+      // Preconditions come first, as they would without a Range.
       const rangeHeader = request.headers.get("Range");
       let range: ByteRange | "unsatisfiable" | null = null;
       let rangeOf: R2Object | null = null;
       if (rangeHeader) {
         rangeOf = await env.SITES.head(key);
         if (!rangeOf) return text(404, "Not found");
+        const failed = failedPrecondition(onlyIf, rangeOf);
+        if (failed) return preconditionFailed(failed, rangeOf);
         if (ifRangeMatches(request.headers.get("If-Range"), rangeOf)) {
           range = parseRange(rangeHeader, rangeOf.size);
         }
@@ -147,8 +187,7 @@ export default {
 
       // A get whose precondition failed returns the object without a body.
       if (!("body" in object)) {
-        const conditional = onlyIf.has("If-None-Match") || onlyIf.has("If-Modified-Since");
-        return new Response(null, { status: conditional ? 304 : 412, headers });
+        return preconditionFailed(failedPrecondition(onlyIf, object) ?? 412, object);
       }
 
       if (range) {
