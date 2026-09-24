@@ -168,6 +168,7 @@ release/
 **/routeTree.gen.ts
 # Sites built by hand with packages/shell/scripts/site.ts
 packages/shell/sites/
+packages/shell/dist-viewer/
 
 # wrangler dev state (local R2, caches)
 .wrangler/

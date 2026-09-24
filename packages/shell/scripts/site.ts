@@ -25,6 +25,8 @@
 // --local it goes to the local R2 of `wrangler dev` in packages/publish-worker
 // instead, and with --wrangler to the real bucket through wrangler, signed in
 // with `wrangler login` — neither needs the R2 variables.
+//
+// Needs Node 22.18 or later (type stripping, node:sqlite).
 
 import { execFile, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -46,6 +48,11 @@ const antidrawRoot = process.env.ANTIDRAW_ROOT ?? path.join(os.homedir(), ".anti
 const USER_COMPONENTS_DIR = "src/components/user-components";
 // Same rule as the runtime plugin: names Preview cannot load.
 const UNUSABLE_NAME_RE = /[/\\?#\0]/;
+// Where build-workspace.ts has Vite write its manifest.
+const BUILD_MANIFEST = ".vite/manifest.json";
+// The workspace build's content-hashed files, which upload caches for a year.
+// Only upload reads it; it is not uploaded.
+const HASHED_FILES = ".hashed-files.json";
 
 const fail = (message: string): never => {
   console.error(`error: ${message}`);
@@ -123,6 +130,19 @@ const build = (target: string, out: string | undefined) => {
   if (!fs.existsSync(sourceDir)) fail(`${sourceDir} does not exist`);
 
   const outDir = path.resolve(out ?? path.join(shellDir, "sites", workspace.id ?? workspace.name));
+  // The build empties outDir first, so it must be a site built before, or new.
+  const contains = (dir: string, inner: string) =>
+    inner === dir || inner.startsWith(dir + path.sep);
+  if (contains(outDir, shellDir) || contains(outDir, sourceDir)) {
+    fail(`${outDir} holds the app or the workspace; pick another --out`);
+  }
+  if (
+    fs.existsSync(outDir) &&
+    fs.readdirSync(outDir).length > 0 &&
+    !fs.existsSync(path.join(outDir, "canvas.json"))
+  ) {
+    fail(`${outDir} is not empty and is not a built site, and the build would empty it; pick another --out`);
+  }
   console.log(`Building "${workspace.name}" → ${outDir}\n`);
 
   run([viteBin(shellDir), "build", "-c", "vite.viewer.config.ts", "--logLevel", "warn"], shellDir);
@@ -134,14 +154,25 @@ const build = (target: string, out: string | undefined) => {
   );
 
   // Everything the viewer adds must be free in the workspace build.
-  const viewerDir = path.join(shellDir, "dist/viewer");
-  for (const name of ["preview.html", "canvas.json", ...fs.readdirSync(viewerDir)]) {
+  const viewerDir = path.join(shellDir, "dist-viewer");
+  for (const name of ["preview.html", "canvas.json", HASHED_FILES, ...fs.readdirSync(viewerDir)]) {
     if (name === "index.html") continue;
     if (fs.existsSync(path.join(outDir, name))) {
       fail(`the workspace build has its own ${name} (from public/?), which the site needs`);
     }
   }
   fs.renameSync(path.join(outDir, "index.html"), path.join(outDir, "preview.html"));
+  // Vite's manifest lists the files the build emitted, all content-hashed;
+  // the rest are public/ files, which a republish may change (see upload).
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(outDir, BUILD_MANIFEST), "utf8"),
+  ) as Record<string, { file: string; css?: string[]; assets?: string[] }>;
+  const hashed = new Set(
+    Object.values(manifest).flatMap((c) => [c.file, ...(c.css ?? []), ...(c.assets ?? [])]),
+  );
+  hashed.delete("index.html");
+  fs.rmSync(path.join(outDir, ".vite"), { recursive: true, force: true });
+  fs.writeFileSync(path.join(outDir, HASHED_FILES), JSON.stringify([...hashed].sort(), null, 2));
   fs.cpSync(viewerDir, outDir, { recursive: true });
 
   const canvasFile = readCanvasFile(workspace);
@@ -190,6 +221,12 @@ const CONTENT_TYPES: Record<string, string> = {
   ".wav": "audio/wav",
   ".ogg": "audio/ogg",
   ".m4a": "audio/mp4",
+  ".aac": "audio/aac",
+  ".flac": "audio/flac",
+  ".m4v": "video/mp4",
+  ".vtt": "text/vtt; charset=utf-8",
+  ".xml": "application/xml",
+  ".webmanifest": "application/manifest+json",
   ".pdf": "application/pdf",
   ".wasm": "application/wasm",
   ".glb": "model/gltf-binary",
@@ -218,7 +255,12 @@ const serve = (dir: string, port: number) => {
         return;
       }
       const file = path.join(root, siteFile(pathname));
-      const stat = file.startsWith(root + path.sep) && fs.statSync(file, { throwIfNoEntry: false });
+      let stat: fs.Stats | undefined | false = false;
+      try {
+        stat = file.startsWith(root + path.sep) && fs.statSync(file, { throwIfNoEntry: false });
+      } catch {
+        // A path fs rejects outright, such as one with a NUL byte.
+      }
       if (!stat || !stat.isFile()) {
         res.writeHead(404).end("Not found");
         return;
@@ -260,11 +302,21 @@ const listFiles = (root: string): string[] =>
 const formatBytes = (n: number) =>
   n < 1024 ** 2 ? `${(n / 1024).toFixed(0)} KB` : n < 1024 ** 3 ? `${(n / 1024 ** 2).toFixed(1)} MB` : `${(n / 1024 ** 3).toFixed(2)} GB`;
 
-// Build output under these is content-hashed, so it can be cached forever.
-const IMMUTABLE_DIRS = ["_antidraw/", "assets/"];
+const IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable";
+// The viewer's build output, all content-hashed (it has no public/ files).
+const VIEWER_ASSETS_DIR = "_antidraw/";
+
+// The pages and the canvas refer to everything else, so they go up last: a
+// visitor never gets a page whose files are not there yet.
+const ENTRY_FILES = new Set(["index.html", "preview.html", "canvas.json"]);
 
 // A single PUT takes up to 5 GiB; larger files would need a multipart upload.
-const MAX_PUT_BYTES = 5 * 1024 ** 3 - 5 * 1024 ** 2;
+// wrangler refuses files over 300 MiB.
+const MAX_PUT_BYTES = { s3: 5 * 1024 ** 3 - 5 * 1024 ** 2, wrangler: 300 * 1024 ** 2 };
+// wrangler takes the key as part of a "bucket/key" argument and mangles some
+// characters on the way (the local R2 stores them percent-encoded, "?" and
+// "#" end the key), so it is given only keys that need no encoding.
+const WRANGLER_SAFE_KEY_RE = /^[A-Za-z0-9._~\/-]+$/;
 
 const UPLOAD_CONCURRENCY = 8;
 
@@ -341,24 +393,36 @@ const upload = async (
   if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(id)) fail(`"${id}" cannot be a publish id`);
 
   const { bucket, put } = via === "s3" ? r2Put() : wranglerPut(via);
-  const files = listFiles(root);
+  const files = listFiles(root).filter((f) => f !== HASHED_FILES);
   const sizes = new Map(files.map((f) => [f, fs.statSync(path.join(root, f)).size]));
-  const tooBig = files.filter((f) => sizes.get(f)! > MAX_PUT_BYTES);
-  if (tooBig.length) fail(`files over 5 GB cannot be uploaded yet:\n  ${tooBig.join("\n  ")}`);
+  const maxBytes = via === "s3" ? MAX_PUT_BYTES.s3 : MAX_PUT_BYTES.wrangler;
+  const tooBig = files.filter((f) => sizes.get(f)! > maxBytes);
+  if (tooBig.length) {
+    fail(`files over ${formatBytes(maxBytes)} cannot be uploaded ${via === "s3" ? "yet" : "through wrangler"}:\n  ${tooBig.join("\n  ")}`);
+  }
+  if (via !== "s3") {
+    const unsafe = files.filter((f) => !WRANGLER_SAFE_KEY_RE.test(f));
+    if (unsafe.length) {
+      fail(`these file names cannot go through wrangler (upload without --local or --wrangler):\n  ${unsafe.join("\n  ")}`);
+    }
+  }
+  const hashedFile = path.join(root, HASHED_FILES);
+  const hashed = new Set<string>(
+    fs.existsSync(hashedFile) ? JSON.parse(fs.readFileSync(hashedFile, "utf8")) : [],
+  );
 
   const total = [...sizes.values()].reduce((a, b) => a + b, 0);
   console.log(`Uploading ${files.length} files (${formatBytes(total)}) to ${bucket}/${id}/`);
 
   let done = 0;
   let uploadedBytes = 0;
-  const queue = [...files];
+  const queue: string[] = [];
   const worker = async () => {
     for (let file = queue.shift(); file; file = queue.shift()) {
       const meta = {
         contentType: contentType(file),
-        cacheControl: IMMUTABLE_DIRS.some((d) => file!.startsWith(d))
-          ? "public, max-age=31536000, immutable"
-          : undefined,
+        cacheControl:
+          file.startsWith(VIEWER_ASSETS_DIR) || hashed.has(file) ? IMMUTABLE_CACHE_CONTROL : undefined,
         size: sizes.get(file)!,
       };
       for (let attempt = 1; ; attempt++) {
@@ -376,7 +440,12 @@ const upload = async (
       }
     }
   };
-  await Promise.all(Array.from({ length: UPLOAD_CONCURRENCY }, worker));
+  const uploadAll = (batch: string[]) => {
+    queue.push(...batch);
+    return Promise.all(Array.from({ length: UPLOAD_CONCURRENCY }, worker));
+  };
+  await uploadAll(files.filter((f) => !ENTRY_FILES.has(f)));
+  await uploadAll(files.filter((f) => ENTRY_FILES.has(f)));
   console.log(`\nDone: ${bucket}/${id}/`);
   if (via === "local") {
     console.log(`  npm run dev -w @antidraw/publish-worker, then open http://${id}.localhost:8787/`);

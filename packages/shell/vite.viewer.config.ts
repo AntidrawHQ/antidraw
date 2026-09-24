@@ -5,9 +5,10 @@ import fs from "fs";
 import path from "path";
 
 // The published viewer (src/viewer): the shell's canvas as a standalone web
-// page. `npm run build:viewer` writes it to dist/viewer, and scripts/site.ts
-// copies it into each published site. Its assets go under _antidraw/ so they
-// cannot collide with the workspace build's assets/ next to them.
+// page. `npm run build:viewer` writes it to dist-viewer (not dist/, which
+// electron-builder packs into the app), and scripts/site.ts copies it into
+// each published site. Its assets go under _antidraw/ so they cannot collide
+// with the workspace build's assets/ next to them.
 //
 // `SITE=<built site dir> npm run dev:viewer` serves the viewer with HMR, and
 // everything else (canvas.json, /preview, the workspace's files) from a site
@@ -56,7 +57,7 @@ export default defineConfig({
     dedupe: ["react", "react-dom"],
   },
   build: {
-    outDir: path.resolve(__dirname, "dist/viewer"),
+    outDir: path.resolve(__dirname, "dist-viewer"),
     emptyOutDir: true,
     assetsDir: "_antidraw",
     // React, React Flow and motion in one chunk: ~540 kB, ~175 kB gzipped.
