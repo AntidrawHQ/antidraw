@@ -30,6 +30,22 @@ const DEFAULT_CACHE_CONTROL = "public, max-age=60";
 const text = (status: number, body: string, headers?: HeadersInit) =>
   new Response(body, { status, headers });
 
+// The conditional headers R2 can evaluate, when they are well formed: R2
+// throws on a malformed one, where HTTP says to ignore it.
+const ETAG_LIST_RE = /^\s*(?:\*|(?:W\/)?"[^"]*"(?:\s*,\s*(?:W\/)?"[^"]*")*)\s*$/;
+const conditionalHeaders = (request: Request) => {
+  const headers = new Headers();
+  for (const name of ["If-Match", "If-None-Match"]) {
+    const value = request.headers.get(name);
+    if (value !== null && ETAG_LIST_RE.test(value)) headers.set(name, value);
+  }
+  for (const name of ["If-Modified-Since", "If-Unmodified-Since"]) {
+    const value = request.headers.get(name);
+    if (value !== null && !Number.isNaN(Date.parse(value))) headers.set(name, value);
+  }
+  return headers;
+};
+
 type ByteRange = { offset: number; length: number };
 
 // A Range header, against an object of `size` bytes: the one byte range it
@@ -102,42 +118,41 @@ export default {
       // The range is worked out here against the object's size, rather than
       // handed to R2 as the request's headers: R2 answers a range it cannot
       // serve with the whole object, which would go out as a 206.
+      const onlyIf = conditionalHeaders(request);
       const rangeHeader = request.headers.get("Range");
       let range: ByteRange | "unsatisfiable" | null = null;
+      let rangeOf: R2Object | null = null;
       if (rangeHeader) {
-        const object = await env.SITES.head(key);
-        if (!object) return text(404, "Not found");
-        if (ifRangeMatches(request.headers.get("If-Range"), object)) {
-          range = parseRange(rangeHeader, object.size);
+        rangeOf = await env.SITES.head(key);
+        if (!rangeOf) return text(404, "Not found");
+        if (ifRangeMatches(request.headers.get("If-Range"), rangeOf)) {
+          range = parseRange(rangeHeader, rangeOf.size);
         }
         if (range === "unsatisfiable") {
-          const headers = headersFor(object);
-          headers.set("Content-Range", `bytes */${object.size}`);
+          const headers = headersFor(rangeOf);
+          headers.set("Content-Range", `bytes */${rangeOf.size}`);
           return new Response(null, { status: 416, headers });
         }
       }
 
-      const object = await env.SITES.get(key, {
-        onlyIf: request.headers,
-        ...(range ? { range } : {}),
-      });
+      let object = await env.SITES.get(key, { onlyIf, ...(range ? { range } : {}) });
+      // Republished between the head and the get: the range was worked out
+      // for another version, so the answer is the whole of this one.
+      if (object && range && rangeOf && object.etag !== rangeOf.etag) {
+        range = null;
+        object = await env.SITES.get(key, { onlyIf });
+      }
       if (!object) return text(404, "Not found");
       const headers = headersFor(object);
 
       // A get whose precondition failed returns the object without a body.
       if (!("body" in object)) {
-        const conditional = request.headers.has("If-None-Match") || request.headers.has("If-Modified-Since");
+        const conditional = onlyIf.has("If-None-Match") || onlyIf.has("If-Modified-Since");
         return new Response(null, { status: conditional ? 304 : 412, headers });
       }
 
       if (range) {
-        // The object may have been replaced since the head above; its size
-        // now is what the range has to fit.
-        const end = Math.min(range.offset + range.length, object.size) - 1;
-        if (range.offset > end) {
-          headers.set("Content-Range", `bytes */${object.size}`);
-          return new Response(null, { status: 416, headers });
-        }
+        const end = range.offset + range.length - 1;
         headers.set("Content-Range", `bytes ${range.offset}-${end}/${object.size}`);
         return new Response(object.body, { status: 206, headers });
       }
