@@ -59,7 +59,10 @@ const QueuedRow = ({ row, cancelling, onCancel }: QueuedRowProps) => {
         {/* Dimmed against sent messages (neutral-700 / neutral-200):
             same bubble, lower opacity, quieter text. */}
         <div className="relative max-w-full rounded-lg bg-neutral-700 py-1.5 pl-2.5 pr-8 opacity-70 transition-colors duration-200">
-          <p className="text-[13px] leading-snug text-neutral-400">
+          {/* Clamped, and wrapped anywhere: the deck sits outside the
+              scrolling transcript, so a pasted log must not grow it without
+              bound. The full text shows once the transcript takes it. */}
+          <p className="line-clamp-3 text-[13px] leading-snug text-neutral-400 [overflow-wrap:anywhere]">
             {promptText(row.message)}
           </p>
           <button
@@ -103,7 +106,9 @@ export const QueuedMessagesDeck = ({
             Queued Messages
           </span>
         </div>
-        <div>
+        {/* Many queued rows scroll here rather than push the composer and
+            its Stop button out of the panel. */}
+        <div className="max-h-60 overflow-y-auto">
           {rows.map((row) => (
             <QueuedRow
               key={row.message.id}
