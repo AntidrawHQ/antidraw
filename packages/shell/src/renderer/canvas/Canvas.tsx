@@ -161,8 +161,10 @@ const HoldToBoxSelect = ({
 
     const onPointerUp = (e: PointerEvent) => {
       if (!start || e.pointerId !== start.pointerId) return;
-      if (drawing) {
-        const r = rectBetween(start, { x: e.clientX, y: e.clientY });
+      const r = rectBetween(start, { x: e.clientX, y: e.clientY });
+      // A box with no area (a hold released in place, a drag along one axis)
+      // selects nothing: xyflow counts every node as inside it.
+      if (drawing && r.width > 0 && r.height > 0) {
         const topLeft = reactFlow.screenToFlowPosition({ x: r.left, y: r.top });
         const bottomRight = reactFlow.screenToFlowPosition({
           x: r.left + r.width,
