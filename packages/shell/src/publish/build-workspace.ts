@@ -12,7 +12,12 @@
 import path from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
-import { failedWorkspaceFile, publishPlugins, type BrokenFiles } from "./vite-plugins.ts";
+import {
+  failedWorkspaceFile,
+  publishPlugins,
+  redactPaths,
+  type BrokenFiles,
+} from "./vite-plugins.ts";
 
 const [outDir, runtimeSrc] = process.argv.slice(2);
 if (!outDir || !runtimeSrc) {
@@ -59,10 +64,7 @@ for (;;) {
     if (!file || broken.size >= MAX_BROKEN_FILES) throw error;
     const message = (error as Error).message.split("\n")[0]!;
     const relative = path.relative(root, file);
-    broken.set(
-      file,
-      `${relative} could not be built: ${message.split(vite.normalizePath(root) + "/").join("")}`,
-    );
+    broken.set(file, redactPaths(vite, root, `${relative} could not be built: ${message}`));
     console.warn(`\n[antidraw] building again without ${relative}\n`);
   }
 }

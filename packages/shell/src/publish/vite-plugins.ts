@@ -8,6 +8,7 @@
 // and only types are imported.
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { Plugin, ResolvedConfig, normalizePath, transformWithEsbuild } from "vite";
 
@@ -20,6 +21,19 @@ const USER_COMPONENTS_DIR = "src/components/user-components";
 const SCANNABLE_FILE_RE = /\.(m?[jt]s|[jt]sx)$/;
 // The router module a workspace's main.tsx renders.
 const RUNTIME_ROUTER = "@antidrawapp/runtime/router";
+
+// Build messages end up in the published bundle (as stub errors), so they
+// name files relative to the workspace, and nothing by its path on this
+// machine: the workspace root becomes ".", the home directory "~".
+export const redactPaths = (vite: ViteApi, root: string, text: string) => {
+  const replace = (from: string, to: string) => {
+    for (const form of new Set([from, vite.normalizePath(from)])) text = text.split(form).join(to);
+  };
+  replace(root + path.sep, "");
+  replace(root, ".");
+  replace(os.homedir(), "~");
+  return text;
+};
 
 // Is this a workspace source file (not a dependency, not the runtime)?
 const isWorkspaceSource = (vite: ViteApi, root: string, file: string) => {
@@ -73,7 +87,11 @@ const runtimeFromApp = (runtimeSrc: string): Plugin => {
 // either, and "?" or "#" in an import path would read as a query or a hash.
 const UNUSABLE_NAME_RE = /[/\\?#\0]/;
 
-const componentsForBuild = (vite: ViteApi, runtimeSrc: string): Plugin => {
+const componentsForBuild = (
+  vite: ViteApi,
+  runtimeSrc: string,
+  broken: BrokenFiles,
+): Plugin => {
   let config: ResolvedConfig;
   let loadComponentFile: string;
 
@@ -102,8 +120,16 @@ const componentsForBuild = (vite: ViteApi, runtimeSrc: string): Plugin => {
           );
           continue;
         }
-        const file = JSON.stringify(vite.normalizePath(path.join(dir, dirent.name)));
-        entries.push(`  [${JSON.stringify(name)}]: () => import(${file}),`);
+        const file = vite.normalizePath(path.join(dir, dirent.name));
+        // A component a previous attempt failed on (see tolerateBrokenSource)
+        // is not imported at all: this module is the app's, not the
+        // workspace's, so its imports are never stubbed.
+        const reason = broken.get(file);
+        entries.push(
+          reason === undefined
+            ? `  [${JSON.stringify(name)}]: () => import(${JSON.stringify(file)}),`
+            : `  [${JSON.stringify(name)}]: () => Promise.reject(new Error(${JSON.stringify(reason)})),`,
+        );
       }
       config.logger.info(`[antidraw] building ${entries.length} components`);
 
@@ -150,16 +176,26 @@ const throwingModule = (reason: string) => ({
 // Files a previous attempt failed on, by normalized path, with the reason.
 export type BrokenFiles = Map<string, string>;
 
+// Every file the build emits gets a content hash in its name, whatever names
+// the workspace's config asks for: site.ts uploads the build's files (Vite's
+// manifest) to be cached for a year, which is only safe for hashed names.
+const hashedOutputNames = (): Plugin => ({
+  name: "antidraw-publish:hashed-output-names",
+  outputOptions: (options) => ({
+    ...options,
+    entryFileNames: "assets/[name]-[hash].js",
+    chunkFileNames: "assets/[name]-[hash].js",
+    assetFileNames: "assets/[name]-[hash][extname]",
+  }),
+});
+
 const tolerateBrokenSource = (vite: ViteApi, broken: BrokenFiles): Plugin => {
   let config: ResolvedConfig;
   const stubs = new Map<string, string>();
   // What index.html loads directly (main.tsx).
   const entryModules = new Set<string>();
 
-  // Reasons end up in the published bundle, so they name files relative to
-  // the workspace, never by their path on this machine.
-  const redact = (text: string) =>
-    text.split(vite.normalizePath(config.root) + "/").join("").split(config.root + path.sep).join("");
+  const redact = (text: string) => redactPaths(vite, config.root, text);
 
   const stub = (reason: string) => {
     reason = redact(reason);
@@ -265,7 +301,8 @@ export const publishPlugins = (
   broken: BrokenFiles,
 ): Plugin[] => [
   runtimeFromApp(runtimeSrc),
-  componentsForBuild(vite, runtimeSrc),
+  componentsForBuild(vite, runtimeSrc, broken),
+  hashedOutputNames(),
   tolerateBrokenSource(vite, broken),
 ];
 
