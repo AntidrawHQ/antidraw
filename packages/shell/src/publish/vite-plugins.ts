@@ -92,7 +92,9 @@ const componentsForBuild = (vite: ViteApi, runtimeSrc: string): Plugin => {
       const dirents = fs.existsSync(dir) ? fs.readdirSync(dir, { withFileTypes: true }) : [];
       const entries: string[] = [];
       for (const dirent of dirents) {
-        if (!dirent.isFile() || !dirent.name.endsWith(".tsx")) continue;
+        if (!dirent.name.endsWith(".tsx")) continue;
+        // Symlinks too, as the shell lists them.
+        if (!fs.statSync(path.join(dir, dirent.name), { throwIfNoEntry: false })?.isFile()) continue;
         const name = dirent.name.slice(0, -".tsx".length);
         if (!name || UNUSABLE_NAME_RE.test(name)) {
           config.logger.warn(
@@ -101,12 +103,15 @@ const componentsForBuild = (vite: ViteApi, runtimeSrc: string): Plugin => {
           continue;
         }
         const file = JSON.stringify(vite.normalizePath(path.join(dir, dirent.name)));
-        entries.push(`  ${JSON.stringify(name)}: () => import(${file}),`);
+        entries.push(`  [${JSON.stringify(name)}]: () => import(${file}),`);
       }
       config.logger.info(`[antidraw] building ${entries.length} components`);
 
       return [
+        // Computed keys and no prototype, so a component named __proto__ is an
+        // entry like any other.
         "const components = {",
+        "  __proto__: null,",
         ...entries,
         "}",
         "export const loadComponent = (name) =>",
@@ -120,14 +125,15 @@ const componentsForBuild = (vite: ViteApi, runtimeSrc: string): Plugin => {
 
 // A build bundles every component, so one file that does not parse, or one
 // import that does not resolve (a package that is not installed, a helper not
-// written yet), would fail the whole build — where in dev it only breaks the
-// previews that load it. Such a module is swapped for a stub that throws when
-// it runs, with a warning naming it: the build finishes, and only the frames
-// that import it fail to load. syntheticNamedExports lets any named import
-// from the stub bind, so its importers still link. A named import the target
-// module does not export (a package whose API changed) is the same story:
-// shimMissingExports binds it to undefined with a warning instead of failing
-// the build, matching dev, where only that preview fails.
+// written yet, a subpath the package does not export), would fail the whole
+// build — where in dev it only breaks the previews that load it. Such a module
+// is swapped for a stub that throws when it runs, with a warning naming it:
+// the build finishes, and only the frames that import it fail to load.
+// syntheticNamedExports lets any named import from the stub bind, so its
+// importers still link. A named import the target module does not export (a
+// package whose API changed) is the same story: shimMissingExports binds it
+// to undefined with a warning instead of failing the build, matching dev,
+// where only that preview fails.
 const STUB_PREFIX = "\0antidraw-broken:";
 
 const throwingModule = (reason: string) => ({
@@ -139,6 +145,28 @@ const tolerateBrokenSource = (vite: ViteApi): Plugin => {
   let config: ResolvedConfig;
   const stubs = new Map<string, string>();
 
+  // Reasons end up in the published bundle, so they name files relative to
+  // the workspace, never by their path on this machine.
+  const redact = (text: string) =>
+    text.split(vite.normalizePath(config.root) + "/").join("").split(config.root + path.sep).join("");
+
+  const stub = (reason: string) => {
+    reason = redact(reason);
+    config.logger.warn(`[antidraw] ${reason} — replaced with a module that throws`);
+    const stubId = `${STUB_PREFIX}${stubs.size}`;
+    stubs.set(stubId, reason);
+    return stubId;
+  };
+
+  const brokenJson = (file: string) => {
+    try {
+      JSON.parse(fs.readFileSync(file, "utf8"));
+      return null;
+    } catch (e) {
+      return `${path.relative(config.root, file)} could not be parsed: ${(e as Error).message}`;
+    }
+  };
+
   return {
     name: "antidraw-publish:tolerate-broken-source",
     config: () => ({
@@ -147,17 +175,40 @@ const tolerateBrokenSource = (vite: ViteApi): Plugin => {
     configResolved(resolved) {
       config = resolved;
     },
-    // "post": reached only by imports every other resolver gave up on.
+    // "pre", so that a resolver further down that throws (a package subpath
+    // missing from its "exports") is caught here too, not only one that gives
+    // up. The rest of the chain runs once, through this.resolve.
     resolveId: {
-      order: "post",
-      handler(id, importer) {
+      order: "pre",
+      async handler(id, importer, options) {
         if (!importer || !isWorkspaceSource(vite, config.root, importer)) return null;
         if (id.startsWith("\0")) return null;
-        const reason = `"${id}" (imported by ${path.relative(config.root, importer)}) could not be resolved`;
-        config.logger.warn(`[antidraw] ${reason} — replaced with a module that throws`);
-        const stubId = `${STUB_PREFIX}${stubs.size}`;
-        stubs.set(stubId, reason);
-        return stubId;
+        // Other plugins probe with this.resolve and cope with a miss
+        // themselves: import.meta.glob resolves its pattern ("@/assets/*")
+        // through the alias. A stub would read as a match.
+        if (options.custom?.["vite:import-glob"] || id.includes("*")) return null;
+        // index.html's <link>s and <script>s: Vite leaves one it cannot
+        // resolve in the page as it is, and a stub there would be bundled
+        // into the entry chunk and fail every preview.
+        if (importer.endsWith(".html")) return null;
+
+        const unresolved = `"${id}" (imported by ${path.relative(config.root, importer)}) could not be resolved`;
+        let resolved;
+        try {
+          resolved = await this.resolve(id, importer, { ...options, skipSelf: true });
+        } catch (e) {
+          return stub(`${unresolved}: ${(e as Error).message}`);
+        }
+        if (!resolved) return stub(unresolved);
+
+        // A JSON file that does not parse fails vite:json's transform, which
+        // load (below) cannot catch: it has to be swapped before it loads.
+        const file = resolved.id.split("?")[0]!;
+        if (!resolved.external && file.endsWith(".json") && isWorkspaceSource(vite, config.root, file)) {
+          const reason = brokenJson(file);
+          if (reason) return stub(reason);
+        }
+        return resolved;
       },
     },
     async load(id) {
@@ -174,7 +225,7 @@ const tolerateBrokenSource = (vite: ViteApi): Plugin => {
         // "file:line:col: ERROR: …" line per error; show the first.
         const lines = (e as Error).message.split("\n");
         const first = (lines[1]?.trim() || lines[0]!).replace(`${id}:`, "line ");
-        const reason = `${path.relative(config.root, id)} could not be parsed: ${first}`;
+        const reason = redact(`${path.relative(config.root, id)} could not be parsed: ${first}`);
         config.logger.warn(`[antidraw] ${reason} — replaced with a module that throws`);
         return throwingModule(reason);
       }
