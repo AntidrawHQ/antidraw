@@ -89,10 +89,40 @@ const runtimeFromApp = (runtimeSrc: string): Plugin => {
 // either, and "?" or "#" in an import path would read as a query or a hash.
 const UNUSABLE_NAME_RE = /[/\\?#\0]/;
 
+// Why a workspace source file does not parse, or null when it does; each file
+// is parsed once per build.
+type ParseCheck = (file: string, root: string) => Promise<string | null>;
+
+const parseCheck = (vite: ViteApi): ParseCheck => {
+  const results = new Map<string, Promise<string | null>>();
+  return (file, root) => {
+    let result = results.get(file);
+    if (!result) {
+      result = fs.promises.readFile(file, "utf8").then(
+        (code) =>
+          vite.transformWithEsbuild(code, file).then(
+            () => null,
+            (e: Error) => {
+              // esbuild's message is a count line followed by one
+              // "file:line:col: ERROR: …" line per error; show the first.
+              const lines = e.message.split("\n");
+              const first = (lines[1]?.trim() || lines[0]!).replace(`${file}:`, "line ");
+              return redactPaths(vite, root, `${path.relative(root, file)} could not be parsed: ${first}`);
+            },
+          ),
+        () => null, // unreadable: left to the build to report
+      );
+      results.set(file, result);
+    }
+    return result;
+  };
+};
+
 const componentsForBuild = (
   vite: ViteApi,
   runtimeSrc: string,
   broken: BrokenFiles,
+  parseError: ParseCheck,
 ): Plugin => {
   let config: ResolvedConfig;
   let loadComponentFile: string;
@@ -105,7 +135,7 @@ const componentsForBuild = (
         fs.realpathSync(path.join(runtimeSrc, "load-component.ts")),
       );
     },
-    load(id) {
+    async load(id) {
       if (vite.normalizePath(id.split("?")[0]!) !== loadComponentFile) return null;
 
       const dir = path.join(config.root, USER_COMPONENTS_DIR);
@@ -123,12 +153,19 @@ const componentsForBuild = (
           continue;
         }
         const file = vite.normalizePath(path.join(dir, dirent.name));
-        // A component a previous attempt failed on (see tolerateBrokenSource)
-        // is not imported at all: this module is the app's, not the
-        // workspace's, so its imports are never stubbed.
-        // Failures are recorded under the file's real path (a symlinked
-        // component's target).
-        const reason = broken.get(vite.normalizePath(fs.realpathSync(file))) ?? broken.get(file);
+        // A component that does not parse, or that a previous attempt failed
+        // on (see tolerateBrokenSource), is not imported at all: this module
+        // is the app's, not the workspace's, so its imports are never
+        // stubbed. Failures are recorded under the file's real path (a
+        // symlinked component's target).
+        const reason =
+          broken.get(vite.normalizePath(fs.realpathSync(file))) ??
+          broken.get(file) ??
+          (await parseError(file, config.root)) ??
+          undefined;
+        if (reason !== undefined) {
+          config.logger.warn(`[antidraw] ${reason} — the component is left out of the build`);
+        }
         entries.push(
           reason === undefined
             ? `  [${JSON.stringify(name)}]: () => import(${JSON.stringify(file)}),`
@@ -183,20 +220,27 @@ const throwingModule = (reason: string) => ({
 // Files a previous attempt failed on, by normalized path, with the reason.
 export type BrokenFiles = Map<string, string>;
 
-// Every file the build emits gets a content hash in its name, whatever names
-// the workspace's config asks for: site.ts uploads the build's files (Vite's
-// manifest) to be cached for a year, which is only safe for hashed names.
-const hashedOutputNames = (): Plugin => ({
-  name: "antidraw-publish:hashed-output-names",
+// The build's output, whatever the workspace's config asks for: every file it
+// emits gets a content hash in its name, since site.ts uploads the build's
+// files (Vite's manifest) to be cached for a year, which is only safe for
+// hashed names; and no source maps, which would publish this machine's paths
+// (see build-workspace.ts). Output options apply after the config's.
+const publishOutput = (): Plugin => ({
+  name: "antidraw-publish:output",
   outputOptions: (options) => ({
     ...options,
+    sourcemap: false,
     entryFileNames: "assets/[name]-[hash].js",
     chunkFileNames: "assets/[name]-[hash].js",
     assetFileNames: "assets/[name]-[hash][extname]",
   }),
 });
 
-const tolerateBrokenSource = (vite: ViteApi, broken: BrokenFiles): Plugin => {
+const tolerateBrokenSource = (
+  vite: ViteApi,
+  broken: BrokenFiles,
+  parseError: ParseCheck,
+): Plugin => {
   let config: ResolvedConfig;
   const stubs = new Map<string, string>();
   // The page's entry: what index.html loads (main.tsx) and the workspace
@@ -290,35 +334,27 @@ const tolerateBrokenSource = (vite: ViteApi, broken: BrokenFiles): Plugin => {
         const normalized = vite.normalizePath(file);
         const reason = broken.get(normalized);
         if (reason !== undefined) return stub(reason);
+        if (!isWorkspaceSource(vite, config.root, file)) return resolved;
+        // A file that does not parse gets a stub here, per import, rather
+        // than when it loads: a module loads once, and the page's entry may
+        // import the same file after a component did.
+        if (!query && SCANNABLE_FILE_RE.test(file)) {
+          const reason = await parseError(file, config.root);
+          if (reason) return stub(reason);
+        }
         // A JSON file that does not parse fails vite:json's transform, which
         // load (below) cannot catch: it has to be swapped before it loads.
         // With a query (?raw, ?url) it is not parsed at all.
-        if (!query && file.endsWith(".json") && isWorkspaceSource(vite, config.root, file)) {
+        if (!query && file.endsWith(".json")) {
           const reason = brokenJson(file);
           if (reason) return stub(reason);
         }
         return resolved;
       },
     },
-    async load(id) {
+    load(id) {
       const reason = stubs.get(id);
-      if (reason !== undefined) return throwingModule(reason);
-
-      if (!SCANNABLE_FILE_RE.test(id) || !isWorkspaceSource(vite, config.root, id)) return null;
-      if (isEntry(id)) return null;
-      const code = await fs.promises.readFile(id, "utf8");
-      try {
-        await vite.transformWithEsbuild(code, id);
-        return code;
-      } catch (e) {
-        // esbuild's message is a count line followed by one
-        // "file:line:col: ERROR: …" line per error; show the first.
-        const lines = (e as Error).message.split("\n");
-        const first = (lines[1]?.trim() || lines[0]!).replace(`${id}:`, "line ");
-        const reason = redact(`${path.relative(config.root, id)} could not be parsed: ${first}`);
-        config.logger.warn(`[antidraw] ${reason} — replaced with a module that throws`);
-        return throwingModule(reason);
-      }
+      return reason === undefined ? null : throwingModule(reason);
     },
   };
 };
@@ -327,12 +363,15 @@ export const publishPlugins = (
   vite: ViteApi,
   runtimeSrc: string,
   broken: BrokenFiles,
-): Plugin[] => [
-  runtimeFromApp(runtimeSrc),
-  componentsForBuild(vite, runtimeSrc, broken),
-  hashedOutputNames(),
-  tolerateBrokenSource(vite, broken),
-];
+): Plugin[] => {
+  const parseError = parseCheck(vite);
+  return [
+    runtimeFromApp(runtimeSrc),
+    componentsForBuild(vite, runtimeSrc, broken, parseError),
+    publishOutput(),
+    tolerateBrokenSource(vite, broken, parseError),
+  ];
+};
 
 // The workspace file a failed build failed on, if the build could go on
 // without it: a workspace source file (not a dependency, not the app's
