@@ -395,15 +395,16 @@ export const failedWorkspaceFile = (
   error: unknown,
   broken: BrokenFiles,
 ) => {
-  // Rollup names the module an error came from, except when loading it
-  // failed (a web worker's own bundle), which only its message says.
+  // Rollup names the module an error came from. When loading a module
+  // failed (a web worker, whose own bundle failed), the message names it,
+  // and it is the one to stub: the error's id is then the file inside the
+  // worker's bundle, which this build's plugins never see.
   const { id: errorId, message } = error as { id?: unknown; message?: unknown };
-  const id =
-    typeof errorId === "string"
-      ? errorId
-      : typeof message === "string"
-        ? /^(?:\[[^\]]+\] )?Could not load (.+?) \(imported by /.exec(message)?.[1]
-        : undefined;
+  const couldNotLoad =
+    typeof message === "string"
+      ? /^(?:\[[^\]]+\] )?Could not load (.+?) \(imported by /.exec(message)?.[1]
+      : undefined;
+  const id = couldNotLoad ?? (typeof errorId === "string" ? errorId : undefined);
   if (!id || id.startsWith("\0")) return null;
   const file = vite.normalizePath(id.split("?")[0]!);
   if (!isWorkspaceSource(vite, root, file) || file.endsWith(".html") || broken.has(file)) return null;

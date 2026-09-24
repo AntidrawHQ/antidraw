@@ -56,6 +56,9 @@ for (;;) {
     await vite.build({
       root,
       mode: "production",
+      // The site is served from the root of its own origin, whatever base
+      // the workspace's config names.
+      base: "/",
       plugins: publishPlugins(vite, path.resolve(runtimeSrc), broken),
       build: {
         outDir: path.resolve(outDir),
