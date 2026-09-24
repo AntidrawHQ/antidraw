@@ -148,52 +148,6 @@ body {
   @apply bg-neutral-800!;
 }
 
-/* React Flow node selection styles */
-.react-flow__node {
-  /* background: transparent; */
-  /* box-shadow: 0 0 0 1px rgb(82 82 91); */
-  /* neutral-600 */
-  /* GPU acceleration for smoother dragging */
-  will-change: transform;
-  transform: translate3d(0, 0, 0);
-}
-
-.react-flow__node.selected {
-  /* box-shadow: 0 0 0 2px rgb(59 130 246);  */
-  /* blue-500 */
-}
-
-/* Disable pointer events on iframe during drag/resize via CSS (avoids React re-renders) */
-.react-flow__node.dragging .iframe-content,
-.react-flow__node .iframe-content.resizing {
-  pointer-events: none !important;
-}
-
-/* Ensure smooth transforms during drag */
-.react-flow__node.dragging {
-  /* Disable transitions during drag for immediate response */
-  transition: none !important;
-}
-
-/* Hardware acceleration for iframe containers */
-.iframe-node-container {
-  will-change: contents;
-  contain: layout style;
-}
-
-/* Corner handles */
-.react-flow .react-flow__resize-control.handle {
-  width: 12px !important;
-  height: 12px !important;
-  z-index: 1000 !important;
-}
-
-/* Side line controls */
-.react-flow .react-flow__resize-control.line {
-  border-width: 2px !important;
-  z-index: 1000 !important;
-}
-
 pre.shiki {
   white-space: pre-wrap; /* Allows text to wrap */
   word-wrap: break-word; /* Ensures long words break and wrap */

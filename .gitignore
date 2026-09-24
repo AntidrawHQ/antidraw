@@ -166,3 +166,8 @@ release/
 # TanStack Router
 .tanstack
 **/routeTree.gen.ts
+# Sites built by hand with packages/shell/scripts/site.ts
+packages/shell/sites/
+
+# wrangler dev state (local R2, caches)
+.wrangler/
