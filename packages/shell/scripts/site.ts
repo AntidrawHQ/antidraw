@@ -53,7 +53,6 @@ const BUILD_MANIFEST = ".vite/manifest.json";
 // The workspace build's content-hashed files, which upload caches for a year.
 // Only upload reads it; it is not uploaded.
 const HASHED_FILES = ".hashed-files.json";
-const HASHED_NAME_RE = /[-.][A-Za-z0-9_-]{8}\.[A-Za-z0-9]+$/;
 
 const fail = (message: string): never => {
   console.error(`error: ${message}`);
@@ -122,7 +121,15 @@ const readCanvasFile = (workspace: Workspace): CanvasFile => {
         .all(workspace.id) as CanvasFile["layouts"] | undefined) ?? []
     : [];
 
-  return { version: 1, name: workspace.name, components, layouts };
+  // Only the frames of components the site has: the table keeps rows for
+  // deleted and renamed ones, whose names are not the site's to publish.
+  const names = new Set(components.map((c) => c.name));
+  return {
+    version: 1,
+    name: workspace.name,
+    components,
+    layouts: layouts.filter((l) => names.has(l.componentName)),
+  };
 };
 
 const build = (target: string, out: string | undefined) => {
@@ -170,12 +177,9 @@ const build = (target: string, out: string | undefined) => {
   const manifest = JSON.parse(
     fs.readFileSync(path.join(outDir, BUILD_MANIFEST), "utf8"),
   ) as Record<string, { file: string; css?: string[]; assets?: string[] }>;
-  // Vite's default names carry an 8-character hash; a workspace config that
-  // names its output otherwise gets the short cache instead.
+  // (The publish plugins give every emitted file a hashed name.)
   const hashed = new Set(
-    Object.values(manifest)
-      .flatMap((c) => [c.file, ...(c.css ?? []), ...(c.assets ?? [])])
-      .filter((f) => HASHED_NAME_RE.test(f)),
+    Object.values(manifest).flatMap((c) => [c.file, ...(c.css ?? []), ...(c.assets ?? [])]),
   );
   fs.rmSync(path.join(outDir, ".vite"), { recursive: true, force: true });
   fs.writeFileSync(path.join(outDir, HASHED_FILES), JSON.stringify([...hashed].sort(), null, 2));
