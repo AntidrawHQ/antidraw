@@ -66,26 +66,29 @@ const order = async () => {
 const tick = () => new Promise((r) => setTimeout(r, 5));
 
 describe("the sidebar order", () => {
-  test("a user prompt moves its conversation to the top; a reply does not", async () => {
-    // Both rows default to the same whole second, so their relative order is
-    // a tie the schema promises nothing about. The first prompt breaks it.
+  test("newest-created first, and a prompt or reply does not move it", async () => {
+    // Created back to back, so createdAt (whole seconds) almost always ties
+    // and the rowid tie-break is what keeps them in creation order.
     const a = await newConversation();
     const b = await newConversation();
+    const c = await newConversation();
+    expect(await order()).toEqual([c, b, a]);
 
     await tick();
     await prompt(a);
-    expect(await order()).toEqual([a, b]);
+    await reply(a);
+    expect(await order()).toEqual([c, b, a]);
+  });
 
-    // The reply lands where the prompt put it.
+  test("a user prompt bumps updatedAt; a reply does not", async () => {
+    const a = await newConversation();
+    await tick();
+    await prompt(a);
+
     const before = await updatedAt(a);
     await tick();
     await reply(a);
     expect(await updatedAt(a)).toBe(before);
-    expect(await order()).toEqual([a, b]);
-
-    await tick();
-    await prompt(b);
-    expect(await order()).toEqual([b, a]);
   });
 
   test("the bump is later than the row's creation default", async () => {
