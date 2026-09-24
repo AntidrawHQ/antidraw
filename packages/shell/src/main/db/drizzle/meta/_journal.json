@@ -43,6 +43,13 @@
       "when": 1788461559806,
       "tag": "0005_add_delivered_at",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1790193355335,
+      "tag": "0006_add_accepted_after_seq",
+      "breakpoints": true
     }
   ]
 }

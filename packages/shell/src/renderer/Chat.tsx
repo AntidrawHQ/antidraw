@@ -24,7 +24,6 @@ import { useQueryClient } from "@tanstack/react-query";
 import { retryStream } from "./lib/stream-subscription";
 import { memo, useEffect, useMemo, useState } from "react";
 import {
-  useCancelQueuedMessage,
   useCancelStream,
   useConversationMessages,
   useCreateConversation,
@@ -44,6 +43,9 @@ import { ChatEmptyState } from "./components/ChatEmptyState";
 import ModelPicker from "@/renderer/components/ModelPicker";
 import EffortDropdown from "@/renderer/components/EffortDropdown";
 import { useComposerModel } from "@/renderer/hooks/use-composer-model";
+import { QueuedMessagesDeck } from "@/renderer/components/QueuedMessagesDeck";
+import { useQueueDeck } from "@/renderer/lib/use-queue-deck";
+import { SMOOTH } from "@/renderer/lib/motion";
 import {
   SUPPORTED_IMAGE_TYPES,
   type ImageAttachment,
@@ -82,15 +84,18 @@ type MessageListProps = {
   conversationId: string | null;
   onSignIn: () => void;
   onRetry: () => void;
+  // Prompts the queued deck is showing instead (see useQueueDeck).
+  hiddenIds: ReadonlySet<string>;
+  // Prompts the deck handed over this session, which play its entrance.
+  revealedIds: ReadonlySet<string>;
 };
 
-const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProps) => {
+const MessageList = memo(({ conversationId, onSignIn, onRetry, hiddenIds, revealedIds }: MessageListProps) => {
   const { data: conversation } = useConversationMessages(conversationId);
   const { data: toolMap } = useToolMap(conversationId);
   const { data: live } = useLivePartial(conversationId);
   const { data: queuedMessageIds } = useQueuedMessageIds(conversationId);
   const { data: failedMessageIds } = useFailedMessageIds(conversationId);
-  const cancelQueued = useCancelQueuedMessage();
   const messages = conversation?.messages ?? [];
   const isStreaming = conversation?.streamStatus === "streaming";
 
@@ -110,6 +115,10 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
       {messages.map((msg) => {
         const sdkMessage = msg.sdkMessage;
         if (sdkMessage.type !== "user" && sdkMessage.type !== "assistant") {
+          return null;
+        }
+
+        if (hiddenIds.has(msg.id)) {
           return null;
         }
 
@@ -160,26 +169,13 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
             ? "tool"
             : "text";
 
-        // Sent mid-turn and not yet folded into a turn by the CLI. Dimmed,
-        // labelled, and withdrawable until the ack lands.
-        const isQueued =
-          !isAssistant && (queuedMessageIds?.includes(msg.id) ?? false);
         // Persisted, never acked, and no live handle holds it: the CLI never
         // received this prompt. The backend decides (see useFailedMessageIds);
-        // a live Queued mark wins over a list that has not been refetched.
+        // a live queued mark wins over a list that has not been refetched.
         const isFailed =
           !isAssistant &&
-          !isQueued &&
+          !(queuedMessageIds?.includes(msg.id) ?? false) &&
           (failedMessageIds?.includes(msg.id) ?? false);
-
-        // Only the message whose cancel is in flight waits on it. The mutation
-        // is shared by every bubble, so reading isPending alone greyed out all
-        // of them for the duration of one DELETE — and that wait is unbounded
-        // by design (see cancelQueued in the conversation store).
-        const isCancelling =
-          isQueued &&
-          cancelQueued.isPending &&
-          cancelQueued.variables?.userMessageId === msg.id;
 
         return (
           <Message
@@ -188,7 +184,9 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
             data-kind={kind}
             className={cn(
               isAssistant ? "justify-start" : "justify-end",
-              "[[data-kind=tool]+&[data-kind=tool]]:-mt-2"
+              "[[data-kind=tool]+&[data-kind=tool]]:-mt-2",
+              revealedIds.has(msg.id) &&
+                cn("animate-in fade-in slide-in-from-bottom-2", SMOOTH)
             )}
           >
             <div className="flex flex-col overflow-auto w-full">
@@ -222,7 +220,7 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
                       key={idx}
                       className={cn(
                         "bg-neutral-700 text-neutral-200 prose prose-sm prose-invert max-w-none",
-                        (isQueued || isFailed) && "opacity-60"
+                        isFailed && "opacity-60"
                       )}
                     >
                       {block.text}
@@ -251,25 +249,6 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
 
                 return null;
               })}
-              {isQueued && conversationId && (
-                <div className="mt-0.5 flex items-center gap-1 self-end text-[10px] text-neutral-400">
-                  <span>{isCancelling ? "Cancelling" : "Queued"}</span>
-                  <button
-                    type="button"
-                    aria-label="Cancel queued message"
-                    className="rounded-full p-0.5 hover:bg-neutral-600 hover:text-neutral-200 disabled:opacity-50"
-                    disabled={isCancelling}
-                    onClick={() =>
-                      cancelQueued.mutate({
-                        conversationId,
-                        userMessageId: msg.id,
-                      })
-                    }
-                  >
-                    <X className="size-3" />
-                  </button>
-                </div>
-              )}
               {isFailed && (
                 <div className="mt-0.5 self-end text-[10px] text-red-400">
                   Not delivered
@@ -371,6 +350,7 @@ export function AppChat({ className, ...props }: AppChatProps) {
   const isLoading = isSendPending || isStreaming;
 
   const composer = useComposerModel(activeConversationId, conversation);
+  const deck = useQueueDeck(activeConversationId);
 
   // Show the chat empty state whenever the active conversation has no messages
   // yet — not just when no conversation exists. Guard against the message fetch
@@ -451,6 +431,9 @@ export function AppChat({ className, ...props }: AppChatProps) {
       images: imagesToSend,
       model: composer.selectedModelId,
       effort: composer.effort,
+      // This render's status, not the cache's: retryStream above has already
+      // written "streaming" into the cache when the stream had failed.
+      sentMidTurn: isStreaming,
     });
 
     // Fire-and-forget title generation if conversation has no title/summary yet
@@ -513,12 +496,21 @@ export function AppChat({ className, ...props }: AppChatProps) {
             conversationId={activeConversationId}
             onSignIn={handleSignIn}
             onRetry={handleRetry}
+            hiddenIds={deck.hiddenIds}
+            revealedIds={deck.revealedIds}
           />
         </ChatContainerContent>
       </ChatContainerRoot>
 
+      {activeConversationId && (
+        <QueuedMessagesDeck
+          conversationId={activeConversationId}
+          rows={deck.rows}
+        />
+      )}
+
       <FileUpload onFilesAdded={handleFilesAdded} accept="image/*">
-        <div className="p-4">
+        <div className="p-4 pt-2">
           {streamFailed && <StreamError onReconnect={handleReconnect} />}
           <PromptInput
             value={input}

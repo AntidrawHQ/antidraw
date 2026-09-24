@@ -1,5 +1,5 @@
 import type { QueryClient } from "@tanstack/react-query";
-import type { ConversationWithMessages } from "@/main/api";
+import type { ConversationWithMessages, Message } from "@/main/api";
 import {
   subscribeToConversation,
   StreamDisconnectedError,
@@ -31,6 +31,20 @@ export type { LivePartial } from "@/shared/utils/live-partial";
 // forgetting to skip it there means asking the backend to replay everything
 // after MAX_SAFE_INTEGER: nothing, silently, forever.
 export const PENDING_SEQ = Number.MAX_SAFE_INTEGER;
+
+// The transcript's sort — the same rule getConversation orders by. A prompt
+// the CLI accepted from the queue sits just after the row it was accepted
+// behind (acceptedAfterSeq), not where its send-time seq would put it; send
+// order breaks the tie between prompts accepted behind the same row.
+// Negative when `a` comes first.
+export const compareTranscript = (
+  a: Pick<Message, "seq" | "acceptedAfterSeq">,
+  b: Pick<Message, "seq" | "acceptedAfterSeq">,
+): number => {
+  const key = (m: typeof a) =>
+    m.acceptedAfterSeq != null ? m.acceptedAfterSeq + 0.5 : m.seq;
+  return key(a) - key(b) || a.seq - b.seq;
+};
 
 // Retries are bounded because streamStatus stays "streaming" throughout them:
 // the spinner holds, which is right for a blip and wrong forever. Giving up is
@@ -358,8 +372,15 @@ const handleStreamEvent = (
         // clock; the persisted row has the same id and content but the seq
         // the DB actually assigned — leave the placeholder and the cursor
         // never advances past it.
+        //
+        // Placed by compareTranscript rather than raw seq, so the same path
+        // moves a prompt the CLI just accepted from the queue: the backend
+        // re-emits it with acceptedAfterSeq set, and it lands after
+        // everything the turn wrote while it waited.
         const messages = old.messages.filter((m) => m.id !== event.message.id);
-        const at = messages.findIndex((m) => m.seq > event.message.seq);
+        const at = messages.findIndex(
+          (m) => compareTranscript(m, event.message) > 0,
+        );
         messages.splice(at === -1 ? messages.length : at, 0, event.message);
         return { ...old, messages };
       },

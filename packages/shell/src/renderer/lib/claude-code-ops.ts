@@ -182,6 +182,27 @@ export const useQueuedMessageIds = (conversationId: string | null) => {
   });
 };
 
+export type SendIntent = "queue" | "direct";
+
+// How each send from this window went out, by userMessageId: "queue" if the
+// conversation was streaming when it was made, "direct" if not. Written by the
+// send's onMutate, dropped by its onError; nothing is persisted.
+//
+// The queued deck needs it because queuedMessageIds cannot say it alone. A
+// mid-turn send exists as a bubble before the backend's `queue` event names
+// it, and the deck must hold it from the start. And every follow-up to a live
+// CLI passes through the queue, idle or not — an idle send is listed for the
+// few milliseconds its ack takes, and must not flash through the deck.
+export const useSendIntents = (conversationId: string | null) => {
+  return useQuery<Record<string, SendIntent>>({
+    queryKey: queryKeys.conversations.sendIntents(conversationId),
+    queryFn: () => ({}),
+    enabled: false,
+    initialData: {},
+    staleTime: Infinity,
+  });
+};
+
 // userMessageIds the CLI never received: persisted, never acked, and not held
 // pending by a live handle. The backend computes it on request, because the
 // renderer cannot: rows here are append-only — the detail query never goes
@@ -257,8 +278,14 @@ export const sendMessageMutationOptions = (queryClient: QueryClient) =>
       // options are ever set.
       model?: string;
       effort?: EffortLevel;
+      // Whether the conversation was streaming when the user sent, as the
+      // caller saw it. Overrides the cache read in onMutate: a send from the
+      // error state reopens the stream first, and that writes "streaming"
+      // before onMutate runs — an idle send would be recorded mid-turn.
+      sentMidTurn?: boolean;
     }) => {
-      const result = await sendMessage(params);
+      const { sentMidTurn: _renderOnly, ...request } = params;
+      const result = await sendMessage(request);
 
       if (result.isErr()) {
         throw new Error(result.error.message);
@@ -267,7 +294,7 @@ export const sendMessageMutationOptions = (queryClient: QueryClient) =>
       return result.value;
     },
 
-onMutate: async ({ message, conversationId, userMessageId, images }) => {
+onMutate: async ({ message, conversationId, userMessageId, images, sentMidTurn }) => {
       // Cancel any outgoing refetches
       await queryClient.cancelQueries({
         queryKey: queryKeys.conversations.detail(conversationId),
@@ -301,7 +328,23 @@ onMutate: async ({ message, conversationId, userMessageId, images }) => {
         // Nothing reads this on the renderer side — delivery is asked of the
         // backend (useFailedMessageIds). It is here because the row has it.
         deliveredAt: null,
+        // Set by the backend when the CLI accepts it; the persisted row
+        // replaces this one then.
+        acceptedAfterSeq: null,
       };
+
+      // Recorded before the bubble goes in, so the first render that has the
+      // bubble already knows whether the queued deck owns it.
+      queryClient.setQueryData<Record<string, SendIntent>>(
+        queryKeys.conversations.sendIntents(conversationId),
+        (prev) => ({
+          ...prev,
+          [userMessageId]:
+            (sentMidTurn ?? previousChat.streamStatus === "streaming")
+              ? "queue"
+              : "direct",
+        }),
+      );
 
       // The bubble goes in now; the status does not. A bubble carries the id
       // the backend will persist under, so the stream's `message` event
@@ -372,6 +415,13 @@ onMutate: async ({ message, conversationId, userMessageId, images }) => {
       queryClient.setQueryData<string[]>(
         queryKeys.conversations.queuedMessageIds(conversationId),
         (prev) => prev?.filter((id) => id !== userMessageId) ?? [],
+      );
+      queryClient.setQueryData<Record<string, SendIntent>>(
+        queryKeys.conversations.sendIntents(conversationId),
+        (prev) => {
+          const { [userMessageId]: _dropped, ...rest } = prev ?? {};
+          return rest;
+        },
       );
     },
   });
