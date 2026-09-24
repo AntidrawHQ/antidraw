@@ -205,9 +205,9 @@ const componentsForBuild = (
 // What fails later than resolving and loading (a CSS file Tailwind cannot
 // build, a web worker's own bundle) fails the build; build-workspace.ts then
 // adds the failing file to `broken` and builds again, and imports of it get a
-// stub like the rest. Nothing in the page's own entry (main.tsx and what it
-// imports) is stubbed, though: a stub there would fail every preview, so that
-// build fails as it should.
+// stub like the rest. A stub the page's own entry (main.tsx and what it
+// imports) needs fails the build, though, since every preview would fail
+// (see buildEnd).
 const STUB_PREFIX = "\0antidraw-broken:";
 // Marks the resolutions tolerateBrokenSource makes itself.
 const INNER_RESOLVE = "antidraw-publish:inner-resolve";
@@ -243,11 +243,6 @@ const tolerateBrokenSource = (
 ): Plugin => {
   let config: ResolvedConfig;
   const stubs = new Map<string, string>();
-  // The page's entry: what index.html loads (main.tsx) and the workspace
-  // files it imports, all the way down. The components are not among them:
-  // the preview page (the app's runtime, outside the workspace) loads those.
-  const entryModules = new Set<string>();
-  const isEntry = (file: string) => entryModules.has(vite.normalizePath(file.split("?")[0]!));
 
   const redact = (text: string) => redactPaths(vite, config.root, text);
 
@@ -303,18 +298,9 @@ const tolerateBrokenSource = (
           custom: { ...options.custom, [INNER_RESOLVE]: true },
         };
 
-        // Nothing in the page's entry is stubbed: a stub there would fail
-        // every preview behind a build that reports success, so the build
-        // fails as plain Vite's would. (Vite leaves an index.html <link> it
-        // cannot resolve in the page as it is.)
-        if (importer.endsWith(".html") || isEntry(importer)) {
-          const resolved = await this.resolve(id, importer, inner);
-          if (resolved && !resolved.external) {
-            const file = vite.normalizePath(resolved.id.split("?")[0]!);
-            if (isWorkspaceSource(vite, config.root, file)) entryModules.add(file);
-          }
-          return resolved;
-        }
+        // Vite leaves an index.html <link> it cannot resolve in the page as
+        // it is.
+        if (importer.endsWith(".html")) return this.resolve(id, importer, inner);
 
         const unresolved = `"${id}" (imported by ${path.relative(config.root, importer)}) could not be resolved`;
         let resolved;
@@ -336,8 +322,9 @@ const tolerateBrokenSource = (
         if (reason !== undefined) return stub(reason);
         if (!isWorkspaceSource(vite, config.root, file)) return resolved;
         // A file that does not parse gets a stub here, per import, rather
-        // than when it loads: a module loads once, and the page's entry may
-        // import the same file after a component did.
+        // than when it loads: a module loads once, and whether the page's
+        // entry imports it too is only known once the graph is complete
+        // (see buildEnd).
         if (!query && SCANNABLE_FILE_RE.test(file)) {
           const reason = await parseError(file, config.root);
           if (reason) return stub(reason);
@@ -355,6 +342,37 @@ const tolerateBrokenSource = (
     load(id) {
       const reason = stubs.get(id);
       return reason === undefined ? null : throwingModule(reason);
+    },
+    // A stub the page's own entry imports (main.tsx, or anything it imports
+    // statically, all the way down) would throw before the router renders,
+    // and every preview would be blank behind a build that reports success.
+    // That build fails instead, as plain Vite's would. The components are
+    // imported dynamically (by the runtime's load-component), so a stub
+    // only they reach is not the entry's. Checked once the whole graph is
+    // known: which importer reaches a file first depends on timing.
+    buildEnd(error) {
+      if (error) return;
+      const inEntry: string[] = [];
+      for (const [stubId, reason] of stubs) {
+        const seen = new Set<string>();
+        const queue = [stubId];
+        for (let id = queue.shift(); id !== undefined; id = queue.shift()) {
+          if (seen.has(id)) continue;
+          seen.add(id);
+          const info = this.getModuleInfo(id);
+          if (!info) continue;
+          if (info.isEntry) {
+            inEntry.push(reason);
+            break;
+          }
+          queue.push(...info.importers);
+        }
+      }
+      if (inEntry.length) {
+        this.error(
+          `the page's entry (src/main.tsx and what it imports) needs files that are broken, so no preview could load:\n  ${inEntry.join("\n  ")}`,
+        );
+      }
     },
   };
 };
