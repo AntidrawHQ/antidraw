@@ -339,6 +339,7 @@ const MAX_PUT_BYTES = { s3: 5 * 1024 ** 3 - 5 * 1024 ** 2, wrangler: 300 * 1024 
 const WRANGLER_SAFE_KEY_RE = /^[A-Za-z0-9._~\/-]+$/;
 
 const UPLOAD_CONCURRENCY = 8;
+const UPLOAD_ATTEMPTS = 4;
 
 type PutObject = (
   key: string,
@@ -413,7 +414,14 @@ const upload = async (
   if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(id)) fail(`"${id}" cannot be a publish id`);
 
   const { bucket, put } = via === "s3" ? r2Put() : wranglerPut(via);
-  const files = listFiles(root).filter((f) => f !== HASHED_FILES);
+  // Dotfiles are not the site's (a Finder .DS_Store, a stray .env in
+  // public/), except .well-known/, which is there to be served.
+  const hidden = (f: string) =>
+    f.split("/").some((part) => part.startsWith(".")) && !f.startsWith(".well-known/");
+  const listed = listFiles(root).filter((f) => f !== HASHED_FILES);
+  const skipped = listed.filter(hidden);
+  if (skipped.length) console.log(`Skipping hidden files:\n  ${skipped.join("\n  ")}`);
+  const files = listed.filter((f) => !hidden(f));
   const sizes = new Map(files.map((f) => [f, fs.statSync(path.join(root, f)).size]));
   const maxBytes = via === "s3" ? MAX_PUT_BYTES.s3 : MAX_PUT_BYTES.wrangler;
   const tooBig = files.filter((f) => sizes.get(f)! > maxBytes);
@@ -450,7 +458,9 @@ const upload = async (
           await put(`${id}/${file}`, path.join(root, file), meta);
           break;
         } catch (e) {
-          if (attempt === 3) fail(`uploading ${file}: ${(e as Error).message}`);
+          if (attempt === UPLOAD_ATTEMPTS) fail(`uploading ${file}: ${(e as Error).message}`);
+          // Throttling (429) and brief R2 or network errors pass; back off.
+          await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** (attempt - 1)));
         }
       }
       done++;
