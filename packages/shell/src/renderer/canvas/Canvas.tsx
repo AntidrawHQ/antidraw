@@ -134,9 +134,11 @@ const HoldToBoxSelect = ({
 
     const onPointerDown = (e: PointerEvent) => {
       if (e.pointerType !== "touch") return;
-      // A second finger is a pinch, never a selection box.
+      // A second finger before the hold completes is a pinch, never a
+      // selection box. Once the box is drawn it is ignored: React Flow has
+      // not seen the first finger move, and would jump to catch up.
       if (!e.isPrimary) {
-        if (start) reset();
+        if (start && !drawing) reset();
         return;
       }
       if (!(e.target instanceof Element) || !e.target.classList.contains("react-flow__pane")) return;
