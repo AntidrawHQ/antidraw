@@ -34,6 +34,46 @@ import {
 } from "@/main/lib/conversation-store";
 import { trackMessageSent } from "@/main/lib/posthog";
 
+// The CLI has taken a prompt: record it and release it from the queue.
+//
+// Column first, pending set second. The undelivered endpoint snapshots
+// pending and then reads null rows; the other order here would let it see a
+// null row that is no longer pending — reported failed, and no later event
+// corrects it.
+//
+// Only an ack we were waiting on places the prompt in the transcript: the
+// queue, and the spawn prompt — a send the renderer made mid-turn can become
+// one if the turn ends first, and it waits on this ack to leave the queued
+// deck either way. A resumed session replays its history as acks too, and
+// placing those would move every old prompt to the bottom.
+const acknowledge = async (conversationId: string, userMessageId: string) => {
+  const awaited = getAwaitingAck(conversationId).includes(userMessageId);
+  const marked = await markDelivered(
+    userMessageId,
+    awaited ? { conversationId } : undefined,
+  );
+  if (marked.isErr()) {
+    console.error("Failed to record the CLI's ack:", marked.error);
+  }
+  resolvePending(conversationId, userMessageId);
+};
+
+// The CLI reports each uuid-stamped command's progress (queued, started,
+// completed, cancelled) with command_uuid set to the uuid we stamped. Not in
+// the SDK's public message types as of 0.3.280 — its interrupt docs describe
+// these frames — so it is narrowed here from the wire shape.
+type CommandLifecycle = {
+  type: "command_lifecycle";
+  command_uuid: string;
+  state: string;
+};
+
+const isCommandLifecycle = (m: unknown): m is CommandLifecycle =>
+  typeof m === "object" &&
+  m !== null &&
+  (m as { type?: unknown }).type === "command_lifecycle" &&
+  typeof (m as { command_uuid?: unknown }).command_uuid === "string";
+
 export const handleSdkMessageWithoutPersisting = async (
   conversationId: string,
   sdkMessage: SDKMessage,
@@ -57,27 +97,25 @@ export const handleSdkMessageWithoutPersisting = async (
     "isReplay" in sdkMessage &&
     sdkMessage.isReplay
   ) {
-    // Column first, pending set second. The undelivered endpoint snapshots
-    // pending and then reads null rows; the other order here would let it
-    // see a null row that is no longer pending — reported failed, and no
-    // later event corrects it.
-    //
-    // Only an ack we were waiting on places the prompt in the transcript:
-    // the queue, and the spawn prompt — a send the renderer made mid-turn
-    // can become one if the turn ends first, and it waits on this ack to
-    // leave the queued deck either way. A resumed session replays its
-    // history as acks too, and placing those would move every old prompt
-    // to the bottom.
-    const awaited = getAwaitingAck(conversationId).includes(sdkMessage.uuid);
-    const marked = await markDelivered(
-      sdkMessage.uuid,
-      awaited ? { conversationId } : undefined,
-    );
-    if (marked.isErr()) {
-      console.error("Failed to record the CLI's ack:", marked.error);
-    }
-    resolvePending(conversationId, sdkMessage.uuid);
+    await acknowledge(conversationId, sdkMessage.uuid);
     return true;
+  }
+
+  // A command's `started` is an ack too, and the only one a slash command
+  // gets: the CLI runs those locally and never replays them, so without this
+  // a queued "/clear" or "/workflows" would wait in the deck until the CLI
+  // exited, then read "Not delivered". It lands where the replay would — just
+  // ahead of the command's output — so for a prompt that gets both, whichever
+  // comes first places it and the other finds it no longer awaited. Only an
+  // awaited uuid counts: the CLI also runs commands it enqueued itself.
+  // Falls through to persisting, as these frames always have.
+  const frame: unknown = sdkMessage;
+  if (
+    isCommandLifecycle(frame) &&
+    frame.state === "started" &&
+    getAwaitingAck(conversationId).includes(frame.command_uuid)
+  ) {
+    await acknowledge(conversationId, frame.command_uuid);
   }
 
   return false;

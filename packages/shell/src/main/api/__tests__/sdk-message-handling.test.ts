@@ -48,6 +48,9 @@ const sessionState = (state: string): SDKMessage =>
 const replayAck = (uuid: string): SDKMessage =>
   ({ type: "user", isReplay: true, uuid }) as never;
 
+const lifecycle = (commandUuid: string, state: string): SDKMessage =>
+  ({ type: "command_lifecycle", command_uuid: commandUuid, state, uuid: crypto.randomUUID() }) as never;
+
 const assistant = (): SDKMessage =>
   ({ type: "assistant", uuid: crypto.randomUUID(), message: {} }) as never;
 
@@ -498,6 +501,85 @@ describe("the replay ack places a prompt it was waiting on", () => {
       [
         "user      queued  ← placed after "turn"",
         "assistant reply to queued",
+      ]
+    `);
+    releaseHandle(id);
+  });
+
+  test("a queued slash command is placed on its lifecycle start — it never gets a replay", async () => {
+    const id = await persistedConversation();
+    const command = await persistPrompt(id, "/workflows");
+    addPending(id, command.id);
+    await persistReply(id, "turn");
+
+    // The frames the CLI sends for a slash command it runs locally.
+    const handled = [];
+    handled.push(await handleSdkMessageWithoutPersisting(id, lifecycle(command.id, "queued")));
+    const placedBeforeStart = (await transcript(id)).find((m) => m.id === command.id)!.acceptedAfterSeq;
+    handled.push(await handleSdkMessageWithoutPersisting(id, lifecycle(command.id, "started")));
+    await persistReply(id, "/workflows isn't available in this environment.");
+    handled.push(await handleSdkMessageWithoutPersisting(id, lifecycle(command.id, "completed")));
+
+    // Lifecycle frames are still left for the persisting path.
+    expect(handled).toMatchInlineSnapshot(`
+      [
+        false,
+        false,
+        false,
+      ]
+    `);
+    expect(placedBeforeStart).toBeNull();
+    expect(view(await transcript(id))).toMatchInlineSnapshot(`
+      [
+        "assistant turn",
+        "user      /workflows  ← placed after "turn"",
+        "assistant /workflows isn't available in this environment.",
+      ]
+    `);
+    expect(getPending(id)).toEqual([]);
+    releaseHandle(id);
+  });
+
+  test("a prompt that gets both a start and a replay is placed once, at the first", async () => {
+    const id = await persistedConversation();
+    const prompt = await persistPrompt(id, "queued");
+    addPending(id, prompt.id);
+    await persistReply(id, "turn");
+
+    await handleSdkMessageWithoutPersisting(id, lifecycle(prompt.id, "started"));
+    await persistReply(id, "reply to queued");
+    // The replay arriving after the reply started must not move it again.
+    await handleSdkMessageWithoutPersisting(id, replayAck(prompt.id));
+
+    expect(view(await transcript(id))).toMatchInlineSnapshot(`
+      [
+        "assistant turn",
+        "user      queued  ← placed after "turn"",
+        "assistant reply to queued",
+      ]
+    `);
+    releaseHandle(id);
+  });
+
+  test("a start for a command we are not awaiting changes nothing", async () => {
+    const id = await persistedConversation();
+    // Sent, but not in the queue: nothing here is waiting on it.
+    const prompt = await persistPrompt(id, "not awaited");
+    await persistReply(id, "turn");
+
+    await handleSdkMessageWithoutPersisting(id, lifecycle(prompt.id, "started"));
+
+    const rows = await transcript(id);
+    expect(rows.map((m) => `${textOf(m)}: ${m.deliveredAt ? "delivered" : "-"}`)).toMatchInlineSnapshot(`
+      [
+        "not awaited: -",
+        "turn: -",
+      ]
+    `);
+    expect(view(rows)).toMatchInlineSnapshot(`
+      [
+        "user      not awaited",
+        "assistant turn",
       ]
     `);
     releaseHandle(id);
