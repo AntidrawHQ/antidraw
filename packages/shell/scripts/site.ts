@@ -324,8 +324,11 @@ const IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable";
 const VIEWER_ASSETS_DIR = "_antidraw/";
 
 // The pages and the canvas refer to everything else, so they go up last: a
-// visitor never gets a page whose files are not there yet.
-const ENTRY_FILES = new Set(["index.html", "preview.html", "canvas.json"]);
+// visitor never gets a page whose files are not there yet. They go one at a
+// time, in this order, so an upload that stops partway leaves the viewer
+// (index.html) on the previous canvas.json, and that on a preview.html that
+// has all its components.
+const ENTRY_FILES = ["preview.html", "canvas.json", "index.html"];
 
 // A single PUT takes up to 5 GiB; larger files would need a multipart upload.
 // wrangler refuses files over 300 MiB.
@@ -461,8 +464,10 @@ const upload = async (
     queue.push(...batch);
     return Promise.all(Array.from({ length: UPLOAD_CONCURRENCY }, worker));
   };
-  await uploadAll(files.filter((f) => !ENTRY_FILES.has(f)));
-  await uploadAll(files.filter((f) => ENTRY_FILES.has(f)));
+  await uploadAll(files.filter((f) => !ENTRY_FILES.includes(f)));
+  for (const entry of ENTRY_FILES) {
+    if (files.includes(entry)) await uploadAll([entry]);
+  }
   console.log(`\nDone: ${bucket}/${id}/`);
   if (via === "local") {
     console.log(`  npm run dev -w @antidraw/publish-worker, then open http://${id}.localhost:8787/`);
