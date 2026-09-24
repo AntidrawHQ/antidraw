@@ -31,7 +31,9 @@ export const redactPaths = (vite: ViteApi, root: string, text: string) => {
   };
   replace(root + path.sep, "");
   replace(root, ".");
-  replace(os.homedir(), "~");
+  // Not a home directory of "/" (a service user's), which is every path.
+  const home = os.homedir();
+  if (home && home !== path.parse(home).root) replace(home, "~");
   return text;
 };
 
@@ -124,7 +126,9 @@ const componentsForBuild = (
         // A component a previous attempt failed on (see tolerateBrokenSource)
         // is not imported at all: this module is the app's, not the
         // workspace's, so its imports are never stubbed.
-        const reason = broken.get(file);
+        // Failures are recorded under the file's real path (a symlinked
+        // component's target).
+        const reason = broken.get(vite.normalizePath(fs.realpathSync(file))) ?? broken.get(file);
         entries.push(
           reason === undefined
             ? `  [${JSON.stringify(name)}]: () => import(${JSON.stringify(file)}),`
@@ -164,9 +168,12 @@ const componentsForBuild = (
 // What fails later than resolving and loading (a CSS file Tailwind cannot
 // build, a web worker's own bundle) fails the build; build-workspace.ts then
 // adds the failing file to `broken` and builds again, and imports of it get a
-// stub like the rest. Not from the page's own entry (main.tsx), though: a stub
-// there would fail every preview, so that build fails as it should.
+// stub like the rest. Nothing in the page's own entry (main.tsx and what it
+// imports) is stubbed, though: a stub there would fail every preview, so that
+// build fails as it should.
 const STUB_PREFIX = "\0antidraw-broken:";
+// Marks the resolutions tolerateBrokenSource makes itself.
+const INNER_RESOLVE = "antidraw-publish:inner-resolve";
 
 const throwingModule = (reason: string) => ({
   code: `throw new Error(${JSON.stringify(reason)})\nexport default {}`,
@@ -192,8 +199,11 @@ const hashedOutputNames = (): Plugin => ({
 const tolerateBrokenSource = (vite: ViteApi, broken: BrokenFiles): Plugin => {
   let config: ResolvedConfig;
   const stubs = new Map<string, string>();
-  // What index.html loads directly (main.tsx).
+  // The page's entry: what index.html loads (main.tsx) and the workspace
+  // files it imports, all the way down. The components are not among them:
+  // the preview page (the app's runtime, outside the workspace) loads those.
   const entryModules = new Set<string>();
+  const isEntry = (file: string) => entryModules.has(vite.normalizePath(file.split("?")[0]!));
 
   const redact = (text: string) => redactPaths(vite, config.root, text);
 
@@ -229,6 +239,11 @@ const tolerateBrokenSource = (vite: ViteApi, broken: BrokenFiles): Plugin => {
     resolveId: {
       order: "pre",
       async handler(id, importer, options) {
+        // A probe made while one of this hook's own resolutions runs (the
+        // alias; vite-tsconfig-paths trying each candidate path): the plugin
+        // that made it copes with a miss, so it goes on untouched. Only the
+        // outermost resolution of an import decides on a stub.
+        if (options.custom?.[INNER_RESOLVE]) return null;
         if (!importer || !isWorkspaceSource(vite, config.root, importer)) return null;
         if (id.startsWith("\0")) return null;
         // runtimeFromApp stops the build on the old template's import, and
@@ -238,31 +253,43 @@ const tolerateBrokenSource = (vite: ViteApi, broken: BrokenFiles): Plugin => {
         // themselves: import.meta.glob resolves its pattern ("@/assets/*")
         // through the alias. A stub would read as a match.
         if (options.custom?.["vite:import-glob"] || id.includes("*")) return null;
-        // index.html's <link>s and <script>s: Vite leaves one it cannot
-        // resolve in the page as it is, and a stub there would be bundled
-        // into the entry chunk and fail every preview.
-        if (importer.endsWith(".html")) {
-          const resolved = await this.resolve(id, importer, { ...options, skipSelf: true });
-          if (resolved) entryModules.add(vite.normalizePath(resolved.id.split("?")[0]!));
+        const inner = {
+          ...options,
+          skipSelf: true,
+          custom: { ...options.custom, [INNER_RESOLVE]: true },
+        };
+
+        // Nothing in the page's entry is stubbed: a stub there would fail
+        // every preview behind a build that reports success, so the build
+        // fails as plain Vite's would. (Vite leaves an index.html <link> it
+        // cannot resolve in the page as it is.)
+        if (importer.endsWith(".html") || isEntry(importer)) {
+          const resolved = await this.resolve(id, importer, inner);
+          if (resolved && !resolved.external) {
+            const file = vite.normalizePath(resolved.id.split("?")[0]!);
+            if (isWorkspaceSource(vite, config.root, file)) entryModules.add(file);
+          }
           return resolved;
         }
 
         const unresolved = `"${id}" (imported by ${path.relative(config.root, importer)}) could not be resolved`;
         let resolved;
         try {
-          resolved = await this.resolve(id, importer, { ...options, skipSelf: true });
+          resolved = await this.resolve(id, importer, inner);
         } catch (e) {
           return stub(`${unresolved}: ${(e as Error).message}`);
         }
-        if (!resolved) return stub(unresolved);
+        // Vite's alias answers with its rewritten id, flagged, when nothing
+        // resolved that ("@/lib/x" → "<root>/src/lib/x").
+        const aliasMissed = (resolved?.meta?.["vite:alias"] as { noResolved?: boolean } | undefined)
+          ?.noResolved;
+        if (!resolved || aliasMissed) return stub(unresolved);
         if (resolved.external) return resolved;
 
         const [file, query] = resolved.id.split("?") as [string, string | undefined];
         const normalized = vite.normalizePath(file);
         const reason = broken.get(normalized);
-        if (reason !== undefined && !entryModules.has(vite.normalizePath(importer))) {
-          return stub(reason);
-        }
+        if (reason !== undefined) return stub(reason);
         // A JSON file that does not parse fails vite:json's transform, which
         // load (below) cannot catch: it has to be swapped before it loads.
         // With a query (?raw, ?url) it is not parsed at all.
@@ -278,6 +305,7 @@ const tolerateBrokenSource = (vite: ViteApi, broken: BrokenFiles): Plugin => {
       if (reason !== undefined) return throwingModule(reason);
 
       if (!SCANNABLE_FILE_RE.test(id) || !isWorkspaceSource(vite, config.root, id)) return null;
+      if (isEntry(id)) return null;
       const code = await fs.promises.readFile(id, "utf8");
       try {
         await vite.transformWithEsbuild(code, id);

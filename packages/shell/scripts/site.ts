@@ -53,6 +53,8 @@ const BUILD_MANIFEST = ".vite/manifest.json";
 // The workspace build's content-hashed files, which upload caches for a year.
 // Only upload reads it; it is not uploaded.
 const HASHED_FILES = ".hashed-files.json";
+// What the publish plugins name emitted files: Rollup's [hash] is 8 characters.
+const HASHED_NAME_RE = /^assets\/[^/]+-[A-Za-z0-9_-]{8}\.[A-Za-z0-9]+$/;
 
 const fail = (message: string): never => {
   console.error(`error: ${message}`);
@@ -60,7 +62,9 @@ const fail = (message: string): never => {
 };
 
 const run = (args: string[], cwd: string) => {
-  const result = spawnSync(process.execPath, args, { cwd, stdio: "inherit" });
+  // Production builds, whatever the shell has set (see build-workspace.ts).
+  const env = { ...process.env, NODE_ENV: "production" };
+  const result = spawnSync(process.execPath, args, { cwd, stdio: "inherit", env });
   if (result.status !== 0) fail(`${path.basename(args[0]!)} failed in ${cwd}`);
 };
 
@@ -177,9 +181,12 @@ const build = (target: string, out: string | undefined) => {
   const manifest = JSON.parse(
     fs.readFileSync(path.join(outDir, BUILD_MANIFEST), "utf8"),
   ) as Record<string, { file: string; css?: string[]; assets?: string[] }>;
-  // (The publish plugins give every emitted file a hashed name.)
+  // The publish plugins name every emitted file assets/[name]-[hash]; one a
+  // plugin emits under a fixed name of its own (robots.txt) is not hashed.
   const hashed = new Set(
-    Object.values(manifest).flatMap((c) => [c.file, ...(c.css ?? []), ...(c.assets ?? [])]),
+    Object.values(manifest)
+      .flatMap((c) => [c.file, ...(c.css ?? []), ...(c.assets ?? [])])
+      .filter((f) => HASHED_NAME_RE.test(f)),
   );
   fs.rmSync(path.join(outDir, ".vite"), { recursive: true, force: true });
   fs.writeFileSync(path.join(outDir, HASHED_FILES), JSON.stringify([...hashed].sort(), null, 2));

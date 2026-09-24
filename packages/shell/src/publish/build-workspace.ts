@@ -25,6 +25,12 @@ if (!outDir || !runtimeSrc) {
   process.exit(1);
 }
 
+// Vite goes by NODE_ENV, not by mode, for whether a build is a production
+// one, and takes it from the workspace's .env when it is not set yet: a
+// development build would publish React's development build and the path of
+// every source file (plugin-react's jsxDEV). Set before Vite is loaded.
+process.env.NODE_ENV = "production";
+
 const root = process.cwd();
 const viteDir = path.dirname(
   createRequire(path.join(root, "package.json")).resolve("vite/package.json"),
