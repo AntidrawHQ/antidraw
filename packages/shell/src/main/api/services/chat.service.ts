@@ -26,7 +26,7 @@ const withStreamStatus = <T extends ConversationRow>(
 });
 import { createUserSDKMessage } from "@/shared/utils/message";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { eq, desc, and, gt, asc, isNull } from "drizzle-orm";
+import { eq, desc, and, gt, asc, isNull, sql } from "drizzle-orm";
 import { ok, err } from "neverthrow";
 
 export const createConversation = async (
@@ -95,7 +95,9 @@ export const listConversations = async (workspaceId: string) => {
       .select()
       .from(conversations)
       .where(eq(conversations.workspaceId, workspaceId))
-      .orderBy(desc(conversations.updatedAt));
+      // Newest first, and fixed: activity never reorders the list. createdAt
+      // has second resolution, so rowid (insertion order) breaks the ties.
+      .orderBy(desc(conversations.createdAt), desc(sql`rowid`));
 
     return ok(result.map(withStreamStatus));
   } catch (_e) {
@@ -313,9 +315,9 @@ export const addMessage = async (params: {
     // use so the ok() below does not hand callers a `Message | undefined`.
     const message = inserted!;
 
-    // A user prompt is the one thing that moves a conversation in the
-    // sidebar. The list orders by updatedAt, and only the user's own input
-    // counts as activity — a reply lands where the prompt already put it.
+    // A user prompt is what marks a conversation active: the sidebar shows
+    // updatedAt as its last-activity time, and only the user's own input
+    // counts — a reply leaves the time the prompt set.
     // It lives here, next to the insert every prompt passes through, so a
     // rework of the send path cannot drop it the way removing the status
     // write did. Its own try: a failed bump must not turn a persisted prompt
