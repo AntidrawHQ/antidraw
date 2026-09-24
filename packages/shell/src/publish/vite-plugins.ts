@@ -197,17 +197,15 @@ const componentsForBuild = (
 // is swapped for a stub that throws when it runs, with a warning naming it:
 // the build finishes, and only the frames that import it fail to load.
 // syntheticNamedExports lets any named import from the stub bind, so its
-// importers still link. A named import the target module does not export (a
-// package whose API changed) is the same story: shimMissingExports binds it
-// to undefined with a warning instead of failing the build, matching dev,
-// where only that preview fails.
+// importers still link.
 //
 // What fails later than resolving and loading (a CSS file Tailwind cannot
-// build, a web worker's own bundle) fails the build; build-workspace.ts then
-// adds the failing file to `broken` and builds again, and imports of it get a
-// stub like the rest. A stub the page's own entry (main.tsx and what it
-// imports) needs fails the build, though, since every preview would fail
-// (see buildEnd).
+// build, a web worker's own bundle, a named import the target module does not
+// export, which in dev fails that module as a whole) fails the build;
+// build-workspace.ts then adds the failing file to `broken` and builds again,
+// and imports of it get a stub like the rest. A stub the page's own entry
+// (main.tsx and what it imports) needs fails the build, though, since every
+// preview would fail (see buildEnd).
 const STUB_PREFIX = "\0antidraw-broken:";
 // Marks the resolutions tolerateBrokenSource makes itself.
 const INNER_RESOLVE = "antidraw-publish:inner-resolve";
@@ -266,9 +264,6 @@ const tolerateBrokenSource = (
 
   return {
     name: "antidraw-publish:tolerate-broken-source",
-    config: () => ({
-      build: { rollupOptions: { shimMissingExports: true } },
-    }),
     configResolved(resolved) {
       config = resolved;
     },
