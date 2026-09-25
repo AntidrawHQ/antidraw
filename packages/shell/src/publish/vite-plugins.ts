@@ -220,9 +220,15 @@ export type BrokenFiles = Map<string, string>;
 
 // The build's output, whatever the workspace's config asks for: every file it
 // emits gets a content hash in its name, since site.ts uploads the build's
-// files (Vite's manifest) to be cached for a year, which is only safe for
-// hashed names; and no source maps, which would publish this machine's paths
-// (see build-workspace.ts). Output options apply after the config's.
+// files to be cached for a year, which is only safe for hashed names; and no
+// source maps, which would publish this machine's paths (see
+// build-workspace.ts). Output options apply after the config's.
+//
+// The list of files the build emitted (web workers' bundles included, which
+// Vite's manifest leaves out) goes to EMITTED_FILES, for site.ts to tell them
+// from the public/ files copied next to them.
+export const EMITTED_FILES = ".vite/antidraw-emitted.json";
+
 const publishOutput = (): Plugin => ({
   name: "antidraw-publish:output",
   outputOptions: (options) => ({
@@ -232,6 +238,16 @@ const publishOutput = (): Plugin => ({
     chunkFileNames: "assets/[name]-[hash].js",
     assetFileNames: "assets/[name]-[hash][extname]",
   }),
+  generateBundle: {
+    order: "post",
+    handler(_options, bundle) {
+      this.emitFile({
+        type: "asset",
+        fileName: EMITTED_FILES,
+        source: JSON.stringify(Object.keys(bundle).sort()),
+      });
+    },
+  },
 });
 
 const tolerateBrokenSource = (
@@ -395,18 +411,24 @@ export const failedWorkspaceFile = (
   error: unknown,
   broken: BrokenFiles,
 ) => {
-  // Rollup names the module an error came from. When loading a module
-  // failed (a web worker, whose own bundle failed), the message names it,
-  // and it is the one to stub: the error's id is then the file inside the
-  // worker's bundle, which this build's plugins never see.
+  // Rollup names the module an error came from. A web worker imported with
+  // ?worker whose own bundle failed is the exception: the error's id is then
+  // a file inside that bundle, which this build's plugins never see, and the
+  // worker to stub is the one the message says could not be loaded. (A
+  // worker made with new Worker(new URL(…)) fails in the transform of the
+  // file that makes it, which the id names.) Vite colours the message in a
+  // terminal.
   const { id: errorId, message } = error as { id?: unknown; message?: unknown };
-  const couldNotLoad =
-    typeof message === "string"
-      ? /^(?:\[[^\]]+\] )?Could not load (.+?) \(imported by /.exec(message)?.[1]
-      : undefined;
-  const id = couldNotLoad ?? (typeof errorId === "string" ? errorId : undefined);
-  if (!id || id.startsWith("\0")) return null;
-  const file = vite.normalizePath(id.split("?")[0]!);
-  if (!isWorkspaceSource(vite, root, file) || file.endsWith(".html") || broken.has(file)) return null;
-  return file;
+  const text = typeof message === "string" ? message.replace(/\x1b\[[0-9;]*m/g, "") : "";
+  const couldNotLoad = /^(?:\[[^\]]+\] )?Could not load (.+?) \(imported by /.exec(text)?.[1];
+  const candidates = couldNotLoad?.includes("?worker")
+    ? [couldNotLoad, errorId]
+    : [errorId, couldNotLoad];
+  for (const id of candidates) {
+    if (typeof id !== "string" || id.startsWith("\0")) continue;
+    const file = vite.normalizePath(id.split("?")[0]!);
+    if (!isWorkspaceSource(vite, root, file) || file.endsWith(".html") || broken.has(file)) continue;
+    return file;
+  }
+  return null;
 };

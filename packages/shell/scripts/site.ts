@@ -48,8 +48,9 @@ const antidrawRoot = process.env.ANTIDRAW_ROOT ?? path.join(os.homedir(), ".anti
 const USER_COMPONENTS_DIR = "src/components/user-components";
 // Same rule as the runtime plugin: names Preview cannot load.
 const UNUSABLE_NAME_RE = /[/\\?#\0]/;
-// Where build-workspace.ts has Vite write its manifest.
-const BUILD_MANIFEST = ".vite/manifest.json";
+// Where the publish plugins list the files the build emitted (EMITTED_FILES
+// in src/publish/vite-plugins.ts).
+const BUILD_EMITTED = ".vite/antidraw-emitted.json";
 // The workspace build's content-hashed files, which upload caches for a year.
 // Only upload reads it; it is not uploaded.
 const HASHED_FILES = ".hashed-files.json";
@@ -61,11 +62,14 @@ const fail = (message: string): never => {
   process.exit(1);
 };
 
-const run = (args: string[], cwd: string) => {
+const run = (args: string[], cwd: string, onFailure?: () => void) => {
   // Production builds, whatever the shell has set (see build-workspace.ts).
   const env = { ...process.env, NODE_ENV: "production" };
   const result = spawnSync(process.execPath, args, { cwd, stdio: "inherit", env });
-  if (result.status !== 0) fail(`${path.basename(args[0]!)} failed in ${cwd}`);
+  if (result.status !== 0) {
+    onFailure?.();
+    fail(`${path.basename(args[0]!)} failed in ${cwd}`);
+  }
 };
 
 const viteBin = (fromDir: string) => {
@@ -160,9 +164,17 @@ const build = (target: string, out: string | undefined) => {
   run([viteBin(shellDir), "build", "-c", "vite.viewer.config.ts", "--logLevel", "warn"], shellDir);
   // The workspace's Vite and config, plus the publish plugins and the preview
   // page from this repo's runtime source (the app will ship its own copy).
+  // A build that fails after Vite emptied outDir (copying public/, say)
+  // leaves it half-built, which the next build would refuse as not a site.
+  const removeHalfBuilt = () => {
+    if (fs.existsSync(outDir) && !fs.existsSync(path.join(outDir, "canvas.json"))) {
+      fs.rmSync(outDir, { recursive: true, force: true });
+    }
+  };
   run(
     [path.join(shellDir, "src/publish/build-workspace.ts"), outDir, RUNTIME_SRC],
     sourceDir,
+    removeHalfBuilt,
   );
 
   // Everything the viewer adds must be free in the workspace build.
@@ -176,18 +188,14 @@ const build = (target: string, out: string | undefined) => {
     }
   }
   fs.renameSync(path.join(outDir, "index.html"), path.join(outDir, "preview.html"));
-  // Vite's manifest lists the files the build emitted, all content-hashed;
-  // the rest are public/ files, which a republish may change (see upload).
-  const manifest = JSON.parse(
-    fs.readFileSync(path.join(outDir, BUILD_MANIFEST), "utf8"),
-  ) as Record<string, { file: string; css?: string[]; assets?: string[] }>;
-  // The publish plugins name every emitted file assets/[name]-[hash]; one a
-  // plugin emits under a fixed name of its own (robots.txt) is not hashed.
-  const hashed = new Set(
-    Object.values(manifest)
-      .flatMap((c) => [c.file, ...(c.css ?? []), ...(c.assets ?? [])])
-      .filter((f) => HASHED_NAME_RE.test(f)),
-  );
+  // The files the build emitted are content-hashed; the rest are public/
+  // files, which a republish may change (see upload). The publish plugins
+  // name every emitted file assets/[name]-[hash]; one a plugin emits under a
+  // fixed name of its own (robots.txt) is not hashed.
+  const emitted = JSON.parse(
+    fs.readFileSync(path.join(outDir, BUILD_EMITTED), "utf8"),
+  ) as string[];
+  const hashed = new Set(emitted.filter((f) => HASHED_NAME_RE.test(f)));
   fs.rmSync(path.join(outDir, ".vite"), { recursive: true, force: true });
   fs.writeFileSync(path.join(outDir, HASHED_FILES), JSON.stringify([...hashed].sort(), null, 2));
   fs.cpSync(viewerDir, outDir, { recursive: true });
