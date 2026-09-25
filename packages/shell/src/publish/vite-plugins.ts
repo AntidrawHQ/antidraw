@@ -18,7 +18,6 @@ export type ViteApi = {
 };
 
 const USER_COMPONENTS_DIR = "src/components/user-components";
-const SCANNABLE_FILE_RE = /\.(m?[jt]s|[jt]sx)$/;
 // The router module a workspace's main.tsx renders.
 const RUNTIME_ROUTER = "@antidrawapp/runtime/router";
 
@@ -93,40 +92,10 @@ const runtimeFromApp = (runtimeSrc: string): Plugin => {
 // either, and "?" or "#" in an import path would read as a query or a hash.
 const UNUSABLE_NAME_RE = /[/\\?#\0]/;
 
-// Why a workspace source file does not parse, or null when it does; each file
-// is parsed once per build.
-type ParseCheck = (file: string, root: string) => Promise<string | null>;
-
-const parseCheck = (vite: ViteApi): ParseCheck => {
-  const results = new Map<string, Promise<string | null>>();
-  return (file, root) => {
-    let result = results.get(file);
-    if (!result) {
-      result = fs.promises.readFile(file, "utf8").then(
-        (code) =>
-          vite.transformWithEsbuild(code, file).then(
-            () => null,
-            (e: Error) => {
-              // esbuild's message is a count line followed by one
-              // "file:line:col: ERROR: …" line per error; show the first.
-              const lines = e.message.split("\n");
-              const first = (lines[1]?.trim() || lines[0]!).replace(`${file}:`, "line ");
-              return redactPaths(vite, root, `${path.relative(root, file)} could not be parsed: ${first}`);
-            },
-          ),
-        () => null, // unreadable: left to the build to report
-      );
-      results.set(file, result);
-    }
-    return result;
-  };
-};
-
 const componentsForBuild = (
   vite: ViteApi,
   runtimeSrc: string,
   broken: BrokenFiles,
-  parseError: ParseCheck,
 ): Plugin => {
   let config: ResolvedConfig;
   let loadComponentFile: string;
@@ -139,7 +108,7 @@ const componentsForBuild = (
         fs.realpathSync(path.join(runtimeSrc, "load-component.ts")),
       );
     },
-    async load(id) {
+    load(id) {
       if (vite.normalizePath(id.split("?")[0]!) !== loadComponentFile) return null;
 
       const dir = path.join(config.root, USER_COMPONENTS_DIR);
@@ -157,16 +126,13 @@ const componentsForBuild = (
           continue;
         }
         const file = vite.normalizePath(path.join(dir, dirent.name));
-        // A component that does not parse, or that a previous attempt failed
-        // on (see tolerateBrokenSource), is not imported at all: this module
-        // is the app's, not the workspace's, so its imports are never
-        // stubbed. Failures are recorded under the file's real path (a
-        // symlinked component's target).
+        // A component a previous attempt failed on (see tolerateBrokenSource)
+        // is not imported at all: this module is the app's, not the
+        // workspace's, so its imports are never stubbed. Failures are
+        // recorded under the file's real path (a symlinked component's
+        // target).
         const reason =
-          broken.get(vite.normalizePath(fs.realpathSync(file))) ??
-          broken.get(file) ??
-          (await parseError(file, config.root)) ??
-          undefined;
+          broken.get(vite.normalizePath(fs.realpathSync(file))) ?? broken.get(file);
         if (reason !== undefined) {
           config.logger.warn(`[antidraw] ${reason} — the component is left out of the build`);
         }
@@ -203,9 +169,9 @@ const componentsForBuild = (
 // syntheticNamedExports lets any named import from the stub bind, so its
 // importers still link.
 //
-// What fails later than resolving and loading (a CSS file Tailwind cannot
-// build, a web worker's own bundle, a named import the target module does not
-// export, which in dev fails that module as a whole) fails the build;
+// What fails after resolving (a file that does not parse, a CSS file Tailwind
+// cannot build, a web worker's own bundle, a named import the target module
+// does not export, which in dev fails that module as a whole) fails the build;
 // build-workspace.ts then adds the failing file to `broken` and builds again,
 // and imports of it get a stub like the rest. A stub the page's own entry
 // (main.tsx and what it imports) needs fails the build, though, since every
@@ -243,6 +209,10 @@ const publishOutput = (vite: ViteApi, outDir: string): Plugin => ({
   configResolved(config) {
     const builds = [config.build, ...Object.values(config.environments ?? {}).map((e) => e.build)];
     for (const build of builds) {
+      // Settings a config can only add to through the inline config: Vite
+      // joins arrays (an input list) and skips nulls when merging.
+      build.rollupOptions.input = path.join(config.root, "index.html");
+      build.watch = null;
       const output = build.rollupOptions.output;
       for (const options of Array.isArray(output) ? output : output ? [output] : []) {
         delete options.dir;
@@ -261,6 +231,8 @@ const publishOutput = (vite: ViteApi, outDir: string): Plugin => ({
   outputOptions: (options) => ({
     ...options,
     sourcemap: false,
+    // Module-per-file output names chunks after their paths on this machine.
+    preserveModules: false,
     entryFileNames: "assets/[name]-[hash].js",
     chunkFileNames: "assets/[name]-[hash].js",
     assetFileNames: "assets/[name]-[hash][extname]",
@@ -280,7 +252,6 @@ const publishOutput = (vite: ViteApi, outDir: string): Plugin => ({
 const tolerateBrokenSource = (
   vite: ViteApi,
   broken: BrokenFiles,
-  parseError: ParseCheck,
 ): Plugin => {
   let config: ResolvedConfig;
   const stubs = new Map<string, string>();
@@ -359,14 +330,6 @@ const tolerateBrokenSource = (
         const reason = broken.get(normalized);
         if (reason !== undefined) return stub(reason);
         if (!isWorkspaceSource(vite, config.root, file)) return resolved;
-        // A file that does not parse gets a stub here, per import, rather
-        // than when it loads: a module loads once, and whether the page's
-        // entry imports it too is only known once the graph is complete
-        // (see buildEnd).
-        if (!query && SCANNABLE_FILE_RE.test(file)) {
-          const reason = await parseError(file, config.root);
-          if (reason) return stub(reason);
-        }
         // A JSON file that does not parse fails vite:json's transform, which
         // load (below) cannot catch: it has to be swapped before it loads.
         // With a query (?raw, ?url) it is not parsed at all.
@@ -421,12 +384,11 @@ export const publishPlugins = (
   outDir: string,
   broken: BrokenFiles,
 ): Plugin[] => {
-  const parseError = parseCheck(vite);
   return [
     runtimeFromApp(runtimeSrc),
-    componentsForBuild(vite, runtimeSrc, broken, parseError),
+    componentsForBuild(vite, runtimeSrc, broken),
     publishOutput(vite, outDir),
-    tolerateBrokenSource(vite, broken, parseError),
+    tolerateBrokenSource(vite, broken),
   ];
 };
 
