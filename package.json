@@ -9,11 +9,15 @@
   ],
   "scripts": {
     "dev:shell": "npm run dev -w @antidraw/shell",
+    "dev:server": "npm run dev -w @antidraw/server",
+    "deploy:server": "npm run deploy -w @antidraw/server",
     "dev:template": "npm run dev -w antidraw-workspace",
     "build:shell": "npm run build -w @antidraw/shell",
     "build:template": "npm run build -w antidraw-workspace",
     "build:create-workspace": "npm run build -w @antidrawapp/create-workspace",
     "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
     "runtime:local": "tsx scripts/use-local-runtime.ts",
     "runtime:npm": "tsx scripts/use-npm-runtime.ts"
   }

@@ -1,0 +1,8 @@
+# Local secrets for `wrangler dev`. Copy to `.dev.vars` (gitignored) and fill in.
+# In production these are set with `wrangler secret put <NAME>` instead.
+
+# Signs session tokens — generate with: openssl rand -base64 32
+BETTER_AUTH_SECRET=""
+BETTER_AUTH_URL="http://localhost:8787"
+GOOGLE_CLIENT_ID=""
+GOOGLE_CLIENT_SECRET=""
