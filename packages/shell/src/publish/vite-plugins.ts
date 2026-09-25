@@ -8,7 +8,6 @@
 // and only types are imported.
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import type { Plugin, ResolvedConfig, normalizePath } from "vite";
 
@@ -22,7 +21,9 @@ const RUNTIME_ROUTER = "@antidrawapp/runtime/router";
 
 // Build messages end up in the published bundle (as stub errors), so they
 // name files relative to the workspace, and nothing by its path on this
-// machine: the workspace root becomes ".", the home directory "~".
+// machine: the workspace root becomes "."; any other path, absolute, under
+// the home directory, or climbing out of the workspace ("../../x", as Rollup
+// names modules relative to it), keeps only its file name ("…/x").
 export const redactPaths = (vite: ViteApi, root: string, text: string) => {
   // And no terminal colour codes, which Vite adds to its messages in a TTY.
   text = text.replace(ANSI_COLOR_RE, "");
@@ -31,11 +32,16 @@ export const redactPaths = (vite: ViteApi, root: string, text: string) => {
   };
   replace(root + path.sep, "");
   replace(root, ".");
-  // Not a home directory of "/" (a service user's), which is every path.
-  const home = os.homedir();
-  if (home && home !== path.parse(home).root) replace(home, "~");
-  return text;
+  return text.replace(OUTSIDE_PATH_RE, (_path, name: string) => `…/${name}`);
 };
+
+// A path segment: anything up to a separator or the punctuation messages put
+// around paths (quotes, brackets, "file:line:col").
+const SEGMENT = String.raw`[^/\\\s"'\x60()<>\[\],:;]+`;
+const OUTSIDE_PATH_RE = new RegExp(
+  String.raw`(?:(?<![\w.~/:-])/(?:${SEGMENT}/)+|~/(?:${SEGMENT}/)*|(?:\.\./)+(?:${SEGMENT}/)*)(${SEGMENT})`,
+  "g",
+);
 
 const ANSI_COLOR_RE = /\x1b\[[0-9;]*m/g;
 
@@ -46,6 +52,29 @@ const isWorkspaceSource = (vite: ViteApi, root: string, file: string) => {
     normalized.startsWith(vite.normalizePath(root) + "/") &&
     !normalized.includes("/node_modules/")
   );
+};
+
+// The workspace's own source: files in the workspace (not dependencies),
+// and, since a symlinked component's target may lie outside the workspace,
+// the folders those targets are in (with what they import next to them).
+const workspaceSource = (vite: ViteApi, root: string) => {
+  const dir = path.join(root, USER_COMPONENTS_DIR);
+  const folders = new Set<string>();
+  for (const name of fs.existsSync(dir) ? fs.readdirSync(dir) : []) {
+    try {
+      const target = vite.normalizePath(fs.realpathSync(path.join(dir, name)));
+      if (!isWorkspaceSource(vite, root, target)) folders.add(path.posix.dirname(target) + "/");
+    } catch {
+      // A dangling symlink.
+    }
+  }
+  return (file: string) => {
+    const normalized = vite.normalizePath(file.split("?")[0]!);
+    if (isWorkspaceSource(vite, root, normalized)) return true;
+    if (normalized.includes("/node_modules/")) return false;
+    for (const folder of folders) if (normalized.startsWith(folder)) return true;
+    return false;
+  };
 };
 
 // The preview page comes from the runtime source the app ships (runtimeSrc),
@@ -257,6 +286,7 @@ const tolerateBrokenSource = (
   broken: BrokenFiles,
 ): Plugin => {
   let config: ResolvedConfig;
+  let ours: (file: string) => boolean;
   const stubs = new Map<string, string>();
 
   const redact = (text: string) => redactPaths(vite, config.root, text);
@@ -283,6 +313,7 @@ const tolerateBrokenSource = (
     name: "antidraw-publish:tolerate-broken-source",
     configResolved(resolved) {
       config = resolved;
+      ours = workspaceSource(vite, resolved.root);
     },
     // "pre", so that a resolver further down that throws (a package subpath
     // missing from its "exports") is caught here too, not only one that gives
@@ -295,7 +326,7 @@ const tolerateBrokenSource = (
         // that made it copes with a miss, so it goes on untouched. Only the
         // outermost resolution of an import decides on a stub.
         if (options.custom?.[INNER_RESOLVE]) return null;
-        if (!importer || !isWorkspaceSource(vite, config.root, importer)) return null;
+        if (!importer || !ours(importer)) return null;
         if (id.startsWith("\0")) return null;
         // runtimeFromApp stops the build on the old template's import, and
         // should not become a stub.
@@ -332,7 +363,7 @@ const tolerateBrokenSource = (
         const normalized = vite.normalizePath(file);
         const reason = broken.get(normalized);
         if (reason !== undefined) return stub(reason);
-        if (!isWorkspaceSource(vite, config.root, file)) return resolved;
+        if (!ours(file)) return resolved;
         // A JSON file that does not parse fails vite:json's transform, which
         // load (below) cannot catch: it has to be swapped before it loads.
         // With a query (?raw, ?url) it is not parsed at all.
@@ -418,25 +449,13 @@ export const failedWorkspaceFile = (
   const candidates = couldNotLoad && /[?&](?:shared)?worker(?:&|$)/.test(couldNotLoad)
     ? [couldNotLoad, errorId]
     : [errorId, couldNotLoad];
-  // A symlinked component's target may lie outside the workspace; it is
-  // still the workspace's, and componentsForBuild leaves it out by that path.
-  const componentTargets = new Set(
-    (fs.existsSync(path.join(root, USER_COMPONENTS_DIR))
-      ? fs.readdirSync(path.join(root, USER_COMPONENTS_DIR))
-      : []
-    ).flatMap((name) => {
-      try {
-        return [vite.normalizePath(fs.realpathSync(path.join(root, USER_COMPONENTS_DIR, name)))];
-      } catch {
-        return [];
-      }
-    }),
-  );
+  // Including a symlinked component's target outside the workspace, which
+  // componentsForBuild leaves out by that path.
+  const ours = workspaceSource(vite, root);
   for (const id of candidates) {
     if (typeof id !== "string" || id.startsWith("\0")) continue;
     const file = vite.normalizePath(id.split("?")[0]!);
-    const ours = isWorkspaceSource(vite, root, file) || componentTargets.has(file);
-    if (!ours || file.endsWith(".html") || broken.has(file)) continue;
+    if (!ours(file) || file.endsWith(".html") || broken.has(file)) continue;
     return file;
   }
   return null;
