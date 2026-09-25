@@ -10,12 +10,13 @@ const DIFFS_OPTIONS = {
   theme: "houston" as const,
   overflow: "scroll" as const,
   disableFileHeader: true,
-  unsafeCSS: `pre, code, [data-file], [data-code] { background-color: #262626 !important; background: #262626 !important; }`,
+  unsafeCSS: `:host, pre,code, [data-file], [data-code] { background-color: #262626 !important; background: #262626 !important; }`,
 };
 
 const DIFFS_STYLE = {
   height: "100%",
   overflow: "auto",
+  backgroundColor: "#262626",
   "--diffs-bg": "#262626",
   "--diffs-dark-bg": "#262626",
   "--diffs-light-bg": "#262626",

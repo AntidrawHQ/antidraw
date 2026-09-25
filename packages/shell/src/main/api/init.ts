@@ -26,4 +26,12 @@ export const getWorkspaceClaudePath = (id: string) =>
 export const getWorkspaceSourcePath = (id: string) =>
   path.join(getWorkspacePath(id), "source");
 
+// Sibling of `source/` so logs never show up in the Vite project or git
+// status. One file per log source (dev server today; more later).
+export const getWorkspaceLogsPath = (id: string) =>
+  path.join(getWorkspacePath(id), "logs");
+
+export const getWorkspaceDevServerLogPath = (id: string) =>
+  path.join(getWorkspaceLogsPath(id), "dev-server.log");
+
 export const getDbPath = () => path.join(antidrawRoot, "antidraw.db");

@@ -4,6 +4,7 @@ import {
   useNodesState,
   useReactFlow,
   useStore,
+  useStoreApi,
   NodeToolbar,
   Position,
   type Node,
@@ -380,6 +381,20 @@ const CanvasContent = ({
       ];
     });
   }, [userComponents, port, setNodes]);
+
+  // After a box selection xyflow keeps a selection rect on top of the selected
+  // nodes, and it swallows the double click that enters interaction mode. Around
+  // a single node it looks just like a normal selection, so drop it.
+  const store = useStoreApi();
+  const soloBoxSelection = useStore(
+    (s) => s.nodesSelectionActive && s.nodes.filter((n) => n.selected).length === 1,
+  );
+
+  useEffect(() => {
+    if (soloBoxSelection) {
+      store.setState({ nodesSelectionActive: false });
+    }
+  }, [soloBoxSelection, store]);
 
   // Focus on component when clicked in ComponentPanel
   const reactFlow = useReactFlow();
