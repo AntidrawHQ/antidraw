@@ -8,6 +8,7 @@
 // and only types are imported.
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { Plugin, ResolvedConfig, normalizePath } from "vite";
 
@@ -19,27 +20,53 @@ const USER_COMPONENTS_DIR = "src/components/user-components";
 // The router module a workspace's main.tsx renders.
 const RUNTIME_ROUTER = "@antidrawapp/runtime/router";
 
-// Build messages end up in the published bundle (as stub errors), so they
-// name files relative to the workspace, and nothing by its path on this
-// machine: the workspace root becomes "."; any other path, absolute, under
-// the home directory, or climbing out of the workspace ("../../x", as Rollup
-// names modules relative to it), keeps only its file name ("…/x").
-export const redactPaths = (vite: ViteApi, root: string, text: string) => {
+// Build messages end up in the published bundle (as stub errors), so no
+// path on this machine may reach them, only paths inside the workspace, made
+// relative ("src/lib/x.ts"). In order:
+//  1. known places, exactly, in every form a message may use (absolute,
+//     normalized, relative to the workspace as Rollup names modules, with
+//     either separator): the workspace root becomes "", the app's runtime
+//     copy and the home directory "…";
+//  2. any quoted or "(imported by …)" path that still leads out of the
+//     workspace keeps only its file name ("…/x.ts"), spaces and all;
+//  3. what is left unquoted and looks like such a path, likewise.
+export const redactPaths = (vite: ViteApi, root: string, text: string, hidden: string[] = []) => {
   // And no terminal colour codes, which Vite adds to its messages in a TTY.
   text = text.replace(ANSI_COLOR_RE, "");
-  const replace = (from: string, to: string) => {
-    for (const form of new Set([from, vite.normalizePath(from)])) text = text.split(form).join(to);
+  const forms = (dir: string) => {
+    const relative = path.relative(root, dir);
+    return new Set(
+      [dir, relative].filter(Boolean).flatMap((p) => [p, vite.normalizePath(p), p.replaceAll("/", "\\")]),
+    );
   };
-  replace(root + path.sep, "");
-  replace(root, ".");
+  const replace = (dir: string, to: string) => {
+    for (const form of [...forms(dir)].sort((a, b) => b.length - a.length)) {
+      text = text.split(form + "/").join(to && to + "/").split(form + "\\").join(to && to + "/");
+      text = text.split(form).join(to || ".");
+    }
+  };
+  replace(root, "");
+  const home = os.homedir();
+  for (const dir of [...hidden, ...(home && home !== path.parse(home).root ? [home] : [])]) {
+    if (!vite.normalizePath(root).startsWith(vite.normalizePath(dir) + "/") || dir !== home) replace(dir, "…");
+  }
+  text = text.replace(QUOTED_PATH_RE, (_all, open: string, p: string, close: string) => `${open}…/${basename(p)}${close}`);
   return text.replace(OUTSIDE_PATH_RE, (_path, name: string) => `…/${name}`);
 };
 
-// A path segment: anything up to a separator or the punctuation messages put
+const basename = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() || p;
+// A path that leads out of the workspace: absolute (POSIX or a drive), from
+// home, or climbing with ../ or ..\.
+const OUTSIDE_START = String.raw`(?:/|[A-Za-z]:[\\/]|~[\\/]|(?:\.\.[\\/])+|…/)`;
+const QUOTED_PATH_RE = new RegExp(
+  String.raw`(["'\x60]|\(imported by )(${OUTSIDE_START}[^"'\x60\n()]*?)(\1|\))`,
+  "g",
+);
+// Unquoted: a segment runs up to a separator or the punctuation messages put
 // around paths (quotes, brackets, "file:line:col").
 const SEGMENT = String.raw`[^/\\\s"'\x60()<>\[\],:;]+`;
 const OUTSIDE_PATH_RE = new RegExp(
-  String.raw`(?:(?<![\w.~/:-])/(?:${SEGMENT}/)+|~/(?:${SEGMENT}/)*|(?:\.\./)+(?:${SEGMENT}/)*)(${SEGMENT})`,
+  String.raw`(?:(?<![\w.~/\\:-])(?:/|[A-Za-z]:[\\/])(?:${SEGMENT}[\\/])+|~[\\/](?:${SEGMENT}[\\/])*|(?:\.\.[\\/])+(?:${SEGMENT}[\\/])*)(${SEGMENT})`,
   "g",
 );
 
@@ -52,29 +79,6 @@ const isWorkspaceSource = (vite: ViteApi, root: string, file: string) => {
     normalized.startsWith(vite.normalizePath(root) + "/") &&
     !normalized.includes("/node_modules/")
   );
-};
-
-// The workspace's own source: files in the workspace (not dependencies),
-// and, since a symlinked component's target may lie outside the workspace,
-// the folders those targets are in (with what they import next to them).
-const workspaceSource = (vite: ViteApi, root: string) => {
-  const dir = path.join(root, USER_COMPONENTS_DIR);
-  const folders = new Set<string>();
-  for (const name of fs.existsSync(dir) ? fs.readdirSync(dir) : []) {
-    try {
-      const target = vite.normalizePath(fs.realpathSync(path.join(dir, name)));
-      if (!isWorkspaceSource(vite, root, target)) folders.add(path.posix.dirname(target) + "/");
-    } catch {
-      // A dangling symlink.
-    }
-  }
-  return (file: string) => {
-    const normalized = vite.normalizePath(file.split("?")[0]!);
-    if (isWorkspaceSource(vite, root, normalized)) return true;
-    if (normalized.includes("/node_modules/")) return false;
-    for (const folder of folders) if (normalized.startsWith(folder)) return true;
-    return false;
-  };
 };
 
 // The preview page comes from the runtime source the app ships (runtimeSrc),
@@ -283,13 +287,17 @@ const publishOutput = (vite: ViteApi, outDir: string): Plugin => ({
 
 const tolerateBrokenSource = (
   vite: ViteApi,
+  runtimeSrc: string,
   broken: BrokenFiles,
 ): Plugin => {
   let config: ResolvedConfig;
-  let ours: (file: string) => boolean;
   const stubs = new Map<string, string>();
+  // Only the workspace's own files. A symlinked component whose target is
+  // outside the workspace is not tolerated: its location would reach the
+  // published messages, so a failure there fails the build instead.
+  const ours = (file: string) => isWorkspaceSource(vite, config.root, file);
 
-  const redact = (text: string) => redactPaths(vite, config.root, text);
+  const redact = (text: string) => redactPaths(vite, config.root, text, [runtimeSrc]);
 
   const stub = (reason: string) => {
     reason = redact(reason);
@@ -313,7 +321,6 @@ const tolerateBrokenSource = (
     name: "antidraw-publish:tolerate-broken-source",
     configResolved(resolved) {
       config = resolved;
-      ours = workspaceSource(vite, resolved.root);
     },
     // "pre", so that a resolver further down that throws (a package subpath
     // missing from its "exports") is caught here too, not only one that gives
@@ -422,7 +429,7 @@ export const publishPlugins = (
     runtimeFromApp(runtimeSrc),
     componentsForBuild(vite, runtimeSrc, broken),
     publishOutput(vite, outDir),
-    tolerateBrokenSource(vite, broken),
+    tolerateBrokenSource(vite, runtimeSrc, broken),
   ];
 };
 
@@ -449,13 +456,10 @@ export const failedWorkspaceFile = (
   const candidates = couldNotLoad && /[?&](?:shared)?worker(?:&|$)/.test(couldNotLoad)
     ? [couldNotLoad, errorId]
     : [errorId, couldNotLoad];
-  // Including a symlinked component's target outside the workspace, which
-  // componentsForBuild leaves out by that path.
-  const ours = workspaceSource(vite, root);
   for (const id of candidates) {
     if (typeof id !== "string" || id.startsWith("\0")) continue;
     const file = vite.normalizePath(id.split("?")[0]!);
-    if (!ours(file) || file.endsWith(".html") || broken.has(file)) continue;
+    if (!isWorkspaceSource(vite, root, file) || file.endsWith(".html") || broken.has(file)) continue;
     return file;
   }
   return null;
