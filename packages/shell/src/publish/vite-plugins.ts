@@ -26,6 +26,8 @@ const RUNTIME_ROUTER = "@antidrawapp/runtime/router";
 // name files relative to the workspace, and nothing by its path on this
 // machine: the workspace root becomes ".", the home directory "~".
 export const redactPaths = (vite: ViteApi, root: string, text: string) => {
+  // And no terminal colour codes, which Vite adds to its messages in a TTY.
+  text = text.replace(ANSI_COLOR_RE, "");
   const replace = (from: string, to: string) => {
     for (const form of new Set([from, vite.normalizePath(from)])) text = text.split(form).join(to);
   };
@@ -36,6 +38,8 @@ export const redactPaths = (vite: ViteApi, root: string, text: string) => {
   if (home && home !== path.parse(home).root) replace(home, "~");
   return text;
 };
+
+const ANSI_COLOR_RE = /\x1b\[[0-9;]*m/g;
 
 // Is this a workspace source file (not a dependency, not the runtime)?
 const isWorkspaceSource = (vite: ViteApi, root: string, file: string) => {
@@ -231,6 +235,15 @@ export const EMITTED_FILES = ".vite/antidraw-emitted.json";
 
 const publishOutput = (): Plugin => ({
   name: "antidraw-publish:output",
+  // Nor a directory of its own: output.dir or output.file in the config
+  // would send the build (and Vite's emptying of it) elsewhere than outDir.
+  configResolved(config) {
+    const output = config.build.rollupOptions.output;
+    for (const options of Array.isArray(output) ? output : output ? [output] : []) {
+      delete options.dir;
+      delete options.file;
+    }
+  },
   outputOptions: (options) => ({
     ...options,
     sourcemap: false,
@@ -419,9 +432,10 @@ export const failedWorkspaceFile = (
   // file that makes it, which the id names.) Vite colours the message in a
   // terminal.
   const { id: errorId, message } = error as { id?: unknown; message?: unknown };
-  const text = typeof message === "string" ? message.replace(/\x1b\[[0-9;]*m/g, "") : "";
+  const text = typeof message === "string" ? message.replace(ANSI_COLOR_RE, "") : "";
   const couldNotLoad = /^(?:\[[^\]]+\] )?Could not load (.+?) \(imported by /.exec(text)?.[1];
-  const candidates = couldNotLoad?.includes("?worker")
+  // Vite's own test for a worker import: ?worker or ?sharedworker.
+  const candidates = couldNotLoad && /[?&](?:shared)?worker(?:&|$)/.test(couldNotLoad)
     ? [couldNotLoad, errorId]
     : [errorId, couldNotLoad];
   for (const id of candidates) {

@@ -154,7 +154,7 @@ const build = (target: string, out: string | undefined) => {
   }
   if (
     fs.existsSync(outDir) &&
-    fs.readdirSync(outDir).length > 0 &&
+    fs.readdirSync(outDir).some((name) => name !== ".git") &&
     !fs.existsSync(path.join(outDir, "canvas.json"))
   ) {
     fail(`${outDir} is not empty and is not a built site, and the build would empty it; pick another --out`);
@@ -166,10 +166,14 @@ const build = (target: string, out: string | undefined) => {
   // page from this repo's runtime source (the app will ship its own copy).
   // A build that fails after Vite emptied outDir (copying public/, say)
   // leaves it half-built, which the next build would refuse as not a site.
-  const removeHalfBuilt = () => {
-    if (fs.existsSync(outDir) && !fs.existsSync(path.join(outDir, "canvas.json"))) {
-      fs.rmSync(outDir, { recursive: true, force: true });
+  // Emptied the way Vite empties it, keeping a .git.
+  const emptyOutDir = () => {
+    for (const name of fs.existsSync(outDir) ? fs.readdirSync(outDir) : []) {
+      if (name !== ".git") fs.rmSync(path.join(outDir, name), { recursive: true, force: true });
     }
+  };
+  const removeHalfBuilt = () => {
+    if (!fs.existsSync(path.join(outDir, "canvas.json"))) emptyOutDir();
   };
   run(
     [path.join(shellDir, "src/publish/build-workspace.ts"), outDir, RUNTIME_SRC],
@@ -183,7 +187,7 @@ const build = (target: string, out: string | undefined) => {
     if (name === "index.html") continue;
     if (fs.existsSync(path.join(outDir, name))) {
       // Not left half-built: the next build would refuse it as not a site.
-      fs.rmSync(outDir, { recursive: true, force: true });
+      emptyOutDir();
       fail(`the workspace build has its own ${name} (from public/?), which the site needs`);
     }
   }
