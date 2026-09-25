@@ -10,11 +10,10 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { Plugin, ResolvedConfig, normalizePath, transformWithEsbuild } from "vite";
+import type { Plugin, ResolvedConfig, normalizePath } from "vite";
 
 export type ViteApi = {
   normalizePath: typeof normalizePath;
-  transformWithEsbuild: typeof transformWithEsbuild;
 };
 
 const USER_COMPONENTS_DIR = "src/components/user-components";

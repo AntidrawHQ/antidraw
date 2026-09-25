@@ -9,6 +9,7 @@
 // dir>: the app's copy of @antidrawapp/runtime/src. The workspace's cwd
 // matters: the runtime plugin resolves its @ alias from it.
 
+import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
@@ -48,6 +49,21 @@ const vite: typeof import("vite") = await import(
 // A build that fails in one workspace file is built again with that file
 // stubbed (see tolerateBrokenSource), up to a point.
 const MAX_BROKEN_FILES = 25;
+// The user-components entry a file outside the workspace is the target of.
+const componentLabel = (file: string) => {
+  if (file.startsWith(vite.normalizePath(root) + "/")) return null;
+  const dir = path.join(root, "src/components/user-components");
+  for (const name of fs.existsSync(dir) ? fs.readdirSync(dir) : []) {
+    try {
+      if (vite.normalizePath(fs.realpathSync(path.join(dir, name))) === file) {
+        return `src/components/user-components/${name}`;
+      }
+    } catch {
+      // A dangling symlink: not this file.
+    }
+  }
+  return path.basename(file);
+};
 // What the site needs from the build, whatever the workspace's config says:
 // its out dir; index.html as the page (it becomes preview.html), written to
 // disk, not a library; assets under assets/ (worker bundles take this
@@ -82,9 +98,10 @@ for (;;) {
     if (!file || broken.size >= MAX_BROKEN_FILES) throw error;
     // The first line, and the one after it when the first only introduces it
     // (esbuild's "Transform failed with 1 error:", then "file:line:col: ERROR: …").
-    const relative = path.relative(root, file);
-    // The file's own path first: a symlinked component's target can be
-    // outside the workspace and the home directory, which redactPaths covers.
+    // How the file is named in messages (which reach the published bundle):
+    // by its path in the workspace, or, for a symlinked component's target
+    // outside it, by the component's own path, never by where it lies.
+    const relative = componentLabel(file) ?? path.relative(root, file);
     const lines = redactPaths(vite, root, (error as Error).message.split(file).join(relative))
       .split("\n")
       .map((line) => line.trim())
