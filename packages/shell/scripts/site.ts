@@ -281,6 +281,21 @@ const CONTENT_TYPES: Record<string, string> = {
 const contentType = (file: string) =>
   CONTENT_TYPES[path.extname(file).toLowerCase()] ?? "application/octet-stream";
 
+// As the publish Worker decodes paths: a "%" that starts no valid escape stays.
+const decodePath = (pathname: string) => {
+  try {
+    return decodeURIComponent(pathname);
+  } catch {
+    return pathname.replace(/(?:%[0-9A-Fa-f]{2})+/g, (escapes) => {
+      try {
+        return decodeURIComponent(escapes);
+      } catch {
+        return escapes;
+      }
+    });
+  }
+};
+
 // The site's routes: the viewer at /, the workspace's Preview page at /preview,
 // and every other path is a file.
 const siteFile = (pathname: string) =>
@@ -292,13 +307,7 @@ const serve = (dir: string, port: number) => {
 
   http
     .createServer((req, res) => {
-      let pathname: string;
-      try {
-        pathname = decodeURIComponent(new URL(req.url ?? "/", "http://x").pathname);
-      } catch {
-        res.writeHead(400).end();
-        return;
-      }
+      const pathname = decodePath(new URL(req.url ?? "/", "http://x").pathname);
       const file = path.join(root, siteFile(pathname));
       let stat: fs.Stats | undefined | false = false;
       try {

@@ -19,6 +19,22 @@ interface Env {
 // A publish id is one DNS label.
 const PUBLISH_ID_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
+// Percent-decoding that leaves a "%" that starts no valid escape as it is
+// ("/100%.png"), as Vite's dev server does, rather than refusing the path.
+const decodePath = (pathname: string) => {
+  try {
+    return decodeURIComponent(pathname);
+  } catch {
+    return pathname.replace(/(?:%[0-9A-Fa-f]{2})+/g, (escapes) => {
+      try {
+        return decodeURIComponent(escapes);
+      } catch {
+        return escapes;
+      }
+    });
+  }
+};
+
 const siteFile = (pathname: string) =>
   pathname === "/" ? "index.html" : pathname === "/preview" ? "preview.html" : pathname.slice(1);
 
@@ -119,12 +135,7 @@ export default {
     const id = url.hostname.endsWith(suffix) ? url.hostname.slice(0, -suffix.length) : "";
     if (!PUBLISH_ID_RE.test(id)) return text(404, "Not found");
 
-    let pathname: string;
-    try {
-      pathname = decodeURIComponent(url.pathname);
-    } catch {
-      return text(400, "Bad request");
-    }
+    const pathname = decodePath(url.pathname);
     const key = `${id}/${siteFile(pathname)}`;
     // Longer than any key R2 can hold, so not a file of the site.
     if (new TextEncoder().encode(key).length > 1024) return text(404, "Not found");
