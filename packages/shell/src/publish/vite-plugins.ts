@@ -213,6 +213,10 @@ const publishOutput = (vite: ViteApi, outDir: string): Plugin => ({
       // joins arrays (an input list) and skips nulls when merging.
       build.rollupOptions.input = path.join(config.root, "index.html");
       build.watch = null;
+      // Manifests are keyed by module id, local paths among them; one named
+      // outside .vite/ (which site.ts deletes) would be published.
+      build.manifest = false;
+      build.ssrManifest = false;
       const output = build.rollupOptions.output;
       for (const options of Array.isArray(output) ? output : output ? [output] : []) {
         delete options.dir;
@@ -415,10 +419,25 @@ export const failedWorkspaceFile = (
   const candidates = couldNotLoad && /[?&](?:shared)?worker(?:&|$)/.test(couldNotLoad)
     ? [couldNotLoad, errorId]
     : [errorId, couldNotLoad];
+  // A symlinked component's target may lie outside the workspace; it is
+  // still the workspace's, and componentsForBuild leaves it out by that path.
+  const componentTargets = new Set(
+    (fs.existsSync(path.join(root, USER_COMPONENTS_DIR))
+      ? fs.readdirSync(path.join(root, USER_COMPONENTS_DIR))
+      : []
+    ).flatMap((name) => {
+      try {
+        return [vite.normalizePath(fs.realpathSync(path.join(root, USER_COMPONENTS_DIR, name)))];
+      } catch {
+        return [];
+      }
+    }),
+  );
   for (const id of candidates) {
     if (typeof id !== "string" || id.startsWith("\0")) continue;
     const file = vite.normalizePath(id.split("?")[0]!);
-    if (!isWorkspaceSource(vite, root, file) || file.endsWith(".html") || broken.has(file)) continue;
+    const ours = isWorkspaceSource(vite, root, file) || componentTargets.has(file);
+    if (!ours || file.endsWith(".html") || broken.has(file)) continue;
     return file;
   }
   return null;

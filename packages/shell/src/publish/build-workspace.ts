@@ -80,9 +80,17 @@ for (;;) {
   } catch (error) {
     const file = failedWorkspaceFile(vite, root, error, broken);
     if (!file || broken.size >= MAX_BROKEN_FILES) throw error;
-    const message = (error as Error).message.split("\n")[0]!;
+    // The first line, and the one after it when the first only introduces it
+    // (esbuild's "Transform failed with 1 error:", then "file:line:col: ERROR: …").
     const relative = path.relative(root, file);
-    broken.set(file, redactPaths(vite, root, `${relative} could not be built: ${message}`));
+    // The file's own path first: a symlinked component's target can be
+    // outside the workspace and the home directory, which redactPaths covers.
+    const lines = redactPaths(vite, root, (error as Error).message.split(file).join(relative))
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const message = lines[0]!.endsWith(":") && lines[1] ? `${lines[0]} ${lines[1]}` : lines[0]!;
+    broken.set(file, `${relative} could not be built: ${message}`);
     console.warn(`\n[antidraw] building again without ${relative}\n`);
   }
 }
