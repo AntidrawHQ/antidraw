@@ -63,10 +63,11 @@ const QUOTED_PATH_RE = new RegExp(
   "g",
 );
 // Unquoted: a segment runs up to a separator or the punctuation messages put
-// around paths (quotes, brackets, "file:line:col").
+// around paths (quotes, brackets, "file:line:col"). A "/" right after an
+// import alias ("@/lib/x", "#/x") does not start a path.
 const SEGMENT = String.raw`[^/\\\s"'\x60()<>\[\],:;]+`;
 const OUTSIDE_PATH_RE = new RegExp(
-  String.raw`(?:(?<![\w.~/\\:-])(?:/|[A-Za-z]:[\\/])(?:${SEGMENT}[\\/])+|~[\\/](?:${SEGMENT}[\\/])*|(?:\.\.[\\/])+(?:${SEGMENT}[\\/])*)(${SEGMENT})`,
+  String.raw`(?:(?<![\w.~/\\:@#-])(?:/|[A-Za-z]:[\\/])(?:${SEGMENT}[\\/])+|~[\\/](?:${SEGMENT}[\\/])*|(?:\.\.[\\/])+(?:${SEGMENT}[\\/])*)(${SEGMENT})`,
   "g",
 );
 
