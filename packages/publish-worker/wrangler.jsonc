@@ -1,0 +1,34 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "antidraw-publish",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "r2_buckets": [
+    // Published sites, each under <publish id>/ (see packages/shell/scripts/site.ts).
+    { "binding": "SITES", "bucket_name": "antidraw-sites" }
+  ],
+  "vars": {
+    // Sites are served at <publish id>.<SITE_DOMAIN>: a domain of its own,
+    // apart from antidraw.com, so published code never shares an origin or
+    // cookies with the product.
+    "SITE_DOMAIN": "antidraw.app"
+  },
+  "routes": [
+    // Every first-level subdomain; the zone needs a proxied wildcard DNS record
+    // (* AAAA 100::) for requests to reach the route.
+    { "pattern": "*.antidraw.app/*", "zone_name": "antidraw.app" },
+    // Until that record exists: a custom domain gets its DNS record and
+    // certificate from the deploy itself (wrangler cannot edit DNS).
+    { "pattern": "default-canvas.antidraw.app", "custom_domain": true }
+  ],
+  "env": {
+    // `npm run dev`: sites at <publish id>.localhost:8787, which browsers
+    // resolve to this machine. No routes: with one, wrangler dev rewrites every
+    // request's host to the route's zone and the publish id is lost.
+    "dev": {
+      "routes": [],
+      "vars": { "SITE_DOMAIN": "localhost" },
+      "r2_buckets": [{ "binding": "SITES", "bucket_name": "antidraw-sites" }]
+    }
+  }
+}
