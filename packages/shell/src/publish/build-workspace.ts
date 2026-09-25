@@ -48,6 +48,19 @@ const vite: typeof import("vite") = await import(
 // A build that fails in one workspace file is built again with that file
 // stubbed (see tolerateBrokenSource), up to a point.
 const MAX_BROKEN_FILES = 25;
+// What the site needs from the build, whatever the workspace's config says:
+// its out dir; index.html as the page (it becomes preview.html), written to
+// disk, not a library; assets under assets/ (worker bundles take this
+// directory); no source maps.
+const siteBuild = {
+  outDir: path.resolve(outDir),
+  emptyOutDir: true,
+  write: true,
+  lib: false,
+  assetsDir: "assets",
+  sourcemap: false,
+  rollupOptions: { input: path.join(root, "index.html") },
+} as const;
 const broken: BrokenFiles = new Map();
 for (;;) {
   try {
@@ -57,12 +70,11 @@ for (;;) {
       // The site is served from the root of its own origin, whatever base
       // the workspace's config names.
       base: "/",
-      plugins: publishPlugins(vite, path.resolve(runtimeSrc), broken),
-      build: {
-        outDir: path.resolve(outDir),
-        emptyOutDir: true,
-        sourcemap: false,
-      },
+      plugins: publishPlugins(vite, path.resolve(runtimeSrc), path.resolve(outDir), broken),
+      build: siteBuild,
+      // A workspace config can set the client environment's build apart
+      // from build; the site's settings go there too.
+      environments: { client: { build: siteBuild } },
     });
     break;
   } catch (error) {

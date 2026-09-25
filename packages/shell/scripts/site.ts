@@ -55,7 +55,12 @@ const BUILD_EMITTED = ".vite/antidraw-emitted.json";
 // Only upload reads it; it is not uploaded.
 const HASHED_FILES = ".hashed-files.json";
 // What the publish plugins name emitted files: Rollup's [hash] is 8 characters.
-const HASHED_NAME_RE = /^assets\/[^/]+-[A-Za-z0-9_-]{8}\.[A-Za-z0-9]+$/;
+// (A manualChunks name can put a chunk in a folder under assets/.)
+const HASHED_NAME_RE = /^assets\/.+-[A-Za-z0-9_-]{8}\.[A-Za-z0-9]+$/;
+
+// A site this script built: a canvas.json alone could be anyone's.
+const isBuiltSite = (dir: string) =>
+  fs.existsSync(path.join(dir, "canvas.json")) && fs.existsSync(path.join(dir, HASHED_FILES));
 
 const fail = (message: string): never => {
   console.error(`error: ${message}`);
@@ -155,7 +160,7 @@ const build = (target: string, out: string | undefined) => {
   if (
     fs.existsSync(outDir) &&
     fs.readdirSync(outDir).some((name) => name !== ".git") &&
-    !fs.existsSync(path.join(outDir, "canvas.json"))
+    !isBuiltSite(outDir)
   ) {
     fail(`${outDir} is not empty and is not a built site, and the build would empty it; pick another --out`);
   }
@@ -173,7 +178,7 @@ const build = (target: string, out: string | undefined) => {
     }
   };
   const removeHalfBuilt = () => {
-    if (!fs.existsSync(path.join(outDir, "canvas.json"))) emptyOutDir();
+    if (!isBuiltSite(outDir)) emptyOutDir();
   };
   run(
     [path.join(shellDir, "src/publish/build-workspace.ts"), outDir, RUNTIME_SRC],
@@ -191,21 +196,32 @@ const build = (target: string, out: string | undefined) => {
       fail(`the workspace build has its own ${name} (from public/?), which the site needs`);
     }
   }
-  fs.renameSync(path.join(outDir, "index.html"), path.join(outDir, "preview.html"));
-  // The files the build emitted are content-hashed; the rest are public/
-  // files, which a republish may change (see upload). The publish plugins
-  // name every emitted file assets/[name]-[hash]; one a plugin emits under a
-  // fixed name of its own (robots.txt) is not hashed.
-  const emitted = JSON.parse(
-    fs.readFileSync(path.join(outDir, BUILD_EMITTED), "utf8"),
-  ) as string[];
-  const hashed = new Set(emitted.filter((f) => HASHED_NAME_RE.test(f)));
-  fs.rmSync(path.join(outDir, ".vite"), { recursive: true, force: true });
-  fs.writeFileSync(path.join(outDir, HASHED_FILES), JSON.stringify([...hashed].sort(), null, 2));
-  fs.cpSync(viewerDir, outDir, { recursive: true });
+  // The rest turns the build into a site; should any of it fail, the out dir
+  // is emptied rather than left for the next build to refuse.
+  let canvasFile: CanvasFile;
+  try {
+    if (!fs.existsSync(path.join(outDir, "index.html"))) {
+      throw new Error("the workspace build wrote no index.html");
+    }
+    fs.renameSync(path.join(outDir, "index.html"), path.join(outDir, "preview.html"));
+    // The files the build emitted are content-hashed; the rest are public/
+    // files, which a republish may change (see upload). The publish plugins
+    // name every emitted file assets/[name]-[hash]; one a plugin emits under a
+    // fixed name of its own (robots.txt) is not hashed.
+    const emitted = JSON.parse(
+      fs.readFileSync(path.join(outDir, BUILD_EMITTED), "utf8"),
+    ) as string[];
+    const hashed = new Set(emitted.filter((f) => HASHED_NAME_RE.test(f)));
+    fs.rmSync(path.join(outDir, ".vite"), { recursive: true, force: true });
+    fs.writeFileSync(path.join(outDir, HASHED_FILES), JSON.stringify([...hashed].sort(), null, 2));
+    fs.cpSync(viewerDir, outDir, { recursive: true });
 
-  const canvasFile = readCanvasFile(workspace);
-  fs.writeFileSync(path.join(outDir, "canvas.json"), JSON.stringify(canvasFile, null, 2));
+    canvasFile = readCanvasFile(workspace);
+    fs.writeFileSync(path.join(outDir, "canvas.json"), JSON.stringify(canvasFile, null, 2));
+  } catch (e) {
+    emptyOutDir();
+    return fail((e as Error).message);
+  }
 
   const { files, bytes } = listFiles(outDir).reduce(
     (acc, f) => ({ files: acc.files + 1, bytes: acc.bytes + fs.statSync(path.join(outDir, f)).size }),

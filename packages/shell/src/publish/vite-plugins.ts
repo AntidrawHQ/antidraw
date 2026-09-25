@@ -233,15 +233,29 @@ export type BrokenFiles = Map<string, string>;
 // from the public/ files copied next to them.
 export const EMITTED_FILES = ".vite/antidraw-emitted.json";
 
-const publishOutput = (): Plugin => ({
+const publishOutput = (vite: ViteApi, outDir: string): Plugin => ({
   name: "antidraw-publish:output",
   // Nor a directory of its own: output.dir or output.file in the config
   // would send the build (and Vite's emptying of it) elsewhere than outDir.
+  // build-workspace.ts sets outDir for the build and for the client
+  // environment; should any build still point elsewhere, it fails here,
+  // before Vite empties anything.
   configResolved(config) {
-    const output = config.build.rollupOptions.output;
-    for (const options of Array.isArray(output) ? output : output ? [output] : []) {
-      delete options.dir;
-      delete options.file;
+    const builds = [config.build, ...Object.values(config.environments ?? {}).map((e) => e.build)];
+    for (const build of builds) {
+      const output = build.rollupOptions.output;
+      for (const options of Array.isArray(output) ? output : output ? [output] : []) {
+        delete options.dir;
+        delete options.file;
+      }
+    }
+    const expected = vite.normalizePath(path.resolve(outDir));
+    const client = config.environments?.client?.build ?? config.build;
+    for (const build of [config.build, client]) {
+      const actual = vite.normalizePath(path.resolve(config.root, build.outDir));
+      if (actual !== expected) {
+        throw new Error(`the workspace's Vite config builds into ${actual}, not the site's out dir`);
+      }
     }
   },
   outputOptions: (options) => ({
@@ -404,13 +418,14 @@ const tolerateBrokenSource = (
 export const publishPlugins = (
   vite: ViteApi,
   runtimeSrc: string,
+  outDir: string,
   broken: BrokenFiles,
 ): Plugin[] => {
   const parseError = parseCheck(vite);
   return [
     runtimeFromApp(runtimeSrc),
     componentsForBuild(vite, runtimeSrc, broken, parseError),
-    publishOutput(),
+    publishOutput(vite, outDir),
     tolerateBrokenSource(vite, broken, parseError),
   ];
 };
