@@ -1,4 +1,5 @@
 import type {
+  Account,
   ComponentListItem,
   ComponentSource,
   Conversation,
@@ -13,7 +14,7 @@ import type {
 } from "@/main/api";
 import type { ImageAttachment } from "@/shared/utils/message";
 import { fetchEventSource } from "@microsoft/fetch-event-source";
-import { ok, err } from "neverthrow";
+import { ok, err, type Result } from "neverthrow";
 
 export type { StreamEvent, EffortLevel } from "@/main/api";
 
@@ -883,3 +884,101 @@ export const saveFrameLayouts = async (
     });
   }
 };
+
+// ============================================================================
+// Cloud account API
+// ============================================================================
+
+export const getAccount = async () => {
+  try {
+    const response = await fetch("antidraw://app/api/account");
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      return err({
+        status: response.status as 500,
+        code: (errorBody?.error?.code as string) ?? "FETCH_ERROR",
+        message: (errorBody?.error?.message as string) ?? response.statusText,
+      });
+    }
+
+    const data: { account: Account | null } = await response.json();
+    return ok(data.account);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "NETWORK_ERROR",
+      message: "Failed to get account",
+    });
+  }
+};
+
+// Resolves once the user finishes in the browser, or with CANCELLED /
+// TIMED_OUT / ACCESS_DENIED if they don't.
+export const signIn = async () => {
+  try {
+    const response = await fetch("antidraw://app/api/account/sign-in", {
+      method: "POST",
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      return err({
+        status: response.status as 500,
+        code: (errorBody?.error?.code as string) ?? "FETCH_ERROR",
+        message: (errorBody?.error?.message as string) ?? response.statusText,
+      });
+    }
+
+    const data: { account: Account } = await response.json();
+    return ok(data.account);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "NETWORK_ERROR",
+      message: "Failed to sign in",
+    });
+  }
+};
+
+export const cancelSignIn = async () => {
+  try {
+    await fetch("antidraw://app/api/account/sign-in/cancel", {
+      method: "POST",
+    });
+    return ok(true);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "NETWORK_ERROR",
+      message: "Failed to cancel sign-in",
+    });
+  }
+};
+
+export const signOut = async () => {
+  try {
+    await fetch("antidraw://app/api/account/sign-out", { method: "POST" });
+    return ok(true);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "NETWORK_ERROR",
+      message: "Failed to sign out",
+    });
+  }
+};
+
+// TODO: publishing has no server side yet. Once the Worker has a publish
+// endpoint, main proxies it through cloudFetch (which answers SIGNED_OUT on a
+// dead token) and this calls that route.
+export const publishWorkspace = async (
+  _workspaceId: string,
+): Promise<
+  Result<{ url: string }, { status: 501; code: string; message: string }>
+> =>
+  err({
+    status: 501,
+    code: "NOT_IMPLEMENTED",
+    message: "Publishing isn't available yet",
+  });
