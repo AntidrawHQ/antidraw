@@ -224,11 +224,4 @@ export const desktopAuth = () =>
         },
       ),
     },
-    rateLimit: [
-      {
-        pathMatcher: (path) => path.startsWith("/desktop/"),
-        window: 60,
-        max: 20,
-      },
-    ],
   }) satisfies BetterAuthPlugin;

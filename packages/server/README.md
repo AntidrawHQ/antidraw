@@ -53,7 +53,7 @@ step to keep in sync.
 
 ```sh
 cd packages/server
-npm run dev          # wrangler dev — local Worker + D1 on http://localhost:8787
+npm run dev          # wrangler dev — local Worker + D1 on http://localhost:8799
 npm test             # vitest
 npm run typecheck
 ```
@@ -128,7 +128,7 @@ node scripts/desktop-auth-smoke.mjs             # opens the browser, prints /api
 In Google Cloud console → APIs & Services → Credentials, create an OAuth client
 of type **Web application** with these authorized redirect URIs:
 
-- `http://localhost:8787/api/auth/callback/google` (local)
+- `http://localhost:8799/api/auth/callback/google` (local)
 - `https://<worker-host>/api/auth/callback/google` (production)
 
 Put its ID and secret in `.dev.vars` locally (see `.dev.vars.example`). While

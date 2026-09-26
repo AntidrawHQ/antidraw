@@ -31,15 +31,19 @@ export const auth = betterAuth({
       prompt: "select_account",
     },
   },
-  // Stored in D1: the default in-memory store is per isolate, which on Workers
-  // is effectively no limit at all.
+  // Off: nothing here is guessable (no passwords or OTPs — Google sign-in,
+  // single-use 43-char desktop codes, 256-bit session tokens), and the
+  // database-backed limiter would add a D1 read + write to every auth request.
+  // Abuse control, when needed, belongs at Cloudflare's edge (rate limiting
+  // rules), before the Worker runs. Explicit so it doesn't hinge on how
+  // better-auth detects production.
   rateLimit: {
-    enabled: true,
-    storage: "database",
+    enabled: false,
   },
   advanced: {
     ipAddress: {
-      // The client IP as Cloudflare saw it; x-forwarded-for is client-settable.
+      // The client IP recorded on sessions, as Cloudflare saw it —
+      // x-forwarded-for is client-settable.
       ipAddressHeaders: ["cf-connecting-ip"],
     },
   },

@@ -2,7 +2,7 @@
 // running Worker, with real Google, and prints the signed-in user.
 //
 //   npm run dev                                   # in packages/server
-//   node scripts/desktop-auth-smoke.mjs           # defaults to localhost:8787
+//   node scripts/desktop-auth-smoke.mjs           # defaults to localhost:8799
 //   node scripts/desktop-auth-smoke.mjs https://<worker-host>
 //
 // Same steps the app will take: PKCE pair + state, a one-shot loopback server
@@ -12,7 +12,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { execFile } from "node:child_process";
 
-const base = (process.argv[2] ?? "http://localhost:8787").replace(/\/$/, "");
+const base = (process.argv[2] ?? "http://localhost:8799").replace(/\/$/, "");
 
 const verifier = randomBytes(32).toString("base64url");
 const challenge = createHash("sha256").update(verifier).digest("base64url");
