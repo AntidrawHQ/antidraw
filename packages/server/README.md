@@ -85,7 +85,10 @@ npm run auth:generate         # better-auth CLI -> src/models/auth.model.ts
 [better-auth](https://better-auth.com) (`src/lib/auth.ts`) serves everything
 under `/api/auth/*`: Google sign-in over the Drizzle/D1 adapter, sessions, and
 the desktop sign-in flow. Clients authenticate with
-`Authorization: Bearer <session token>` (better-auth's `bearer` plugin).
+`Authorization: Bearer <token>` (better-auth's `bearer` plugin), where the
+token is the signed one `/api/auth/desktop/token` returns; raw session tokens
+are rejected. The Worker refuses to start if `BETTER_AUTH_SECRET` (32+ chars),
+`BETTER_AUTH_URL` or the Google credentials are missing.
 
 - **Gate:** `requireSession` (`src/lib/require-session.ts`) is the only way a
   route reads the signed-in user: `ctx.get("user")` / `ctx.get("session")`, or
@@ -109,7 +112,8 @@ lives in `src/services/auth.service.ts`.
    in the browser. The Worker records the flow and redirects to Google.
 2. After Google, better-auth lands on `/api/auth/desktop/callback`. The Worker
    swaps the browser's session for a single-use code (the browser is left
-   signed out) and redirects to the loopback URL with `?code&state` — or
+   signed out, whatever the outcome; a session older than the flow doesn't
+   count) and redirects to the loopback URL with `?code&state` — or
    `?error&state` if sign-in failed.
 3. The app checks `state` and calls `POST /api/auth/desktop/token` with
    `{ code, code_verifier }`, getting `{ token, expiresAt, user }` — a session
@@ -150,7 +154,9 @@ npm run db:migrate            # remote D1
 npx wrangler secret put BETTER_AUTH_SECRET
 npx wrangler secret put GOOGLE_CLIENT_ID
 npx wrangler secret put GOOGLE_CLIENT_SECRET
-# BETTER_AUTH_URL can be a plain var in wrangler.jsonc once the prod URL is known.
+# Required too: an https URL here is what makes auth cookies Secure. Either a
+# secret or a plain var in wrangler.jsonc ("vars": { "BETTER_AUTH_URL": ... }).
+npx wrangler secret put BETTER_AUTH_URL
 
 # 4. Ship it.
 npm run deploy

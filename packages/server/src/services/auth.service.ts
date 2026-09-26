@@ -11,8 +11,8 @@ import { apiError, type ApiError } from "../lib/errors";
 // `verification` table carry the flow, each consumed atomically so every hop
 // is single-use:
 //
-//   desktop-flow:<state>  { redirectUri, codeChallenge }   /start    -> /callback
-//   desktop-code:<code>   { userId, codeChallenge }        /callback -> /token
+//   desktop-flow:<state>  { redirectUri, codeChallenge, startedAt }  /start    -> /callback
+//   desktop-code:<code>   { userId, codeChallenge }                   /callback -> /token
 //
 // The code alone is useless: /token also needs the PKCE verifier, which never
 // leaves the app instance that started the flow.
@@ -45,6 +45,9 @@ export type VerificationStore = {
 const flowValue = z.object({
   redirectUri: z.string(),
   codeChallenge: z.string(),
+  // Epoch ms. /callback only accepts a browser session created after this, so
+  // a session already in the browser can't stand in for the Google sign-in.
+  startedAt: z.number(),
 });
 export type DesktopFlow = z.infer<typeof flowValue>;
 
@@ -52,6 +55,7 @@ const codeValue = z.object({
   userId: z.string(),
   codeChallenge: z.string(),
 });
+type DesktopCode = z.infer<typeof codeValue>;
 
 const parseStored = <T>(schema: z.ZodType<T>, raw: string): T | null => {
   try {
@@ -108,6 +112,7 @@ export const startDesktopFlow = (
         value: JSON.stringify({
           redirectUri,
           codeChallenge: input.codeChallenge,
+          startedAt: Date.now(),
         } satisfies DesktopFlow),
         expiresAt: new Date(Date.now() + FLOW_TTL_MS),
       }),
@@ -151,7 +156,10 @@ export const issueDesktopCode = (
   return ResultAsync.fromPromise(
     store.createVerificationValue({
       identifier: codeKey(code),
-      value: JSON.stringify(input),
+      value: JSON.stringify({
+        userId: input.userId,
+        codeChallenge: input.codeChallenge,
+      } satisfies DesktopCode),
       expiresAt: new Date(Date.now() + CODE_TTL_MS),
     }),
     storeFailure,

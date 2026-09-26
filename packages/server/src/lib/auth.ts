@@ -6,6 +6,23 @@ import { getDb } from "../db";
 import * as schema from "../db/schema";
 import { desktopAuth } from "./desktop-auth.plugin";
 
+// Fail at startup rather than run misconfigured. Without a secret, better-auth
+// falls back to a public default and only refuses it when NODE_ENV is
+// "production", which Workers don't set. Without a base URL, cookies go out
+// without Secure. (Under the better-auth CLI, `env` is an inert stub whose
+// values are truthy non-strings, so these pass.)
+for (const name of [
+  "BETTER_AUTH_SECRET",
+  "BETTER_AUTH_URL",
+  "GOOGLE_CLIENT_ID",
+  "GOOGLE_CLIENT_SECRET",
+] as const) {
+  if (!env[name]) throw new Error(`${name} is not set (see .dev.vars.example)`);
+}
+if (typeof env.BETTER_AUTH_SECRET === "string" && env.BETTER_AUTH_SECRET.length < 32) {
+  throw new Error("BETTER_AUTH_SECRET must be at least 32 characters");
+}
+
 // One better-auth instance per isolate, built at module scope from the
 // `cloudflare:workers` env import rather than per request from `ctx.env`:
 // betterAuth() runs its full init eagerly, so a per-request build would redo it
@@ -48,9 +65,12 @@ export const auth = betterAuth({
     },
   },
   plugins: [
-    // Lets `Authorization: Bearer <session token>` authenticate a request —
-    // the desktop app holds a token, not a cookie jar.
-    bearer(),
+    // Lets `Authorization: Bearer <token>` authenticate a request — the
+    // desktop app holds a token, not a cookie jar. Signed tokens only (what
+    // /desktop/token issues): better-auth hands out raw session tokens, e.g.
+    // every session's from /list-sessions, and those must not work as
+    // credentials.
+    bearer({ requireSignature: true }),
     desktopAuth(),
   ],
 });

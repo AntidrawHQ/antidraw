@@ -10,6 +10,7 @@ import {
   parseSetCookieHeader,
   toCookieOptions,
 } from "better-auth/cookies";
+import { makeSignature } from "better-auth/crypto";
 import { z } from "zod";
 import type { ApiError } from "./errors";
 import {
@@ -146,12 +147,23 @@ export const desktopAuth = () =>
         async (ctx) => {
           const { state, error } = ctx.query;
 
+          // The browser session only carried the user from Google to here; the
+          // app gets its own at /token. Drop it before anything can bail out,
+          // so no exit from here leaves the browser signed in on the Worker's
+          // domain.
+          const session = await getSessionFromCtx(ctx);
+          if (session) {
+            await ctx.context.internalAdapter.deleteSession(session.session.token);
+            deleteSessionCookie(ctx);
+          }
+
           const flowCookie = ctx.context.createAuthCookie(FLOW_COOKIE);
           const boundState = await ctx.getSignedCookie(
             flowCookie.name,
             ctx.context.secret,
           );
-          ctx.setCookie(flowCookie.name, "", { ...flowCookie.attributes, maxAge: 0 });
+          // A mismatched cookie may belong to a newer flow in another tab, so
+          // it is only cleared once it has been used.
           if (boundState !== state) {
             return errorPage({
               status: 400,
@@ -159,24 +171,24 @@ export const desktopAuth = () =>
               message: "This sign-in was started in a different browser.",
             });
           }
+          ctx.setCookie(flowCookie.name, "", { ...flowCookie.attributes, maxAge: 0 });
 
           const flow = await takeDesktopFlow(ctx.context.internalAdapter, state);
           if (flow.isErr()) return errorPage(flow.error);
-          const { redirectUri, codeChallenge } = flow.value;
-
-          // The browser session only carried the user from Google to here; the
-          // app gets its own at /token. Drop it so nothing stays signed in on
-          // the Worker's domain.
-          const session = await getSessionFromCtx(ctx);
-          if (session) {
-            await ctx.context.internalAdapter.deleteSession(session.session.token);
-            deleteSessionCookie(ctx);
-          }
+          const { redirectUri, codeChallenge, startedAt } = flow.value;
 
           if (error || !session) {
+            // No error from better-auth and no session means the session
+            // lookup failed, not that the user declined.
             throw ctx.redirect(
-              loopbackRedirect(redirectUri, { error: error ?? "access_denied", state }),
+              loopbackRedirect(redirectUri, { error: error ?? "server_error", state }),
             );
+          }
+          // Only the session Google just created for this flow counts. One
+          // that predates /start (a web sign-in on this origin) would hand a
+          // code to whoever started the flow without the Google step.
+          if (session.session.createdAt.getTime() < startedAt) {
+            throw ctx.redirect(loopbackRedirect(redirectUri, { error: "access_denied", state }));
           }
 
           const code = await issueDesktopCode(ctx.context.internalAdapter, {
@@ -214,10 +226,14 @@ export const desktopAuth = () =>
           }
 
           // A fresh session just for this app install — independent of any
-          // browser session, revocable on its own.
+          // browser session, revocable on its own. The token is signed, the
+          // same form as the session cookie: auth.ts sets
+          // bearer({ requireSignature: true }), so the raw tokens better-auth
+          // returns from /list-sessions don't work as credentials.
           const session = await ctx.context.internalAdapter.createSession(user.id);
+          const signature = await makeSignature(session.token, ctx.context.secret);
           return ctx.json({
-            token: session.token,
+            token: `${session.token}.${signature}`,
             expiresAt: session.expiresAt,
             user: toPublicUser(user),
           });
