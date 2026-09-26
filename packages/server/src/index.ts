@@ -3,16 +3,18 @@ import { HTTPException } from "hono/http-exception";
 import type { AppEnv } from "./lib/env";
 import { respondError } from "./lib/respond";
 import { healthController } from "./controllers/health.controller";
+import { authController, meController } from "./controllers/auth.controller";
 
 // Built by a factory so tests can mount extra routes on a real app (with the
 // real fallbacks below) instead of asserting against a copy of them.
 export const createApp = () => {
   // All routes live under /api, matching @antidraw/shell's in-Electron API so
-  // the two share one path convention. Mount feature controllers here:
-  //   api.route("/auth", authController)  // better-auth — next step
+  // the two share one path convention. Mount feature controllers here.
   const api = new Hono<AppEnv>();
 
   api.route("/health", healthController);
+  api.route("/auth", authController); // better-auth: /api/auth/*
+  api.route("/me", meController);
 
   const app = new Hono<AppEnv>();
   app.route("/api", api);

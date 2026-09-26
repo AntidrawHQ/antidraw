@@ -17,3 +17,12 @@ export type Bindings = {
 export type AppEnv = {
   Bindings: Bindings;
 };
+
+// `import { env } from "cloudflare:workers"` types its env as Cloudflare.Env.
+// Point that at Bindings so module-scope code (the auth instance in
+// lib/auth.ts) sees the same typed bindings as `ctx.env`.
+declare global {
+  namespace Cloudflare {
+    interface Env extends Bindings {}
+  }
+}
