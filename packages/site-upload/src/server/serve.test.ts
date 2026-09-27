@@ -1,0 +1,549 @@
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  bytes,
+  createTestBucket,
+  manifestOf,
+  sha256,
+  summarize,
+  uniqueSite,
+  type TestBucket,
+} from "../../test/helpers";
+import { SiteServer, type SiteServerOptions } from "./serve";
+import { SiteStore } from "./store";
+
+let env: TestBucket;
+let clock: number;
+let store: SiteStore;
+let site: string;
+
+beforeAll(async () => {
+  env = await createTestBucket();
+});
+afterAll(() => env.mf.dispose());
+
+beforeEach(() => {
+  clock = Date.now();
+  store = new SiteStore({ bucket: env.bucket, now: () => clock });
+  site = uniqueSite();
+});
+
+async function publish(publishId: string, contents: Record<string, string>, immutable: string[] = []) {
+  const { missing } = await store.plan(site, publishId, manifestOf(contents, immutable));
+  for (const content of new Set(Object.values(contents))) {
+    if (!missing.includes(sha256(content))) continue;
+    const body = bytes(content);
+    await store.putFile(site, publishId, sha256(content), body, body.length);
+  }
+  await store.commit(site, publishId);
+}
+
+const server = (options: Partial<SiteServerOptions> = {}) => new SiteServer({ store, now: () => clock, ...options });
+
+const get = (s: SiteServer, path: string, init: RequestInit = {}) =>
+  s.fetch(new Request(`https://example.test${path}`, init), site);
+
+/** Fetches each path and summarizes every response, for one snapshot. */
+async function fetchAll(s: SiteServer, requests: Record<string, [string, RequestInit?]>) {
+  const out: Record<string, unknown> = {};
+  for (const [name, [path, init]] of Object.entries(requests)) out[name] = await summarize(await get(s, path, init));
+  return out;
+}
+
+const SITE = {
+  "index.html": "<h1>home</h1>",
+  "about/index.html": "<h1>about</h1>",
+  "assets/app-1a2b3c4d.js": "console.log(1)",
+  "docs/é ü.txt": "unicode",
+  "404.html": "<h1>missing</h1>",
+  "video.mp4": "0123456789",
+};
+
+describe("resolving paths", () => {
+  beforeEach(() => publish("p1", SITE, ["assets/app-1a2b3c4d.js"]));
+
+  it("serves pages, folders, assets and unicode paths", async () => {
+    expect(
+      await fetchAll(server(), {
+        root: ["/"],
+        "folder with slash": ["/about/"],
+        "folder without slash": ["/about?x=1"],
+        "hashed asset": ["/assets/app-1a2b3c4d.js"],
+        "percent-encoded NFC": ["/docs/%C3%A9%20%C3%BC.txt"],
+        "percent-encoded NFD": [`/docs/${encodeURIComponent("é ü.txt")}`],
+      }),
+    ).toMatchInlineSnapshot(`
+      {
+        "folder with slash": {
+          "body": "<h1>about</h1>",
+          "headers": {
+            "accept-ranges": "bytes",
+            "cache-control": "public, max-age=0, must-revalidate",
+            "content-length": "14",
+            "content-type": "text/html; charset=utf-8",
+            "etag": ""sha(<h1>about</h1>)"",
+            "x-content-type-options": "nosniff",
+          },
+          "status": 200,
+        },
+        "folder without slash": {
+          "body": "",
+          "headers": {
+            "cache-control": "public, max-age=0, must-revalidate",
+            "location": "/about/?x=1",
+          },
+          "status": 308,
+        },
+        "hashed asset": {
+          "body": "console.log(1)",
+          "headers": {
+            "accept-ranges": "bytes",
+            "cache-control": "public, max-age=31536000, immutable",
+            "content-length": "14",
+            "content-type": "text/javascript; charset=utf-8",
+            "etag": ""sha(console.log(1))"",
+            "x-content-type-options": "nosniff",
+          },
+          "status": 200,
+        },
+        "percent-encoded NFC": {
+          "body": "unicode",
+          "headers": {
+            "accept-ranges": "bytes",
+            "cache-control": "public, max-age=0, must-revalidate",
+            "content-length": "7",
+            "content-type": "text/plain; charset=utf-8",
+            "etag": ""sha(unicode)"",
+            "x-content-type-options": "nosniff",
+          },
+          "status": 200,
+        },
+        "percent-encoded NFD": {
+          "body": "unicode",
+          "headers": {
+            "accept-ranges": "bytes",
+            "cache-control": "public, max-age=0, must-revalidate",
+            "content-length": "7",
+            "content-type": "text/plain; charset=utf-8",
+            "etag": ""sha(unicode)"",
+            "x-content-type-options": "nosniff",
+          },
+          "status": 200,
+        },
+        "root": {
+          "body": "<h1>home</h1>",
+          "headers": {
+            "accept-ranges": "bytes",
+            "cache-control": "public, max-age=0, must-revalidate",
+            "content-length": "13",
+            "content-type": "text/html; charset=utf-8",
+            "etag": ""sha(<h1>home</h1>)"",
+            "x-content-type-options": "nosniff",
+          },
+          "status": 200,
+        },
+      }
+    `);
+  });
+
+  it("answers errors and unknown paths", async () => {
+    expect(
+      await fetchAll(server(), {
+        unknown: ["/nope"],
+        "bad percent-encoding": ["/%E0%A4%A"],
+        "dot segments stay inside the site": ["/about/../../../index.html"],
+        "encoded dot segments": ["/%2e%2e/current.json"],
+        post: ["/", { method: "POST" }],
+        head: ["/video.mp4", { method: "HEAD" }],
+      }),
+    ).toMatchInlineSnapshot(`
+      {
+        "bad percent-encoding": {
+          "body": "Bad request",
+          "headers": {
+            "cache-control": "no-store",
+            "content-type": "text/plain; charset=utf-8",
+          },
+          "status": 400,
+        },
+        "dot segments stay inside the site": {
+          "body": "<h1>home</h1>",
+          "headers": {
+            "accept-ranges": "bytes",
+            "cache-control": "public, max-age=0, must-revalidate",
+            "content-length": "13",
+            "content-type": "text/html; charset=utf-8",
+            "etag": ""sha(<h1>home</h1>)"",
+            "x-content-type-options": "nosniff",
+          },
+          "status": 200,
+        },
+        "encoded dot segments": {
+          "body": "<h1>missing</h1>",
+          "headers": {
+            "cache-control": "no-store",
+            "content-length": "16",
+            "content-type": "text/html; charset=utf-8",
+            "x-content-type-options": "nosniff",
+          },
+          "status": 404,
+        },
+        "head": {
+          "body": "",
+          "headers": {
+            "accept-ranges": "bytes",
+            "cache-control": "public, max-age=0, must-revalidate",
+            "content-length": "10",
+            "content-type": "video/mp4",
+            "etag": ""sha(0123456789)"",
+            "x-content-type-options": "nosniff",
+          },
+          "status": 200,
+        },
+        "post": {
+          "body": "Method not allowed",
+          "headers": {
+            "allow": "GET, HEAD",
+            "cache-control": "no-store",
+            "content-type": "text/plain; charset=utf-8",
+          },
+          "status": 405,
+        },
+        "unknown": {
+          "body": "<h1>missing</h1>",
+          "headers": {
+            "cache-control": "no-store",
+            "content-length": "16",
+            "content-type": "text/html; charset=utf-8",
+            "x-content-type-options": "nosniff",
+          },
+          "status": 404,
+        },
+      }
+    `);
+  });
+});
+
+describe("not-found modes", () => {
+  it("serves a plain 404 when the site has no 404.html, or was never published", async () => {
+    const neverPublished = await summarize(await get(server(), "/"));
+    await publish("p1", { "index.html": "home" });
+    expect({ neverPublished, no404Page: await summarize(await get(server(), "/nope")) }).toMatchInlineSnapshot(`
+      {
+        "neverPublished": {
+          "body": "Not found",
+          "headers": {
+            "cache-control": "no-store",
+            "content-type": "text/plain; charset=utf-8",
+          },
+          "status": 404,
+        },
+        "no404Page": {
+          "body": "Not found",
+          "headers": {
+            "cache-control": "no-store",
+            "content-type": "text/plain; charset=utf-8",
+          },
+          "status": 404,
+        },
+      }
+    `);
+  });
+
+  it("falls back to index.html in single-page-application mode, for paths without an extension", async () => {
+    await publish("p1", { "index.html": "app", "404.html": "missing" });
+    expect(
+      await fetchAll(server({ notFound: "single-page-application" }), {
+        route: ["/users/42"],
+        "missing file": ["/missing.js"],
+      }),
+    ).toMatchInlineSnapshot(`
+      {
+        "missing file": {
+          "body": "Not found",
+          "headers": {
+            "cache-control": "no-store",
+            "content-type": "text/plain; charset=utf-8",
+          },
+          "status": 404,
+        },
+        "route": {
+          "body": "app",
+          "headers": {
+            "accept-ranges": "bytes",
+            "cache-control": "public, max-age=0, must-revalidate",
+            "content-length": "3",
+            "content-type": "text/html; charset=utf-8",
+            "etag": ""sha(app)"",
+            "x-content-type-options": "nosniff",
+          },
+          "status": 200,
+        },
+      }
+    `);
+  });
+});
+
+describe("conditional requests and ranges", () => {
+  beforeEach(() => publish("p1", SITE));
+  const homeTag = `"${sha256("<h1>home</h1>")}"`;
+  const videoTag = `"${sha256("0123456789")}"`;
+
+  it("answers If-None-Match", async () => {
+    expect(
+      await fetchAll(server(), {
+        "weak match": ["/", { headers: { "if-none-match": `W/${homeTag}` } }],
+        "one of several": ["/", { headers: { "if-none-match": `"x", ${homeTag}` } }],
+        "no match": ["/", { headers: { "if-none-match": '"other"' } }],
+      }),
+    ).toMatchInlineSnapshot(`
+      {
+        "no match": {
+          "body": "<h1>home</h1>",
+          "headers": {
+            "accept-ranges": "bytes",
+            "cache-control": "public, max-age=0, must-revalidate",
+            "content-length": "13",
+            "content-type": "text/html; charset=utf-8",
+            "etag": ""sha(<h1>home</h1>)"",
+            "x-content-type-options": "nosniff",
+          },
+          "status": 200,
+        },
+        "one of several": {
+          "body": "",
+          "headers": {
+            "accept-ranges": "bytes",
+            "cache-control": "public, max-age=0, must-revalidate",
+            "etag": ""sha(<h1>home</h1>)"",
+            "x-content-type-options": "nosniff",
+          },
+          "status": 304,
+        },
+        "weak match": {
+          "body": "",
+          "headers": {
+            "accept-ranges": "bytes",
+            "cache-control": "public, max-age=0, must-revalidate",
+            "etag": ""sha(<h1>home</h1>)"",
+            "x-content-type-options": "nosniff",
+          },
+          "status": 304,
+        },
+      }
+    `);
+  });
+
+  it("serves byte ranges", async () => {
+    const range = (value: string, extra: Record<string, string> = {}): [string, RequestInit] => [
+      "/video.mp4",
+      { headers: { range: value, ...extra } },
+    ];
+    expect(
+      await fetchAll(server(), {
+        "bytes=2-4": range("bytes=2-4"),
+        "bytes=-3": range("bytes=-3"),
+        "bytes=8-": range("bytes=8-"),
+        "past the end": range("bytes=10-"),
+        "multiple ranges": range("bytes=0-1,4-5"),
+        "If-Range matches": range("bytes=0-1", { "if-range": videoTag }),
+        "If-Range stale": range("bytes=0-1", { "if-range": '"old"' }),
+        "ranged HEAD": ["/video.mp4", { method: "HEAD", headers: { range: "bytes=0-3" } }],
+      }),
+    ).toMatchInlineSnapshot(`
+      {
+        "If-Range matches": {
+          "body": "01",
+          "headers": {
+            "accept-ranges": "bytes",
+            "cache-control": "public, max-age=0, must-revalidate",
+            "content-length": "2",
+            "content-range": "bytes 0-1/10",
+            "content-type": "video/mp4",
+            "etag": ""sha(0123456789)"",
+            "x-content-type-options": "nosniff",
+          },
+          "status": 206,
+        },
+        "If-Range stale": {
+          "body": "0123456789",
+          "headers": {
+            "accept-ranges": "bytes",
+            "cache-control": "public, max-age=0, must-revalidate",
+            "content-length": "10",
+            "content-type": "video/mp4",
+            "etag": ""sha(0123456789)"",
+            "x-content-type-options": "nosniff",
+          },
+          "status": 200,
+        },
+        "bytes=-3": {
+          "body": "789",
+          "headers": {
+            "accept-ranges": "bytes",
+            "cache-control": "public, max-age=0, must-revalidate",
+            "content-length": "3",
+            "content-range": "bytes 7-9/10",
+            "content-type": "video/mp4",
+            "etag": ""sha(0123456789)"",
+            "x-content-type-options": "nosniff",
+          },
+          "status": 206,
+        },
+        "bytes=2-4": {
+          "body": "234",
+          "headers": {
+            "accept-ranges": "bytes",
+            "cache-control": "public, max-age=0, must-revalidate",
+            "content-length": "3",
+            "content-range": "bytes 2-4/10",
+            "content-type": "video/mp4",
+            "etag": ""sha(0123456789)"",
+            "x-content-type-options": "nosniff",
+          },
+          "status": 206,
+        },
+        "bytes=8-": {
+          "body": "89",
+          "headers": {
+            "accept-ranges": "bytes",
+            "cache-control": "public, max-age=0, must-revalidate",
+            "content-length": "2",
+            "content-range": "bytes 8-9/10",
+            "content-type": "video/mp4",
+            "etag": ""sha(0123456789)"",
+            "x-content-type-options": "nosniff",
+          },
+          "status": 206,
+        },
+        "multiple ranges": {
+          "body": "0123456789",
+          "headers": {
+            "accept-ranges": "bytes",
+            "cache-control": "public, max-age=0, must-revalidate",
+            "content-length": "10",
+            "content-type": "video/mp4",
+            "etag": ""sha(0123456789)"",
+            "x-content-type-options": "nosniff",
+          },
+          "status": 200,
+        },
+        "past the end": {
+          "body": "",
+          "headers": {
+            "accept-ranges": "bytes",
+            "cache-control": "public, max-age=0, must-revalidate",
+            "content-range": "bytes */10",
+            "etag": ""sha(0123456789)"",
+            "x-content-type-options": "nosniff",
+          },
+          "status": 416,
+        },
+        "ranged HEAD": {
+          "body": "",
+          "headers": {
+            "accept-ranges": "bytes",
+            "cache-control": "public, max-age=0, must-revalidate",
+            "content-length": "4",
+            "content-range": "bytes 0-3/10",
+            "content-type": "video/mp4",
+            "etag": ""sha(0123456789)"",
+            "x-content-type-options": "nosniff",
+          },
+          "status": 206,
+        },
+      }
+    `);
+  });
+});
+
+describe("pointer cache", () => {
+  const body = async (s: SiteServer, path = "/") => (await get(s, path)).text();
+
+  it("keeps serving the cached version until the TTL passes", async () => {
+    await publish("p1", { "index.html": "v1" });
+    const s = server({ pointerTtlMs: 5000 });
+    const seen = [await body(s)];
+    await publish("p2", { "index.html": "v2" });
+    seen.push(await body(s));
+    clock += 4999;
+    seen.push(await body(s));
+    clock += 1;
+    seen.push(await body(s));
+    expect(seen).toMatchInlineSnapshot(`
+      [
+        "v1",
+        "v1",
+        "v1",
+        "v2",
+      ]
+    `);
+  });
+
+  it("re-reads the pointer on a miss, so new files are found right away", async () => {
+    await publish("p1", { "index.html": "v1" });
+    const s = server({ pointerTtlMs: 60_000 });
+    await get(s, "/");
+    await publish("p2", { "index.html": "v2", "assets/new-chunk.js": "new" });
+    clock += 1000;
+    expect(await summarize(await get(s, "/assets/new-chunk.js"))).toMatchInlineSnapshot(`
+      {
+        "body": "new",
+        "headers": {
+          "accept-ranges": "bytes",
+          "cache-control": "public, max-age=0, must-revalidate",
+          "content-length": "3",
+          "content-type": "text/javascript; charset=utf-8",
+          "etag": ""sha(new)"",
+          "x-content-type-options": "nosniff",
+        },
+        "status": 200,
+      }
+    `);
+  });
+
+  it("re-reads at most once a second on misses", async () => {
+    await publish("p1", { "index.html": "v1" });
+    let reads = 0;
+    const counting = new SiteStore({ bucket: env.bucket, now: () => clock });
+    const read = counting.readPointer.bind(counting);
+    counting.readPointer = (s) => {
+      reads++;
+      return read(s);
+    };
+    const s = new SiteServer({ store: counting, now: () => clock });
+    await get(s, "/");
+    for (let i = 0; i < 5; i++) await get(s, `/missing-${i}`);
+    const withinASecond = reads;
+    clock += 1000;
+    await get(s, "/missing-again");
+    expect({ withinASecond, afterASecond: reads }).toMatchInlineSnapshot(`
+      {
+        "afterASecond": 2,
+        "withinASecond": 1,
+      }
+    `);
+  });
+
+  it("forgets the least recently used site past the limit", async () => {
+    await publish("p1", { "index.html": "first site v1" });
+    const first = site;
+    site = uniqueSite();
+    await publish("p1", { "index.html": "second site" });
+    const second = site;
+
+    const s = server({ maxCachedSites: 1, pointerTtlMs: 60_000 });
+    const home = async (key: string) => (await s.fetch(new Request("https://x.test/"), key)).text();
+    const seen = [await home(first), await home(second)];
+    site = first;
+    await publish("p2", { "index.html": "first site v2" });
+    // The first site was evicted when the second was cached, so v2 shows at once.
+    seen.push(await home(first));
+    expect(seen).toMatchInlineSnapshot(`
+      [
+        "first site v1",
+        "second site",
+        "first site v2",
+      ]
+    `);
+  });
+});
