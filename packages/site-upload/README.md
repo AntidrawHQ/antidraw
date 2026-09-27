@@ -36,7 +36,8 @@ The package ships TypeScript source; consumers bundle it (wrangler, Vite).
 **What stays servable.** The live version, plus the previous version's
 immutable files (`i: true`, i.e. hashed build output) that the live version
 dropped, so a page opened before a publish can still load its chunks. Nothing
-older, and not the previous version's HTML. Cleanup keeps exactly these files,
+older, and never a page: HTML, SVG and other XML documents are not carried
+over or cached as immutable, whatever the uploader marks. Cleanup keeps exactly these files,
 plus those of any plan still inside its 1-hour upload window.
 
 **Commit retries.** Repeating a commit is safe while it's still the latest one:

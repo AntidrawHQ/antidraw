@@ -550,6 +550,26 @@ describe("retained files", () => {
   });
 });
 
+describe("retained documents", () => {
+  it("never carries the previous version's pages or SVG forward, even when marked immutable", async () => {
+    await publish(
+      "p1",
+      { "index.html": "v1", "old.html": "old page", "icon.svg": "<svg/>", "assets/app-1.js": "js1" },
+      ["old.html", "icon.svg", "assets/app-1.js"],
+    );
+    await publish("p2", { "index.html": "v2" });
+    expect((await pointer())?.retained).toMatchInlineSnapshot(`
+      {
+        "assets/app-1.js": {
+          "h": "sha(js1)",
+          "i": true,
+          "s": 3,
+        },
+      }
+    `);
+  });
+});
+
 describe("readPointer", () => {
   it("returns null for a site that was never published", async () => {
     expect(await store.readPointer(site)).toBeNull();

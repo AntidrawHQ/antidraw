@@ -1,5 +1,5 @@
-import mime from "mime";
 import { isId, type FileEntry } from "../protocol/manifest";
+import { contentType, isDocument } from "./content-type";
 import { ifNoneMatchHits, ifRangeAllows, parseRange, type ByteRange } from "./http-conditions";
 import type { Pointer, SiteStore } from "./store";
 
@@ -210,7 +210,7 @@ export class SiteServer {
       // single-page-application fallback included) sit at URLs every publish
       // reuses, so pinning one in browsers for a year would outlive later
       // publishes, by a teammate or a slug's next owner, with no way to purge it.
-      const immutable = entry.i === true && !isPage(type);
+      const immutable = entry.i === true && !isDocument(type);
       headers.set("etag", etag);
       headers.set("cache-control", this.cacheControl({ site, path, immutable }));
       headers.set("accept-ranges", "bytes");
@@ -361,14 +361,7 @@ function decodePath(pathname: string): string | null {
   }
 }
 
-/** The Content-Type Cloudflare's own static-asset serving would send for `path`. */
-export function contentType(path: string): string {
-  const type = mime.getType(path);
-  if (!type) return "application/octet-stream";
-  return type.startsWith("text/") && !type.includes("charset") ? `${type}; charset=utf-8` : type;
-}
-
-const isPage = (type: string) => /^(text\/html|application\/xhtml\+xml)\b/.test(type);
+export { contentType } from "./content-type";
 
 const unavailable = () => text(503, "Temporarily unavailable", { "retry-after": "1" });
 

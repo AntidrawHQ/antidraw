@@ -905,3 +905,25 @@ describe("file cache", () => {
     `);
   });
 });
+
+describe("documents marked immutable", () => {
+  it("still revalidates SVG and XML, which a browser can open and run script in", async () => {
+    await publish("p1", { "index.html": "home", "icon.svg": "<svg/>", "feed.xml": "<rss/>", "assets/app-1.js": "js" }, [
+      "icon.svg",
+      "feed.xml",
+      "assets/app-1.js",
+    ]);
+    const cacheControl = async (path: string) => (await get(server(), path)).headers.get("cache-control");
+    expect({
+      "icon.svg": await cacheControl("/icon.svg"),
+      "feed.xml": await cacheControl("/feed.xml"),
+      "assets/app-1.js": await cacheControl("/assets/app-1.js"),
+    }).toMatchInlineSnapshot(`
+      {
+        "assets/app-1.js": "public, max-age=31536000, immutable",
+        "feed.xml": "public, max-age=0, must-revalidate",
+        "icon.svg": "public, max-age=0, must-revalidate",
+      }
+    `);
+  });
+});

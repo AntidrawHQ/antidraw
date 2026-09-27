@@ -19,6 +19,7 @@ import {
   type BucketObjectBody,
   type BucketRange,
 } from "./bucket";
+import { contentType, isDocument } from "./content-type";
 
 /** What a site serves: the committed files plus where it came from. */
 export type Pointer = {
@@ -248,7 +249,7 @@ export class SiteStore {
     if (current) {
       for (const path in current.files) {
         const entry = current.files[path]!;
-        if (entry.i && !(path in plan.files)) retained[path] = entry;
+        if (entry.i && !(path in plan.files) && !isDocument(contentType(path))) retained[path] = entry;
       }
     }
     const pointer: Pointer = {

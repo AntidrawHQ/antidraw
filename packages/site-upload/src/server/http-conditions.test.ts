@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ifNoneMatchHits, ifRangeAllows, parseRange } from "./http-conditions";
-import { contentType } from "./serve";
+import { contentType, isDocument } from "./content-type";
 
 const table = <T>(inputs: string[], fn: (input: string) => T) =>
   Object.fromEntries(inputs.map((input) => [input, fn(input)]));
@@ -170,6 +170,31 @@ describe("contentType", () => {
         "icon.svg": "image/svg+xml",
         "index.html": "text/html; charset=utf-8",
         "notes.md": "text/markdown; charset=utf-8",
+      }
+    `);
+  });
+});
+
+describe("isDocument", () => {
+  it("covers every type a browser can open as a page and run script in", () => {
+    expect(
+      table(
+        ["index.html", "page.xhtml", "icon.svg", "feed.xml", "feed.rss", "doc.xsl", "app.js", "style.css", "data.json", "photo.png", "clip.mp4"],
+        (path) => `${contentType(path)} → ${isDocument(contentType(path)) ? "document" : "asset"}`,
+      ),
+    ).toMatchInlineSnapshot(`
+      {
+        "app.js": "text/javascript; charset=utf-8 → asset",
+        "clip.mp4": "video/mp4 → asset",
+        "data.json": "application/json → asset",
+        "doc.xsl": "application/xml → document",
+        "feed.rss": "application/rss+xml → document",
+        "feed.xml": "application/xml → document",
+        "icon.svg": "image/svg+xml → document",
+        "index.html": "text/html; charset=utf-8 → document",
+        "page.xhtml": "application/xhtml+xml → document",
+        "photo.png": "image/png → asset",
+        "style.css": "text/css; charset=utf-8 → asset",
       }
     `);
   });
