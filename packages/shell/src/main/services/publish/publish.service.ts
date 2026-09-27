@@ -551,11 +551,15 @@ const beginRequest = (opts: {
       publishError("BUILD_FAILED", "The built site is missing its entry pages."),
     );
   }
-  // The server takes 1-100 characters; the name is only the slug base and the
-  // remix display name.
-  const name =
-    Array.from(opts.workspaceName.trim()).slice(0, 100).join("").trim() ||
-    "Canvas";
+  // The server takes 1-100 characters (zod counts UTF-16 code units); the name
+  // is only the slug base and the remix display name. Cut whole code points so
+  // a surrogate pair is never split.
+  let cut = "";
+  for (const ch of opts.workspaceName.trim()) {
+    if (cut.length + ch.length > 100) break;
+    cut += ch;
+  }
+  const name = cut.trim() || "Canvas";
 
   return ok({
     clientWorkspaceId: opts.workspaceId,

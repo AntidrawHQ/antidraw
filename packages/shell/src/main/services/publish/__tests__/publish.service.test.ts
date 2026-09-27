@@ -330,6 +330,20 @@ describe("publishWorkspace: happy path", () => {
     });
   });
 
+  test("a long name is cut to 100 UTF-16 units without splitting a surrogate pair", async () => {
+    vi.mocked(getWorkspace).mockResolvedValue(
+      ok({ id: WS, name: `  ${"a".repeat(99)}😀😀  ` } as never),
+    );
+    await run();
+    // The server's zod max(100) counts UTF-16 units: 99 + a 2-unit emoji is 101.
+    expect(beginBody().name).toBe("a".repeat(99));
+
+    vi.mocked(beginPublish).mockClear();
+    vi.mocked(getWorkspace).mockResolvedValue(ok({ id: WS, name: "😀".repeat(60) } as never));
+    await run();
+    expect(beginBody().name).toBe("😀".repeat(50));
+  });
+
   test("allowRemix is omitted when not given, and sent when given", async () => {
     await run();
     expect(beginBody()).not.toHaveProperty("allowRemix");
