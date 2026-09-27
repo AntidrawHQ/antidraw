@@ -177,7 +177,7 @@ describe("cloud-publish", () => {
 
   test("complete, session, abort, site status and patch hit the documented routes", async () => {
     reply(json({ site, version: 4 }));
-    reply(json({ status: "completed", resultVersion: 4, site }));
+    reply(json({ status: "completed", resultVersion: 4, live: true, site }));
     reply(json({ ok: true }));
     reply(json({ site: null }));
     reply(json({ site: { ...site, allowRemix: false } }));

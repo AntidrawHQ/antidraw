@@ -60,7 +60,7 @@ CREATE TABLE `site_version` (
 	`file_count` integer NOT NULL,
 	`site_file_count` integer NOT NULL,
 	`site_bytes` integer NOT NULL,
-	`site_file_row_bytes` integer DEFAULT 0 NOT NULL,
+	`file_row_bytes` integer DEFAULT 0 NOT NULL,
 	`allow_remix` integer DEFAULT true NOT NULL,
 	`keep` integer DEFAULT false NOT NULL,
 	`publish_session_id` text NOT NULL,

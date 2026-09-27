@@ -366,9 +366,10 @@ const runs = new Map<string, Run>();
 // own (followUnfinished) until the record is dropped. The run's staging is
 // gone by then, but complete needs only the session: everything was uploaded.
 // Dropped once complete answers (live, or refused for good), when the server
-// reports the session aborted or expired, when it is aborted, when the
-// workspace publishes again, or once it has expired. Its retry and a run of the same workspace
-// never overlap: a run waits for a retry in flight before it begins (else the
+// reports the session aborted or expired, when it is aborted, when a new run
+// of the workspace is about to begin (not when it starts: one that ends before
+// begin leaves it be), or once it has expired. Its retry and a run of the same
+// workspace never overlap: a run waits for a retry in flight before it begins (else the
 // old session could commit after the new one's begin and fail its complete
 // as a conflict), and no retry starts while a run holds the workspace.
 type Unfinished = {
@@ -383,9 +384,9 @@ type Unfinished = {
   follow?: ReturnType<typeof setTimeout> | null;
 };
 const unfinished = new Map<string, Unfinished>();
-// A retry in flight, per workspace, until it settles; kept apart from
-// `unfinished`, which a run drops as it starts (a cancelled run must not
-// leave the next one free to begin under it).
+// A retry in flight, per workspace, until it settles: every run that starts
+// meanwhile waits for it before it begins, a cancelled one included (it must
+// not leave the next one free to begin under it).
 const retries = new Map<string, Promise<unknown>>();
 
 const forgetUnfinished = (workspaceId: string) => {
@@ -417,7 +418,9 @@ const dropUnfinished = (workspaceId: string, held: Unfinished) => {
 // follow-up survive a closed panel but not a reload or a closed window. Each
 // is getPublishOutcome, which already keeps to one attempt at a time and
 // stays out of a run's way. They stop once the record is dropped (a final
-// answer, or the workspace publishes again) or the session has expired.
+// answer, or a new run of the workspace is about to begin) or the session
+// has expired. While a run holds the workspace they only read, and carry on
+// once it ends without beginning.
 const followUnfinished = (workspaceId: string, held: Unfinished, attempt: number) => {
   const delays = publishTiming.followDelaysMs;
   if (delays.length === 0) return;
@@ -503,10 +506,10 @@ export async function* publishWorkspace(
     staging: null,
   };
   runs.set(workspaceId, run);
-  // A new publish replaces whatever an earlier one left unfinished, once a
-  // "check status" retry of it still in flight has settled.
+  // A "check status" retry of an earlier unfinished publish still in flight:
+  // the run waits for it before it begins. The earlier record itself is kept
+  // until the run is about to begin (see steps).
   const retrying = retries.get(workspaceId) ?? null;
-  forgetUnfinished(workspaceId);
 
   const onCallerAbort = () => {
     if (!run.finishing) run.controller.abort();
@@ -949,7 +952,6 @@ const steps = async (ctx: {
   if (signal.aborted) return err(CANCELLED);
 
   // ── upload ──
-  emit({ type: "step", step: "uploading" });
   const body = beginRequest({
     workspaceId,
     workspaceName: ctx.workspaceName,
@@ -959,6 +961,14 @@ const steps = async (ctx: {
   });
   if (body.isErr()) return err(body.error);
 
+  // The new session replaces whatever an earlier run left unfinished, but
+  // only from here: a run that ends before begin (cancelled, refused, a
+  // failed build) leaves it, and main's follow-up of it, as they were. Until
+  // now that record was only read (the run holds the workspace), and a retry
+  // of it in flight was waited for before the run got this far. "uploading"
+  // is the step that tells the renderer the earlier session was let go.
+  forgetUnfinished(workspaceId);
+  emit({ type: "step", step: "uploading" });
   const begun = await beginPublish(body.value, { signal });
   if (begun.isErr()) {
     return err(signal.aborted ? CANCELLED : mapCloudError(begun.error, packed.manifest));
@@ -1060,12 +1070,13 @@ const steps = async (ctx: {
   if (session.isErr()) {
     return session.error.code === "SIGNED_OUT" ? err(SIGNED_OUT) : outcomeUnknown();
   }
-  const { status, resultVersion } = session.value;
+  const { status, resultVersion, live } = session.value;
   if (status === "completed" && resultVersion !== null) {
     // Committed is not live: the server commits, then switches the site
-    // over, and answers complete only once visitors see the version. The
-    // session read cannot tell the two apart, so complete (idempotent: it
-    // re-syncs the switch-over) is what says the publish is live.
+    // over. The read says which (retrying the switch-over first), so a live
+    // version needs nothing more; otherwise complete (idempotent: it re-syncs
+    // the switch-over) is what says the publish is live.
+    if (live) return ok(toResult(session.value.site, resultVersion));
     const confirmed = await completePublish(publishId, objects);
     if (confirmed.isOk()) {
       return ok(toResult(confirmed.value.site, confirmed.value.version));
@@ -1094,22 +1105,30 @@ const steps = async (ctx: {
 // the site over to a committed version), and a session the server now
 // refuses for good is aborted, so the answer is "it will not go live" rather
 // than "pending" until it expires. A committed session is "completed" only
-// once complete confirms it is live; until then it reads "pending", since
-// visitors still get the previous version.
+// once it is live (the server's read says so, or complete confirms it); until
+// then it reads "pending", since visitors still get the previous version.
 export const getPublishOutcome = async (
   workspaceId: string,
   publishId: string,
 ): Promise<Result<PublishSessionResponse, PublishError>> => {
   const result = await getPublishSession(publishId);
-  if (result.isErr()) return err(mapCloudError(result.error));
   const held = unfinished.get(workspaceId);
-  // While a run holds the workspace (it let this session go), only read.
-  if (held?.publishId !== publishId || runs.has(workspaceId)) {
-    return ok(result.value);
+  const isHeld = held?.publishId === publishId;
+  if (result.isErr()) {
+    if (result.error.code === "PUBLISH_NOT_FOUND") {
+      if (held && isHeld) dropUnfinished(workspaceId, held);
+      return supersededOutcome(workspaceId, result.error);
+    }
+    return err(mapCloudError(result.error));
   }
-  if (result.value.status !== "pending" && result.value.status !== "completed") {
+  const session = result.value;
+  if (!held || !isHeld) return ok(asSeen(session));
+  // While a run holds the workspace, only read (the run waits for no retry
+  // started now).
+  if (runs.has(workspaceId)) return ok(asSeen(session));
+  if (session.live || (session.status !== "pending" && session.status !== "completed")) {
     dropUnfinished(workspaceId, held);
-    return ok(result.value);
+    return ok(session);
   }
   // One attempt at a time, however many checks arrive.
   if (!held.inFlight) {
@@ -1121,6 +1140,27 @@ export const getPublishOutcome = async (
     retries.set(workspaceId, attempt);
   }
   return held.inFlight;
+};
+
+// A committed session visitors do not see yet reads pending.
+const asSeen = (session: PublishSessionResponse): PublishSessionResponse =>
+  session.status === "completed" && !session.live ? { ...session, status: "pending" } : session;
+
+// The server forgets a completed session once its version is pruned (several
+// publishes later), and only a completed one: it committed, and the site has
+// since moved on to a newer version, which is what visitors see. So it reads
+// as done, with the site as it is now (resultVersion unknown). Without a site
+// (unpublished since) it is the server's error.
+const supersededOutcome = async (
+  workspaceId: string,
+  notFound: CloudError,
+): Promise<Result<PublishSessionResponse, PublishError>> => {
+  const site = await fetchSiteStatus(workspaceId);
+  if (site.isErr()) {
+    return err(site.error.code === "SIGNED_OUT" ? SIGNED_OUT : mapCloudError(site.error));
+  }
+  if (!site.value) return err(mapCloudError(notFound));
+  return ok({ status: "completed", resultVersion: null, live: true, site: site.value });
 };
 
 const finishUnfinished = async (
@@ -1136,6 +1176,7 @@ const finishUnfinished = async (
       return ok({
         status: "completed",
         resultVersion: completed.value.version,
+        live: true,
         site: completed.value.site,
       });
     }

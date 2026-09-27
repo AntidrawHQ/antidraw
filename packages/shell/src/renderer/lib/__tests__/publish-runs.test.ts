@@ -272,12 +272,12 @@ describe("Check status asks about the session when main names it", () => {
 
     // Someone else's publish moved the head; this session is still pending.
     heads = { A: 5 };
-    mockSession.mockResolvedValueOnce(ok({ status: "pending", resultVersion: null, site: site("A", 5) }));
+    mockSession.mockResolvedValueOnce(ok({ status: "pending", resultVersion: null, live: false, site: site("A", 5) }));
     await checkPublishStatus(queryClient, "A");
     expect(runOf("A")).toMatchObject({ phase: "failed", check: "pending", checking: false });
     expect(mockSession).toHaveBeenLastCalledWith("A", "pub_9");
 
-    mockSession.mockResolvedValueOnce(ok({ status: "completed", resultVersion: 6, site: site("A", 6) }));
+    mockSession.mockResolvedValueOnce(ok({ status: "completed", resultVersion: 6, live: true, site: site("A", 6) }));
     await checkPublishStatus(queryClient, "A");
     expect(runOf("A")).toMatchObject({ phase: "published", url: "https://A.example.test", result: null });
     expect(queryClient.getQueryData(queryKeys.publish.status("A"))).toEqual(site("A", 6));
@@ -289,7 +289,7 @@ describe("Check status asks about the session when main names it", () => {
     push("A", unknownWith("pub_9"));
     await a;
 
-    mockSession.mockResolvedValueOnce(ok({ status: "expired", resultVersion: null, site: site("A", 4) }));
+    mockSession.mockResolvedValueOnce(ok({ status: "expired", resultVersion: null, live: false, site: site("A", 4) }));
     await checkPublishStatus(queryClient, "A");
     expect(runOf("A")).toMatchObject({ phase: "failed", check: "ended" });
   });
@@ -467,7 +467,7 @@ describe("a publish that may still finish is finished in the background", () => 
       type: "error",
       error: { code: "PUBLISH_OUTCOME_UNKNOWN", message: "m", details: { publishId } },
     }) as PublishEvent;
-  const pending = () => ok({ status: "pending" as const, resultVersion: null, site: site("A", 1) });
+  const pending = () => ok({ status: "pending" as const, resultVersion: null, live: false, site: site("A", 1) });
 
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
@@ -495,7 +495,7 @@ describe("a publish that may still finish is finished in the background", () => 
     expect(runOf("A")).toBeUndefined();
 
     mockSession.mockResolvedValueOnce(
-      ok({ status: "completed", resultVersion: 2, site: site("A", 2) }),
+      ok({ status: "completed", resultVersion: 2, live: true, site: site("A", 2) }),
     );
     await vi.advanceTimersByTimeAsync(FOLLOW_DELAYS_MS[1]!);
     expect(mockSession).toHaveBeenCalledTimes(2);
@@ -510,7 +510,7 @@ describe("a publish that may still finish is finished in the background", () => 
   test("while the panel is up, a completion shows on it", async () => {
     await failUnknown();
     mockSession.mockResolvedValueOnce(
-      ok({ status: "completed", resultVersion: 2, site: site("A", 2) }),
+      ok({ status: "completed", resultVersion: 2, live: true, site: site("A", 2) }),
     );
     await vi.advanceTimersByTimeAsync(FOLLOW_DELAYS_MS[0]!);
     expect(runOf("A")).toMatchObject({ phase: "published", result: null });
@@ -520,7 +520,7 @@ describe("a publish that may still finish is finished in the background", () => 
     await failUnknown();
     dismissPublishRun("A");
     mockSession.mockResolvedValueOnce(
-      ok({ status: "expired", resultVersion: null, site: site("A", 1) }),
+      ok({ status: "expired", resultVersion: null, live: false, site: site("A", 1) }),
     );
     await vi.advanceTimersByTimeAsync(FOLLOW_DELAYS_MS[0]!);
     expect(runOf("A")).toMatchObject({
@@ -545,18 +545,56 @@ describe("a publish that may still finish is finished in the background", () => 
     expect(runOf("A")).toBeUndefined();
   });
 
-  test("publishing the workspace again stops following the old session", async () => {
+  test("publishing the workspace again stops following the old session once it uploads", async () => {
     await failUnknown();
+    mockSession.mockResolvedValue(pending());
     void startPublish(queryClient, "A");
+    // Main lets the earlier session go only as the new one begins.
+    await vi.advanceTimersByTimeAsync(FOLLOW_DELAYS_MS[0]!);
+    expect(mockSession).toHaveBeenCalledTimes(1);
+
+    push("A", { type: "step", step: "uploading" });
+    await vi.advanceTimersByTimeAsync(0);
+    const asked = mockSession.mock.calls.length;
     await vi.advanceTimersByTimeAsync(FOLLOW_MAX_MS);
-    expect(mockSession).not.toHaveBeenCalled();
+    expect(mockSession.mock.calls.length).toBe(asked);
     expect(runOf("A")?.phase).toBe("publishing");
+  });
+
+  test("a new publish that ends before uploading keeps following the old session", async () => {
+    await failUnknown();
+    mockSession.mockResolvedValue(pending());
+    const again = startPublish(queryClient, "A");
+    push("A", { type: "step", step: "checking" });
+    push("A", fail("SERVER_UNREACHABLE"));
+    expect(await again).toBe("failed");
+    expect(runOf("A")).toMatchObject({ phase: "failed", error: { code: "SERVER_UNREACHABLE" } });
+
+    await vi.advanceTimersByTimeAsync(FOLLOW_DELAYS_MS[0]!);
+    expect(mockSession).toHaveBeenLastCalledWith("A", "pub_9");
+    const asked = mockSession.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(FOLLOW_DELAYS_MS[1]!);
+    expect(mockSession.mock.calls.length).toBe(asked + 1);
+  });
+
+  test("a new publish cancelled before uploading brings back the old session's answer", async () => {
+    await failUnknown();
+    const again = startPublish(queryClient, "A");
+    push("A", fail("CANCELLED"));
+    expect(await again).toBe("cancelled");
+    expect(runOf("A")).toBeUndefined();
+
+    mockSession.mockResolvedValueOnce(
+      ok({ status: "completed", resultVersion: 2, live: true, site: site("A", 2) }),
+    );
+    await vi.advanceTimersByTimeAsync(FOLLOW_DELAYS_MS[0]!);
+    expect(runOf("A")).toMatchObject({ phase: "published", url: "https://A.example.test", result: null });
   });
 
   test("a final answer from Check status ends the follow", async () => {
     await failUnknown();
     mockSession.mockResolvedValueOnce(
-      ok({ status: "aborted", resultVersion: null, site: site("A", 1) }),
+      ok({ status: "aborted", resultVersion: null, live: false, site: site("A", 1) }),
     );
     await checkPublishStatus(queryClient, "A");
     expect(runOf("A")).toMatchObject({ phase: "failed", check: "ended" });
@@ -573,7 +611,7 @@ describe("a publish that may still finish is finished in the background", () => 
     expect(mockSession).toHaveBeenCalledTimes(1);
 
     void startPublish(queryClient, "A");
-    answer(ok({ status: "completed", resultVersion: 2, site: site("A", 2) }));
+    answer(ok({ status: "completed", resultVersion: 2, live: true, site: site("A", 2) }));
     await vi.advanceTimersByTimeAsync(0);
     expect(runOf("A")?.phase).toBe("publishing");
   });

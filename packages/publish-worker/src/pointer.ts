@@ -92,6 +92,12 @@ type Cached = LoadedPointer & {
 // How long a cached pointer is served before R2 is asked whether it changed
 // (a conditional get, which costs no body when it has not).
 export const REVALIDATE_MS = 5_000;
+// A request for a path the cached pointer does not have asks R2 again first
+// (serve.ts), once the cached copy is this old: another isolate may already
+// have served the new version's page, which names files only the new pointer
+// has. The floor bounds what a stream of real 404s costs: at most one
+// conditional get per site per isolate this often, however many there are.
+export const MISS_REVALIDATE_MS = 500;
 
 // Memory. An isolate has 128 MB, shared by every request it serves, for any
 // site. The server keeps a pointer under 2 MB (MAX_POINTER_BYTES in
@@ -186,9 +192,16 @@ export const createPointerCache = (now: () => number = Date.now) => {
     return entry;
   };
 
-  const load = async (bucket: R2Bucket, slug: string): Promise<LoadedPointer> => {
+  // `maxAgeMs`: how long ago the cached copy may have been checked to be
+  // served as it is (a request for a missing path passes MISS_REVALIDATE_MS).
+  // A shorter one shares the read in flight like any other.
+  const load = async (
+    bucket: R2Bucket,
+    slug: string,
+    { maxAgeMs = REVALIDATE_MS }: { maxAgeMs?: number } = {},
+  ): Promise<LoadedPointer> => {
     const cached = cache.get(slug);
-    if (cached && now() - cached.checkedAt < REVALIDATE_MS) {
+    if (cached && now() - cached.checkedAt < maxAgeMs) {
       // Most recently used goes last.
       cache.delete(slug);
       cache.set(slug, cached);

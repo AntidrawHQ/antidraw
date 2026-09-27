@@ -2,7 +2,7 @@
 // path up in the site's pointer, m/<slug>.json (see pointer.ts), and answers
 // with the content that entry names, c/<owner id>/<sha256>. A path the
 // pointer does not list is a 404: nothing is ever read from R2 by request
-// path. A site is the directory that packages/shell builds (scripts/site.ts,
+// path (a miss only re-checks the pointer, see MISS_REVALIDATE_MS). A site is the directory that packages/shell builds (scripts/site.ts,
 // the app's Publish), and it expects to be the root of its origin: the viewer
 // at /, the workspace's Preview page at /preview, and everything else a file
 // (components refer to public files as "/clip.mp4").
@@ -18,6 +18,7 @@ import {
   contentKey,
   createPointerCache,
   entryFor,
+  MISS_REVALIDATE_MS,
   type PointerCache,
   type PointerEntry,
 } from "./pointer";
@@ -70,7 +71,9 @@ export const cacheControlFor = (path: string, immutable: boolean) =>
 
 const text = (status: number, body: string, headers?: HeadersInit) =>
   new Response(body, { status, headers });
-const notFound = () => text(404, "Not found");
+// A 404 may be the moment before a publish reaches this isolate (see
+// MISS_REVALIDATE_MS), so no cache keeps it.
+const notFound = () => text(404, "Not found", { "Cache-Control": "no-store" });
 
 // A file's validators: its strong ETag is the sha256 of its content, and its
 // modification date is when the pointer that serves it was written (it cannot
@@ -177,7 +180,16 @@ export const createWorker = (pointers: PointerCache = createPointerCache()) =>
       const path = siteFile(decodePath(url.pathname));
 
       try {
-        const { pointer, written } = await pointers.load(env.SITES, slug);
+        let loaded = await pointers.load(env.SITES, slug);
+        if (!loaded.pointer || entryFor(loaded.pointer, path) === undefined) {
+          // The cached pointer may be up to REVALIDATE_MS old, and another
+          // isolate may already have served the new version's page, which
+          // names files (its hashed chunks) only the new pointer has. So a
+          // miss asks R2 again before it is a 404, unless the cached copy was
+          // checked moments ago.
+          loaded = await pointers.load(env.SITES, slug, { maxAgeMs: MISS_REVALIDATE_MS });
+        }
+        const { pointer, written } = loaded;
         if (!pointer || !written) return notFound();
         const entry = entryFor(pointer, path);
         if (entry === undefined) return notFound();

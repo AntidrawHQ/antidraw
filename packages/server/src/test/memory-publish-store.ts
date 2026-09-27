@@ -217,7 +217,10 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
       if (!session || (opts.onlyIfPending && session.status !== "pending")) return false;
       session.status = status;
       if (opts.holdUntil !== undefined) session.holdUntil = opts.holdUntil;
-      if (opts.stubPlan) session.plan = PLAN_STUB;
+      if (opts.retire) {
+        session.plan = PLAN_STUB;
+        state.sessionObjects = state.sessionObjects.filter((o) => o.sessionId !== sessionId);
+      }
       return true;
     },
     async usedBytes(userId) {
@@ -230,10 +233,10 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
         .filter((o) => o.userId === userId && o.kind === "site" && !o.deleting)
         .reduce((sum, o) => sum + o.size, 0);
     },
-    async siteFileRowBytes(userId) {
+    async fileRowBytes(userId) {
       return state.versions
         .filter((v) => v.userId === userId)
-        .reduce((sum, v) => sum + v.siteFileRowBytes, 0);
+        .reduce((sum, v) => sum + v.fileRowBytes, 0);
     },
     async openSessions(userId, now) {
       const open = [...state.sessions.values()].filter(
@@ -300,7 +303,7 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
         fileCount: v.fileCount,
         siteFileCount: v.siteFileCount,
         siteBytes: v.siteBytes,
-        siteFileRowBytes: v.siteFileRowBytes,
+        fileRowBytes: v.fileRowBytes,
         allowRemix: site.allowRemix,
         keep: false,
         publishSessionId: v.sessionId,
@@ -312,8 +315,12 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
         state.siteFiles.push({ ...f, versionId: v.id, userId: v.userId });
       for (const so of state.sessionObjects.filter((o) => o.sessionId === v.sessionId)) {
         const row = state.objects.get(objectId(so));
-        if (row && !row.deleting) row.verified = true;
+        if (row && !row.deleting) {
+          row.verified = true;
+          row.createdAt = Math.max(row.createdAt, v.now);
+        }
       }
+      state.sessionObjects = state.sessionObjects.filter((o) => o.sessionId !== v.sessionId);
       site.headVersion = next;
       site.completeLock = null;
       site.completeLockExpiresAt = null;
@@ -323,9 +330,16 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
         session.status = "completed";
         session.resultVersion = next;
         session.plan = PLAN_STUB;
+        session.holdUntil = 0;
       }
       deleteVersions(
         (x) => !(x.siteId === v.siteId && !x.keep && x.version <= next - v.keepVersions),
+      );
+      deleteSessions(
+        (s) =>
+          s.siteId === v.siteId &&
+          s.status === "completed" &&
+          !state.versions.some((x) => x.siteId === v.siteId && x.version === s.resultVersion),
       );
       return { ok: true };
     },
@@ -386,7 +400,7 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
       state.siteFiles = state.siteFiles.filter((f) => {
         const v = passed.get(f.versionId);
         if (!v || graceCandidate(f)) return true;
-        v.siteFileRowBytes = Math.max(0, v.siteFileRowBytes - siteFileRowBytes(f));
+        v.fileRowBytes = Math.max(0, v.fileRowBytes - siteFileRowBytes(f));
         return false;
       });
       site.pointerVersion = to;

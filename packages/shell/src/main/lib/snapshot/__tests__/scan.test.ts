@@ -34,6 +34,13 @@ describe("isExcludedSnapshotPath (the table shared with the server)", () => {
     ["a/.npmrc", true],
     ["k/id_rsa", true],
     ["x.pem", true],
+    ["keys/AuthKey_ABC123.p8", true],
+    ["a/server.PPK", true],
+    ["android/release.jks", true],
+    ["android/app/debug.keystore", true],
+    ["vault.kdbx", true],
+    ["notes.p8.md", false],
+    ["keystore.ts", false],
     [".aws/credentials", true],
     ["src/app.ts", false],
     ["dist", false],
@@ -50,13 +57,14 @@ describe("isExcludedSnapshotPath (the table shared with the server)", () => {
     [".dev.var\u017f", true],
     [".git-credential\u017f", true],
     ["k/id_r\u017fa", true],
+    ["android/debug.\u212Aeystore", true],
     ["a/.DS_\u017ftore", true],
   ])("%s → %s", (p, excluded) => {
     expect(isExcludedSnapshotPath(p)).toBe(excluded);
   });
 
   test("the credential denylist, without *.key (Keynote files)", () => {
-    for (const name of [".npmrc", ".YARNRC.yml", ".netrc", ".git-credentials", ".pypirc", "a.p12", "b.PFX", "id_dsa.pub", "id_ecdsa", "id_ed25519"]) {
+    for (const name of [".npmrc", ".YARNRC.yml", ".netrc", ".git-credentials", ".pypirc", "a.p12", "b.PFX", "AuthKey_X.p8", "c.ppk", "d.JKS", "e.keystore", "f.kdbx", "id_dsa.pub", "id_ecdsa", "id_ed25519", "id_ed25519_sk", "id_ecdsa_sk.pub"]) {
       expect(isSensitiveFile(name), name).toBe(true);
     }
     expect(isSensitiveFile("slides.key")).toBe(false);

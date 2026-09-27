@@ -7,6 +7,7 @@ import {
   chunk,
   d1PublishStore,
   jsonChunks,
+  largeFileRowBytes,
   PLAN_STUB,
   siteFileRowBytes,
   type NewSession,
@@ -82,7 +83,9 @@ const version = (over: Partial<NewVersion> = {}): NewVersion => ({
   siteFiles: [
     { path: "index.html", sha256: hex("index"), size: 10, contentType: "text/html", immutable: false },
   ],
-  siteFileRowBytes: siteFileRowBytes({ path: "index.html", contentType: "text/html" }),
+  fileRowBytes:
+    siteFileRowBytes({ path: "index.html", contentType: "text/html" }) +
+    largeFileRowBytes({ path: "a.bin" }),
   keepVersions: 5,
   now: 20,
   sessionObjects: 2, // session()'s
@@ -267,6 +270,8 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     const { store, q } = setup();
     await site(store);
     await store.createSession(session());
+    // Another session holding the same objects keeps its rows.
+    await store.createSession(session({ id: "pub_2" }));
     expect(await lock(store)).not.toBeNull();
     expect(await store.commitVersion(version())).toEqual({ ok: true });
     expect(q("SELECT version, source_sha256, allow_remix FROM site_version")).toEqual([
@@ -276,16 +281,26 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     expect(q("SELECT user_id, path, sha256, size, content_type FROM version_site_file")).toEqual([
       { user_id: U, path: "index.html", sha256: hex("index"), size: 10, content_type: "text/html" },
     ]);
-    expect(q("SELECT verified FROM stored_object")).toEqual([{ verified: 1 }, { verified: 1 }]);
+    // The age floor restarts at the commit (created at 10, committed at 20).
+    expect(q("SELECT verified, created_at FROM stored_object")).toEqual([
+      { verified: 1, created_at: 20 },
+      { verified: 1, created_at: 20 },
+    ]);
     expect(await store.findSiteById("site_1")).toMatchObject({
       headVersion: 1,
       pointerVersion: 0,
       completeLock: null,
     });
+    // Retired by its commit: it holds nothing and keeps no session objects.
     expect(await store.getSession("pub_1")).toMatchObject({
       status: "completed",
       resultVersion: 1,
+      holdUntil: 0,
+      plan: PLAN_STUB,
     });
+    expect(q("SELECT session_id, count(*) AS n FROM publish_session_object GROUP BY 1")).toEqual([
+      { session_id: "pub_2", n: 2 },
+    ]);
     expect(await store.getHeadVersion({ id: "site_1", headVersion: 1 })).toMatchObject({
       id: "ver_1",
       version: 1,
@@ -314,6 +329,9 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
       missing: [{ kind: "blob", sha256: hex("blob") }],
     });
     expectRolledBack(q);
+    // The session keeps its session objects, and its hold.
+    expect(q("SELECT count(*) AS n FROM publish_session_object")).toEqual([{ n: 2 }]);
+    expect(await store.getSession("pub_1")).toMatchObject({ holdUntil: 1000 });
     expect(await store.findSiteById("site_1")).toMatchObject({
       headVersion: 0,
       completeLock: "pub_1",
@@ -446,28 +464,33 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     expect(await store.releaseUnheldObjects(U, session().objects, 20)).toBe(2);
   });
 
-  it("stubs the plan with the status when asked, even while the session holds the lock", async () => {
-    const { store } = setup();
+  it("retires the session with the status when asked, even while the session holds the lock", async () => {
+    const { store, q } = setup();
     await site(store);
     const plan = JSON.stringify({ big: "x".repeat(1000) });
-    for (const id of ["pub_1", "pub_2", "pub_3"]) {
-      await store.createSession(session({ id, plan, objects: [] }));
-    }
+    for (const id of ["pub_1", "pub_2", "pub_3"]) await store.createSession(session({ id, plan }));
+    const objects = () =>
+      q<{ session_id: string }>("SELECT DISTINCT session_id FROM publish_session_object").map(
+        (r) => r.session_id,
+      );
     const abort = (id: string) =>
-      store.setSessionStatus(id, "aborted", { onlyIfPending: true, holdUntil: 50, stubPlan: true });
+      store.setSessionStatus(id, "aborted", { onlyIfPending: true, holdUntil: 50, retire: true });
     expect(await abort("pub_1")).toBe(true);
     expect(await store.getSession("pub_1")).toMatchObject({
       status: "aborted",
       holdUntil: 50,
       plan: PLAN_STUB,
     });
+    expect(objects()).toEqual(["pub_2", "pub_3"]);
     expect(await abort("pub_1")).toBe(false); // no longer pending
     expect(await store.setSessionStatus("pub_2", "aborted")).toBe(true);
     expect((await store.getSession("pub_2"))?.plan).toBe(plan);
+    expect(objects()).toEqual(["pub_2", "pub_3"]);
     // A complete in flight read the plan before it took the lock.
     await lock(store, "pub_3");
     await abort("pub_3");
     expect((await store.getSession("pub_3"))?.plan).toBe(PLAN_STUB);
+    expect(objects()).toEqual(["pub_2"]);
   });
 
   it("claims the lock only against the expected head and a free, lapsed or own lock", async () => {
@@ -605,7 +628,7 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     );
     await lock(store);
     expect(await store.commitVersion(version({ sessionObjects: 3 }))).toEqual({ ok: true });
-    const opts = { now: 5000, minCreatedAt: 11, limit: 500 };
+    const opts = { now: 5000, minCreatedAt: 21, limit: 500 };
     expect(await store.claimGcObjects(opts)).toEqual([]);
     // Another version lists the same content: still referenced.
     q("DELETE FROM version_large_file");
@@ -626,8 +649,10 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     const opts = { now: 5000, limit: 500 };
     expect(await store.claimGcObjects({ ...opts, minCreatedAt: 0 })).toEqual([]); // referenced, and fresh
     q("DELETE FROM site_version");
-    expect(await store.claimGcObjects({ ...opts, minCreatedAt: 10 })).toEqual([]); // created_at 10: not older
-    expect(await store.claimGcObjects({ ...opts, minCreatedAt: 11 })).toHaveLength(2);
+    // Created at 10, committed at 20: the floor runs from the commit, past
+    // every upload URL the session was given.
+    expect(await store.claimGcObjects({ ...opts, minCreatedAt: 20 })).toEqual([]);
+    expect(await store.claimGcObjects({ ...opts, minCreatedAt: 21 })).toHaveLength(2);
   });
 
   it("does not claim a row a session started holding just before", async () => {
@@ -732,7 +757,7 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     for (let v = 1; v <= 3; v++) {
       q(
         `INSERT INTO site_version (id, site_id, user_id, version, source_sha256, source_size,
-           snapshot_bytes, file_count, site_file_count, site_bytes, site_file_row_bytes,
+           snapshot_bytes, file_count, site_file_count, site_bytes, file_row_bytes,
            publish_session_id, created_at)
          VALUES (?, 'site_1', ?, ?, 'x', 1, 1, 1, 4, 4, ?, 'p', 0)`,
         `ver_${v}`,
@@ -756,7 +781,7 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     q("UPDATE site SET head_version = 3 WHERE id = 'site_1'");
     const rows = () =>
       q<{ version: number; n: number; bytes: number }>(
-        `SELECT v.version, count(f.path) AS n, v.site_file_row_bytes AS bytes FROM site_version v
+        `SELECT v.version, count(f.path) AS n, v.file_row_bytes AS bytes FROM site_version v
           LEFT JOIN version_site_file f ON f.version_id = v.id GROUP BY v.id ORDER BY v.version`,
       ).map((r) => [r.version, r.n, r.bytes]);
 
@@ -769,11 +794,11 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
       [2, 2, grace],
       [3, 4, bytes(paths)],
     ]);
-    expect(await store.siteFileRowBytes(U)).toBe(2 * grace + bytes(paths));
-    expect(await store.siteFileRowBytes(V)).toBe(0);
+    expect(await store.fileRowBytes(U)).toBe(2 * grace + bytes(paths));
+    expect(await store.fileRowBytes(V)).toBe(0);
     await store.setPointerVersion("site_1", 3); // nothing more to prune
     expect(rows()[0]).toEqual([1, 2, grace]);
-    expect(await store.siteFileRowBytes(U)).toBe(2 * grace + bytes(paths));
+    expect(await store.fileRowBytes(U)).toBe(2 * grace + bytes(paths));
   });
 
   it("records and reads the session objects a complete found", async () => {

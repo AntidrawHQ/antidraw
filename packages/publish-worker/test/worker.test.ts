@@ -6,7 +6,12 @@ import {
   IMMUTABLE_CACHE_CONTROL,
   type Env,
 } from "../src/serve";
-import { createPointerCache, MAX_POINTER_BYTES, REVALIDATE_MS } from "../src/pointer";
+import {
+  createPointerCache,
+  MAX_POINTER_BYTES,
+  MISS_REVALIDATE_MS,
+  REVALIDATE_MS,
+} from "../src/pointer";
 import { createMemoryR2, type MemoryR2 } from "./memory-r2";
 
 const OWNER = "owner_Secret123";
@@ -59,8 +64,10 @@ const publish = (r2: MemoryR2, slug: string, files: Files, version = 1, written 
 };
 
 const V2 = '{"version":2}';
+const V2_INDEX = '<!doctype html><script src="/assets/index-NEWhash1.js"></script>';
+const V2_CHUNK = "console.log(2)";
 beforeAll(async () => {
-  await Promise.all([...Object.values(FILES).map((f) => f.body), V2].map(hashOf));
+  await Promise.all([...Object.values(FILES).map((f) => f.body), V2, V2_INDEX, V2_CHUNK].map(hashOf));
 });
 
 let r2: MemoryR2;
@@ -76,8 +83,14 @@ beforeEach(() => {
   publish(r2, "site", FILES);
 });
 
+const fetchFrom = (
+  from: ReturnType<typeof createWorker>,
+  path: string,
+  init: RequestInit = {},
+  host = "site.antidraw.app",
+) => from.fetch(new Request(`https://${host}${path}`, init) as never, env) as Promise<Response>;
 const fetchSite = (path: string, init: RequestInit = {}, host = "site.antidraw.app") =>
-  worker.fetch(new Request(`https://${host}${path}`, init) as never, env) as Promise<Response>;
+  fetchFrom(worker, path, init, host);
 
 const etagOf = (path: string) => `"${sha(FILES[path]!.body)}"`;
 
@@ -160,6 +173,14 @@ describe("not found", () => {
     expect(r2.reads.every((key) => key === "m/site.json")).toBe(true);
   });
 
+  test("a 404 is not cached", async () => {
+    const missing = await fetchSite("/missing.js");
+    expect(missing.status).toBe(404);
+    expect(missing.headers.get("Cache-Control")).toBe("no-store");
+    const noSite = await fetchSite("/", {}, "nosite.antidraw.app");
+    expect(noSite.headers.get("Cache-Control")).toBe("no-store");
+  });
+
   test("a site with no pointer is a 404", async () => {
     const response = await fetchSite("/", {}, "nosite.antidraw.app");
     expect(response.status).toBe(404);
@@ -199,6 +220,65 @@ describe("publishing again", () => {
     const response = await fetchSite("/canvas.json");
     expect(await response.text()).toBe(V2);
     expect(response.headers.get("ETag")).toBe(`"${sha(V2)}"`);
+  });
+
+  // Two isolates, each with its own pointer cache, over one bucket.
+  const V2_FILES: Files = {
+    ...FILES,
+    "index.html": { body: V2_INDEX, type: "text/html; charset=utf-8" },
+    "assets/index-NEWhash1.js": { body: V2_CHUNK, type: "text/javascript; charset=utf-8", immutable: true },
+  };
+
+  test("a file only the new pointer has is served by an isolate still holding the old one", async () => {
+    const isolateA = worker;
+    const isolateB = createWorker(createPointerCache(() => time));
+    // B caches version 1.
+    expect((await fetchFrom(isolateB, "/")).status).toBe(200);
+    time += 1_000;
+    publish(r2, "site", V2_FILES, 2);
+    // A reads version 2 and serves its page, which names the new chunk.
+    expect(await (await fetchFrom(isolateA, "/")).text()).toBe(V2_INDEX);
+    time += 1_000;
+    // The chunk request lands on B, whose version 1 is 2 s old: inside the
+    // revalidation window, but a miss asks R2 again.
+    const chunk = await fetchFrom(isolateB, "/assets/index-NEWhash1.js");
+    expect(chunk.status).toBe(200);
+    expect(await chunk.text()).toBe(V2_CHUNK);
+    // And B now serves version 2 throughout.
+    expect(await (await fetchFrom(isolateB, "/")).text()).toBe(V2_INDEX);
+  });
+
+  test("a site's first publish is served by an isolate that cached it as missing", async () => {
+    expect((await fetchSite("/", {}, "fresh.antidraw.app")).status).toBe(404);
+    time += MISS_REVALIDATE_MS;
+    publish(r2, "fresh", FILES);
+    expect((await fetchSite("/", {}, "fresh.antidraw.app")).status).toBe(200);
+  });
+
+  test("a stream of 404s reads the pointer at most once per MISS_REVALIDATE_MS", async () => {
+    await fetchSite("/");
+    time += MISS_REVALIDATE_MS;
+    const before = r2.reads.length;
+    // 100 missing paths over 10 floors' worth of time, in parallel bursts.
+    for (let burst = 0; burst < 20; burst++) {
+      const responses = await Promise.all(
+        Array.from({ length: 5 }, (_, n) => fetchSite(`/missing-${burst}-${n}.js`)),
+      );
+      expect(responses.every((r) => r.status === 404)).toBe(true);
+      time += MISS_REVALIDATE_MS / 2;
+    }
+    const reads = r2.reads.slice(before);
+    // Every burst without the floor, every request without the shared read.
+    expect(reads.length).toBeLessThanOrEqual(10);
+    expect(reads.every((key) => key === "m/site.json")).toBe(true);
+  });
+
+  test("a miss right after a check reads nothing more", async () => {
+    await fetchSite("/");
+    expect((await fetchSite("/missing.js")).status).toBe(404);
+    time += MISS_REVALIDATE_MS - 1;
+    expect((await fetchSite("/missing.js")).status).toBe(404);
+    expect(r2.reads).toEqual(["m/site.json", `c/${OWNER}/${sha(FILES["index.html"]!.body)}`]);
   });
 });
 

@@ -125,8 +125,10 @@ export const startPublish = async (
   workspaceId: string,
 ): Promise<PublishOutcome> => {
   if (getRun(workspaceId)?.phase === "publishing") return "already-publishing";
-  // Main lets an unfinished session go as the workspace publishes again.
-  stopFollowing(workspaceId);
+  // An unfinished earlier session is still followed until this run reaches
+  // "uploading": main lets it go only once the new session begins, and keeps
+  // finishing it after a run that ends before that (cancelled, refused,
+  // offline).
   const id = nextRunId++;
   setRun(workspaceId, {
     id,
@@ -151,6 +153,8 @@ export const startPublish = async (
     workspaceId,
     onProgress: (event) => {
       if (event.type === "step") {
+        // Main has let the earlier session go (see above).
+        if (event.step === "uploading") stopFollowing(workspaceId);
         patchRun(workspaceId, id, "publishing", {
           progress: { step: event.step, percent: null },
           // Main ignores a cancel from here on: the server may have committed.

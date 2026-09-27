@@ -17,7 +17,7 @@ import {
   MAX_PENDING_SITE_BYTES,
   MAX_PLAN_JSON_BYTES,
   MAX_SITE_BYTES,
-  MAX_SITE_FILE_ROW_BYTES,
+  MAX_FILE_ROW_BYTES,
   MAX_SITES_PER_ACCOUNT,
   MAX_SNAPSHOT_BYTES,
   MAX_STORED_SITE_BYTES,
@@ -42,11 +42,13 @@ import {
   siteContentKey,
   sourceKey,
   type BucketName,
+  type ObjectInfo,
   type ObjectStore,
   type UrlSigner,
 } from "../lib/storage";
 import {
   d1PublishStore,
+  largeFileRowBytes,
   siteFileRowBytes,
   type ObjectKind,
   type ObjectRef,
@@ -186,6 +188,29 @@ const headObject = (deps: PublishDeps, userId: string, o: ObjectRef) => {
   return (bucket === "sites" ? deps.sites : deps.sources).head(key);
 };
 
+// What a HEAD found: the object's info, null when R2 has no such key, or
+// "unchecked" when R2 failed twice. R2 now and then answers a transient error
+// (10001, "try again"): among the thousands of HEADs of a first publish one
+// is likely, and it must not sink the others.
+const tryHead = async (
+  deps: PublishDeps,
+  userId: string,
+  o: ObjectRef,
+): Promise<ObjectInfo | null | "unchecked"> => {
+  try {
+    return await headObject(deps, userId, o);
+  } catch {
+    try {
+      return await headObject(deps, userId, o);
+    } catch (error) {
+      console.error(`publish: HEAD of ${o.kind} ${o.sha256} failed twice`, error);
+      return "unchecked";
+    }
+  }
+};
+const isObject = (info: ObjectInfo | null | "unchecked", o: SizedObjectRef) =>
+  info !== null && info !== "unchecked" && info.size === o.size && info.sha256 === o.sha256;
+
 // Runs `fn` over `items` with at most `limit` in flight (R2 HEADs).
 const mapLimit = async <T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>) => {
   const out: R[] = new Array(items.length);
@@ -224,6 +249,12 @@ const planObjects = (
     ...contents.values(),
   ];
 };
+
+// The D1 footprint the plan's version would keep: a row per large file and
+// per site file (toward MAX_FILE_ROW_BYTES).
+const planRowBytes = (plan: Pick<StoredPlan, "largeFiles" | "site">) =>
+  plan.largeFiles.reduce((a, f) => a + largeFileRowBytes(f), 0) +
+  plan.site.files.reduce((a, f) => a + siteFileRowBytes(f), 0);
 
 // A site path whose content is `sha256`, to name it in an upload or a miss.
 const sitePathOf = (plan: Pick<StoredPlan, "site">, sha256: string) =>
@@ -416,8 +447,9 @@ const resolveObjects = async (
       // No row, or GC is removing it.
       if (!row || row.deleting) return { ...o, upload: true, committed: false };
       if (row.verified) return { ...o, upload: false, committed: true };
-      const info = await headObject(deps, userId, o);
-      const present = info !== null && info.size === o.size && info.sha256 === o.sha256;
+      // One R2 could not answer about is asked for again: sending the same
+      // bytes twice is harmless, a begin failed by one HEAD is not.
+      const present = isObject(await tryHead(deps, userId, o), o);
       return { ...o, upload: !present, committed: false };
     }),
   );
@@ -442,7 +474,7 @@ const siteStorageExceeded = (usedBytes: number, publishBytes: number) =>
 const siteFilesExceeded = (usedBytes: number, publishBytes: number) =>
   apiError(413, "QUOTA_EXCEEDED", "Your published sites have too many files between them.", {
     reason: "site-files",
-    quotaBytes: MAX_SITE_FILE_ROW_BYTES,
+    quotaBytes: MAX_FILE_ROW_BYTES,
     usedBytes,
     publishBytes,
   });
@@ -496,12 +528,13 @@ export const beginPublish = (
       );
     }
 
-    // Every retained version keeps rows for its site files in D1 (rows the
-    // pointer can no longer use are pruned as it moves on), so the account's
-    // total is bounded, not only each plan's.
-    const rowBytesBefore = await deps.store.siteFileRowBytes(userId);
-    const rowBytes = req.site.files.reduce((a, f) => a + siteFileRowBytes(f), 0);
-    if (rowBytesBefore + rowBytes > MAX_SITE_FILE_ROW_BYTES) {
+    // Every retained version keeps rows for its large files and site files in
+    // D1 (site-file rows the pointer can no longer use are pruned as it moves
+    // on), so the account's total is bounded, not only each plan's: a plan's
+    // thousand large files may all name one blob, costing no quota.
+    const rowBytesBefore = await deps.store.fileRowBytes(userId);
+    const rowBytes = planRowBytes(plan);
+    if (rowBytesBefore + rowBytes > MAX_FILE_ROW_BYTES) {
       return err(siteFilesExceeded(rowBytesBefore, rowBytes));
     }
 
@@ -691,18 +724,25 @@ const claimLock = async (
 // - An object an earlier complete of this session found (`present`): the
 //   session holds it since, so GC cannot have claimed it.
 //
-// Stops asking once MAX_REPORTED_MISSING are missing, and records what it
-// found for a retry.
-const findMissing = async (deps: PublishDeps, session: SessionRow, plan: StoredPlan) => {
+// Stops asking once MAX_REPORTED_MISSING are missing. What its HEADs find is
+// pushed onto `confirmed` as they answer, for the caller to record for a
+// retry. `unchecked`: objects R2 failed to answer about (tryHead).
+const findMissing = async (
+  deps: PublishDeps,
+  session: SessionRow,
+  plan: StoredPlan,
+  confirmed: ObjectRef[],
+) => {
   const objects = planObjects(plan);
   const rows = new Map<string, StoredObjectRow>();
   for (const row of await deps.store.getStoredObjects(session.userId, objects)) {
     rows.set(refKey(row), row);
   }
   const found = new Set((await deps.store.presentSessionObjects(session.id)).map(refKey));
-  const confirmed: ObjectRef[] = [];
   let missingCount = 0;
-  // true: present; false: missing; null: not looked at (enough were missing).
+  let unchecked = 0;
+  // true: present; false: missing; null: not looked at (enough were
+  // missing), or R2 could not say.
   const checks = await mapLimit(objects, HEAD_CONCURRENCY, async (o): Promise<boolean | null> => {
     const row = rows.get(refKey(o));
     if (!row || row.deleting || row.size !== o.size) {
@@ -711,8 +751,12 @@ const findMissing = async (deps: PublishDeps, session: SessionRow, plan: StoredP
     }
     if (row.verified || found.has(refKey(o))) return true;
     if (missingCount >= MAX_REPORTED_MISSING) return null;
-    const info = await headObject(deps, session.userId, o);
-    const present = info !== null && info.size === o.size && info.sha256 === o.sha256;
+    const info = await tryHead(deps, session.userId, o);
+    if (info === "unchecked") {
+      unchecked++;
+      return null;
+    }
+    const present = isObject(info, o);
     if (present) confirmed.push({ kind: o.kind, sha256: o.sha256 });
     else missingCount++;
     return present;
@@ -723,11 +767,12 @@ const findMissing = async (deps: PublishDeps, session: SessionRow, plan: StoredP
     const path = o.kind === "site" ? sitePathOf(plan, o.sha256) : undefined;
     missing.push({ kind: o.kind, sha256: o.sha256, ...(path !== undefined ? { path } : {}) });
   });
-  if (missing.length > 0 && confirmed.length > 0) {
-    await deps.store.markSessionObjectsPresent(session.id, confirmed);
-  }
-  return missing;
+  return { missing, unchecked };
 };
+
+// Retryable (5xx): the next attempt HEADs only what this one did not find.
+const storageUnavailable = () =>
+  apiError(503, "STORAGE_FAILED", "Could not check every upload with storage. Try again.");
 
 const switchFailed = () =>
   apiError(
@@ -786,11 +831,26 @@ const verifyAndCommit = async (
   plan: StoredPlan,
 ): Promise<Result<void, ApiError>> => {
   const release = () => deps.store.releaseCompleteLock(site.id, session.id);
+  // What this attempt's HEADs found. However it ends short of a commit (an
+  // upload missing, a HEAD R2 failed, the commit refused or a throw), that
+  // is recorded, best effort, so the next attempt does not HEAD it again:
+  // each attempt then makes progress, rather than having to get thousands of
+  // HEADs and the commit through in one go.
+  const confirmed: ObjectRef[] = [];
+  const remember = async () => {
+    if (confirmed.length === 0) return;
+    try {
+      await deps.store.markSessionObjectsPresent(session.id, confirmed);
+    } catch (error) {
+      console.error(error);
+    }
+  };
   try {
-    const missing = await findMissing(deps, session, plan);
-    if (missing.length > 0) {
+    const scan = await findMissing(deps, session, plan, confirmed);
+    if (scan.missing.length > 0 || scan.unchecked > 0) {
+      await remember();
       await release();
-      return err(uploadIncomplete(missing));
+      return err(scan.missing.length > 0 ? uploadIncomplete(scan.missing) : storageUnavailable());
     }
 
     const objects = planObjects(plan);
@@ -822,7 +882,7 @@ const verifyAndCommit = async (
         // entries. A public file whose name looks hashed is neither.
         immutable: immutable && isImmutableSitePath(path),
       })),
-      siteFileRowBytes: plan.site.files.reduce((a, f) => a + siteFileRowBytes(f), 0),
+      fileRowBytes: planRowBytes(plan),
       keepVersions: KEEP_VERSIONS,
       now: deps.now().getTime(),
       // begin created one session object per plan object.
@@ -830,6 +890,7 @@ const verifyAndCommit = async (
     });
     if (committed.ok) return ok(undefined);
 
+    await remember();
     await release();
     switch (committed.reason) {
       case "conflict":
@@ -844,6 +905,7 @@ const verifyAndCommit = async (
         return err(storeFailure(committed.error));
     }
   } catch (error) {
+    await remember();
     try {
       await release();
     } catch (releaseError) {
@@ -911,8 +973,20 @@ export const getPublishSession = (
     const sessionResult = await loadOwnSession(deps, userId, sessionId);
     if (sessionResult.isErr()) return err(sessionResult.error);
     const session = sessionResult.value;
-    const site = await deps.store.findSiteById(session.siteId);
+    let site = await deps.store.findSiteById(session.siteId);
     if (!site) return err(notFound());
+    const committed = session.status === "completed" ? session.resultVersion : null;
+    const isLive = (s: SiteRow) => committed !== null && s.pointerVersion >= committed;
+    // Committed but not switched over (the complete that committed it failed
+    // to write the pointer, and nothing has retried since): re-sync here, as
+    // a retry of complete would, rather than leave visitors on the old
+    // version until GC's hourly re-sync. A failure just answers not live.
+    if (committed !== null && !isLive(site)) {
+      const { success } = await deps.completeLimiter.limit({ key: userId });
+      if (success && (await ensurePointer(deps, site)).isOk()) {
+        site = (await deps.store.findSiteById(site.id)) ?? site;
+      }
+    }
     // GC marks lapsed sessions expired hourly; report it straight away.
     const status =
       session.status === "pending" && session.expiresAt < deps.now().getTime()
@@ -921,6 +995,7 @@ export const getPublishSession = (
     return ok({
       status,
       resultVersion: session.resultVersion,
+      live: isLive(site),
       site: await siteStatusOf(deps, site),
     });
   });
@@ -948,12 +1023,13 @@ export const abortPublish = (
       // Unreadable: keep the hold.
     }
     const releaseHold = plan.objectUploads === 0 && plan.siteUploads === 0;
-    // A released session no longer counts as open, so its plan goes now
-    // rather than at GC's next retire.
+    // A released session no longer counts as open, so its plan and session
+    // objects go now rather than at GC's next retire: begin + abort of a
+    // publish that needs no upload is cheap to repeat.
     await deps.store.setSessionStatus(session.id, "aborted", {
       onlyIfPending: true,
       ...(releaseHold
-        ? { holdUntil: Math.min(session.holdUntil, deps.now().getTime()), stubPlan: true }
+        ? { holdUntil: Math.min(session.holdUntil, deps.now().getTime()), retire: true }
         : {}),
     });
     return ok({ ok: true as const });

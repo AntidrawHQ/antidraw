@@ -867,7 +867,7 @@ describe("publishWorkspace: complete", () => {
       .mockResolvedValueOnce(limited)
       .mockResolvedValue(ok({ site: { ...site, headVersion: 5 }, version: 5 }));
     vi.mocked(getPublishSession).mockResolvedValue(
-      ok({ status: "completed", resultVersion: 5, site: { ...site, headVersion: 5 } }),
+      ok({ status: "completed", resultVersion: 5, live: false, site: { ...site, headVersion: 5 } }),
     );
 
     expect(lastResult(await run()).version).toBe(5);
@@ -901,7 +901,7 @@ describe("publishWorkspace: complete", () => {
       .mockResolvedValueOnce(offline)
       .mockResolvedValue(ok({ site: { ...site, headVersion: 7 }, version: 7 }));
     vi.mocked(getPublishSession).mockResolvedValue(
-      ok({ status: "completed", resultVersion: 7, site: { ...site, headVersion: 7 } }),
+      ok({ status: "completed", resultVersion: 7, live: false, site: { ...site, headVersion: 7 } }),
     );
 
     const events = await run();
@@ -919,7 +919,7 @@ describe("publishWorkspace: complete", () => {
       err({ status: 500, code: "STORAGE_FAILED", message: "saved, but not switched over" }),
     );
     vi.mocked(getPublishSession).mockResolvedValue(
-      ok({ status: "completed", resultVersion: 4, site: { ...site, headVersion: 4 } }),
+      ok({ status: "completed", resultVersion: 4, live: false, site: { ...site, headVersion: 4 } }),
     );
 
     const events = await run();
@@ -936,6 +936,20 @@ describe("publishWorkspace: complete", () => {
     expect(abortPublish).not.toHaveBeenCalled();
   });
 
+  test("no answer after 5 attempts, session completed and live → done, with no confirming complete", async () => {
+    vi.mocked(completePublish).mockResolvedValue(
+      err({ status: 502, code: "SERVER_UNREACHABLE", message: "Offline" }),
+    );
+    vi.mocked(getPublishSession).mockResolvedValue(
+      ok({ status: "completed", resultVersion: 7, live: true, site: { ...site, headVersion: 7 } }),
+    );
+
+    const events = await run();
+
+    expect(completePublish).toHaveBeenCalledTimes(5);
+    expect(lastResult(events)).toMatchObject({ version: 7, url: site.url });
+  });
+
   test("session completed, and complete then refuses for good → that refusal, not published", async () => {
     vi.mocked(completePublish)
       .mockResolvedValueOnce(err({ status: 500, code: "STORAGE_FAILED", message: "x" }))
@@ -945,7 +959,7 @@ describe("publishWorkspace: complete", () => {
       .mockResolvedValueOnce(err({ status: 500, code: "STORAGE_FAILED", message: "x" }))
       .mockResolvedValue(err({ status: 404, code: "SITE_NOT_FOUND", message: "Gone" }));
     vi.mocked(getPublishSession).mockResolvedValue(
-      ok({ status: "completed", resultVersion: 4, site: { ...site, headVersion: 4 } }),
+      ok({ status: "completed", resultVersion: 4, live: false, site: { ...site, headVersion: 4 } }),
     );
 
     const error = lastError(await run());
@@ -959,7 +973,7 @@ describe("publishWorkspace: complete", () => {
       err({ status: 409, code: "PUBLISH_IN_PROGRESS", message: "Locked" }),
     );
     vi.mocked(getPublishSession).mockResolvedValue(
-      ok({ status: "pending", resultVersion: null, site }),
+      ok({ status: "pending", resultVersion: null, live: false, site }),
     );
 
     const error = lastError(await run());
@@ -986,7 +1000,7 @@ describe("publishWorkspace: complete", () => {
       err({ status: 503, code: "SERVER_ERROR", message: "Unavailable" }),
     );
     vi.mocked(getPublishSession).mockResolvedValue(
-      ok({ status: "expired", resultVersion: null, site }),
+      ok({ status: "expired", resultVersion: null, live: false, site }),
     );
 
     expect(lastError(await run()).code).toBe("PUBLISH_EXPIRED");
@@ -1053,7 +1067,7 @@ describe("publishWorkspace: cancel and time limits around server calls", () => {
 });
 
 describe("main finishes a publish left unfinished in the background", () => {
-  const pending = { status: "pending" as const, resultVersion: null, site };
+  const pending = { status: "pending" as const, resultVersion: null, live: false, site };
   const later = new Date(Date.now() + 60 * 60_000).toISOString();
   const waitFor = async (check: () => boolean) => {
     for (let i = 0; i < 200 && !check(); i++) await new Promise((r) => setTimeout(r, 5));
@@ -1088,7 +1102,7 @@ describe("main finishes a publish left unfinished in the background", () => {
     await new Promise((r) => setTimeout(r, 40));
     expect(vi.mocked(completePublish).mock.calls.length).toBe(settled);
     vi.mocked(getPublishSession).mockResolvedValue(
-      ok({ status: "completed", resultVersion: 4, site }),
+      ok({ status: "completed", resultVersion: 4, live: false, site }),
     );
     await getPublishOutcome(WS, "pub_1");
     expect(vi.mocked(completePublish).mock.calls.length).toBe(settled);
@@ -1103,10 +1117,95 @@ describe("main finishes a publish left unfinished in the background", () => {
     await new Promise((r) => setTimeout(r, 60));
     expect(completePublish).toHaveBeenCalledTimes(1);
   });
+
+  // A run that ends before begin replaces nothing: the earlier session is
+  // still the one to finish, by a check and by main on its own.
+  const live = () =>
+    vi.mocked(completePublish).mockResolvedValue(ok({ site: { ...site, headVersion: 4 }, version: 4 }));
+
+  test("a publish that fails before begin keeps the earlier session, and a check still finishes it", async () => {
+    await leaveUnfinished();
+    vi.mocked(beginPublish).mockClear();
+    vi.mocked(getAccount).mockResolvedValue(
+      err({ status: 502, code: "SERVER_UNREACHABLE", message: "Couldn't reach the AntiDraw server" }),
+    );
+    expect(lastError(await run()).code).toBe("SERVER_UNREACHABLE");
+    expect(beginPublish).not.toHaveBeenCalled();
+
+    live();
+    expect((await getPublishOutcome(WS, "pub_1"))._unsafeUnwrap()).toMatchObject({
+      status: "completed",
+      resultVersion: 4,
+    });
+    expect(completePublish).toHaveBeenCalledWith("pub_1", 7);
+  });
+
+  test("a publish refused before begin (no entry pages) keeps it too, and never says uploading", async () => {
+    await leaveUnfinished();
+    vi.mocked(beginPublish).mockClear();
+    builtOverrides = { entries: [] };
+    const events = await run();
+    expect(lastError(events).code).toBe("BUILD_FAILED");
+    expect(events).not.toContainEqual({ type: "step", step: "uploading" });
+    expect(beginPublish).not.toHaveBeenCalled();
+
+    live();
+    expect((await getPublishOutcome(WS, "pub_1"))._unsafeUnwrap().status).toBe("completed");
+    expect(completePublish).toHaveBeenCalledTimes(1);
+  });
+
+  test("main keeps following it through a cancelled publish, and finishes it after", async () => {
+    publishTiming.followDelaysMs = [5];
+    await leaveUnfinished();
+    vi.mocked(getAccount).mockImplementationOnce(() => new Promise(() => {}));
+    const events: PublishEvent[] = [];
+    for await (const event of publishWorkspace(WS, { signal: new AbortController().signal })) {
+      events.push(event);
+      if (event.type === "step" && event.step === "checking") cancelPublish(WS);
+    }
+    expect(lastError(events).code).toBe("CANCELLED");
+
+    live();
+    await waitFor(() =>
+      vi.mocked(completePublish).mock.calls.some(([id]) => id === "pub_1"),
+    );
+    // Live: the record is dropped.
+    const settled = vi.mocked(completePublish).mock.calls.length;
+    await new Promise((r) => setTimeout(r, 40));
+    expect(vi.mocked(completePublish).mock.calls.length).toBe(settled);
+  });
+
+  test("while a publish holds the workspace, a check only reads, and a committed session reads pending", async () => {
+    await leaveUnfinished();
+    let release!: () => void;
+    vi.mocked(buildWorkspaceSite).mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => (release = resolve));
+      return err({ code: "CANCELLED", message: "stopped" });
+    });
+    const holding = publishWorkspace(WS, { signal: new AbortController().signal });
+    for (;;) {
+      const event = (await holding.next()).value as PublishEvent;
+      if (event.type === "step" && event.step === "building") break;
+    }
+
+    const committed = { status: "completed" as const, resultVersion: 4, live: false, site };
+    vi.mocked(getPublishSession).mockResolvedValue(ok(committed));
+    expect((await getPublishOutcome(WS, "pub_1"))._unsafeUnwrap()).toEqual({
+      ...committed,
+      status: "pending",
+    });
+    expect(completePublish).not.toHaveBeenCalled();
+
+    release();
+    await collect(holding);
+    live();
+    expect((await getPublishOutcome(WS, "pub_1"))._unsafeUnwrap().status).toBe("completed");
+    expect(completePublish).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("getPublishOutcome: finishing a publish left pending", () => {
-  const pending = { status: "pending" as const, resultVersion: null, site };
+  const pending = { status: "pending" as const, resultVersion: null, live: false, site };
 
   // A run whose every complete got no definite answer, and whose session was
   // still pending afterwards.
@@ -1132,6 +1231,7 @@ describe("getPublishOutcome: finishing a publish left pending", () => {
     expect(outcome._unsafeUnwrap()).toEqual({
       status: "completed",
       resultVersion: 4,
+      live: true,
       site: { ...site, headVersion: 4 },
     });
     // Timed by the run's plan, as the run's own completes were.
@@ -1139,7 +1239,7 @@ describe("getPublishOutcome: finishing a publish left pending", () => {
 
     // Done: later checks only read.
     vi.mocked(getPublishSession).mockResolvedValue(
-      ok({ status: "completed", resultVersion: 4, site }),
+      ok({ status: "completed", resultVersion: 4, live: false, site }),
     );
     await getPublishOutcome(WS, publishId);
     expect(completePublish).toHaveBeenCalledTimes(1);
@@ -1149,7 +1249,7 @@ describe("getPublishOutcome: finishing a publish left pending", () => {
     vi.mocked(completePublish).mockResolvedValue(
       err({ status: 500, code: "STORAGE_FAILED", message: "saved, but not switched over" }),
     );
-    const committed = { status: "completed" as const, resultVersion: 4, site: { ...site, headVersion: 4 } };
+    const committed = { status: "completed" as const, resultVersion: 4, live: false, site: { ...site, headVersion: 4 } };
     vi.mocked(getPublishSession).mockResolvedValue(ok(committed));
     const error = lastError(await run());
     expect(error.code).toBe("PUBLISH_OUTCOME_UNKNOWN");
@@ -1165,7 +1265,7 @@ describe("getPublishOutcome: finishing a publish left pending", () => {
 
     // It goes through: live.
     vi.mocked(completePublish).mockResolvedValue(ok({ site: { ...site, headVersion: 4 }, version: 4 }));
-    expect((await getPublishOutcome(WS, "pub_1"))._unsafeUnwrap()).toEqual(committed);
+    expect((await getPublishOutcome(WS, "pub_1"))._unsafeUnwrap()).toEqual({ ...committed, live: true });
     expect(completePublish).toHaveBeenCalledTimes(2);
 
     // Done: later checks only read.
@@ -1177,7 +1277,7 @@ describe("getPublishOutcome: finishing a publish left pending", () => {
     vi.mocked(completePublish).mockResolvedValue(
       err({ status: 500, code: "STORAGE_FAILED", message: "saved, but not switched over" }),
     );
-    const committed = { status: "completed" as const, resultVersion: 4, site };
+    const committed = { status: "completed" as const, resultVersion: 4, live: false, site };
     vi.mocked(getPublishSession).mockResolvedValue(ok(committed));
     expect(lastError(await run()).code).toBe("PUBLISH_OUTCOME_UNKNOWN");
     vi.mocked(completePublish)
@@ -1187,9 +1287,63 @@ describe("getPublishOutcome: finishing a publish left pending", () => {
     expect((await getPublishOutcome(WS, "pub_1"))._unsafeUnwrapErr().code).toBe("INTERNAL_ERROR");
     expect(abortPublish).not.toHaveBeenCalled();
 
-    // Let go: the next check only reads.
-    expect((await getPublishOutcome(WS, "pub_1"))._unsafeUnwrap().status).toBe("completed");
+    // Let go: the next check only reads, and a committed session the site
+    // never switched over to still reads pending.
+    expect((await getPublishOutcome(WS, "pub_1"))._unsafeUnwrap().status).toBe("pending");
     expect(completePublish).toHaveBeenCalledTimes(1);
+  });
+
+  test("a committed session the read reports live is done without another complete", async () => {
+    const publishId = await leavePending();
+    const live = { status: "completed" as const, resultVersion: 4, live: true, site: { ...site, headVersion: 4 } };
+    vi.mocked(getPublishSession).mockResolvedValue(ok(live));
+
+    expect((await getPublishOutcome(WS, publishId))._unsafeUnwrap()).toEqual(live);
+    expect(completePublish).not.toHaveBeenCalled();
+
+    // Let go: a later read that says otherwise sends nothing either.
+    vi.mocked(getPublishSession).mockResolvedValue(ok(pending));
+    await getPublishOutcome(WS, publishId);
+    expect(completePublish).not.toHaveBeenCalled();
+  });
+
+  test("a session this process does not hold reads pending while committed but not live", async () => {
+    const committed = { status: "completed" as const, resultVersion: 4, live: false, site };
+    vi.mocked(getPublishSession).mockResolvedValue(ok(committed));
+    expect((await getPublishOutcome(WS, "pub_other"))._unsafeUnwrap()).toEqual({
+      ...committed,
+      status: "pending",
+    });
+    vi.mocked(getPublishSession).mockResolvedValue(ok({ ...committed, live: true }));
+    expect((await getPublishOutcome(WS, "pub_other"))._unsafeUnwrap().status).toBe("completed");
+    expect(completePublish).not.toHaveBeenCalled();
+  });
+
+  test("a session the server no longer knows (its version pruned) reads done, with the site as it is now", async () => {
+    const publishId = await leavePending();
+    const notFound = err({ status: 404, code: "PUBLISH_NOT_FOUND", message: "Publish session not found" } as const);
+    vi.mocked(getPublishSession).mockResolvedValue(notFound);
+    vi.mocked(fetchSiteStatus).mockResolvedValue(ok({ ...site, headVersion: 9 }));
+
+    expect((await getPublishOutcome(WS, publishId))._unsafeUnwrap()).toEqual({
+      status: "completed",
+      resultVersion: null,
+      live: true,
+      site: { ...site, headVersion: 9 },
+    });
+    expect(completePublish).not.toHaveBeenCalled();
+
+    // Let go: nothing is sent for it again.
+    vi.mocked(getPublishSession).mockResolvedValue(ok(pending));
+    await getPublishOutcome(WS, publishId);
+    expect(completePublish).not.toHaveBeenCalled();
+
+    // Without a site (unpublished since), it is the server's error.
+    vi.mocked(getPublishSession).mockResolvedValue(notFound);
+    vi.mocked(fetchSiteStatus).mockResolvedValue(ok(null));
+    expect((await getPublishOutcome(WS, publishId))._unsafeUnwrapErr().details?.serverCode).toBe(
+      "PUBLISH_NOT_FOUND",
+    );
   });
 
   test("still no answer → pending, and the next check tries again", async () => {

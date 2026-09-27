@@ -12,6 +12,7 @@ import {
   parsePointer,
   pointerKey,
   PointerBusyError,
+  MISS_REVALIDATE_MS,
   REVALIDATE_MS,
 } from "../src/pointer";
 import { createMemoryR2 } from "./memory-r2";
@@ -141,6 +142,35 @@ describe("createPointerCache", () => {
     expect((await cache.load(r2.bucket, "s")).pointer?.version).toBe(1);
     advance(REVALIDATE_MS);
     expect((await cache.load(r2.bucket, "s")).pointer?.version).toBe(2);
+  });
+
+  test("a shorter maxAgeMs revalidates a copy the default window would still serve", async () => {
+    const { r2, cache, advance } = setup();
+    r2.put("m/s.json", pointerText(1));
+    await cache.load(r2.bucket, "s");
+    r2.put("m/s.json", pointerText(2));
+    advance(MISS_REVALIDATE_MS - 1);
+    expect((await cache.load(r2.bucket, "s", { maxAgeMs: MISS_REVALIDATE_MS })).pointer?.version).toBe(1);
+    expect(r2.reads).toHaveLength(1);
+    advance(1);
+    expect((await cache.load(r2.bucket, "s", { maxAgeMs: MISS_REVALIDATE_MS })).pointer?.version).toBe(2);
+    // The new copy restarts the default window.
+    advance(REVALIDATE_MS - 1);
+    expect((await cache.load(r2.bucket, "s")).pointer?.version).toBe(2);
+    expect(r2.reads).toHaveLength(2);
+  });
+
+  test("a shorter maxAgeMs shares the read in flight", async () => {
+    const { r2, cache, advance } = setup();
+    r2.put("m/s.json", pointerText(1));
+    await cache.load(r2.bucket, "s");
+    advance(REVALIDATE_MS);
+    await Promise.all([
+      cache.load(r2.bucket, "s"),
+      cache.load(r2.bucket, "s", { maxAgeMs: MISS_REVALIDATE_MS }),
+      cache.load(r2.bucket, "s", { maxAgeMs: MISS_REVALIDATE_MS }),
+    ]);
+    expect(r2.reads).toHaveLength(2);
   });
 
   test("a missing pointer is cached as no site, and found once it appears", async () => {

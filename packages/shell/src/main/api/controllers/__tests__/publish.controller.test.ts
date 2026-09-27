@@ -209,7 +209,7 @@ describe("publish controller", () => {
 
   test("GET session answers what became of a publish session", async () => {
     vi.mocked(cloudFetch).mockResolvedValue(
-      ok(json({ status: "completed", resultVersion: 3, site: { ...site, headVersion: 3 } })),
+      ok(json({ status: "completed", resultVersion: 3, live: true, site: { ...site, headVersion: 3 } })),
     );
 
     const res = await app.request(`/api/publish/${WS}/session/pub_1`);
@@ -218,6 +218,7 @@ describe("publish controller", () => {
     expect(await res.json()).toEqual({
       status: "completed",
       resultVersion: 3,
+      live: true,
       site: { ...site, headVersion: 3 },
     });
     expect(vi.mocked(cloudFetch).mock.calls[0]![0]).toBe("/api/publish/sessions/pub_1");

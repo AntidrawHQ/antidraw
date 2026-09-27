@@ -29,16 +29,20 @@ export const MAX_PENDING_SITE_BYTES = 1024 * MiB;
 // contents through commits faster than GC collects them. Begin refuses a
 // publish that adds site bytes past it.
 export const MAX_STORED_SITE_BYTES = 4096 * MiB;
-// Per account: the D1 footprint of retained site-file rows (version_site_file),
-// estimated per row as its path and content type bytes plus
-// SITE_FILE_ROW_OVERHEAD_BYTES (the sha256, ids, size and both indexes). A
-// version keeps every row while its site's pointer may still be at it, and
-// after that only the rows a pointer's grace entries can use, but an account
-// can make every path look immutable: this bounds what its retained versions
-// keep in the database the auth tables share. Begin checks it, so concurrent
-// begins can pass it together by at most MAX_OPEN_SESSIONS_PER_ACCOUNT plans.
-export const MAX_SITE_FILE_ROW_BYTES = 64 * MiB;
-export const SITE_FILE_ROW_OVERHEAD_BYTES = 256;
+// Per account: the D1 footprint of retained file rows, site files
+// (version_site_file) and large files (version_large_file) alike, estimated
+// per row as its path (and a site file's content type) bytes plus
+// FILE_ROW_OVERHEAD_BYTES (the sha256, ids, size and both indexes). A version
+// keeps every large-file row for as long as it is retained, and every
+// site-file row while its site's pointer may still be at it (after that, only
+// the ones a pointer's grace entries can use). Neither is bounded by the bytes
+// the rows name (a thousand large-file paths can share one blob, and an
+// account can make every site path look immutable), so this bounds what its
+// retained versions keep in the database the auth tables share. Begin checks
+// it, so concurrent begins can pass it together by at most
+// MAX_OPEN_SESSIONS_PER_ACCOUNT plans.
+export const MAX_FILE_ROW_BYTES = 64 * MiB;
+export const FILE_ROW_OVERHEAD_BYTES = 256;
 // Per account: sessions that are not completed and still hold (their upload
 // URLs work). Each keeps a plan of up to MAX_PLAN_JSON_BYTES in D1.
 export const MAX_OPEN_SESSIONS_PER_ACCOUNT = 10;

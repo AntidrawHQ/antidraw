@@ -5,7 +5,7 @@ import { utf8Bytes } from "../lib/paths";
 import {
   D1_JSON_PARAM_BYTES,
   D1_MAX_PARAMS,
-  SITE_FILE_ROW_OVERHEAD_BYTES,
+  FILE_ROW_OVERHEAD_BYTES,
 } from "../lib/publish-limits";
 
 // Every D1 statement publish + remix + GC run, behind one structural type so
@@ -87,7 +87,7 @@ export type VersionRow = {
   fileCount: number;
   siteFileCount: number;
   siteBytes: number;
-  siteFileRowBytes: number;
+  fileRowBytes: number;
   allowRemix: boolean;
   keep: boolean;
   publishSessionId: string;
@@ -107,9 +107,12 @@ export type SiteFileRow = {
 };
 
 // A version_site_file row's estimated D1 footprint, toward the account's
-// MAX_SITE_FILE_ROW_BYTES. `siteFileRowWeight` below is the same sum in SQL.
+// MAX_FILE_ROW_BYTES. `siteFileRowWeight` below is the same sum in SQL.
 export const siteFileRowBytes = (f: Pick<SiteFileRow, "path" | "contentType">) =>
-  utf8Bytes(f.path) + utf8Bytes(f.contentType) + SITE_FILE_ROW_OVERHEAD_BYTES;
+  utf8Bytes(f.path) + utf8Bytes(f.contentType) + FILE_ROW_OVERHEAD_BYTES;
+// A version_large_file row's, likewise. Its rows stay as long as the version.
+export const largeFileRowBytes = (f: Pick<LargeFileRow, "path">) =>
+  utf8Bytes(f.path) + FILE_ROW_OVERHEAD_BYTES;
 // A site file of one of the site's versions, for building its pointer.
 export type VersionSiteFileRow = SiteFileRow & { version: number };
 
@@ -149,8 +152,9 @@ export type NewVersion = {
   siteBytes: number;
   largeFiles: LargeFileRow[];
   siteFiles: SiteFileRow[];
-  // Σ siteFileRowBytes over siteFiles.
-  siteFileRowBytes: number;
+  // Σ siteFileRowBytes over siteFiles plus Σ largeFileRowBytes over
+  // largeFiles.
+  fileRowBytes: number;
   keepVersions: number;
   now: number;
   // How many session objects the session was created with (its plan's
@@ -196,23 +200,24 @@ export type PublishStore = {
   // cap. Its session objects go with it.
   discardSession(sessionId: string): Promise<void>;
   getSession(sessionId: string): Promise<SessionRow | null>;
-  // `stubPlan` also replaces the plan with PLAN_STUB, for a session whose
-  // hold ends here: otherwise the plan would stay in D1 until GC retires the
-  // session, outside the open-session cap. (A complete of it already in
-  // flight read the plan before it took the lock.)
+  // `retire` does here what GC's retire would, for a session whose hold ends
+  // here: its plan becomes PLAN_STUB and its session objects are deleted.
+  // Otherwise both would stay in D1 until GC's next run, outside the
+  // open-session cap. (A complete of it already in flight read the plan
+  // before it took the lock, and its commit guard needs a pending session.)
   setSessionStatus(
     sessionId: string,
     status: SessionStatus,
-    opts?: { holdUntil?: number; onlyIfPending?: boolean; stubPlan?: boolean },
+    opts?: { holdUntil?: number; onlyIfPending?: boolean; retire?: boolean },
   ): Promise<boolean>;
   // The storage quota's use: every source and blob GC has not claimed.
   usedBytes(userId: string): Promise<number>;
   // Every site content of the account GC has not claimed, toward
   // MAX_STORED_SITE_BYTES.
   storedSiteBytes(userId: string): Promise<number>;
-  // Σ site_file_row_bytes of the account's retained versions, toward
-  // MAX_SITE_FILE_ROW_BYTES.
-  siteFileRowBytes(userId: string): Promise<number>;
+  // Σ file_row_bytes of the account's retained versions (their large-file
+  // and site-file rows), toward MAX_FILE_ROW_BYTES.
+  fileRowBytes(userId: string): Promise<number>;
   // The account's sessions that have not committed and still hold, and the
   // uncommitted site bytes they hold (their site_upload_bytes).
   openSessions(userId: string, now: number): Promise<{ count: number; siteUploadBytes: number }>;
@@ -245,7 +250,7 @@ export type PublishStore = {
   // raising it past the head). The pointer only moves forward, so no pointer
   // will be at a version it moved past again: those versions' rows that no
   // grace entry can use are deleted in the same batch, and their
-  // site_file_row_bytes lowered to match.
+  // file_row_bytes lowered to match.
   setPointerVersion(siteId: string, version: number): Promise<void>;
 
   // GC. Where these ask whether a session has expired or still holds
@@ -375,7 +380,7 @@ const toVersion = (r: Raw): VersionRow => ({
   fileCount: num(r.file_count),
   siteFileCount: num(r.site_file_count),
   siteBytes: num(r.site_bytes),
-  siteFileRowBytes: num(r.site_file_row_bytes ?? 0),
+  fileRowBytes: num(r.file_row_bytes ?? 0),
   allowRemix: bool(r.allow_remix),
   keep: bool(r.keep),
   publishSessionId: String(r.publish_session_id),
@@ -423,7 +428,7 @@ const graceCandidate = (f: SQL) => sql`(${f}.immutable = 1)`;
 // siteFileRowBytes, in SQL. CAST AS BLOB: length() of a TEXT counts characters.
 const siteFileRowWeight = (f: SQL) =>
   sql`(length(CAST(${f}.path AS BLOB)) + length(CAST(${f}.content_type AS BLOB))
-    + ${SITE_FILE_ROW_OVERHEAD_BYTES})`;
+    + ${FILE_ROW_OVERHEAD_BYTES})`;
 
 // Column `i` of a json_each row (`j.value`, a JSON array).
 const col = (i: number) => sql.raw(`json_extract(j.value, '$[${i}]')`);
@@ -580,13 +585,17 @@ export const d1PublishStore = (db: Db): PublishStore => {
     async setSessionStatus(sessionId, status, opts = {}) {
       const sets = [sql`status = ${status}`];
       if (opts.holdUntil !== undefined) sets.push(sql`hold_until = ${opts.holdUntil}`);
-      if (opts.stubPlan) sets.push(sql`plan = ${PLAN_STUB}`);
+      if (opts.retire) sets.push(sql`plan = ${PLAN_STUB}`);
       const onlyPending = opts.onlyIfPending ? sql` AND status = 'pending'` : sql``;
-      return (
+      const updated =
         (await changes(
           sql`UPDATE publish_session SET ${join(sets)} WHERE id = ${sessionId}${onlyPending}`,
-        )) > 0
-      );
+        )) > 0;
+      // Should this fail, GC's retire deletes them once the hold has ended.
+      if (updated && opts.retire) {
+        await changes(sql`DELETE FROM publish_session_object WHERE session_id = ${sessionId}`);
+      }
+      return updated;
     },
 
     // Every source and blob GC has not claimed counts, committed or not,
@@ -604,8 +613,8 @@ export const d1PublishStore = (db: Db): PublishStore => {
       return num(row?.used ?? 0);
     },
 
-    async siteFileRowBytes(userId) {
-      const row = await first(sql`SELECT COALESCE(SUM(site_file_row_bytes), 0) AS bytes
+    async fileRowBytes(userId) {
+      const row = await first(sql`SELECT COALESCE(SUM(file_row_bytes), 0) AS bytes
         FROM site_version WHERE user_id = ${userId}`);
       return num(row?.bytes ?? 0);
     },
@@ -657,12 +666,12 @@ export const d1PublishStore = (db: Db): PublishStore => {
             AND so.deleting = 0))`;
       const statements: SQL[] = [
         sql`INSERT INTO site_version (id, site_id, user_id, version, source_sha256, source_size,
-            snapshot_bytes, file_count, site_file_count, site_bytes, site_file_row_bytes,
+            snapshot_bytes, file_count, site_file_count, site_bytes, file_row_bytes,
             allow_remix, publish_session_id, created_at)
           SELECT ${v.id}, ${v.siteId}, ${v.userId}, ${next},
             CASE WHEN ${guard} THEN ${v.source.sha256} ELSE NULL END,
             ${v.source.size}, ${v.snapshotBytes}, ${v.fileCount}, ${v.siteFileCount}, ${v.siteBytes},
-            ${v.siteFileRowBytes}, (SELECT allow_remix FROM site WHERE id = ${v.siteId}),
+            ${v.fileRowBytes}, (SELECT allow_remix FROM site WHERE id = ${v.siteId}),
             ${v.sessionId}, ${v.now}`,
       ];
       for (const part of chunk(v.largeFiles, 6)) {
@@ -682,19 +691,36 @@ export const d1PublishStore = (db: Db): PublishStore => {
             FROM json_each(${json}) j`);
       }
       statements.push(
-        sql`UPDATE stored_object SET verified = 1 WHERE deleting = 0 AND (user_id, kind, sha256) IN
-          (SELECT user_id, kind, sha256 FROM publish_session_object
-            WHERE session_id = ${v.sessionId})`,
+        // GC's age floor for a verified object runs from its last commit, so
+        // it outlasts every upload URL the committing session was given
+        // (UPLOAD_URL_TTL_S): the hold that kept GC off them ends here.
+        sql`UPDATE stored_object SET verified = 1, created_at = max(created_at, ${v.now})
+          WHERE deleting = 0 AND (user_id, kind, sha256) IN
+            (SELECT user_id, kind, sha256 FROM publish_session_object
+              WHERE session_id = ${v.sessionId})`,
         sql`UPDATE site SET head_version = ${next},
             complete_lock = NULL, complete_lock_expires_at = NULL, updated_at = ${v.now}
           WHERE id = ${v.siteId} AND head_version = ${v.baseVersion}
             AND complete_lock = ${v.sessionId}`,
-        // Nothing reads the plan again.
+        // The commit retires the session, as GC would once its hold ended:
+        // nothing reads its plan again, and every object it held is verified
+        // and referenced by the new version (and, once that is pruned, kept
+        // by the age floor), so it holds nothing. Kept until then, its
+        // session objects (one per plan object, up to ~6 000) would pile up
+        // outside the open-session cap at the rate limit.
         sql`UPDATE publish_session SET status = 'completed', result_version = ${next},
-            plan = ${PLAN_STUB}
+            plan = ${PLAN_STUB}, hold_until = 0
           WHERE id = ${v.sessionId}`,
+        sql`DELETE FROM publish_session_object WHERE session_id = ${v.sessionId}`,
         sql`DELETE FROM site_version WHERE site_id = ${v.siteId} AND keep = 0
           AND version <= ${next - v.keepVersions}`,
+        // A completed session goes with its version, so a site keeps about
+        // as many as it keeps versions rather than every commit for
+        // GC_SESSION_RETENTION_MS.
+        sql`DELETE FROM publish_session WHERE site_id = ${v.siteId} AND status = 'completed'
+          AND NOT EXISTS (SELECT 1 FROM site_version sv
+            WHERE sv.site_id = publish_session.site_id
+              AND sv.version = publish_session.result_version)`,
       );
       try {
         await batch(statements);
@@ -777,7 +803,7 @@ export const d1PublishStore = (db: Db): PublishStore => {
       const passed = sql`site_id = ${siteId} AND version >= ${at} AND version < ${to}`;
       const f = sql.raw("version_site_file");
       await batch([
-        sql`UPDATE site_version SET site_file_row_bytes = max(0, site_file_row_bytes
+        sql`UPDATE site_version SET file_row_bytes = max(0, file_row_bytes
             - (SELECT COALESCE(SUM(${siteFileRowWeight(f)}), 0) FROM version_site_file
                 WHERE version_site_file.version_id = site_version.id
                   AND NOT ${graceCandidate(f)}))

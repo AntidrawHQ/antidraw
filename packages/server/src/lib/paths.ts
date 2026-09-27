@@ -45,12 +45,19 @@ const isAlwaysExcludedFile = (name: string) =>
   /^\.env/i.test(name) || name.toLowerCase() === ".ds_store";
 
 const SENSITIVE_NAMES = new Set([".npmrc", ".yarnrc.yml", ".netrc", ".git-credentials", ".pypirc"]);
-// No `*.key`: it also matches Keynote files.
+// Credential files and private-key containers: PEM, PKCS#12 (.p12/.pfx),
+// PKCS#8 (.p8), PuTTY (.ppk), Java/Android signing (.jks/.keystore), KeePass
+// (.kdbx). No `*.key`: it also matches Keynote files.
 const SENSITIVE_PATTERNS = [
   /^\.dev\.vars/i,
   /\.pem$/i,
   /\.p12$/i,
   /\.pfx$/i,
+  /\.p8$/i,
+  /\.ppk$/i,
+  /\.jks$/i,
+  /\.keystore$/i,
+  /\.kdbx$/i,
   /^id_(rsa|dsa|ecdsa|ed25519)/i,
 ];
 const isSensitiveFile = (name: string) =>

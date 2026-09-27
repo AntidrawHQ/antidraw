@@ -83,7 +83,11 @@ describe("publish routes", () => {
     expect(await complete.json()).toMatchObject({ version: 1, site: { headVersion: 1 } });
 
     const session = await call(`/api/publish/sessions/${begun.publish.id}`);
-    expect(await session.json()).toMatchObject({ status: "completed", resultVersion: 1 });
+    expect(await session.json()).toMatchObject({
+      status: "completed",
+      resultVersion: 1,
+      live: true,
+    });
 
     const status = await call(`/api/publish/sites?clientWorkspaceId=${WORKSPACE}`);
     expect(await status.json()).toMatchObject({

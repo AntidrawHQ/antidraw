@@ -5,7 +5,7 @@ import {
   MAX_OPEN_SESSIONS_PER_ACCOUNT,
   MAX_PENDING_SITE_BYTES,
   MAX_PLAN_JSON_BYTES,
-  MAX_SITE_FILE_ROW_BYTES,
+  MAX_FILE_ROW_BYTES,
   MAX_SITES_PER_ACCOUNT,
   MAX_STORED_SITE_BYTES,
   QUOTA_BYTES,
@@ -40,7 +40,7 @@ import {
   makePublishDeps,
   setAllowRemix,
 } from "./publish.service";
-import { PLAN_STUB, siteFileRowBytes } from "./publish.store";
+import { largeFileRowBytes, PLAN_STUB, siteFileRowBytes } from "./publish.store";
 
 const USER = "user-1";
 const OTHER = "user-2";
@@ -57,6 +57,19 @@ const publish = async (deps: TestDeps, input: PlanInput = {}, user = USER) => {
 };
 
 const kinds = (uploads: { kind: string }[]) => uploads.map((u) => u.kind).sort();
+
+// Makes R2 HEADs throw, as R2's transient "internal error, try again" does,
+// on the calls `fail` picks (numbered from 1 across both buckets).
+const failHeads = (deps: TestDeps, fail: (call: number, key: string) => boolean) => {
+  let calls = 0;
+  for (const store of [deps.sites, deps.sources]) {
+    const head = store.head.bind(store);
+    store.head = async (key) => {
+      if (fail(++calls, key)) throw new Error("R2 10001: internal error; try again");
+      return head(key);
+    };
+  }
+};
 
 describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
   const setup = () => {
@@ -170,6 +183,18 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       (await completePublish(deps, USER, third.publish.id))._unsafeUnwrap();
       const rows = await deps.store.getStoredObjects(USER, refs);
       expect(rows.every((r) => r.verified)).toBe(true);
+    });
+
+    it("asks again for an object R2 cannot answer a HEAD about, rather than failing", async () => {
+      const deps = setup();
+      const first = (await begin(deps))._unsafeUnwrap();
+      performUploads(deps, first.uploads);
+      (await abortPublish(deps, USER, first.publish.id))._unsafeUnwrap();
+      // Its uploads are still held and unverified: a new begin looks them up.
+      const logo = siteContentKey(USER, hex("site-logo.png"));
+      failHeads(deps, (_call, key) => key === logo);
+      const again = (await begin(deps))._unsafeUnwrap();
+      expect(again.uploads.map((u) => u.path)).toEqual(["logo.png"]);
     });
 
     it("refuses when the limiter says so", async () => {
@@ -593,6 +618,7 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       await publish(deps);
       const begun = (await begin(deps))._unsafeUnwrap();
       expect(begun.uploads).toEqual([]);
+      expect(await deps.harness.sessionObjectRows(begun.publish.id)).toBe(8);
       (await abortPublish(deps, USER, begun.publish.id))._unsafeUnwrap();
       expect(await deps.store.getSession(begun.publish.id)).toMatchObject({
         status: "aborted",
@@ -600,6 +626,8 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
         // It no longer counts as open, so its plan does not wait for GC.
         plan: PLAN_STUB,
       });
+      // Nor do its session objects: begin + abort would otherwise pile them up.
+      expect(await deps.harness.sessionObjectRows(begun.publish.id)).toBe(0);
     });
 
     it("answers 404 for an unknown or foreign session", async () => {
@@ -923,6 +951,62 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       expect(heads).toEqual([siteContentKey(USER, logo.sha256)]);
     });
 
+    it("retries a HEAD R2 fails once, and commits", async () => {
+      const deps = setup();
+      const files = Array.from({ length: 300 }, (_, i) => ({ path: `f/${i}.txt` }));
+      const begun = (await begin(deps, { files }))._unsafeUnwrap();
+      performUploads(deps, begun.uploads);
+      failHeads(deps, (call) => call === 150);
+      expect((await completePublish(deps, USER, begun.publish.id))._unsafeUnwrap().version).toBe(1);
+    });
+
+    it("keeps what it found when R2 cannot answer a HEAD, and a retry HEADs only the rest", async () => {
+      const deps = setup();
+      const files = Array.from({ length: 300 }, (_, i) => ({ path: `f/${i}.txt` }));
+      const begun = (await begin(deps, { files }))._unsafeUnwrap();
+      performUploads(deps, begun.uploads);
+      const flaky = siteContentKey(USER, hex("site-f/149.txt"));
+      let healed = false;
+      failHeads(deps, (_call, key) => key === flaky && !healed);
+      const heads = recordHeads(deps);
+      const failed = await completePublish(deps, USER, begun.publish.id);
+      // Retryable, and nothing committed.
+      expect(failed._unsafeUnwrapErr()).toMatchObject({ status: 503, code: "STORAGE_FAILED" });
+      expect(heads).toHaveLength(begun.uploads.length + 1); // the flaky one twice
+      expect(await deps.harness.versionNumbers(begun.publish.siteId)).toEqual([]);
+      expect((await deps.store.findSiteById(begun.publish.siteId))?.completeLock).toBeNull();
+
+      heads.length = 0;
+      healed = true;
+      expect((await completePublish(deps, USER, begun.publish.id))._unsafeUnwrap().version).toBe(1);
+      expect(heads).toEqual([flaky]);
+    });
+
+    it("keeps what it found when the commit fails, so a retry HEADs nothing", async () => {
+      const deps = setup();
+      const begun = (await begin(deps))._unsafeUnwrap();
+      performUploads(deps, begun.uploads);
+      const heads = recordHeads(deps);
+      const commit = deps.store.commitVersion;
+      const failures = [
+        async () => ({ ok: false as const, reason: "other" as const, error: new Error("D1") }),
+        async (): Promise<never> => {
+          throw new Error("D1 hiccup");
+        },
+      ];
+      for (const failure of failures) {
+        deps.store.commitVersion = failure;
+        expect((await completePublish(deps, USER, begun.publish.id))._unsafeUnwrapErr()).toMatchObject(
+          { status: 500, code: "PUBLISH_STORE_FAILED" },
+        );
+      }
+      expect(heads).toHaveLength(begun.uploads.length); // the first attempt's
+      deps.store.commitVersion = commit;
+      heads.length = 0;
+      expect((await completePublish(deps, USER, begun.publish.id))._unsafeUnwrap().version).toBe(1);
+      expect(heads).toEqual([]);
+    });
+
     it("stops HEADing once it has found as many missing objects as it reports", async () => {
       const deps = setup();
       const files = Array.from({ length: 400 }, (_, i) => ({ path: `f/${i}.txt`, size: 0 }));
@@ -1167,6 +1251,48 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       expect((await deps.harness.sessionRows(USER)).count).toBe(MAX_OPEN_SESSIONS_PER_ACCOUNT);
     });
 
+    it("retires a session at its commit: no session objects, no hold", async () => {
+      const deps = setup();
+      await publish(deps);
+      // Publishing contents the account already has costs no upload and no
+      // HEAD; each round must not leave a row per object behind for the
+      // rest of the session's two hours.
+      for (let v = 2; v <= 4; v++) {
+        const { begun } = await publish(deps);
+        expect(begun.uploads).toEqual([]);
+        expect(await deps.harness.sessionObjectRows(begun.publish.id)).toBe(0);
+        expect(await deps.store.getSession(begun.publish.id)).toMatchObject({
+          status: "completed",
+          resultVersion: v,
+          holdUntil: 0,
+        });
+      }
+      // Its objects stay: the version references them.
+      await runGc(deps.gc, new Date(deps.clock.now + GC_CLOCK_SKEW_MARGIN_MS + 60_000));
+      expect(
+        await deps.store.getStoredObjects(USER, [{ kind: "source", sha256: hex("source-1") }]),
+      ).toMatchObject([{ verified: true, deleting: false }]);
+    });
+
+    it("forgets a completed session once its version is pruned", async () => {
+      const deps = setup();
+      const ids: string[] = [];
+      for (let v = 1; v <= 7; v++) {
+        ids.push((await publish(deps, { entries: defaultEntries(`v${v}`) })).begun.publish.id);
+      }
+      // Versions 3 to 7 are kept, and their sessions with them.
+      expect((await deps.harness.sessionRows(USER)).count).toBe(5);
+      for (const id of ids.slice(0, 2)) {
+        expect((await getPublishSession(deps, USER, id))._unsafeUnwrapErr().code).toBe(
+          "PUBLISH_NOT_FOUND",
+        );
+      }
+      expect((await getPublishSession(deps, USER, ids[2]))._unsafeUnwrap()).toMatchObject({
+        status: "completed",
+        resultVersion: 3,
+      });
+    });
+
     it("stubs a session's plan when it commits", async () => {
       const deps = setup();
       const { begun } = await publish(deps);
@@ -1343,9 +1469,11 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
     });
   });
 
-  describe("site file rows", () => {
+  describe("file rows", () => {
     const rowBytes = (files: { path: string; contentType: string }[]) =>
       files.reduce((a, f) => a + siteFileRowBytes(f), 0);
+    const largeRowBytes = (files: { path: string }[]) =>
+      files.reduce((a, f) => a + largeFileRowBytes(f), 0);
 
     it("keeps every file of the head, and only the grace candidates of older versions", async () => {
       const deps = setup();
@@ -1362,9 +1490,39 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
         "2:logo.png",
         "2:preview.html",
       ]);
-      const head = (await beginRequest({ entries: defaultEntries("v2") })).site.files;
-      const grace = (await beginRequest()).site.files.filter((f) => f.immutable);
-      expect(await deps.store.siteFileRowBytes(USER)).toBe(rowBytes(head) + rowBytes(grace));
+      const v1 = await beginRequest();
+      const v2 = await beginRequest({ entries: defaultEntries("v2") });
+      // Every retained version keeps its large-file rows.
+      expect(await deps.store.fileRowBytes(USER)).toBe(
+        rowBytes(v2.site.files) +
+          rowBytes(v1.site.files.filter((f) => f.immutable)) +
+          largeRowBytes(v1.snapshot.largeFiles) +
+          largeRowBytes(v2.snapshot.largeFiles),
+      );
+    });
+
+    it("counts large-file rows, however few blobs they name, until their version is pruned", async () => {
+      const deps = setup();
+      // A thousand long paths naming one blob: one blob's bytes of quota.
+      const blob = { sha256: hex("one-blob"), size: 2 * MiB };
+      const largeFiles = Array.from({ length: 1000 }, (_, i) => ({
+        path: `${"d".repeat(200)}/${String(i).padStart(4, "0")}.bin`,
+        ...blob,
+      }));
+      const { begun } = await publish(deps, { largeFiles });
+      const perVersion = largeRowBytes(largeFiles);
+      expect(perVersion).toBeGreaterThan(1000 * 200);
+      const siteFiles = (await beginRequest()).site.files;
+      expect(await deps.store.fileRowBytes(USER)).toBe(perVersion + rowBytes(siteFiles));
+
+      // Five more versions: the first is pruned, its rows with it.
+      for (let v = 2; v <= 6; v++) {
+        await publish(deps, { largeFiles, entries: defaultEntries(`v${v}`) });
+      }
+      expect(await deps.harness.versionNumbers(begun.publish.siteId)).toEqual([2, 3, 4, 5, 6]);
+      const graceBytes = rowBytes(siteFiles.filter((f) => f.immutable));
+      const headBytes = rowBytes((await beginRequest({ entries: defaultEntries("v6") })).site.files);
+      expect(await deps.store.fileRowBytes(USER)).toBe(5 * perVersion + 4 * graceBytes + headBytes);
     });
 
     it("marks only build-named files immutable, and never keeps a public file as a grace entry", async () => {
@@ -1422,17 +1580,17 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       ]);
     });
 
-    it(`refuses a publish that would take the account's rows past ${MAX_SITE_FILE_ROW_BYTES / MiB} MiB`, async () => {
+    it(`refuses a publish that would take the account's rows past ${MAX_FILE_ROW_BYTES / MiB} MiB`, async () => {
       const deps = setup();
       await publish(deps);
       const req = await beginRequest({ workspace: workspaceId(2), name: "Other" });
-      const adds = rowBytes(req.site.files);
-      const actual = deps.store.siteFileRowBytes;
+      const adds = rowBytes(req.site.files) + largeRowBytes(req.snapshot.largeFiles);
+      const actual = deps.store.fileRowBytes;
       // The account's rows, as if just under the cap before this plan.
       const room = async (spare: number) => {
         const used = await actual(USER);
-        deps.store.siteFileRowBytes = async (u) =>
-          (await actual(u)) + MAX_SITE_FILE_ROW_BYTES - used - adds - spare;
+        deps.store.fileRowBytes = async (u) =>
+          (await actual(u)) + MAX_FILE_ROW_BYTES - used - adds - spare;
       };
       await room(-1);
       const refused = await beginPublish(deps, USER, req);
@@ -1441,8 +1599,8 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
         code: "QUOTA_EXCEEDED",
         details: {
           reason: "site-files",
-          quotaBytes: MAX_SITE_FILE_ROW_BYTES,
-          usedBytes: MAX_SITE_FILE_ROW_BYTES - adds + 1,
+          quotaBytes: MAX_FILE_ROW_BYTES,
+          usedBytes: MAX_FILE_ROW_BYTES - adds + 1,
           publishBytes: adds,
         },
       });
@@ -1481,6 +1639,44 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       deps.clock.now += SESSION_TTL_MS + 1;
       expect((await getPublishSession(deps, USER, pending.publish.id))._unsafeUnwrap().status).toBe(
         "expired",
+      );
+    });
+
+    it("says whether a committed version is live, and switches the site over when it is not", async () => {
+      const deps = setup();
+      const { begun: first } = await publish(deps);
+      const slug = first.publish.slug;
+      expect((await getPublishSession(deps, USER, first.publish.id))._unsafeUnwrap().live).toBe(
+        true,
+      );
+
+      const begun = (await begin(deps, { entries: defaultEntries("v2") }))._unsafeUnwrap();
+      expect((await getPublishSession(deps, USER, begun.publish.id))._unsafeUnwrap().live).toBe(
+        false,
+      );
+      performUploads(deps, begun.uploads);
+      deps.sitesBucket.failPut = (key) => key === pointerKey(slug);
+      expect((await completePublish(deps, USER, begun.publish.id)).isErr()).toBe(true);
+      // Committed, not live: the read tries the switch-over, which fails again.
+      expect((await getPublishSession(deps, USER, begun.publish.id))._unsafeUnwrap()).toMatchObject(
+        { status: "completed", resultVersion: 2, live: false },
+      );
+      // Rate limited like complete: no attempt.
+      deps.sitesBucket.failPut = () => false;
+      deps.limits.complete = false;
+      expect((await getPublishSession(deps, USER, begun.publish.id))._unsafeUnwrap().live).toBe(
+        false,
+      );
+      expect(pointerOf(deps, slug)?.version).toBe(1);
+
+      deps.limits.complete = true;
+      expect((await getPublishSession(deps, USER, begun.publish.id))._unsafeUnwrap()).toMatchObject(
+        { status: "completed", resultVersion: 2, live: true, site: { headVersion: 2 } },
+      );
+      expect(pointerOf(deps, slug)?.version).toBe(2);
+      // A newer version live counts too.
+      expect((await getPublishSession(deps, USER, first.publish.id))._unsafeUnwrap().live).toBe(
+        true,
       );
     });
 

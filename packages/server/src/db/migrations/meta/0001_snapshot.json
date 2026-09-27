@@ -799,8 +799,8 @@
           "notNull": true,
           "autoincrement": false
         },
-        "site_file_row_bytes": {
-          "name": "site_file_row_bytes",
+        "file_row_bytes": {
+          "name": "file_row_bytes",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,

@@ -176,7 +176,7 @@ stores a snapshot of its source that others can remix. All routes are behind
 | `POST /api/publish/sessions` | begin: validate the plan, find or create the workspace's site, sign upload URLs for what the server lacks |
 | `POST /api/publish/sessions/:id/complete` | verify every upload, commit the version, write the site's pointer (the switch-over) |
 | `POST /api/publish/sessions/:id/abort` | best effort, idempotent |
-| `GET /api/publish/sessions/:id` | settle a complete whose outcome the app could not see |
+| `GET /api/publish/sessions/:id` | settle a complete whose outcome the app could not see (`live`: its version is what visitors see) |
 | `GET /api/publish/sites?clientWorkspaceId=` / `PATCH /api/publish/sites/:siteId` | site status; `{ allowRemix }` |
 | `POST /api/remix` | 10-minute download URLs for a site's head snapshot |
 | `PUT` / `GET /api/storage/:token` | local dev only (below) |
@@ -206,8 +206,9 @@ URL signing). Wire schemas are in
   pointer in one conditional put (never replacing a newer version's), so a
   site switches over atomically and a failed or cancelled publish leaves it
   as it was. If that write fails the version is committed but not live yet;
-  complete answers 500 `STORAGE_FAILED`, and its retry (or GC's hourly
-  re-sync) writes it.
+  complete answers 500 `STORAGE_FAILED`, and its retry, a read of the session
+  (which answers `live: false` until the pointer reaches the version), or
+  GC's hourly re-sync writes it.
 - `antidraw-sources` (binding `SOURCES`, private): `u/<userId>/source/<sha256>.tar.gz`
   and `u/<userId>/blob/<sha256>`, content-addressed per account and
   deduplicated. Each account has a 1 GiB quota over every source and blob GC
@@ -224,18 +225,25 @@ commit has verified across them (413 `QUOTA_EXCEEDED`, `details.reason:
 account keeps: at most 4 GiB of site contents GC has not removed, committed
 or not (`details.reason: "site-storage"`; a publish that adds no new content
 passes), and at most 64 MiB of estimated D1 footprint in retained
-`version_site_file` rows (`details.reason: "site-files"`). A version keeps
-all its site-file rows only while the site's pointer may still be at it; once
-the pointer moves past it, only the rows a grace entry can use (its
-immutable files) are kept.
+`version_large_file` and `version_site_file` rows (`details.reason:
+"site-files"`). A version keeps its large-file rows as long as it is
+retained, and all its site-file rows only while the site's pointer may still
+be at it; once the pointer moves past it, only the rows a grace entry can use
+(its immutable files) are kept. A commit retires its session at once (plan
+stubbed, session objects dropped, hold ended: every object it held is now
+verified and referenced, and the 24 h floor runs from that commit), and a
+completed session is forgotten with its version.
 
 Clients PUT bytes straight to R2 with presigned S3 URLs (aws4fetch), signed
 over `content-length`, the sha256 checksum and the metadata; complete then
 HEAD-checks size and sha256 of every object no commit has verified and no
 earlier attempt of the session found (a verified row always has its bytes:
 only GC deletes object keys, after marking their rows `deleting`), stopping
-once 50 are missing. Begin HEADs only objects with an unverified row: one
-without a row is not in R2. Every upload carries its sha256.
+once 50 are missing. A HEAD R2 fails is tried once more; if it fails again,
+complete answers 503 `STORAGE_FAILED`. Whatever an attempt found is recorded
+however it ends short of a commit, so a retry HEADs only the rest. Begin HEADs
+only objects with an unverified row (one without a row is not in R2), and
+asks again for one R2 cannot answer about. Every upload carries its sha256.
 
 **GC** runs hourly from the cron trigger (`src/scheduled.ts`): expire lapsed
 sessions, drop versions beyond the newest 5 (`keep` ones excepted), re-sync

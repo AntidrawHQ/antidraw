@@ -22,7 +22,9 @@ export const isAlwaysExcludedFile = (name: string): boolean =>
 
 const SECRET_NAMES = new Set([".npmrc", ".yarnrc.yml", ".netrc", ".git-credentials", ".pypirc"]);
 // One regex, not one per pattern: extract tests every segment of every manifest path
-const SECRET_PATTERN = /^\.dev\.vars|\.(?:pem|p12|pfx)$|^id_(?:rsa|dsa|ecdsa|ed25519)/i;
+// Private-key containers: PEM, PKCS#12 (.p12/.pfx), PKCS#8 (.p8, App Store Connect keys),
+// PuTTY (.ppk), Java/Android signing (.jks/.keystore), KeePass databases (.kdbx)
+const SECRET_PATTERN = /^\.dev\.vars|\.(?:pem|p12|pfx|p8|ppk|jks|keystore|kdbx)$|^id_(?:rsa|dsa|ecdsa|ed25519)/i;
 
 // Credential files. Remix is on by default, so a snapshot is effectively public; these are never
 // packed. `*.key` is deliberately absent: it also matches Keynote files.

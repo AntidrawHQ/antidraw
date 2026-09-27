@@ -78,9 +78,14 @@ export const completePublishResponse = z.object({
 });
 export type CompletePublishResponse = z.infer<typeof completePublishResponse>;
 
+// `live`: the session committed and the site's pointer has reached its
+// version (or a newer one), so visitors see it. Committed is not live: the
+// server commits, then switches the site over, and the switch-over can fail;
+// a read of a committed session that is not live retries it first.
 export const publishSessionResponse = z.object({
   status: z.enum(["pending", "completed", "aborted", "expired"]),
   resultVersion: z.number().int().positive().nullable(),
+  live: z.boolean(),
   site: siteStatus,
 });
 export type PublishSessionResponse = z.infer<typeof publishSessionResponse>;

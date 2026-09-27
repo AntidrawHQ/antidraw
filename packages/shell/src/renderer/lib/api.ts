@@ -1094,6 +1094,9 @@ export const getPublishStatus = async (workspaceId: string) => {
 export type PublishSessionOutcome = {
   status: "pending" | "completed" | "aborted" | "expired";
   resultVersion: number | null;
+  // Visitors see the session's version. Main reports a committed session
+  // that is not live yet as "pending".
+  live: boolean;
   site: SiteStatus;
 };
 
