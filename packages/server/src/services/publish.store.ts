@@ -135,6 +135,9 @@ export type CommitFailure =
   | { reason: "conflict" }
   | { reason: "objects-gone"; missing: ObjectRef[] }
   | { reason: "lock-lost" }
+  // The session is no longer pending, or its hold ended: GC may already have
+  // claimed its objects and retired its session objects.
+  | { reason: "expired" }
   | { reason: "other"; error: unknown };
 
 export type PublishStore = {
@@ -576,9 +579,14 @@ export const d1PublishStore = (db: Db): PublishStore => {
       const next = v.baseVersion + 1;
       // A failed guard binds NULL into the NOT NULL source_sha256, so the
       // insert fails and D1 rolls the whole batch back. The unique index on
-      // (site_id, version) is a second expected-version check.
+      // (site_id, version) is a second expected-version check. The session
+      // must still be pending and holding: once its hold ends, GC may claim
+      // its unverified objects and retire (delete) its session objects, after
+      // which the object check below would pass with nothing to check.
       const guard = sql`EXISTS (SELECT 1 FROM site WHERE id = ${v.siteId}
             AND head_version = ${v.baseVersion} AND complete_lock = ${v.sessionId})
+        AND EXISTS (SELECT 1 FROM publish_session WHERE id = ${v.sessionId}
+            AND status = 'pending' AND hold_until > ${v.now})
         AND NOT EXISTS (SELECT 1 FROM publish_session_object pso
           WHERE pso.session_id = ${v.sessionId}
           AND NOT EXISTS (SELECT 1 FROM stored_object so WHERE so.user_id = pso.user_id
@@ -625,6 +633,9 @@ export const d1PublishStore = (db: Db): PublishStore => {
       } catch (error) {
         const site = await findSiteById(v.siteId);
         if (!site || site.headVersion !== v.baseVersion) return { ok: false, reason: "conflict" };
+        const session = await first(sql`SELECT 1 AS live FROM publish_session
+          WHERE id = ${v.sessionId} AND status = 'pending' AND hold_until > ${v.now}`);
+        if (!session) return { ok: false, reason: "expired" };
         const missing = await missingSessionObjects(v.sessionId);
         if (missing.length > 0) return { ok: false, reason: "objects-gone", missing };
         if (site.completeLock !== v.sessionId) return { ok: false, reason: "lock-lost" };

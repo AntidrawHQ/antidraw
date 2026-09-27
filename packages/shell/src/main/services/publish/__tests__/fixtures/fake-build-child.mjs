@@ -11,7 +11,8 @@
 // stdout/stderr (as a stray watcher or esbuild service would), in its process
 // group or in a group of its own, and writes the grandchild's pid to
 // fake-build.grandchild.pid.
-// It prints the names of the variables it got, and where node_modules leads.
+// It prints the names of the variables it got, and where node_modules/vite
+// leads.
 
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -31,7 +32,7 @@ if (grandchild) {
 
 console.log(`ENV ${JSON.stringify(Object.keys(process.env).sort())}`);
 console.log(`ARGS ${JSON.stringify({ outDir, runtimeSrc, cacheDir })}`);
-console.log(`NODE_MODULES ${fs.realpathSync("node_modules")}`);
+console.log(`NODE_MODULES ${fs.realpathSync("node_modules/vite")}`);
 for (let i = 1; i <= lines; i++) console.log(`line ${i}`);
 
 if (mode === "fail") {

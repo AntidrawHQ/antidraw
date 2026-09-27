@@ -411,6 +411,53 @@ describe("cancel", () => {
     expect(await a).toBe("published");
   });
 
+  test("a cancel after uploads started keeps the run, so the panel can warn about public files", async () => {
+    mockCancel.mockImplementationOnce(async (workspaceId) => {
+      push(workspaceId, {
+        type: "error",
+        error: {
+          code: "CANCELLED",
+          message: "Publishing was cancelled.",
+          details: { publicFilesMayHaveChanged: true },
+        },
+      } as PublishEvent);
+      return ok(true);
+    });
+    const a = startPublish(queryClient, "A");
+    push("A", { type: "upload-progress", uploadedBytes: 60, totalBytes: 100 } as PublishEvent);
+    await vi.waitFor(() =>
+      expect(runOf("A")).toMatchObject({ progress: { step: "uploading", percent: 60 } }),
+    );
+    await armCancel();
+
+    await cancelPublishRun("A");
+    expect(await a).toBe("cancelled");
+    expect(runOf("A")).toMatchObject({
+      phase: "failed",
+      error: { code: "CANCELLED", details: { publicFilesMayHaveChanged: true } },
+    });
+  });
+
+  test("signed out after uploads started keeps the run too", async () => {
+    const a = startPublish(queryClient, "A");
+    push("A", {
+      type: "error",
+      error: { code: "SIGNED_OUT", message: "m", details: { publicFilesMayHaveChanged: true } },
+    } as PublishEvent);
+    expect(await a).toBe("signed-out");
+    expect(runOf("A")).toMatchObject({
+      phase: "failed",
+      error: { code: "SIGNED_OUT", details: { publicFilesMayHaveChanged: true } },
+    });
+  });
+
+  test("signed out before any upload ends the run quietly", async () => {
+    const a = startPublish(queryClient, "A");
+    push("A", fail("SIGNED_OUT"));
+    expect(await a).toBe("signed-out");
+    expect(runOf("A")).toBeUndefined();
+  });
+
   test("a second start while one is in flight does not start another", async () => {
     void startPublish(queryClient, "A");
     expect(await startPublish(queryClient, "A")).toBe("already-publishing");

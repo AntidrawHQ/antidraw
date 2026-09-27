@@ -333,6 +333,65 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     expect(q("SELECT id FROM site_version")).toEqual([{ id: "ver_x" }]);
   });
 
+  // A complete that straddles a GC run: GC claims the session's unverified
+  // objects once its hold ends, deletes them and then retires the session,
+  // deleting its session objects, so the object check has nothing to check.
+  const gcRun = async (store: PublishStore, now: number) => {
+    await store.expireSessions(now);
+    const claimed = await store.claimGcObjects({ now, minCreatedAt: now - 86_400_000, limit: 500 });
+    await store.deleteObjectRows(claimed);
+    await store.retireSessions(now, 97);
+    return claimed;
+  };
+  const expired = { ok: false, reason: "expired" };
+
+  it("rolls back when GC retired the session after the lock was taken", async () => {
+    const { store, q } = setup();
+    await site(store);
+    await store.createSession(session());
+    expect(await lock(store)).not.toBeNull();
+    expect(await gcRun(store, 2000)).toHaveLength(2);
+    expect(q("SELECT * FROM publish_session_object")).toEqual([]);
+    for (const now of [995, 2001]) {
+      expect(await store.commitVersion(version({ now }))).toEqual(expired);
+    }
+    expect(q("SELECT * FROM site_version")).toEqual([]);
+    expect(q("SELECT * FROM version_large_file")).toEqual([]);
+    expect(q("SELECT status FROM publish_session")).toEqual([{ status: "expired" }]);
+    expect(await store.findSiteById("site_1")).toMatchObject({
+      headVersion: 0,
+      completeLock: "pub_1",
+    });
+  });
+
+  it("rolls back when the session was aborted, held or not", async () => {
+    const { store, q } = setup();
+    await site(store);
+    await store.createSession(session());
+    await lock(store);
+    // Aborted with its hold kept: its objects are safe, but it may not commit.
+    await store.setSessionStatus("pub_1", "aborted", { onlyIfPending: true });
+    expect(await store.commitVersion(version())).toEqual(expired);
+    expect(q("SELECT verified FROM stored_object")).toEqual([{ verified: 0 }, { verified: 0 }]);
+    // Aborted before any URL was issued: the hold ends at once, and GC may
+    // retire it before the in-flight complete commits.
+    await store.setSessionStatus("pub_1", "aborted", { holdUntil: 16 });
+    expect(await gcRun(store, 17)).toHaveLength(2);
+    expect(await store.commitVersion(version())).toEqual(expired);
+    expect(q("SELECT * FROM site_version")).toEqual([]);
+    expect(q("SELECT status FROM publish_session")).toEqual([{ status: "aborted" }]);
+  });
+
+  it("rolls back when the session's hold ended at the commit's now", async () => {
+    const { store, q } = setup();
+    await site(store);
+    await store.createSession(session({ holdUntil: 20 }));
+    await lock(store);
+    expect(await store.commitVersion(version({ now: 20 }))).toEqual(expired);
+    expectRolledBack(q);
+    expect(await store.commitVersion(version({ now: 19 }))).toEqual({ ok: true });
+  });
+
   it("claims the lock only against the expected head and a free, lapsed or own lock", async () => {
     const { store } = setup();
     await site(store);

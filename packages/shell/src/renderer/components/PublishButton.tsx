@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type Ref } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { skipToken, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -91,6 +91,16 @@ const progressLabel = ({ step, percent }: PublishProgress) => {
 const PUBLIC_FILES_NOTE =
   "Some public files on your live site may already be updated. Publish again to bring the site back in step.";
 
+// Whether a panel that has just opened may move focus onto its button: only
+// while focus is still on the Publish button, where the user just clicked.
+// A panel that opens on its own later (a failure, a sign-in the publish
+// asked for) must not pull focus out of the composer, where the next Space or
+// Enter would press its button and start a publish or a sign-in.
+export const panelTakesFocus = (
+  active: Element | null,
+  publishButton: Element | null,
+): boolean => !!active && !!publishButton && publishButton.contains(active);
+
 function GoogleG({ size = 16 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 48 48" className="shrink-0" aria-hidden>
@@ -102,23 +112,28 @@ function GoogleG({ size = 16 }: { size?: number }) {
   );
 }
 
-// The panel body for a failed publish: what went wrong, whatever detail
+// The panel body for a failed publish (exported for tests): what went wrong, whatever detail
 // helps fix it, and the one action that makes sense next.
-function FailureContent({
+export function FailureContent({
   error,
   onRetry,
   onCheckStatus,
   checking,
   check,
+  buttonRef,
 }: {
   error: AccountRequestError;
   onRetry: () => void;
   onCheckStatus: () => void;
   checking: boolean; // a "Check status" is in flight
   check: StatusCheck | null;
+  buttonRef?: Ref<HTMLButtonElement>;
 }) {
   const details = error.details ?? {};
   const outcomeUnknown = error.code === "PUBLISH_OUTCOME_UNKNOWN";
+  // Only kept as a run when uploads had started (publish-runs), so the panel
+  // is there for the public-files note.
+  const cancelled = error.code === "CANCELLED";
   // Checking again can't tell without the site's version from before the
   // publish, and a session that ended will never go live: either way the next
   // useful step is publishing again.
@@ -153,7 +168,7 @@ function FailureContent({
       </span>
 
       <h2 id="publish-failed-title" className="mt-4 text-base font-medium tracking-[-0.01em] text-[#e0e0e0]">
-        {outcomeUnknown ? "Still finishing" : "Couldn't publish"}
+        {outcomeUnknown ? "Still finishing" : cancelled ? "Publish cancelled" : "Couldn't publish"}
       </h2>
       <p className="mt-1.5 text-[13px] leading-[1.6] text-[#9a9a9a]">{message}</p>
 
@@ -244,7 +259,7 @@ function FailureContent({
         type="button"
         onClick={canCheck ? onCheckStatus : onRetry}
         disabled={checking}
-        autoFocus
+        ref={buttonRef}
         className="mt-5 flex h-10 w-full items-center justify-center gap-2.5 rounded-[10px] border border-white/[0.12] bg-white/[0.08] text-sm font-medium text-[#e0e0e0] transition-colors hover:border-white/[0.24] hover:bg-white/[0.12] focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-white/20 disabled:hover:border-white/[0.12] disabled:hover:bg-white/[0.08]"
       >
         {checking ? (
@@ -254,7 +269,7 @@ function FailureContent({
           </>
         ) : canCheck ? (
           "Check status"
-        ) : outcomeUnknown ? (
+        ) : outcomeUnknown || cancelled ? (
           "Publish again"
         ) : (
           "Try again"
@@ -296,6 +311,11 @@ export const PublishButton = ({
   // or clicking again to see progress) must not land on Cancel.
   const [pointerHeld, setPointerHeld] = useState(false);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const publishButtonRef = useRef<HTMLButtonElement>(null);
+  // Stable, so it runs once as a panel's button mounts, not on every render.
+  const focusIfAtPublish = useCallback((el: HTMLButtonElement | null) => {
+    if (el && panelTakesFocus(document.activeElement, publishButtonRef.current)) el.focus();
+  }, []);
   const step: Step = signInStep ?? run?.phase ?? "closed";
   // For callbacks, which outlive the render that started them.
   const stepRef = useRef(step);
@@ -450,6 +470,7 @@ export const PublishButton = ({
   return (
     <>
       <button
+        ref={publishButtonRef}
         type="button"
         onClick={onPublishClick}
         onPointerLeave={() => setPointerHeld(false)}
@@ -515,7 +536,7 @@ export const PublishButton = ({
                 }}
               >
                 <motion.div
-                  role="dialog"
+                  role={failed ? "alertdialog" : "dialog"}
                   aria-modal
                   aria-labelledby={failed ? "publish-failed-title" : "publish-handshake-title"}
                   className={`relative flex ${failed ? "w-[360px]" : "w-[320px]"} origin-top-right flex-col items-start rounded-[14px] border border-[#2d2d2d] bg-[#2c2c2c] p-5 text-left shadow-[0_24px_80px_-20px_rgba(0,0,0,0.8)]`}
@@ -540,6 +561,7 @@ export const PublishButton = ({
                       onCheckStatus={() => void checkPublishStatus(queryClient, workspaceId)}
                       checking={failed.checking}
                       check={failed.check}
+                      buttonRef={focusIfAtPublish}
                     />
                   ) : (
                     <>
@@ -553,12 +575,18 @@ export const PublishButton = ({
                           ? "Finish signing in with Google in your browser. We'll publish right after."
                           : `Once you're signed in, ${workspaceName} goes live on a link you can share.`}
                       </p>
+                      {/* signed out after uploads had started (publish-runs) */}
+                      {run?.phase === "failed" && run.error.details?.publicFilesMayHaveChanged && (
+                        <p className="mt-1.5 text-[12px] leading-[1.6] text-[#9a9a9a]">
+                          {PUBLIC_FILES_NOTE}
+                        </p>
+                      )}
 
                       <button
                         type="button"
                         onClick={signIn}
                         disabled={step === "waiting"}
-                        autoFocus
+                        ref={focusIfAtPublish}
                         className="mt-5 flex h-10 w-full items-center justify-center gap-2.5 rounded-[10px] border border-white/[0.12] bg-white/[0.08] text-sm font-medium text-[#e0e0e0] transition-colors hover:border-white/[0.24] hover:bg-white/[0.12] focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-white/20 disabled:hover:border-white/[0.12] disabled:hover:bg-white/[0.08]"
                       >
                         {linked ? (

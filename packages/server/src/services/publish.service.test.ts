@@ -1101,6 +1101,34 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       expect(await deps.harness.versionNumbers(begun.publish.siteId)).toEqual([1]);
     });
 
+    it("refuses with 410 when a GC run retired the session while it was committing", async () => {
+      const deps = setup();
+      const begun = (await begin(deps))._unsafeUnwrap();
+      performUploads(deps, begun.uploads);
+      deps.clock.now += SESSION_TTL_MS - 1_000;
+      const commit = deps.store.commitVersion;
+      let report: Awaited<ReturnType<typeof runGc>> | undefined;
+      let lockHeld = false;
+      deps.store.commitVersion = async (v) => {
+        // The hold ends and GC claims and deletes the unverified objects, then
+        // retires the session (its session objects go), before the commit.
+        deps.clock.now += 2_000;
+        report = await runGc(deps.gc, new Date(deps.clock.now));
+        lockHeld = (await deps.store.findSiteById(v.siteId))?.completeLock === v.sessionId;
+        return commit(v);
+      };
+      const result = await completePublish(deps, USER, begun.publish.id, completeRequest());
+      deps.store.commitVersion = commit;
+      expect(report).toMatchObject({ expiredSessions: 1, retiredSessions: 1 });
+      expect(report!.deletedObjects).toBeGreaterThan(0);
+      expect(lockHeld).toBe(true);
+      expect(result._unsafeUnwrapErr()).toMatchObject({ status: 410, code: "PUBLISH_EXPIRED" });
+      expect(await deps.harness.versionNumbers(begun.publish.siteId)).toEqual([]);
+      const site = await deps.store.findSiteById(begun.publish.siteId);
+      expect(site).toMatchObject({ headVersion: 0, completeLock: null });
+      expect((await deps.store.getSession(begun.publish.id))?.status).toBe("expired");
+    });
+
     it("refuses when the complete limiter says so, before touching storage", async () => {
       const deps = setup();
       const begun = (await begin(deps))._unsafeUnwrap();

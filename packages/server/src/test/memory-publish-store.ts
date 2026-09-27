@@ -274,14 +274,18 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
     async commitVersion(v): Promise<{ ok: true } | ({ ok: false } & CommitFailure)> {
       const site = state.sites.get(v.siteId);
       const next = v.baseVersion + 1;
+      const current = state.sessions.get(v.sessionId);
+      const live = !!current && current.status === "pending" && current.holdUntil > v.now;
       const guard =
         !!site &&
         site.headVersion === v.baseVersion &&
         site.completeLock === v.sessionId &&
+        live &&
         (await missingSessionObjects(v.sessionId)).length === 0;
       const duplicate = state.versions.some((x) => x.siteId === v.siteId && x.version === next);
       if (!guard || duplicate || !site) {
         if (!site || site.headVersion !== v.baseVersion) return { ok: false, reason: "conflict" };
+        if (!live) return { ok: false, reason: "expired" };
         const missing = await missingSessionObjects(v.sessionId);
         if (missing.length > 0) return { ok: false, reason: "objects-gone", missing };
         if (site.completeLock !== v.sessionId) return { ok: false, reason: "lock-lost" };

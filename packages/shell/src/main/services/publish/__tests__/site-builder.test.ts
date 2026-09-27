@@ -131,7 +131,7 @@ describe("buildWorkspaceSite", () => {
 
     // The child ran in the staged tree with the workspace's node_modules
     // linked in, and got the out dir, runtime source and cache dir.
-    expect(logs).toContain(`NODE_MODULES ${nodeModules}`);
+    expect(logs).toContain(`NODE_MODULES ${path.join(nodeModules, "vite")}`);
     const args = JSON.parse(logs.find((l) => l.startsWith("ARGS "))!.slice("ARGS ".length));
     expect(args).toEqual({ outDir, runtimeSrc: h.resources!.runtimeSrc, cacheDir });
   });
@@ -292,6 +292,106 @@ describe("buildWorkspaceSite", () => {
     expect(error.code).toBe("SITE_ASSEMBLY_FAILED");
     expect(error.message).toContain("canvas.json");
     expect(fs.readdirSync(outDir)).toEqual([]);
+  });
+
+  describe("packages linked from inside the workspace", () => {
+    const source = () => path.dirname(nodeModules);
+    // Prints where each path leads (as Vite, which resolves through
+    // symlinks, would read it) and what it holds.
+    const useReadingChild = (paths: string[]) => {
+      const fixture = path.join(tmp, "reading-child.mjs");
+      write(
+        fixture,
+        `import fs from "node:fs";
+         import path from "node:path";
+         for (const p of ${JSON.stringify(paths)}) {
+           let real = null, content = null;
+           try { real = fs.realpathSync(p); content = fs.readFileSync(real, "utf8"); } catch {}
+           console.log("READ " + JSON.stringify({ p, real, content }));
+         }
+         const out = process.argv[2];
+         fs.mkdirSync(path.join(out, ".vite"), { recursive: true });
+         fs.writeFileSync(path.join(out, "index.html"), "x");
+         fs.writeFileSync(path.join(out, ".vite/antidraw-emitted.json"), '["index.html"]');`,
+      );
+      h.resources = { ...h.resources!, buildScript: fixture };
+    };
+    type Read = { p: string; real: string | null; content: string | null };
+    const reads = (logs: string[]) => {
+      const all = logs
+        .filter((l) => l.startsWith("READ "))
+        .map((l) => JSON.parse(l.slice("READ ".length)) as Read);
+      return (p: string) => all.find((r) => r.p === p)!;
+    };
+
+    test("a relative file: link is built from the snapshot, not the live workspace", async () => {
+      // The live package was edited after staging, and has a gitignored
+      // file scan left out of the snapshot.
+      write(path.join(source(), "packages/mylib/index.ts"), 'export const msg = "LIVE-EDIT"');
+      write(path.join(source(), "packages/mylib/secrets.json"), '{"key":"live"}');
+      write(path.join(source(), "packages/mylib/node_modules/dep/index.js"), "dep");
+      write(path.join(source(), "packages/scoped/index.ts"), 'export const msg = "LIVE-SCOPED"');
+      fs.symlinkSync("../packages/mylib", path.join(nodeModules, "mylib"), "dir");
+      fs.mkdirSync(path.join(nodeModules, "@me"));
+      fs.symlinkSync("../../packages/scoped", path.join(nodeModules, "@me", "scoped"), "dir");
+      write(path.join(nodeModules, "@me", "plain", "index.js"), "plain");
+      write(path.join(nodeModules, ".package-lock.json"), "{}");
+      write(path.join(staged, "packages/mylib/index.ts"), 'export const msg = "SNAPSHOT"');
+      write(path.join(staged, "packages/scoped/index.ts"), 'export const msg = "SNAPSHOT-SCOPED"');
+
+      useReadingChild([
+        "node_modules/mylib/index.ts",
+        "node_modules/mylib/secrets.json",
+        "node_modules/mylib/node_modules/dep/index.js",
+        "node_modules/@me/scoped/index.ts",
+        "node_modules/@me/plain/index.js",
+        "node_modules/vite/package.json",
+        "node_modules/.package-lock.json",
+      ]);
+      const logs: string[] = [];
+      expect((await build({ onLog: (line) => logs.push(line) })).isOk()).toBe(true);
+      const r = reads(logs);
+
+      expect(r("node_modules/mylib/index.ts")).toEqual({
+        p: "node_modules/mylib/index.ts",
+        real: path.join(staged, "packages/mylib/index.ts"),
+        content: 'export const msg = "SNAPSHOT"',
+      });
+      expect(r("node_modules/mylib/secrets.json").content).toBeNull();
+      expect(r("node_modules/@me/scoped/index.ts").real).toBe(path.join(staged, "packages/scoped/index.ts"));
+      expect(r("node_modules/@me/scoped/index.ts").content).toBe('export const msg = "SNAPSHOT-SCOPED"');
+      // Dependencies still come from the live install: the linked package's
+      // own, and every ordinary entry.
+      expect(r("node_modules/mylib/node_modules/dep/index.js").real).toBe(
+        path.join(source(), "packages/mylib/node_modules/dep/index.js"),
+      );
+      expect(r("node_modules/@me/plain/index.js").real).toBe(path.join(nodeModules, "@me/plain/index.js"));
+      expect(r("node_modules/vite/package.json").real).toBe(path.join(nodeModules, "vite/package.json"));
+      expect(r("node_modules/.package-lock.json").content).toBe("{}");
+
+      // Only links are removed afterwards; the live tree is as it was.
+      expect(fs.lstatSync(path.join(staged, "node_modules"), { throwIfNoEntry: false })).toBeUndefined();
+      expect(fs.lstatSync(path.join(staged, "packages/mylib/node_modules"), { throwIfNoEntry: false })).toBeUndefined();
+      expect(fs.readFileSync(path.join(staged, "packages/mylib/index.ts"), "utf8")).toBe('export const msg = "SNAPSHOT"');
+      expect(fs.readFileSync(path.join(source(), "packages/mylib/index.ts"), "utf8")).toBe('export const msg = "LIVE-EDIT"');
+      expect(fs.existsSync(path.join(source(), "packages/mylib/node_modules/dep/index.js"))).toBe(true);
+      expect(fs.readlinkSync(path.join(nodeModules, "mylib"))).toBe("../packages/mylib");
+      expect(fs.existsSync(path.join(nodeModules, "@me/plain/index.js"))).toBe(true);
+    });
+
+    test("a linked package the snapshot left out does not resolve to the live one", async () => {
+      write(path.join(source(), "generated/index.ts"), "live only");
+      fs.symlinkSync("../generated", path.join(nodeModules, "generated"), "dir");
+
+      useReadingChild(["node_modules/generated/index.ts"]);
+      const logs: string[] = [];
+      expect((await build({ onLog: (line) => logs.push(line) })).isOk()).toBe(true);
+      expect(reads(logs)("node_modules/generated/index.ts")).toEqual({
+        p: "node_modules/generated/index.ts",
+        real: null,
+        content: null,
+      });
+    });
   });
 
   test("the node_modules link is removed afterwards, and what it led to is kept", async () => {

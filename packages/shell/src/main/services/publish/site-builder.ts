@@ -44,7 +44,8 @@ export type BuildWorkspaceSiteOptions = {
   workspaceName: string;
   // What is built: the staged snapshot, not the live workspace.
   stagedSourceDir: string;
-  // <workspace>/source/node_modules, linked into the staged tree for the build.
+  // <workspace>/source/node_modules, linked into the staged tree for the build
+  // (linkNodeModules).
   nodeModulesDir: string;
   // Must not exist yet.
   outDir: string;
@@ -211,6 +212,116 @@ const runBuildChild = (
     });
   });
 
+const isInside = (dir: string, file: string) => {
+  const rel = path.relative(dir, file);
+  return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+};
+
+const linkDir = (target: string, link: string) =>
+  fs.symlinkSync(target, link, process.platform === "win32" ? "junction" : "dir");
+
+// Links one top-level node_modules entry (`name`, or `@scope/name`) into
+// stagedModules. An entry that leads back into the workspace's own source (a
+// `file:` dependency, or an npm workspace member: `node_modules/x ->
+// ../packages/x`) is linked to the same path in the staged tree, since Vite
+// resolves through symlinks and would otherwise build the live files, not
+// the snapshot. Every other entry is linked to the live one. Returns links
+// made in the staged tree outside stagedModules.
+const linkEntry = (
+  entry: string,
+  dirs: { live: string; staged: string; realLive: string; realSource: string; stagedSource: string },
+): string[] => {
+  const livePath = path.join(dirs.live, entry);
+  const stagedPath = path.join(dirs.staged, entry);
+  let real: string | undefined;
+  try {
+    real = fs.realpathSync(livePath);
+  } catch {
+    // Broken: linked as it is, and it fails the build as it would in place.
+  }
+  const rel = real !== undefined && isInside(dirs.realSource, real) ? path.relative(dirs.realSource, real) : undefined;
+  const isWorkspaceLink =
+    rel !== undefined && !isInside(dirs.realLive, real!) && !rel.split(path.sep).includes("node_modules");
+  if (!isWorkspaceLink) {
+    if (real !== undefined && !fs.statSync(real).isDirectory()) {
+      // Top-level files (.package-lock.json and the like); junctions are
+      // directories only.
+      if (process.platform === "win32") fs.copyFileSync(livePath, stagedPath);
+      else fs.symlinkSync(livePath, stagedPath, "file");
+    } else {
+      linkDir(livePath, stagedPath);
+    }
+    return [];
+  }
+
+  const stagedTarget = path.join(dirs.stagedSource, rel!);
+  // Left dangling when the snapshot does not have the package: the build then
+  // fails to resolve it, as it would for any file scan left out.
+  linkDir(stagedTarget, stagedPath);
+  // The package's own dependencies (npm installs a `file:` package's into
+  // its node_modules, which no snapshot has) come from the live install.
+  const liveDeps = path.join(real!, "node_modules");
+  const stagedDeps = path.join(stagedTarget, "node_modules");
+  if (
+    fs.statSync(liveDeps, { throwIfNoEntry: false })?.isDirectory() &&
+    fs.statSync(stagedTarget, { throwIfNoEntry: false })?.isDirectory() &&
+    !fs.lstatSync(stagedDeps, { throwIfNoEntry: false })
+  ) {
+    linkDir(liveDeps, stagedDeps);
+    return [stagedDeps];
+  }
+  return [];
+};
+
+// Gives the staged tree a node_modules: a directory of links to the entries
+// of the workspace's installed one (see linkEntry). Returns what to remove
+// afterwards; on failure, what it made is already removed.
+const linkNodeModules = (
+  nodeModulesDir: string,
+  stagedSourceDir: string,
+): Result<string[], Error> => {
+  const stagedModules = path.join(stagedSourceDir, "node_modules");
+  const made: string[] = [];
+  try {
+    fs.mkdirSync(stagedModules);
+    made.push(stagedModules);
+    const dirs = {
+      live: nodeModulesDir,
+      staged: stagedModules,
+      realLive: fs.realpathSync(nodeModulesDir),
+      realSource: fs.realpathSync(path.dirname(nodeModulesDir)),
+      stagedSource: stagedSourceDir,
+    };
+    for (const dirent of fs.readdirSync(nodeModulesDir, { withFileTypes: true })) {
+      if (dirent.name.startsWith("@") && dirent.isDirectory()) {
+        fs.mkdirSync(path.join(stagedModules, dirent.name));
+        for (const name of fs.readdirSync(path.join(nodeModulesDir, dirent.name))) {
+          made.push(...linkEntry(path.join(dirent.name, name), dirs));
+        }
+      } else {
+        made.push(...linkEntry(dirent.name, dirs));
+      }
+    }
+    return ok(made);
+  } catch (e) {
+    removeLinks(made);
+    return err(e as Error);
+  }
+};
+
+// Removes the links (and stagedModules, a directory of links, with what the
+// build wrote into it), never what they point at: rmSync does not follow
+// symlinks or junctions.
+const removeLinks = (made: string[]) => {
+  for (const p of made) {
+    try {
+      fs.rmSync(p, { recursive: true, force: true });
+    } catch {
+      // Already gone.
+    }
+  }
+};
+
 // Builds the staged workspace into a site in outDir: the workspace build in a
 // child (build-workspace.ts, run as Node by the Electron binary, with the
 // workspace's own Vite), then the viewer and canvas.json added to it
@@ -235,13 +346,11 @@ export const buildWorkspaceSite = async (
 
   // The staged tree has no node_modules of its own (snapshots never do): the
   // build uses the workspace's installed ones.
-  const link = path.join(opts.stagedSourceDir, "node_modules");
-  try {
-    fs.symlinkSync(opts.nodeModulesDir, link, process.platform === "win32" ? "junction" : "dir");
-  } catch (e) {
+  const linked = linkNodeModules(opts.nodeModulesDir, opts.stagedSourceDir);
+  if (linked.isErr()) {
     return err({
       code: "BUILD_FAILED",
-      message: `Could not link the workspace's dependencies: ${(e as Error).message}`,
+      message: `Could not link the workspace's dependencies: ${linked.error.message}`,
     });
   }
 
@@ -308,11 +417,6 @@ export const buildWorkspaceSite = async (
       return err({ code: "SITE_ASSEMBLY_FAILED", message: (e as Error).message });
     }
   } finally {
-    // The link only, never what it points at.
-    try {
-      fs.unlinkSync(link);
-    } catch {
-      // Already gone.
-    }
+    removeLinks(linked.value);
   }
 };

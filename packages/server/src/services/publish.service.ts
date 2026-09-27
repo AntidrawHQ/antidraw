@@ -628,6 +628,8 @@ const conflict = () =>
   apiError(409, "PUBLISH_CONFLICT", "The site was published from somewhere else meanwhile");
 const inProgress = () =>
   apiError(409, "PUBLISH_IN_PROGRESS", "Another publish of this site is finishing. Try again.");
+const publishExpired = () =>
+  apiError(410, "PUBLISH_EXPIRED", "This publish expired. Publish again.");
 const uploadIncomplete = (missing: { kind: string; sha256: string; path?: string }[]) =>
   apiError(409, "UPLOAD_INCOMPLETE", "Some uploads did not arrive", {
     missing: missing.slice(0, 50),
@@ -851,6 +853,8 @@ const verifyAndCommit = async (
     switch (committed.reason) {
       case "conflict":
         return (await conflictOrCompleted(deps, session.id)).map(() => undefined);
+      case "expired":
+        return err(publishExpired());
       case "objects-gone":
         return err(uploadIncomplete(committed.missing));
       case "lock-lost":
@@ -882,7 +886,7 @@ export const completePublish = (
     const done = await completedResult(deps, session);
     if (done) return done;
     if (session.status !== "pending" || session.expiresAt < deps.now().getTime()) {
-      return err(apiError(410, "PUBLISH_EXPIRED", "This publish expired. Publish again."));
+      return err(publishExpired());
     }
     const plan = parsePlan(session.plan);
     if (!plan) return err(storeFailure(new Error(`unreadable plan for ${session.id}`)));
