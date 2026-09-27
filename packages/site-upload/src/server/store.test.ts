@@ -123,6 +123,25 @@ describe("plan", () => {
     `);
   });
 
+  it("clears publishes that were uploaded but never committed when recording a new one", async () => {
+    await upload("abandoned", { "index.html": "never committed", "a.js": "reused" });
+    clock += 2 * HOUR;
+    const result = await plan("p2", { "index.html": "new", "a.js": "reused" });
+    expect({ result, stored: await stored() }).toMatchInlineSnapshot(`
+      {
+        "result": {
+          "missing": [
+            "sha(new)",
+          ],
+        },
+        "stored": [
+          "f/sha(reused)",
+          "m/p2.json",
+        ],
+      }
+    `);
+  });
+
   it("refuses conflicting, expired and invalid plans", async () => {
     await plan("p1", { "index.html": "x" });
     await publish("p2", { "index.html": "y" });
@@ -627,12 +646,13 @@ describe("cleanup", () => {
     await publish("p3", { "index.html": "v3" });
     clock += 2 * HOUR;
     // p4 reuses v1's file, which neither p3 nor p2 needs, and it is past the grace period.
+    // Recording p4 already ran cleanup, which kept v1 for p4 and deleted the rest.
     await plan("p4", { "index.html": "v1" });
     clock += HOUR / 2;
     expect(await store.cleanup(site)).toMatchInlineSnapshot(`
       {
-        "deletedFiles": 1,
-        "deletedPlans": 2,
+        "deletedFiles": 0,
+        "deletedPlans": 0,
       }
     `);
     expect(await stored()).toMatchInlineSnapshot(`

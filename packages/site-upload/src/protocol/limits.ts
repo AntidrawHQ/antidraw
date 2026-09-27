@@ -3,6 +3,11 @@ export type Limits = {
   maxFileBytes: number;
   maxTotalBytes: number;
   maxPathBytes: number;
+  /**
+   * The file list's JSON size (paths plus entries). Bounds what a plan, and a
+   * site's pointer, cost to store, read and parse on every serving isolate.
+   */
+  maxManifestBytes: number;
 };
 
 const MiB = 1024 * 1024;
@@ -14,6 +19,9 @@ export const DEFAULT_LIMITS: Limits = {
   maxFileBytes: 95 * MiB,
   maxTotalBytes: 500 * MiB,
   maxPathBytes: 1024,
+  // About 200 bytes a file at the file limit. A pointer holds the live list
+  // plus retained entries (part of the previous list), so it stays under 4 MiB.
+  maxManifestBytes: 2 * MiB,
 };
 
 // Stored plans and pointers were checked against the limits in force when they
@@ -23,6 +31,7 @@ export const STORED_LIMITS: Limits = {
   maxFileBytes: Number.MAX_SAFE_INTEGER,
   maxTotalBytes: Number.MAX_SAFE_INTEGER,
   maxPathBytes: Number.MAX_SAFE_INTEGER,
+  maxManifestBytes: Number.MAX_SAFE_INTEGER,
 };
 
 // A plan body is the manifest JSON: at 10k files with 1 KiB paths it stays

@@ -74,11 +74,11 @@ describe("handleUpload", () => {
   it("rejects bad plan bodies", async () => {
     expect({
       "not JSON": await post("plan", "{nope"),
-      "no body": await call("plan", { method: "POST" }),
+      "no body": await call("plan", { method: "POST", headers: { "content-type": "application/json" } }),
       "declared too large": await call("plan", {
         method: "POST",
         body: "{}",
-        headers: { "content-length": String(MAX_PLAN_BODY_BYTES + 1) },
+        headers: { "content-type": "application/json", "content-length": String(MAX_PLAN_BODY_BYTES + 1) },
       }),
     }).toMatchInlineSnapshot(`
       {
@@ -139,11 +139,78 @@ describe("handleUpload", () => {
         else controller.enqueue(chunk);
       },
     });
-    const res = await call("plan", { method: "POST", body, duplex: "half" } as RequestInit);
+    const res = await call("plan", {
+      method: "POST",
+      body,
+      duplex: "half",
+      headers: { "content-type": "application/json" },
+    } as RequestInit);
     expect({ status: res.status, pulledMiB: pulled }).toMatchInlineSnapshot(`
       {
         "pulledMiB": 17,
         "status": 413,
+      }
+    `);
+  });
+
+  it("refuses plans and commits a browser would send cross-origin without a preflight", async () => {
+    const manifest = JSON.stringify(manifestOf({ "index.html": "x" }));
+    const results = {
+      "plan as text/plain": await call("plan", { method: "POST", body: manifest, headers: { "content-type": "text/plain" } }),
+      "plan as a form": await call("plan", {
+        method: "POST",
+        body: "a=b",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+      }),
+      "commit with no type": await call("commit", { method: "POST" }),
+      "plan as JSON with charset": (await call("plan", {
+        method: "POST",
+        body: manifest,
+        headers: { "content-type": "Application/JSON; charset=utf-8" },
+      })).status,
+    };
+    expect(results).toMatchInlineSnapshot(`
+      {
+        "commit with no type": {
+          "body": {
+            "error": {
+              "code": "UNSUPPORTED_MEDIA_TYPE",
+              "message": "Send Content-Type: application/json",
+            },
+          },
+          "headers": {
+            "cache-control": "no-store",
+            "content-type": "application/json; charset=utf-8",
+          },
+          "status": 415,
+        },
+        "plan as JSON with charset": 200,
+        "plan as a form": {
+          "body": {
+            "error": {
+              "code": "UNSUPPORTED_MEDIA_TYPE",
+              "message": "Send Content-Type: application/json",
+            },
+          },
+          "headers": {
+            "cache-control": "no-store",
+            "content-type": "application/json; charset=utf-8",
+          },
+          "status": 415,
+        },
+        "plan as text/plain": {
+          "body": {
+            "error": {
+              "code": "UNSUPPORTED_MEDIA_TYPE",
+              "message": "Send Content-Type: application/json",
+            },
+          },
+          "headers": {
+            "cache-control": "no-store",
+            "content-type": "application/json; charset=utf-8",
+          },
+          "status": 415,
+        },
       }
     `);
   });

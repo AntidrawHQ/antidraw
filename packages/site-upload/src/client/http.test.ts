@@ -65,6 +65,7 @@ describe("createHttpTransport", () => {
             "body": undefined,
             "headers": {
               "authorization": "Bearer t",
+              "content-type": "application/json",
             },
             "method": "POST",
             "url": "https://api.test/publish/p1/commit",

@@ -191,6 +191,7 @@ describe("end to end", () => {
     const hash = sha256("hello");
     await fetch(`${base}/plan`, {
       method: "POST",
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({ v: 1, files: { "index.html": { h: hash, s: 5 } } }),
     });
 
@@ -205,7 +206,10 @@ describe("end to end", () => {
       duplex: "half",
     } as RequestInit);
     const wrongBytes = await fetch(`${base}/files/${hash}`, { method: "PUT", body: "HELLO" });
-    const commit = await fetch(`${base}/commit`, { method: "POST" });
+    const commit = await fetch(`${base}/commit`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+    });
 
     expect({
       chunked: await summarize(chunked),
@@ -276,12 +280,14 @@ describe("end to end", () => {
     const base = `/_upload/${site}/manual`;
     await fetch(`${origin}${base}/plan`, {
       method: "POST",
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({ v: 1, files: { "big.bin": { h: hash, s: content.length } } }),
     });
 
     await truncatedPut(`${base}/files/${hash}`, content.subarray(0, 100 * 1024), content.length);
     const replan = await fetch(`${origin}${base}/plan`, {
       method: "POST",
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({ v: 1, files: { "big.bin": { h: hash, s: content.length } } }),
     });
     expect(readable(await replan.json())).toMatchInlineSnapshot(`

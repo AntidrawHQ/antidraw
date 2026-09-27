@@ -4,6 +4,7 @@ export type ErrorCode =
   | "INVALID_MANIFEST"
   | "TOO_LARGE"
   | "METHOD_NOT_ALLOWED"
+  | "UNSUPPORTED_MEDIA_TYPE"
   | "NOT_FOUND"
   // File uploads
   | "LENGTH_REQUIRED"
@@ -31,6 +32,7 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   INVALID_MANIFEST: 400,
   TOO_LARGE: 413,
   METHOD_NOT_ALLOWED: 405,
+  UNSUPPORTED_MEDIA_TYPE: 415,
   NOT_FOUND: 404,
   LENGTH_REQUIRED: 411,
   NOT_IN_PLAN: 409,

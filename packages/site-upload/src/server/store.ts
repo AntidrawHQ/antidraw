@@ -101,7 +101,8 @@ export class SiteStore {
 
   /**
    * Records the manifest for `publishId` and returns the hashes the site
-   * doesn't have yet. Safe to repeat with the same manifest.
+   * doesn't have yet. Safe to repeat with the same manifest. Recording a new
+   * plan also runs cleanup() for the site.
    */
   async plan(site: string, publishId: string, input: unknown): Promise<PlanResult> {
     this.assertIds(site, publishId);
@@ -124,6 +125,11 @@ export class SiteStore {
         // Lets cleanup see a plan's age from a listing, without reading it.
         customMetadata: { createdAt: String(plan.createdAt) },
       });
+      // Clears what earlier publishes left, including ones that uploaded but
+      // never committed, so a site's storage stays bounded even when the
+      // caller only cleans up after commits. Runs after the plan is written
+      // so this plan's files are kept. The caller's lock covers it.
+      await this.cleanup(site);
     }
 
     const stored = await this.storedSizes(site);

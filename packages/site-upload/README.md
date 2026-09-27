@@ -46,7 +46,8 @@ replayed commit gets `SUPERSEDED` instead of rolling the site back.
 ## Serving and caching
 
 `SiteServer` reads a site's `current.json` (kept in memory for 5 s, one read
-shared by concurrent requests, 32 MiB of pointers at most), maps the URL to a
+shared by concurrent requests, 32 MiB of pointers at most; a pointer is under
+4 MiB at the default limits, so at least 8 fit), maps the URL to a
 file, and answers ETag/304 and single-range requests itself. It never throws:
 storage failures become a 503 with `retry-after`.
 
@@ -62,15 +63,29 @@ per request, so their caches last.
 ## What the caller owns
 
 - **Auth and ownership.** `handleUpload` trusts `site` and `publishId`. Route to
-  it only after checking the user owns the site.
+  it only after checking the user owns the site. Authenticate upload routes
+  with a bearer token (`createHttpTransport`'s `headers`), not a cookie session,
+  and don't answer them with credentialed CORS. `handleUpload` requires
+  `Content-Type: application/json` on plan and commit, so a web page can't send
+  any upload request without a preflight, but a cookie that reaches these
+  routes is still one misconfigured CORS header away from letting any page
+  re-point a user's site.
 - **One publish per site at a time.** Plan, upload, commit and cleanup for one
   site must not overlap: hold a per-site lock, and hold it until the publish's
   commit has succeeded (including the client's retries). Plan expiry (1 h) and the orphan
   grace period (1 h) limit the damage if a lock holder dies, but don't replace
   the lock.
-- **Calling cleanup**, e.g. after each commit while still holding the lock.
+- **Calling cleanup** after each commit, still holding the lock. Recording a
+  new plan also runs it, so publishes that were uploaded but never committed
+  are cleared by the site's next plan. A site that stops publishing keeps its
+  last abandoned upload until then; a scheduled cleanup (under the lock) clears
+  those too.
 - **Rate limits and quotas.** Built-in limits are per publish: 10,000 files,
-  95 MiB per file (under the Workers 100 MB request-body limit), 500 MiB total.
+  95 MiB per file (under the Workers 100 MB request-body limit), 500 MiB total,
+  2 MiB of file-list JSON. A site holds its live version, retained chunks and
+  any plans from the last hour, so storage per site is bounded by how many
+  publishes an hour the caller allows; meter PUT `Content-Length` for a byte
+  quota per user. Rate-limit the site Worker per IP as well.
 
 ## Tests
 

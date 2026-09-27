@@ -27,12 +27,14 @@ describe("resolveLimits", () => {
         "maxFiles: 5": {
           "maxFileBytes": 99614720,
           "maxFiles": 5,
+          "maxManifestBytes": 2097152,
           "maxPathBytes": 1024,
           "maxTotalBytes": 524288000,
         },
         "maxFiles: undefined": {
           "maxFileBytes": 99614720,
           "maxFiles": 10000,
+          "maxManifestBytes": 2097152,
           "maxPathBytes": 1024,
           "maxTotalBytes": 524288000,
         },

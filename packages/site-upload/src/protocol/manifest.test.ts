@@ -307,7 +307,13 @@ describe("parseManifest", () => {
   });
 
   it("enforces each limit, and allows exactly the limit", () => {
-    const limits: Limits = { maxFiles: 3, maxFileBytes: 10, maxTotalBytes: 15, maxPathBytes: 8 };
+    const limits: Limits = {
+      maxFiles: 3,
+      maxFileBytes: 10,
+      maxTotalBytes: 15,
+      maxPathBytes: 8,
+      maxManifestBytes: 1000,
+    };
     const cases: Record<string, unknown> = {
       "4 files": withPaths("a", "b", "c", "d"),
       "11-byte file": { v: 1, files: { a: { h: H, s: 11 } } },
@@ -377,6 +383,66 @@ describe("parseManifest", () => {
       `);
   });
 
+  it("caps the file list's JSON size, so max-length paths can't build a huge pointer", () => {
+    // 3,000 files with 1,000-byte paths: within the file and path limits, but
+    // about 3 MB of JSON. A quote costs two bytes once escaped.
+    const long = Array.from({ length: 3000 }, (_, i) => `${String(i).padStart(4, "0")}${"x".repeat(996)}`);
+    const quoted = Array.from({ length: 1500 }, (_, i) => `${String(i).padStart(4, "0")}${'"'.repeat(996)}`);
+    const small = { ...DEFAULT_LIMITS, maxManifestBytes: 200 };
+    expect({
+      "3,000 long paths": tryParse(withPaths(...long)),
+      "1,500 paths of quotes": tryParse(withPaths(...quoted)),
+      "two files under a 200-byte cap": tryParse(withPaths("a", "b"), small),
+      "three files over it": tryParse(withPaths("a", "b", "c"), small),
+    }).toMatchInlineSnapshot(`
+      {
+        "1,500 paths of quotes": {
+          "code": "TOO_LARGE",
+          "details": {
+            "actual": 3117000,
+            "limit": 2097152,
+            "reason": "manifest",
+          },
+          "error": "SiteUploadError",
+          "message": "The file list is 3117000 bytes of JSON, over the 2097152-byte limit; use fewer files or shorter paths",
+        },
+        "3,000 long paths": {
+          "code": "TOO_LARGE",
+          "details": {
+            "actual": 3246000,
+            "limit": 2097152,
+            "reason": "manifest",
+          },
+          "error": "SiteUploadError",
+          "message": "The file list is 3246000 bytes of JSON, over the 2097152-byte limit; use fewer files or shorter paths",
+        },
+        "three files over it": {
+          "code": "TOO_LARGE",
+          "details": {
+            "actual": 249,
+            "limit": 200,
+            "reason": "manifest",
+          },
+          "error": "SiteUploadError",
+          "message": "The file list is 249 bytes of JSON, over the 200-byte limit; use fewer files or shorter paths",
+        },
+        "two files under a 200-byte cap": {
+          "files": {
+            "a": {
+              "h": "sha(x)",
+              "s": 1,
+            },
+            "b": {
+              "h": "sha(x)",
+              "s": 1,
+            },
+          },
+          "v": 1,
+        },
+      }
+    `);
+  });
+
   it("handles the default maximum file count quickly", () => {
     const paths = Array.from({ length: DEFAULT_LIMITS.maxFiles }, (_, i) => `dir${i % 50}/file-${i}.txt`);
     const started = performance.now();
@@ -387,7 +453,7 @@ describe("parseManifest", () => {
   it("handles deep paths without quadratic blowup", () => {
     const deep = Array.from({ length: 2000 }, (_, i) => `${"d/".repeat(500)}f${i}`);
     const started = performance.now();
-    parseManifest(withPaths(...deep), { ...DEFAULT_LIMITS, maxPathBytes: 2048 });
+    parseManifest(withPaths(...deep), { ...DEFAULT_LIMITS, maxPathBytes: 2048, maxManifestBytes: 8 * 1024 * 1024 });
     expect(performance.now() - started).toBeLessThan(1000);
   });
 });

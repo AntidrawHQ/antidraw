@@ -76,7 +76,12 @@ export function createHttpTransport(options: HttpTransportOptions): UploadTransp
       );
     },
     async commit(signal) {
-      const body = (await send("commit", { method: "POST" }, signal)) as Partial<CommitResult> | null;
+      const body = (await send(
+        "commit",
+        // The server requires the JSON type even with no body (see handleUpload).
+        { method: "POST", headers: { "content-type": "application/json" } },
+        signal,
+      )) as Partial<CommitResult> | null;
       if (!body || typeof body.publishId !== "string") {
         throw new SiteUploadError("BAD_RESPONSE", "The commit reply is malformed");
       }

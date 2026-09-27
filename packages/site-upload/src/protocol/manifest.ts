@@ -50,6 +50,10 @@ export function pathProblem(path: string, maxBytes: number): string | null {
   return null;
 }
 
+/** An entry's share of the file list's JSON: "path":{"h":…,"s":…}, */
+const entryBytes = (path: string, entry: FileEntry) =>
+  encoder.encode(JSON.stringify(path)).length + JSON.stringify(entry).length + 2;
+
 // Sorting with "/" as the lowest character puts every "a/..." path directly
 // after "a", so file/folder clashes are adjacent pairs.
 const sortKey = (path: string) => path.replaceAll("/", "\u0000");
@@ -75,6 +79,7 @@ export function parseManifest(input: unknown, limits: Limits = DEFAULT_LIMITS): 
 
   const sizeOf = new Map<string, number>();
   let total = 0;
+  let manifestBytes = 0;
   for (const path of paths) {
     const problem = pathProblem(path, limits.maxPathBytes);
     if (problem) throw invalid(`Path ${JSON.stringify(path)} ${problem}`, { path });
@@ -103,12 +108,20 @@ export function parseManifest(input: unknown, limits: Limits = DEFAULT_LIMITS): 
     }
     sizeOf.set(entry.h, size);
     total += size;
+    manifestBytes += entryBytes(path, entry.i ? { h: entry.h, s: size, i: true } : { h: entry.h, s: size });
   }
   if (total > limits.maxTotalBytes) {
     throw new SiteUploadError(
       "TOO_LARGE",
       `The site is ${total} bytes, over the ${limits.maxTotalBytes}-byte limit`,
       { reason: "total", limit: limits.maxTotalBytes, actual: total },
+    );
+  }
+  if (manifestBytes > limits.maxManifestBytes) {
+    throw new SiteUploadError(
+      "TOO_LARGE",
+      `The file list is ${manifestBytes} bytes of JSON, over the ${limits.maxManifestBytes}-byte limit; use fewer files or shorter paths`,
+      { reason: "manifest", limit: limits.maxManifestBytes, actual: manifestBytes },
     );
   }
 
