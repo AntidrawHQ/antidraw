@@ -53,6 +53,7 @@ export type PublishErrorCode =
 export type PublishRefusalReason =
   | "pending-site"
   | "open-sessions"
+  | "session-objects"
   | "site-storage"
   | "site-files";
 
@@ -74,13 +75,15 @@ export type PublishErrorDetails = {
   // contents), "site-files" (QUOTA_EXCEEDED: the rows the account keeps for
   // its sites: the files their retained versions list, stored objects and
   // unfinished publishes), "open-sessions" (RATE_LIMITED: too many unfinished
-  // publishes).
+  // publishes), "session-objects" (RATE_LIMITED: too many files begun in the
+  // last hour).
   reason?: PublishRefusalReason;
   collisions?: string[][]; // CASE_COLLISION
   paths?: string[]; // SNAPSHOT_FAILED from server INVALID_PATH / STAGE_FAILED
   logTail?: string[]; // BUILD_FAILED
   timedOut?: boolean; // BUILD_FAILED from BUILD_TIMEOUT
   siteLimit?: number; // SITE_LIMIT
+  retryAfterSeconds?: number; // RATE_LIMITED "session-objects"
   serverCode?: string; // INTERNAL_ERROR / SERVER_ERROR: the server's own code
   publishId?: string; // PUBLISH_OUTCOME_UNKNOWN: the session "Check status" asks about
 };

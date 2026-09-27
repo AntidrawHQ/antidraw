@@ -793,6 +793,27 @@ describe("publishWorkspace: server and upload failures", () => {
     expect(completePublish).not.toHaveBeenCalled();
   });
 
+  test("uploads start no later than a margin before the session expires, and stop at its expiry", async () => {
+    await run();
+
+    const opts = vi.mocked(uploadAll).mock.calls[0]![1]!;
+    const expiresAt = Date.parse(beginResponse().publish.expiresAt);
+    expect(opts.stopBy).toBe(expiresAt);
+    expect(opts.startBy).toBe(expiresAt - publishTiming.uploadStartMarginMs);
+  });
+
+  test("uploads that ran out of time end the run as expired, and abort the session", async () => {
+    vi.mocked(uploadAll).mockResolvedValue(
+      err({ code: "EXPIRED", message: "The publish took too long and its uploads expired" }),
+    );
+
+    const error = lastError(await run());
+
+    expect(error.code).toBe("PUBLISH_EXPIRED");
+    expect(abortPublish).toHaveBeenCalledWith("pub_1");
+    expect(completePublish).not.toHaveBeenCalled();
+  });
+
   test("a conflict at complete never aborts", async () => {
     vi.mocked(completePublish).mockResolvedValue(
       err({ status: 409, code: "PUBLISH_CONFLICT", message: "Head moved" }),
@@ -1922,6 +1943,19 @@ describe("error mapping", () => {
     expect(open.message).toContain("unfinished publishes");
     expect(open.message).not.toContain("minute");
     expect(open.details).toEqual({ reason: "open-sessions" });
+
+    const spent = mapCloudError(
+      cloud(429, "RATE_LIMITED", {
+        reason: "session-objects",
+        limit: 20_000,
+        used: 19_990,
+        publishObjects: 40,
+        retryAfterSeconds: 1_530,
+      }),
+    );
+    expect(spent.code).toBe("RATE_LIMITED");
+    expect(spent.message).toContain("26 minutes");
+    expect(spent.details).toEqual({ reason: "session-objects", retryAfterSeconds: 1_530 });
 
     // Without a reason, the plain copy stays.
     expect(mapCloudError(cloud(413, "QUOTA_EXCEEDED")).message).toContain("storage quota");

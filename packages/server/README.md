@@ -216,12 +216,21 @@ URL signing). Wire schemas are in
 
 Every object (`stored_object`, kinds `source`, `blob` and `site`) is kept
 while a retained version lists it (`site_version`, `version_large_file`,
-`version_site_file`) or a session that can still upload holds it. Begin also
-bounds what a signed-in client can park before it commits: at most 10
-uncommitted sessions whose upload URLs still work (429 `RATE_LIMITED`,
-`details.reason: "open-sessions"`), and at most 1 GiB of site contents no
-commit has verified across them (413 `QUOTA_EXCEEDED`, `details.reason:
-"pending-site"`). Site contents are append-only, so begin also bounds what an
+`version_site_file`) or a session holds it. A session holds its objects until
+an hour after its upload URLs expire (`UPLOAD_PUT_GRACE_MS`): a presigned PUT
+is checked when it arrives, so one that started just in time may land later,
+and its bytes must still have a row that counts and collects them. For the
+same reason GC keeps, unverified, the row of an object it was deleting when a
+begin since asked for it again. Begin also bounds what a signed-in client can
+park before it commits: at most 10 uncommitted sessions that still hold (429
+`RATE_LIMITED`, `details.reason: "open-sessions"`), and at most 1 GiB of site
+contents no commit has verified across them (413 `QUOTA_EXCEEDED`,
+`details.reason: "pending-site"`). What begin writes grows with its plan (a
+`publish_session_object` row per plan object), so besides the rate limiter
+(20 begins a minute, aborts counted with them) an account's begins may insert
+at most 20 000 session objects an hour (429 `RATE_LIMITED`, `details.reason:
+"session-objects"`, with `retryAfterSeconds`), charged in the batch that
+inserts the session. Site contents are append-only, so begin also bounds what an
 account keeps: at most 4 GiB of site contents GC has not removed, committed
 or not (`details.reason: "site-storage"`; a publish that adds no new content
 passes), and at most 64 MiB of estimated D1 footprint in retained
@@ -249,8 +258,8 @@ asks again for one R2 cannot answer about. Every upload carries its sha256.
 sessions, drop versions beyond the newest 5 (`keep` ones excepted), re-sync
 the pointers of sites whose pointer is behind their head version, delete
 account objects (sources, blobs and site contents) nothing references or
-holds (never-committed ones as soon as no session's upload URLs can still
-reach them, committed ones after 24 h; claimed in turns across accounts),
+holds (never-committed ones as soon as no session holds them, committed ones
+24 h after their last commit; claimed in turns across accounts),
 retire sessions whose hold ended (plan stubbed, held objects dropped) and
 forget old ones, and free the slugs of sites that never completed (their
 pointer first). Each step is bounded (`GcLimits` in

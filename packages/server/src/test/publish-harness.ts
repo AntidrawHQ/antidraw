@@ -43,6 +43,7 @@ const PUBLISH_TABLES = [
   "stored_object",
   "publish_session",
   "publish_session_object",
+  "publish_budget",
 ];
 
 const memoryHarness = (): Harness => {

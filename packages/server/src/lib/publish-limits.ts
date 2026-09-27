@@ -61,6 +61,9 @@
  *   up to 1 024 B: an index key that long spills into an overflow page of its
  *   own). Measured up to ~6 200 B; counted largeFileRowBytes (up to 7 552 B a
  *   row, 7.5 MB a version), reserved at begin. Lives with its version.
+ * publish_budget: begin, at most one per account (its session-object window,
+ *   MAX_SESSION_OBJECTS_PER_WINDOW), updated in place by later begins. ~100 B,
+ *   not counted: it never grows. Lives until the account goes.
  * Rate limits are Workers rate-limit bindings: nothing in D1.
  *
  * GC (gc.service.ts) acts on a bounded number of rows per statement,
@@ -120,6 +123,17 @@ export const FILE_ROW_OVERHEAD_BYTES = 384;
 // at most 900 bytes).
 export const FILE_KEY_INLINE_BYTES = 900;
 export const PAGE_BYTES = 4096;
+// Per account: session objects (one per plan object: its source, distinct
+// blobs and distinct site contents) begins may insert per window. Each is a
+// row with two index entries, deleted again by the commit or a no-upload
+// abort, and a commit writes a file row per plan file besides: counting
+// begins alone (PUBLISH_RATE_LIMITER) would let one account begin and abort a
+// publish of 5 000 stored files at 20 a minute, about a billion D1 row writes
+// a day. This allows three begins of the largest plan an hour, or hundreds of
+// a typical one. Begin checks it before it writes anything, and the batch
+// that inserts the session charges it and fails past it.
+export const MAX_SESSION_OBJECTS_PER_WINDOW = 20_000;
+export const SESSION_OBJECT_WINDOW_MS = 60 * 60 * 1000;
 // Per account: sessions that are not completed and still hold (their upload
 // URLs work). Each keeps a plan of up to MAX_PLAN_JSON_BYTES in D1.
 export const MAX_OPEN_SESSIONS_PER_ACCOUNT = 10;
@@ -149,11 +163,27 @@ export const D1_JSON_PARAM_BYTES = 1_000_000;
 export const KEEP_VERSIONS = 5;
 export const SESSION_TTL_MS = 2 * 60 * 60 * 1000;
 // Equal to the session TTL, so a queued PUT never meets an expired URL while
-// its session is valid, and every URL expires by the session's hold_until.
+// its session is valid.
 export const UPLOAD_URL_TTL_S = SESSION_TTL_MS / 1000;
+// A presigned PUT is checked when it arrives, and may then stream for as long
+// as the client keeps sending: one that started just before its URL expired
+// lands after it. So a session holds its objects (GC keeps off them, and they
+// count toward the caps) this long past its expiry: a PUT that takes longer
+// (under ~140 KB/s for the largest object) may land after GC has deleted the
+// object's row, leaving bytes nothing counts or collects. The app starts no
+// PUT close to expiry.
+export const UPLOAD_PUT_GRACE_MS = 60 * 60 * 1000;
+// A session's hold_until, from begin: every upload URL it was given expires
+// UPLOAD_PUT_GRACE_MS before it.
+export const SESSION_HOLD_MS = SESSION_TTL_MS + UPLOAD_PUT_GRACE_MS;
 export const COMPLETE_LOCK_TTL_MS = 10 * 60 * 1000;
 export const DOWNLOAD_URL_TTL_S = 600;
 export const GC_MIN_AGE_MS = 24 * 60 * 60 * 1000;
+// A commit restarts the age floor of a verified object it uses only once the
+// floor has run this long, so a run of commits of the same files does not
+// rewrite thousands of rows each. The floor then still ends at least
+// GC_MIN_AGE_MS less this after the last commit: long past every hold.
+export const GC_MIN_AGE_REFRESH_MS = 60 * 60 * 1000;
 export const GC_LOCK_TTL_MS = 5 * 60 * 1000;
 // The cron trigger (wrangler.jsonc, src/scheduled.ts): GC runs hourly.
 export const GC_CRON = "17 * * * *";

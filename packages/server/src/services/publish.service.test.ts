@@ -10,7 +10,9 @@ import {
   MAX_SITES_PER_ACCOUNT,
   MAX_STORED_SITE_BYTES,
   QUOTA_BYTES,
+  SESSION_HOLD_MS,
   SESSION_TTL_MS,
+  UPLOAD_PUT_GRACE_MS,
 } from "../lib/publish-limits";
 import { beginPublishRequest, completePublishRequest } from "../lib/publish.schemas";
 import { blobKey, pointerKey, siteContentKey, sourceKey } from "../lib/storage";
@@ -45,6 +47,9 @@ import { accountRowBytes, largeFileRowBytes, PLAN_STUB, siteFileRowBytes } from 
 
 const USER = "user-1";
 const OTHER = "user-2";
+// The default plan's objects: its source, its blob, and six site contents
+// (three files and the three entry pages).
+const PLAN_OBJECTS = 8;
 
 const begin = async (deps: TestDeps, input: PlanInput = {}, user = USER) =>
   beginPublish(deps, user, await beginRequest(input));
@@ -699,7 +704,8 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       const session = await deps.store.getSession(begun.publish.id);
       expect(session).toMatchObject({
         status: "aborted",
-        holdUntil: deps.clock.now + SESSION_TTL_MS,
+        // A PUT that started before its URL expired may still be landing.
+        holdUntil: deps.clock.now + SESSION_TTL_MS + UPLOAD_PUT_GRACE_MS,
       });
 
       // GC cannot take its objects while URLs still work.
@@ -949,7 +955,7 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       // An object uploaded by an abandoned session, whose hold then ended.
       const abandoned = (await begin(deps))._unsafeUnwrap();
       performUploads(deps, abandoned.uploads);
-      deps.clock.now += SESSION_TTL_MS + 1;
+      deps.clock.now += SESSION_HOLD_MS + 1;
       const claimed = await deps.store.claimGcObjects({
         now: deps.clock.now,
         minCreatedAt: deps.clock.now - 24 * 3600_000,
@@ -1184,10 +1190,10 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       let report: Awaited<ReturnType<typeof runGc>> | undefined;
       let lockHeld = false;
       deps.store.commitVersion = async (v) => {
-        // The hold ends (GC's margin with it) and GC claims and deletes the
-        // unverified objects, then retires the session (its session objects
-        // go), before the commit.
-        deps.clock.now += 2_000 + GC_CLOCK_SKEW_MARGIN_MS;
+        // The request stalls until the hold ends (GC's margin with it), and
+        // GC claims and deletes the unverified objects, then retires the
+        // session (its session objects go), before the commit.
+        deps.clock.now += 2_000 + UPLOAD_PUT_GRACE_MS + GC_CLOCK_SKEW_MARGIN_MS;
         report = await runGc(deps.gc, new Date(deps.clock.now));
         lockHeld = (await deps.store.findSiteById(v.siteId))?.completeLock === v.sessionId;
         return commit(v);
@@ -1249,7 +1255,7 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       ).toMatchObject({ verified: true, deleting: false });
     });
 
-    it("refuses with 410 when GC, its clock ahead by more than its margin, retired the session before the commit", async () => {
+    it("refuses with 410 when GC, its clock ahead by more than its margin, expired the session before the commit", async () => {
       const deps = setup();
       const begun = (await begin(deps))._unsafeUnwrap();
       performUploads(deps, begun.uploads);
@@ -1257,15 +1263,14 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       const commit = deps.store.commitVersion;
       let report: Awaited<ReturnType<typeof runGc>> | undefined;
       deps.store.commitVersion = async (v) => {
-        // This Worker's clock still reads a live hold; GC's does not, even
-        // with its margin.
+        // This Worker's clock still reads a live session; GC's does not, even
+        // with its margin. The hold outlasts the expiry, so its objects stay.
         report = await runGc(deps.gc, new Date(deps.clock.now + GC_CLOCK_SKEW_MARGIN_MS + 2_000));
         return commit(v);
       };
       const result = await completePublish(deps, USER, begun.publish.id);
       deps.store.commitVersion = commit;
-      expect(report).toMatchObject({ retiredSessions: 1 });
-      expect(report!.deletedObjects).toBeGreaterThan(0);
+      expect(report).toMatchObject({ expiredSessions: 1, retiredSessions: 0, deletedObjects: 0 });
       expect(result._unsafeUnwrapErr()).toMatchObject({ status: 410, code: "PUBLISH_EXPIRED" });
       expect(await deps.harness.versionNumbers(begun.publish.siteId)).toEqual([]);
     });
@@ -1292,6 +1297,91 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
     });
   });
 
+  describe("session-object budget", () => {
+    it("refuses a begin that would insert more session objects in the hour than the account's budget", async () => {
+      const deps = setup();
+      const T = deps.clock.now;
+      // The attack: one publish, then begin + abort of it (nothing to upload,
+      // so each abort retires its session at once) as fast as the limiter
+      // lets. Each begin still writes a session object per plan object.
+      deps.caps = { sessionObjectsPerWindow: 3 * PLAN_OBJECTS };
+      await publish(deps);
+      for (let i = 0; i < 2; i++) {
+        const begun = (await begin(deps))._unsafeUnwrap();
+        expect(begun.uploads).toEqual([]);
+        (await abortPublish(deps, USER, begun.publish.id))._unsafeUnwrap();
+      }
+      const sessions = await deps.harness.sessionRows(USER);
+      deps.clock.now = T + 30 * 60_000;
+      expect((await begin(deps))._unsafeUnwrapErr()).toMatchObject({
+        status: 429,
+        code: "RATE_LIMITED",
+        details: {
+          reason: "session-objects",
+          limit: 3 * PLAN_OBJECTS,
+          used: 3 * PLAN_OBJECTS,
+          publishObjects: PLAN_OBJECTS,
+          retryAfterSeconds: 30 * 60,
+        },
+      });
+      expect(await deps.harness.sessionRows(USER)).toEqual(sessions);
+      // Refused before it writes anything or asks R2: no site for a new
+      // workspace.
+      const heads = recordHeads(deps);
+      expect(
+        (await begin(deps, { workspace: workspaceId(2) }))._unsafeUnwrapErr(),
+      ).toMatchObject({ details: { reason: "session-objects" } });
+      expect(heads).toEqual([]);
+      expect(await deps.store.findSiteByWorkspace(USER, workspaceId(2))).toBeNull();
+      // Another account has its own.
+      expect((await begin(deps, {}, OTHER)).isOk()).toBe(true);
+      // The next hour's window.
+      deps.clock.now = T + 60 * 60_000;
+      expect((await begin(deps)).isOk()).toBe(true);
+    });
+
+    it("charges the window in the insert, so concurrent begins cannot pass it together", async () => {
+      const deps = setup();
+      deps.caps = { sessionObjectsPerWindow: PLAN_OBJECTS + 1 };
+      (await begin(deps))._unsafeUnwrap();
+      // A begin that read the window before the first was inserted.
+      const read = deps.store.sessionObjectsInWindow;
+      let calls = 0;
+      deps.store.sessionObjectsInWindow = async (userId, now, windowMs) =>
+        ++calls === 1 ? { used: 0, resetsAt: now + windowMs } : read(userId, now, windowMs);
+      const refused = await begin(deps, {
+        workspace: workspaceId(2),
+        source: { sha256: hex("racer"), size: 10 },
+      });
+      deps.store.sessionObjectsInWindow = read;
+      expect(refused._unsafeUnwrapErr()).toMatchObject({
+        status: 429,
+        code: "RATE_LIMITED",
+        details: { reason: "session-objects", used: PLAN_OBJECTS },
+      });
+      // It wrote nothing: no session, no session objects, no stored object.
+      expect((await deps.harness.sessionRows(USER)).count).toBe(1);
+      expect(
+        await deps.store.getStoredObjects(USER, [{ kind: "source", sha256: hex("racer") }]),
+      ).toEqual([]);
+      expect((await deps.store.accountRows(USER)).sessionObjects).toBe(PLAN_OBJECTS);
+    });
+
+    it("rate-limits the abort of a pending session with begins", async () => {
+      const deps = setup();
+      const begun = (await begin(deps))._unsafeUnwrap();
+      deps.limits.publish = false;
+      expect((await abortPublish(deps, USER, begun.publish.id))._unsafeUnwrapErr()).toMatchObject({
+        status: 429,
+        code: "RATE_LIMITED",
+      });
+      expect((await deps.store.getSession(begun.publish.id))?.status).toBe("pending");
+      deps.limits.publish = true;
+      (await abortPublish(deps, USER, begun.publish.id))._unsafeUnwrap();
+      expect((await deps.store.getSession(begun.publish.id))?.status).toBe("aborted");
+    });
+  });
+
   describe("open sessions", () => {
     it(`refuses a begin past ${MAX_OPEN_SESSIONS_PER_ACCOUNT} uncommitted held sessions, before creating a site`, async () => {
       const deps = setup();
@@ -1310,9 +1400,12 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
         },
       });
       expect(await deps.store.findSiteByWorkspace(USER, workspaceId(2))).toBeNull();
-      // Another account is unaffected; the holds end with the URLs.
+      // Another account is unaffected; the holds end an upload grace after
+      // the URLs expire.
       expect((await begin(deps, {}, OTHER)).isOk()).toBe(true);
       deps.clock.now = T + SESSION_TTL_MS + 1;
+      expect((await begin(deps, { workspace: workspaceId(2) })).isErr()).toBe(true);
+      deps.clock.now = T + SESSION_HOLD_MS + 1;
       expect((await begin(deps, { workspace: workspaceId(2) })).isOk()).toBe(true);
     });
 
@@ -1449,8 +1542,13 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       expect((await begin(deps, siteOf(3, 200 * MiB)))._unsafeUnwrapErr().code).toBe(
         "QUOTA_EXCEEDED",
       );
-      // Expiry: the URLs stop working with the hold.
+      // Its URLs have expired, but a PUT through one may still be landing:
+      // its bytes count until the hold ends, an upload grace later.
       deps.clock.now = T + SESSION_TTL_MS + 1;
+      expect((await begin(deps, siteOf(3, 200 * MiB)))._unsafeUnwrapErr().code).toBe(
+        "QUOTA_EXCEEDED",
+      );
+      deps.clock.now = T + SESSION_HOLD_MS + 1;
       expect((await begin(deps, siteOf(3, 200 * MiB))).isOk()).toBe(true);
     });
 
@@ -1493,7 +1591,7 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       expect(kinds(begun.uploads)).toEqual(["site", "site", "site", "site"]);
       (await abortPublish(deps, USER, begun.publish.id))._unsafeUnwrap();
       expect((await deps.store.getSession(begun.publish.id))?.holdUntil).toBe(
-        deps.clock.now + SESSION_TTL_MS,
+        deps.clock.now + SESSION_HOLD_MS,
       );
     });
   });
@@ -1761,11 +1859,13 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
 
     it(`bounds never-uploaded objects and their session objects at ${MAX_ACCOUNT_ROW_BYTES / MiB} MiB`, async () => {
       const deps = setup();
+      // The rows, not the rate they are written at.
+      deps.caps = { sessionObjectsPerWindow: Infinity };
       const T = deps.clock.now;
       const begun = await fill(deps, MAX_ACCOUNT_ROW_BYTES, async (i) => {
         // Ten sessions hold at once; then their holds end (GC never runs).
         if (i > 0 && i % MAX_OPEN_SESSIONS_PER_ACCOUNT === 0) {
-          deps.clock.now = T + (i / MAX_OPEN_SESSIONS_PER_ACCOUNT) * (SESSION_TTL_MS + 1);
+          deps.clock.now = T + (i / MAX_OPEN_SESSIONS_PER_ACCOUNT) * (SESSION_HOLD_MS + 1);
         }
         return begin(deps, {
           workspace: workspaceId(i % MAX_SITES_PER_ACCOUNT),
@@ -1778,7 +1878,7 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
     it("bounds committed objects and their versions' file rows", async () => {
       const deps = setup();
       const cap = 8 * MiB;
-      deps.caps = { accountRowBytes: cap };
+      deps.caps = { accountRowBytes: cap, sessionObjectsPerWindow: Infinity };
       await fill(deps, cap, async (i) => {
         const result = await begin(deps, {
           files: distinct(`c${i}`, 1000),

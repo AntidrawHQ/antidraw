@@ -261,6 +261,53 @@ describe("uploadAll", () => {
     expect(result._unsafeUnwrapErr()).toMatchObject({ code: "UPLOAD_FAILED", label: "missing" });
   });
 
+  test("starts no upload once `startBy` has passed → EXPIRED", async () => {
+    handler = ok;
+    const task = await makeTask("late.bin", Buffer.alloc(10));
+
+    const result = await uploadAll([task], { startBy: Date.now() - 1, stopBy: Date.now() + 60_000 });
+
+    expect(result._unsafeUnwrapErr()).toMatchObject({ code: "EXPIRED", label: "late.bin" });
+    expect(received).toHaveLength(0);
+  });
+
+  test("does not retry once `startBy` has passed during the backoff", async () => {
+    handler = (_req, res) => res.writeHead(500).end();
+    const task = await makeTask("late-retry.bin", Buffer.alloc(10));
+
+    const result = await uploadAll([task], {
+      startBy: Date.now() + 30,
+      backoffMs: 80,
+      attempts: 4,
+    });
+
+    expect(result._unsafeUnwrapErr().code).toBe("EXPIRED");
+    expect(received).toHaveLength(1);
+  });
+
+  test("stops an upload still running at `stopBy` → EXPIRED", async () => {
+    // Never answers: the PUT would run on past its URL's expiry.
+    handler = () => undefined;
+    const task = await makeTask("slow.bin", Buffer.alloc(10));
+    const started = Date.now();
+
+    const result = await uploadAll([task], { startBy: started + 60_000, stopBy: started + 100 });
+
+    expect(result._unsafeUnwrapErr().code).toBe("EXPIRED");
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  test("uploads normally well before `startBy`", async () => {
+    handler = ok;
+    const task = await makeTask("in-time.bin", Buffer.alloc(10));
+    const now = Date.now();
+
+    const result = await uploadAll([task], { startBy: now + 60_000, stopBy: now + 120_000 });
+
+    expect(result.isOk()).toBe(true);
+    expect(received).toHaveLength(1);
+  });
+
   test("nothing to upload is a success", async () => {
     const events: UploadProgress[] = [];
     const result = await uploadAll([], { onProgress: (p) => events.push(p) });

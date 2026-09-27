@@ -132,6 +132,21 @@ describe("routes", () => {
     expect(await (await fetchSite("/100%.png")).text()).toBe("png");
   });
 
+  test("a file the pointer names in NFD (as macOS stores it) is served at its NFC URL, without a revalidation", async () => {
+    const decomposed = "café.png".normalize("NFD");
+    publish(r2, "site", { ...FILES, [decomposed]: { body: "png", type: "image/png" } });
+    // How a browser sends <img src="/café.png"> typed in NFC.
+    const composed = new URL("https://site.antidraw.app/café.png".normalize("NFC")).pathname;
+    expect(composed).toBe("/caf%C3%A9.png");
+    const response = await fetchSite(composed);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("png");
+    // And the NFD spelling still works.
+    expect((await fetchSite(`/${encodeURIComponent(decomposed)}`)).status).toBe(200);
+    // A hit: the pointer was read once, not re-checked as a miss.
+    expect(r2.reads.filter((key) => key === "m/site.json")).toHaveLength(1);
+  });
+
   test("hashed build output and the viewer's assets are immutable", async () => {
     for (const path of ["/assets/index-AbC12345.js", "/_antidraw/viewer.js"]) {
       const response = await fetchSite(path);

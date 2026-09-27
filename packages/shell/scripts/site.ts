@@ -203,6 +203,18 @@ const decodePath = (pathname: string) => {
 const siteFile = (pathname: string) =>
   pathname === "/" ? "index.html" : pathname === "/preview" ? "preview.html" : pathname.slice(1);
 
+// The file under root whose path is `rel` in NFC, when exactly one is: the
+// publish Worker finds a file whichever Unicode normalization form the page
+// and the disk spell its name in (packages/publish-worker/src/pointer.ts,
+// pointerPathFor). APFS ignores the form, so this only matters on a
+// filesystem that does not (Linux).
+const nfcMatch = (root: string, rel: string) => {
+  if (/^[\x00-\x7f]*$/.test(rel)) return undefined;
+  const want = rel.normalize("NFC");
+  const found = listFiles(root).filter((f) => f.normalize("NFC") === want);
+  return found.length === 1 ? path.join(root, found[0]!) : undefined;
+};
+
 const serve = (dir: string, port: number) => {
   const root = path.resolve(dir);
   if (!fs.existsSync(path.join(root, "canvas.json"))) fail(`${root} is not a built site`);
@@ -210,12 +222,22 @@ const serve = (dir: string, port: number) => {
   http
     .createServer((req, res) => {
       const pathname = decodePath(new URL(req.url ?? "/", "http://x").pathname);
-      const file = path.join(root, siteFile(pathname));
-      let stat: fs.Stats | undefined | false = false;
-      try {
-        stat = file.startsWith(root + path.sep) && fs.statSync(file, { throwIfNoEntry: false });
-      } catch {
-        // A path fs rejects outright, such as one with a NUL byte.
+      let file = path.join(root, siteFile(pathname));
+      const statOf = (f: string) => {
+        try {
+          return f.startsWith(root + path.sep) && fs.statSync(f, { throwIfNoEntry: false });
+        } catch {
+          // A path fs rejects outright, such as one with a NUL byte.
+          return false;
+        }
+      };
+      let stat = statOf(file);
+      if (!stat && file.startsWith(root + path.sep)) {
+        const other = nfcMatch(root, path.relative(root, file).split(path.sep).join("/"));
+        if (other) {
+          file = other;
+          stat = statOf(file);
+        }
       }
       if (!stat || !stat.isFile()) {
         res.writeHead(404).end("Not found");

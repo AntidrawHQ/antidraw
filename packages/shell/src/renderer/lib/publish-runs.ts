@@ -388,9 +388,14 @@ export const checkPublishStatus = async (
       return;
     }
     const { status, site } = session.value;
-    // Final: nothing left to finish in the background.
-    if (status !== "pending" && follows.get(workspaceId)?.runId === id) {
-      stopFollowing(workspaceId);
+    // Final, for the session this run's follow is on: settled the way the
+    // follow would have, which ends it. The panel may have been closed, or a
+    // newer run started, while this check was in flight; main has let the
+    // session go, so this answer is the only one that will come.
+    const f = follows.get(workspaceId);
+    if (status !== "pending" && f?.runId === id) {
+      settleFollowed(workspaceId, f, session.value);
+      return;
     }
     if (status === "completed") {
       queryClient.setQueryData(queryKeys.publish.status(workspaceId), site);

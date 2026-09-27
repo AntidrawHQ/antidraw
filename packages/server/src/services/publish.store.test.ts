@@ -65,6 +65,7 @@ const session = (over: Partial<NewSession> = {}): NewSession => ({
     { kind: "blob", sha256: hex("blob"), size: 2000 },
   ],
   siteUploadBytes: 0,
+  budget: { windowMs: 3_600_000, maxObjects: 1_000_000 },
   ...over,
 });
 
@@ -382,7 +383,7 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
   const gcRun = async (store: PublishStore, now: number) => {
     await store.expireSessions(now, 97);
     const claimed = await store.claimGcObjects({ now, minCreatedAt: now - 86_400_000, limit: 500 });
-    await store.deleteObjectRows(claimed);
+    await store.deleteObjectRows(claimed, now);
     await store.retireSessions(now, 97, 10_000);
     return claimed;
   };
@@ -613,9 +614,9 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
       { deleting: 1, verified: 0 },
     ]);
     expect(await store.leftoverDeletingObjects(10)).toHaveLength(2);
-    expect(await store.deleteObjectRows([{ userId: U, kind: "source", sha256: hex("src") }])).toBe(
-      1,
-    );
+    expect(
+      await store.deleteObjectRows([{ userId: U, kind: "source", sha256: hex("src") }], 1000),
+    ).toBe(1);
     expect(q("SELECT kind FROM stored_object")).toEqual([{ kind: "blob" }]);
   });
 
@@ -662,6 +663,104 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     // The first session's hold has ended; a second begin holds the same objects.
     await store.createSession(session({ id: "pub_2", holdUntil: 9000 }));
     expect(await store.claimGcObjects({ now: 200, minCreatedAt: 0, limit: 500 })).toEqual([]);
+  });
+
+  it("keeps a row GC is deleting while a session that began since holds it", async () => {
+    const { store, q } = setup();
+    await site(store);
+    await store.createSession(session({ holdUntil: 100 }));
+    const claimed = await store.claimGcObjects({ now: 200, minCreatedAt: 0, limit: 500 });
+    expect(claimed).toHaveLength(2);
+    // A begin while GC deletes the keys: its upsert leaves the deleting rows
+    // alone, but it holds them and was given URLs for them (a larger source).
+    await store.createSession(
+      session({
+        id: "pub_2",
+        holdUntil: 9000,
+        objects: [
+          { kind: "source", sha256: hex("src"), size: 150 },
+          { kind: "blob", sha256: hex("blob"), size: 2000 },
+        ],
+      }),
+    );
+    // GC deleted the keys; the rows stay, tracked again, at the holder's size.
+    expect(await store.deleteObjectRows(claimed, 200)).toBe(0);
+    expect(q("SELECT kind, size, verified, deleting FROM stored_object ORDER BY kind")).toEqual([
+      { kind: "blob", size: 2000, verified: 0, deleting: 0 },
+      { kind: "source", size: 150, verified: 0, deleting: 0 },
+    ]);
+    expect(await store.usedBytes(U)).toBe(2150);
+    // Once that hold ends too, GC claims them again and they go.
+    const again = await store.claimGcObjects({ now: 9000, minCreatedAt: 0, limit: 500 });
+    expect(again).toHaveLength(2);
+    expect(await store.deleteObjectRows(again, 9000)).toBe(2);
+    expect(q("SELECT kind FROM stored_object")).toEqual([]);
+  });
+
+  it("charges begins' session objects to the account's window, and refuses one past it whole", async () => {
+    const { store, q } = setup();
+    await site(store);
+    const budget = { windowMs: 1000, maxObjects: 3 };
+    expect(await store.createSession(session({ budget }))).toBe("created");
+    expect(await store.sessionObjectsInWindow(U, 10, 1000)).toEqual({ used: 2, resetsAt: 1010 });
+    // Two more would take the window to 4: nothing of it is written.
+    const over = session({
+      id: "pub_2",
+      now: 500,
+      budget,
+      objects: [
+        { kind: "source", sha256: hex("src-2"), size: 1 },
+        { kind: "blob", sha256: hex("blob-2"), size: 1 },
+      ],
+    });
+    expect(await store.createSession(over)).toBe("over-budget");
+    expect(q("SELECT id FROM publish_session")).toEqual([{ id: "pub_1" }]);
+    expect(q("SELECT count(*) AS n FROM publish_session_object")).toEqual([{ n: 2 }]);
+    expect(q("SELECT count(*) AS n FROM stored_object")).toEqual([{ n: 2 }]);
+    expect(q("SELECT window_start, session_objects FROM publish_budget")).toEqual([
+      { window_start: 10, session_objects: 2 },
+    ]);
+    // Another account has its own window.
+    await site(store, "site_2", V, "w2");
+    expect(
+      await store.createSession(session({ id: "pub_3", userId: V, siteId: "site_2", budget })),
+    ).toBe("created");
+    // Once the window has run, a new one starts with this begin.
+    expect(await store.createSession({ ...over, now: 1010 })).toBe("created");
+    expect(await store.sessionObjectsInWindow(U, 1010, 1000)).toEqual({
+      used: 2,
+      resetsAt: 2010,
+    });
+    expect(await store.sessionObjectsInWindow(U, 2010, 1000)).toEqual({ used: 0, resetsAt: 3010 });
+  });
+
+  it("restarts a verified object's age floor at a commit only once it has run an hour", async () => {
+    const { store, q } = setup();
+    await site(store);
+    await store.createSession(session());
+    await lock(store);
+    expect(await store.commitVersion(version())).toEqual({ ok: true });
+    const commitAt = async (n: number, now: number) => {
+      const id = `pub_${n}`;
+      await store.createSession(session({ id, baseVersion: n - 1, now, holdUntil: now + 1000 }));
+      await store.claimCompleteLock({
+        siteId: "site_1",
+        sessionId: id,
+        baseVersion: n - 1,
+        now,
+        expiresAt: now + 600_000,
+      });
+      expect(
+        await store.commitVersion(
+          version({ id: `ver_${n}`, sessionId: id, baseVersion: n - 1, now }),
+        ),
+      ).toEqual({ ok: true });
+      return q<{ created_at: number }>("SELECT DISTINCT created_at FROM stored_object");
+    };
+    // Committed again within the hour: the rows are left as they are.
+    expect(await commitAt(2, 20 + 3_599_999)).toEqual([{ created_at: 20 }]);
+    // An hour on, the floor restarts.
+    expect(await commitAt(3, 20 + 3_600_001)).toEqual([{ created_at: 20 + 3_600_001 }]);
   });
 
   it("releases only unheld, unverified, unreferenced rows", async () => {
@@ -891,7 +990,7 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     await store.getStoredObjects(U, [{ kind: "blob", sha256: hex("x") }]);
     await store.releaseUnheldObjects(U, [{ kind: "blob", sha256: hex("x") }], 50);
     await store.commitVersion(version());
-    await store.deleteObjectRows([{ userId: U, kind: "blob", sha256: hex("x") }]);
+    await store.deleteObjectRows([{ userId: U, kind: "blob", sha256: hex("x") }], 50);
     const touching = shim.log
       .slice(from)
       .map((s) => s.sql)

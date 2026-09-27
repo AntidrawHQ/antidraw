@@ -1,6 +1,12 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { GC_CLOCK_SKEW_MARGIN_MS, GC_CRON, SESSION_TTL_MS } from "../lib/publish-limits";
+import {
+  GC_CLOCK_SKEW_MARGIN_MS,
+  GC_CRON,
+  SESSION_HOLD_MS,
+  SESSION_TTL_MS,
+  UPLOAD_PUT_GRACE_MS,
+} from "../lib/publish-limits";
 import { blobKey, pointerKey, siteContentKey, sourceKey } from "../lib/storage";
 import {
   beginRequest,
@@ -75,8 +81,20 @@ describe.each(harnesses)("gc (%s)", (_name, makeHarness) => {
     expect(lapsed).toMatchObject({ expiredSessions: 0, retiredSessions: 0 });
     expect(await deps.store.getSession(begun.publish.id)).toMatchObject({ status: "pending" });
 
-    const report = await gcAt(deps, T + SESSION_TTL_MS + GC_CLOCK_SKEW_MARGIN_MS + 1);
-    expect(report).toMatchObject({ expiredSessions: 1, retiredSessions: 1 });
+    // Expired, but still held: a PUT that started before its URL expired may
+    // still be landing.
+    const expired = await gcAt(deps, T + SESSION_TTL_MS + GC_CLOCK_SKEW_MARGIN_MS + 1);
+    expect(expired).toMatchObject({ expiredSessions: 1, retiredSessions: 0 });
+    expect(await deps.store.getSession(begun.publish.id)).toMatchObject({
+      status: "expired",
+      holdUntil: T + SESSION_TTL_MS + UPLOAD_PUT_GRACE_MS,
+    });
+    expect(
+      (await gcAt(deps, T + SESSION_HOLD_MS + GC_CLOCK_SKEW_MARGIN_MS - 1)).retiredSessions,
+    ).toBe(0);
+
+    const report = await gcAt(deps, T + SESSION_HOLD_MS + GC_CLOCK_SKEW_MARGIN_MS + 1);
+    expect(report).toMatchObject({ expiredSessions: 0, retiredSessions: 1 });
     // Retired: its plan stubbed, its held objects dropped, hold_until 0.
     expect(await deps.store.getSession(begun.publish.id)).toMatchObject({
       status: "expired",
@@ -95,7 +113,7 @@ describe.each(harnesses)("gc (%s)", (_name, makeHarness) => {
     const v2 = { kind: "source" as const, sha256: hex("source-v2") };
     const blob = { kind: "blob" as const, sha256: hex("blob-1") };
 
-    const early = await gcAt(deps, T + SESSION_TTL_MS + HOUR);
+    const early = await gcAt(deps, T + SESSION_HOLD_MS + HOUR);
     expect(early.deletedObjects).toBe(0);
     expect(await objectRows(deps, v1)).toHaveLength(1); // verified: the 24 h floor applies
 
@@ -123,14 +141,94 @@ describe.each(harnesses)("gc (%s)", (_name, makeHarness) => {
     expect(await objectRows(deps, orphan)).toHaveLength(1);
 
     // Hold over, but within GC's clock-skew margin: still spared.
-    expect((await gcAt(deps, T + SESSION_TTL_MS + 1)).deletedObjects).toBe(0);
+    expect((await gcAt(deps, T + SESSION_HOLD_MS + 1)).deletedObjects).toBe(0);
     expect(await objectRows(deps, orphan)).toHaveLength(1);
 
-    // Past the margin: gone, though only 2 h old.
-    const report = await gcAt(deps, T + SESSION_TTL_MS + GC_CLOCK_SKEW_MARGIN_MS + 1);
+    // Past the margin: gone, though only 3 h old.
+    const report = await gcAt(deps, T + SESSION_HOLD_MS + GC_CLOCK_SKEW_MARGIN_MS + 1);
     expect(report.deletedObjects).toBe(PLAN_OBJECTS);
     expect(await objectRows(deps, orphan)).toEqual([]);
     expect(deps.sourcesBucket.objects.has(sourceKey(USER, orphan.sha256))).toBe(false);
+    expect(await deps.store.usedBytes(USER)).toBe(0);
+  });
+
+  it("keeps off an object whose PUT started before its URL expired until the grace ends", async () => {
+    const deps = setup();
+    const T = deps.clock.now;
+    const orphan = { kind: "source" as const, sha256: hex("slow"), size: 10 };
+    const begun = await begin(deps, { source: orphan });
+    const put = begun.uploads.find((u) => u.kind === "source")!;
+    // The PUT starts a second before its URL expires and is still streaming
+    // when the hourly run comes round.
+    const run = await gcAt(deps, T + SESSION_TTL_MS + GC_CLOCK_SKEW_MARGIN_MS + 30 * 60_000);
+    expect(run.deletedObjects).toBe(0);
+    expect(await objectRows(deps, orphan)).toHaveLength(1);
+    expect(await deps.store.usedBytes(USER)).toBeGreaterThanOrEqual(orphan.size);
+    // It lands within the grace: its row still counts it, and GC collects
+    // it (bytes and row) once the hold is over.
+    deps.clock.now = T + SESSION_TTL_MS + 50 * 60_000;
+    performUploads(deps, [put]);
+    const report = await gcAt(deps, T + SESSION_HOLD_MS + GC_CLOCK_SKEW_MARGIN_MS + 1);
+    expect(report.deletedObjects).toBe(PLAN_OBJECTS);
+    expect(await objectRows(deps, orphan)).toEqual([]);
+    expect(deps.sourcesBucket.keys()).toEqual([]);
+    expect(deps.sitesBucket.keys()).toEqual([]);
+  });
+
+  it("keeps tracking an object a begin asked for while GC was deleting it", async () => {
+    const deps = setup();
+    const T = deps.clock.now;
+    await begin(deps); // never uploaded; its hold ends
+    const at = T + SESSION_HOLD_MS + GC_CLOCK_SKEW_MARGIN_MS + 1;
+    // Between GC's claim and its R2 delete, a begin of the same plan is
+    // given URLs for the claimed objects (their rows count as absent).
+    let late: Awaited<ReturnType<typeof begin>> | undefined;
+    const del = deps.gc.sources.delete.bind(deps.gc.sources);
+    deps.gc.sources.delete = async (keys) => {
+      if (!late) {
+        deps.clock.now = at;
+        late = await begin(deps, { workspace: workspaceId(2) });
+      }
+      return del(keys);
+    };
+    const report = await gcAt(deps, at);
+    deps.gc.sources.delete = del;
+    expect(late!.uploads).toHaveLength(PLAN_OBJECTS);
+    // Its keys are gone, but its rows are not: they count again, unverified.
+    expect(report.deletedObjects).toBe(0);
+    const refs = late!.uploads.map(({ kind, sha256 }) => ({ kind, sha256 }));
+    const rows = await objectRows(deps, ...refs);
+    expect(rows.map((r) => [r.deleting, r.verified])).toEqual(refs.map(() => [false, false]));
+    // Its PUTs land after the delete: tracked, so the publish completes...
+    performUploads(deps, late!.uploads);
+    expect(await deps.store.usedBytes(USER)).toBe(1000 + 2 * MiB);
+    (await completePublish(deps, USER, late!.publish.id))._unsafeUnwrap();
+    // ...and had it not, GC would have collected them once its hold ended.
+  });
+
+  it("collects what a begin asked for while GC was deleting it, once that hold ends", async () => {
+    const deps = setup();
+    const T = deps.clock.now;
+    await begin(deps);
+    const at = T + SESSION_HOLD_MS + GC_CLOCK_SKEW_MARGIN_MS + 1;
+    let late: Awaited<ReturnType<typeof begin>> | undefined;
+    const del = deps.gc.sources.delete.bind(deps.gc.sources);
+    deps.gc.sources.delete = async (keys) => {
+      if (!late) {
+        deps.clock.now = at;
+        late = await begin(deps, { workspace: workspaceId(2) });
+      }
+      return del(keys);
+    };
+    await gcAt(deps, at);
+    deps.gc.sources.delete = del;
+    // The late PUTs land, and the publish is abandoned.
+    performUploads(deps, late!.uploads);
+    (await abortPublish(deps, USER, late!.publish.id))._unsafeUnwrap();
+    const report = await gcAt(deps, at + SESSION_HOLD_MS + GC_CLOCK_SKEW_MARGIN_MS + 1);
+    expect(report.deletedObjects).toBe(PLAN_OBJECTS);
+    expect(deps.sourcesBucket.keys()).toEqual([]);
+    expect(deps.sitesBucket.keys()).toEqual([]);
     expect(await deps.store.usedBytes(USER)).toBe(0);
   });
 
@@ -138,7 +236,7 @@ describe.each(harnesses)("gc (%s)", (_name, makeHarness) => {
     const deps = setup();
     for (let n = 1; n <= 6; n++) await publish(deps, version(n));
     const v1 = { kind: "source" as const, sha256: hex("source-v1") };
-    await gcAt(deps, deps.clock.now + SESSION_TTL_MS + 1);
+    await gcAt(deps, deps.clock.now + SESSION_HOLD_MS + 1);
     expect(await objectRows(deps, v1)).toHaveLength(1);
   });
 
@@ -149,7 +247,7 @@ describe.each(harnesses)("gc (%s)", (_name, makeHarness) => {
     performUploads(deps, abandoned.uploads);
     deps.sourcesBucket.failDeletes = 2; // the batch and its one retry
 
-    const holdOver = T + SESSION_TTL_MS + GC_CLOCK_SKEW_MARGIN_MS;
+    const holdOver = T + SESSION_HOLD_MS + GC_CLOCK_SKEW_MARGIN_MS;
     const failed = await gcAt(deps, holdOver + 1);
     expect(failed).toMatchObject({ deletedObjects: 0, failedObjectBatches: 1 });
     const rows = await objectRows(
@@ -208,7 +306,7 @@ describe.each(harnesses)("gc (%s)", (_name, makeHarness) => {
       hex("site-assets/chunk-v1AAAAAA.js"),
       await sha256Hex(defaultEntries("v1")["index.html"]),
     ];
-    expect((await gcAt(deps, T + SESSION_TTL_MS + HOUR)).deletedObjects).toBe(0);
+    expect((await gcAt(deps, T + SESSION_HOLD_MS + HOUR)).deletedObjects).toBe(0);
     const report = await gcAt(deps, T + DAY + HOUR);
     expect(report.deletedObjects).toBe(2 + 5 * 3); // source, chunk, 5 x three entry pages
     for (const sha of v1) {
@@ -227,8 +325,8 @@ describe.each(harnesses)("gc (%s)", (_name, makeHarness) => {
     const begun = await begin(deps);
     performUploads(deps, begun.uploads);
     expect(deps.sitesBucket.keys(`c/${USER}/`)).toHaveLength(6);
-    expect((await gcAt(deps, T + SESSION_TTL_MS + 1)).deletedObjects).toBe(0);
-    const report = await gcAt(deps, T + SESSION_TTL_MS + GC_CLOCK_SKEW_MARGIN_MS + 1);
+    expect((await gcAt(deps, T + SESSION_HOLD_MS + 1)).deletedObjects).toBe(0);
+    const report = await gcAt(deps, T + SESSION_HOLD_MS + GC_CLOCK_SKEW_MARGIN_MS + 1);
     expect(report.deletedObjects).toBe(PLAN_OBJECTS);
     expect(deps.sitesBucket.keys()).toEqual([]);
     expect(deps.sourcesBucket.keys()).toEqual([]);
@@ -375,14 +473,14 @@ describe.each(harnesses)("gc (%s)", (_name, makeHarness) => {
     const b = await begin(deps, { workspace: workspaceId(2), files });
     // 12 session objects each; 5 per statement, 2 statements a run.
     deps.gc.limits = { sessionObjectsPerStatement: 5, sessionStatementsPerRun: 2 };
-    const first = await gcAt(deps, T + SESSION_TTL_MS + HOUR);
+    const first = await gcAt(deps, T + SESSION_HOLD_MS + HOUR);
     expect(first).toMatchObject({ retiredSessions: 0 });
     expect(first.backlog).toContain("retire-sessions");
     expect(await deps.harness.sessionObjectRows(a.publish.id)).toBe(2);
     expect(await deps.harness.sessionObjectRows(b.publish.id)).toBe(12);
-    const second = await gcAt(deps, T + SESSION_TTL_MS + 2 * HOUR);
+    const second = await gcAt(deps, T + SESSION_HOLD_MS + 2 * HOUR);
     expect(second).toMatchObject({ retiredSessions: 1 });
-    const third = await gcAt(deps, T + SESSION_TTL_MS + 3 * HOUR);
+    const third = await gcAt(deps, T + SESSION_HOLD_MS + 3 * HOUR);
     expect(third).toMatchObject({ retiredSessions: 1 });
     expect(third.backlog).not.toContain("retire-sessions");
     for (const id of [a.publish.id, b.publish.id]) {
@@ -401,10 +499,10 @@ describe.each(harnesses)("gc (%s)", (_name, makeHarness) => {
       claims.push(opts.limit);
       return claim(opts);
     };
-    const first = await gcAt(deps, T + SESSION_TTL_MS + HOUR);
+    const first = await gcAt(deps, T + SESSION_HOLD_MS + HOUR);
     expect(first).toMatchObject({ deletedObjects: 5, backlog: ["objects"] });
     expect(claims).toEqual([2, 2, 1]);
-    const second = await gcAt(deps, T + SESSION_TTL_MS + 2 * HOUR);
+    const second = await gcAt(deps, T + SESSION_HOLD_MS + 2 * HOUR);
     deps.store.claimGcObjects = claim;
     expect(second).toMatchObject({ deletedObjects: PLAN_OBJECTS - 5, backlog: [] });
   });
@@ -438,7 +536,7 @@ describe.each(harnesses)("gc (%s)", (_name, makeHarness) => {
     )._unsafeUnwrap();
     deps.gc.limits = { objectsPerRun: 2 };
 
-    const report = await gcAt(deps, T + SESSION_TTL_MS + HOUR);
+    const report = await gcAt(deps, T + SESSION_HOLD_MS + HOUR);
     expect(report.deletedObjects).toBe(2);
     expect(report.backlog).toContain("objects");
     // One of each account's: OTHER's oldest went in the first run.
@@ -460,14 +558,14 @@ describe.each(harnesses)("gc (%s)", (_name, makeHarness) => {
 
     // The source and five blobs first (oldest, then in order), then the six
     // site contents; a batch spanning both buckets deletes from each.
-    const first = await gcAt(deps, T + SESSION_TTL_MS + HOUR);
+    const first = await gcAt(deps, T + SESSION_HOLD_MS + HOUR);
     expect(first).toMatchObject({ deletedObjects: 4, backlog: ["objects"] });
     expect(deps.sourcesBucket.deletes.map((keys) => keys.length)).toEqual([3, 1]);
-    const second = await gcAt(deps, T + SESSION_TTL_MS + 2 * HOUR);
+    const second = await gcAt(deps, T + SESSION_HOLD_MS + 2 * HOUR);
     expect(second).toMatchObject({ deletedObjects: 4, backlog: ["objects"] });
     expect(deps.sourcesBucket.deletes.map((keys) => keys.length)).toEqual([3, 1, 2]);
     expect(deps.sitesBucket.deletes.map((keys) => keys.length)).toEqual([1, 1]);
-    const third = await gcAt(deps, T + SESSION_TTL_MS + 3 * HOUR);
+    const third = await gcAt(deps, T + SESSION_HOLD_MS + 3 * HOUR);
     expect(third).toMatchObject({ deletedObjects: 4 });
     expect(await deps.store.leftoverDeletingObjects(10)).toEqual([]);
     expect(await deps.store.usedBytes(USER)).toBe(0);
@@ -479,13 +577,13 @@ describe.each(harnesses)("gc (%s)", (_name, makeHarness) => {
     const T = deps.clock.now;
     await begin(deps);
     deps.gc.limits = { runBudgetMs: -1 };
-    const out = await gcAt(deps, T + SESSION_TTL_MS + HOUR);
+    const out = await gcAt(deps, T + SESSION_HOLD_MS + HOUR);
     expect(out).toMatchObject({ deletedObjects: 0 });
     expect(out.backlog).toContain("objects");
     expect(await deps.store.leftoverDeletingObjects(10)).toHaveLength(PLAN_OBJECTS);
 
     deps.gc.limits = {};
-    expect((await gcAt(deps, T + SESSION_TTL_MS + 2 * HOUR)).deletedObjects).toBe(PLAN_OBJECTS);
+    expect((await gcAt(deps, T + SESSION_HOLD_MS + 2 * HOUR)).deletedObjects).toBe(PLAN_OBJECTS);
   });
 
   it("forgets uncommitted sessions a day after they expire, committed ones after 7 days", async () => {
@@ -493,7 +591,7 @@ describe.each(harnesses)("gc (%s)", (_name, makeHarness) => {
     const T = deps.clock.now;
     const done = await publish(deps);
     const dropped = await begin(deps, { entries: defaultEntries("v2") });
-    const report = await gcAt(deps, T + SESSION_TTL_MS + DAY + 1);
+    const report = await gcAt(deps, T + SESSION_HOLD_MS + DAY + 1);
     expect(report.deletedSessions).toBe(1);
     expect(await deps.store.getSession(dropped.publish.id)).toBeNull();
     expect(await deps.store.getSession(done.publish.id)).not.toBeNull();

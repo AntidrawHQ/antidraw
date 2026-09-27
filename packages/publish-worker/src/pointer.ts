@@ -53,14 +53,54 @@ export const parsePointer = (text: string): Pointer | null => {
   return value as Pointer;
 };
 
+// Unicode normalization. A pointer's paths are file names as the publishing
+// machine's disk gave them, and macOS (Finder especially) stores accented
+// names decomposed (NFD: "cafe\u0301.png"), while a page names the file as its
+// source spells it, usually composed (NFC: "caf\u00e9.png"). The browser
+// percent-encodes the path as written and nothing on the way normalizes it;
+// Vite's dev server finds the file anyway because APFS ignores normalization,
+// and `site.ts serve` matches by NFC form as this does. So a path the pointer
+// does not list as it is is looked up by its NFC form among the pointer's
+// paths by theirs, which also matches a path that mixes forms (a directory
+// made in one, a file in the other). Two paths of the pointer that differ only in normalization are
+// each served by their exact name, and neither by the other's.
+const ASCII_RE = /^[\x00-\x7f]*$/;
+// NFC form -> the pointer's path, or null when two paths share the form. Only
+// non-ASCII paths (ASCII is the same in every form), built on the first
+// lookup that needs it and kept as long as the pointer is.
+const normalizedPaths = new WeakMap<Pointer, Map<string, string | null>>();
+const normalizedPathsOf = (pointer: Pointer) => {
+  let index = normalizedPaths.get(pointer);
+  if (!index) {
+    index = new Map();
+    for (const path of Object.keys(pointer.files)) {
+      if (ASCII_RE.test(path)) continue;
+      const key = path.normalize("NFC");
+      index.set(key, index.has(key) ? null : path);
+    }
+    normalizedPaths.set(pointer, index);
+  }
+  return index;
+};
+
+// The pointer's own path that serves `path`: itself, or the one that is the
+// same in NFC (see above).
+const pointerPathFor = (pointer: Pointer, path: string) => {
+  if (Object.hasOwn(pointer.files, path)) return path;
+  if (ASCII_RE.test(path)) return undefined;
+  return normalizedPathsOf(pointer).get(path.normalize("NFC")) ?? undefined;
+};
+
 // The pointer's entry for a site path: undefined when the site has no such
 // file, and "malformed" when the entry is not one. An own property only: the
-// path "constructor" is not Object.prototype's.
+// path "constructor" is not Object.prototype's. A path the pointer spells in
+// another Unicode normalization form is the same file (pointerPathFor).
 export const entryFor = (
   pointer: Pointer,
-  path: string,
+  requested: string,
 ): PointerEntry | "malformed" | undefined => {
-  if (!Object.hasOwn(pointer.files, path)) return undefined;
+  const path = pointerPathFor(pointer, requested);
+  if (path === undefined) return undefined;
   const entry = pointer.files[path];
   if (
     !isRecord(entry) ||

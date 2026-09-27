@@ -100,6 +100,56 @@ describe("entryFor", () => {
   test.each(["bad-immutable", "bad-sha", "bad-size", "bad-type", "not-an-object"])("%s is malformed", (path) => {
     expect(entryFor(pointer, path)).toBe("malformed");
   });
+
+  describe("Unicode normalization", () => {
+    // Accented names as macOS stores them (NFD), and as source code types them (NFC).
+    const nfd = (s: string) => s.normalize("NFD");
+    const nfc = (s: string) => s.normalize("NFC");
+    const entry = (s: number) => ({ h: SHA, s, t: "image/png" });
+    const unicode = parsePointer(
+      JSON.stringify({
+        v: 1,
+        version: 1,
+        u: "u",
+        files: {
+          [nfd("café.png")]: entry(1),
+          [nfc("crème.png")]: entry(2),
+          // A directory named in one form, its file in the other.
+          [`${nfd("été")}/${nfc("noël.png")}`]: entry(3),
+          // Two paths that differ only in form: each by its exact name only.
+          [nfc("über.txt")]: entry(4),
+          [nfd("über.txt")]: entry(5),
+        },
+      }),
+    )!;
+
+    test("the fixture really is in both forms", () => {
+      expect(nfd("café.png")).not.toBe(nfc("café.png"));
+      expect(Object.hasOwn(unicode.files, nfc("café.png"))).toBe(false);
+    });
+
+    test("a path the pointer spells in NFD is found by its NFC spelling, and the other way", () => {
+      expect(entryFor(unicode, nfc("café.png"))).toMatchObject({ s: 1 });
+      expect(entryFor(unicode, nfd("café.png"))).toMatchObject({ s: 1 });
+      expect(entryFor(unicode, nfd("crème.png"))).toMatchObject({ s: 2 });
+      expect(entryFor(unicode, nfc("crème.png"))).toMatchObject({ s: 2 });
+    });
+
+    test("a path that mixes forms is found in either", () => {
+      expect(entryFor(unicode, nfc("été/noël.png"))).toMatchObject({ s: 3 });
+      expect(entryFor(unicode, nfd("été/noël.png"))).toMatchObject({ s: 3 });
+    });
+
+    test("paths that differ only in form are each served by their exact name", () => {
+      expect(entryFor(unicode, nfc("über.txt"))).toMatchObject({ s: 4 });
+      expect(entryFor(unicode, nfd("über.txt"))).toMatchObject({ s: 5 });
+    });
+
+    test("a different name is still missing", () => {
+      expect(entryFor(unicode, "cafe.png")).toBeUndefined();
+      expect(entryFor(unicode, nfc("cafés.png"))).toBeUndefined();
+    });
+  });
 });
 
 describe("createPointerCache", () => {

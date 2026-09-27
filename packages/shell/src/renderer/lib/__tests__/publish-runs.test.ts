@@ -602,6 +602,60 @@ describe("a publish that may still finish is finished in the background", () => 
     expect(mockSession).toHaveBeenCalledTimes(1);
   });
 
+  // Check status in flight when the panel closes: its final answer is the
+  // follow's, so it is shown or held the same way, not dropped.
+  const checkInFlight = async () => {
+    await failUnknown();
+    let answer!: (v: Awaited<ReturnType<typeof api.getPublishSession>>) => void;
+    mockSession.mockImplementationOnce(() => new Promise((r) => (answer = r)));
+    const check = checkPublishStatus(queryClient, "A");
+    expect(runOf("A")).toMatchObject({ phase: "failed", checking: true });
+    return { check, answer: (v: Parameters<typeof answer>[0]) => answer(v) };
+  };
+
+  test("a completion from Check status shows after the panel was closed mid-check", async () => {
+    const { check, answer } = await checkInFlight();
+    dismissPublishRun("A");
+    expect(runOf("A")).toBeUndefined();
+    answer(ok({ status: "completed", resultVersion: 2, live: true, site: site("A", 2) }));
+    await check;
+    expect(runOf("A")).toMatchObject({ phase: "published", url: "https://A.example.test", result: null });
+    expect(queryClient.getQueryData(queryKeys.publish.status("A"))).toEqual(site("A", 2));
+    await vi.advanceTimersByTimeAsync(FOLLOW_MAX_MS);
+    expect(mockSession).toHaveBeenCalledTimes(1);
+  });
+
+  test("an ended session from Check status brings back 'did not go live' after the panel was closed mid-check", async () => {
+    const { check, answer } = await checkInFlight();
+    dismissPublishRun("A");
+    answer(ok({ status: "expired", resultVersion: null, live: false, site: site("A", 1) }));
+    await check;
+    expect(runOf("A")).toMatchObject({
+      phase: "failed",
+      error: { code: "PUBLISH_OUTCOME_UNKNOWN" },
+      check: "ended",
+      checking: false,
+    });
+  });
+
+  test("a Check status answer that comes after publishing again mid-check is held for how that run ends", async () => {
+    const { check, answer } = await checkInFlight();
+    dismissPublishRun("A", { republishing: true });
+    const again = startPublish(queryClient, "A");
+    push("A", { type: "step", step: "building" });
+    answer(ok({ status: "completed", resultVersion: 2, live: true, site: site("A", 2) }));
+    await check;
+    expect(runOf("A")?.phase).toBe("publishing");
+
+    push("A", fail("BUILD_FAILED"));
+    expect(await again).toBe("failed");
+    expect(runOf("A")).toMatchObject({ phase: "failed", error: { code: "BUILD_FAILED" } });
+    dismissPublishRun("A");
+    expect(runOf("A")).toMatchObject({ phase: "published", url: "https://A.example.test", result: null });
+    await vi.advanceTimersByTimeAsync(FOLLOW_MAX_MS);
+    expect(mockSession).toHaveBeenCalledTimes(1);
+  });
+
   test("an answer does not replace a newer run of the workspace", async () => {
     await failUnknown();
     dismissPublishRun("A");

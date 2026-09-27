@@ -1,3 +1,10 @@
+CREATE TABLE `publish_budget` (
+	`user_id` text PRIMARY KEY NOT NULL,
+	`window_start` integer NOT NULL,
+	`session_objects` integer NOT NULL,
+	FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
 CREATE TABLE `publish_session` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,

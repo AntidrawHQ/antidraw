@@ -184,8 +184,9 @@ export const publishSession = sqliteTable(
     plan: text("plan").notNull(), // JSON, zod-parsed on read
     resultVersion: integer("result_version"),
     expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
-    // Upload URLs stay valid until then; 0 = none were issued, or GC retired
-    // the session after its hold ended.
+    // GC keeps off the session's objects until then: its upload URLs'
+    // expiry (expires_at) plus UPLOAD_PUT_GRACE_MS, for a PUT still landing.
+    // 0 = none were issued, or GC retired the session after its hold ended.
     holdUntil: integer("hold_until", { mode: "timestamp_ms" }).notNull(),
     // Σ size of the plan's site contents no commit had verified at begin;
     // counts toward MAX_PENDING_SITE_BYTES while the session holds and has
@@ -221,3 +222,18 @@ export const publishSessionObject = sqliteTable(
     index("publish_session_object_userId_kind_sha256_idx").on(t.userId, t.kind, t.sha256),
   ],
 );
+
+// Per account: how many session objects its begins inserted in the current
+// window (MAX_SESSION_OBJECTS_PER_WINDOW in lib/publish-limits.ts). A begin
+// writes a row per plan object and a commit or abort deletes them again, so
+// the rate limiter's count of begins alone lets one account write rows at
+// thousands a second. Begin charges its plan here, in the batch that inserts
+// its session, and that batch fails once the window is spent. One row per
+// account that ever began a publish.
+export const publishBudget = sqliteTable("publish_budget", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => user.id, { onDelete: "cascade" }),
+  windowStart: integer("window_start", { mode: "timestamp_ms" }).notNull(),
+  sessionObjects: integer("session_objects").notNull(),
+});

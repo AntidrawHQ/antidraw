@@ -68,6 +68,12 @@ const COMPLETE_ATTEMPTS = 5;
 // empty list turns them off (tests do, except where they test them).
 export const publishTiming = {
   completeRetryBaseMs: 2_000,
+  // No upload starts (or is retried) this close to the session's expiry: a
+  // PUT that starts just before its URL expires may stream on past it, and
+  // the server only holds its objects for a while after expiry
+  // (UPLOAD_PUT_GRACE_MS). One still running at expiry is stopped: complete
+  // would refuse by then anyway.
+  uploadStartMarginMs: 10 * 60 * 1000,
   followDelaysMs: [15_000, 30_000, 60_000, 120_000] as number[],
 };
 
@@ -164,11 +170,11 @@ export const mapCloudError = (
     case "QUOTA_EXCEEDED":
       // "pending-site": not the storage quota, but the site files of this
       // account's unfinished publishes, which stop counting when those
-      // sessions finish or expire (up to two hours).
+      // sessions finish, or an hour after they expire (up to three hours).
       if (details.reason === "pending-site") {
         return publishError(
           "QUOTA_EXCEEDED",
-          "Too many site files are waiting on unfinished publishes. Try again in an hour or two.",
+          "Too many site files are waiting on unfinished publishes. Try again in a few hours.",
           {
             reason: "pending-site",
             ...pickNumbers(details, ["quotaBytes", "usedBytes", "publishBytes"]),
@@ -238,13 +244,26 @@ export const mapCloudError = (
       );
     case "RATE_LIMITED":
       // "open-sessions": too many unfinished publishes hold their sessions;
-      // they free up as they finish or expire (up to two hours), not within
-      // the minute the plain rate limit resets in.
+      // they free up as they finish, or an hour after they expire (up to
+      // three hours), not within the minute the plain rate limit resets in.
       if (details.reason === "open-sessions") {
         return publishError(
           "RATE_LIMITED",
-          "Too many unfinished publishes. Try again in an hour or two.",
+          "Too many unfinished publishes. Try again in a few hours.",
           { reason: "open-sessions" },
+        );
+      }
+      // "session-objects": the account's hourly budget of files begun
+      // (published or not) is spent; the server says when it frees up.
+      if (details.reason === "session-objects") {
+        const wait =
+          typeof details.retryAfterSeconds === "number" && details.retryAfterSeconds > 0
+            ? Math.ceil(details.retryAfterSeconds / 60)
+            : 60;
+        return publishError(
+          "RATE_LIMITED",
+          `Too many files published in the last hour. Try again in ${wait} minute${wait === 1 ? "" : "s"}.`,
+          { reason: "session-objects", ...pickNumbers(details, ["retryAfterSeconds"]) },
         );
       }
       return publishError(
@@ -333,7 +352,11 @@ export const mapSiteBuildError = (e: SiteBuildError): PublishError => {
 };
 
 const fromUploadError = (e: UploadError): PublishError =>
-  e.code === "CANCELLED" ? CANCELLED : publishError("UPLOAD_FAILED", e.message);
+  e.code === "CANCELLED"
+    ? CANCELLED
+    : e.code === "EXPIRED"
+      ? mapCloudError({ status: 410, code: "PUBLISH_EXPIRED", message: e.message })
+      : publishError("UPLOAD_FAILED", e.message);
 
 // Complete is idempotent (a completed session answers with its result), so
 // anything that leaves its outcome unknown is worth another try.
@@ -1022,8 +1045,11 @@ const steps = async (ctx: {
     uploadedFiles: 0,
     totalFiles: tasks.value.length,
   });
+  const expiresAt = Date.parse(begun.value.publish.expiresAt);
   const uploaded = await uploadAll(tasks.value, {
     signal,
+    startBy: expiresAt - publishTiming.uploadStartMarginMs,
+    stopBy: expiresAt,
     onProgress: (p) => emit({ type: "upload-progress", ...p }),
   });
   if (uploaded.isErr()) return err(fromUploadError(uploaded.error));

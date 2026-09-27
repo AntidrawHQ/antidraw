@@ -7,6 +7,7 @@ import {
   D1_MAX_PARAMS,
   FILE_KEY_INLINE_BYTES,
   FILE_ROW_OVERHEAD_BYTES,
+  GC_MIN_AGE_REFRESH_MS,
   OBJECT_ROW_BYTES,
   PAGE_BYTES,
   SESSION_OBJECT_ROW_BYTES,
@@ -176,7 +177,12 @@ export type NewSession = {
   now: number;
   objects: SizedObjectRef[]; // every account object the plan needs
   siteUploadBytes: number; // Σ size of its site contents no commit has verified
+  // The account's session-object window: `objects` are charged to it, and
+  // the session is not created once they take it past `maxObjects`.
+  budget: SessionObjectBudget;
 };
+
+export type SessionObjectBudget = { windowMs: number; maxObjects: number };
 
 export type NewVersion = {
   id: string;
@@ -231,8 +237,17 @@ export type PublishStore = {
   // was refused before it issued any URL. Returns the number deleted.
   releaseUnheldObjects(userId: string, refs: ObjectRef[], now: number): Promise<number>;
 
-  // One batch: the session, its objects and the stored-object upsert.
-  createSession(session: NewSession): Promise<void>;
+  // The session objects the account's begins inserted in the window current
+  // at `now`, and when that window ends.
+  sessionObjectsInWindow(
+    userId: string,
+    now: number,
+    windowMs: number,
+  ): Promise<{ used: number; resetsAt: number }>;
+  // One batch: the budget charge, the session, its objects and the
+  // stored-object upsert. "over-budget": the charge took the window past its
+  // budget, and the batch wrote nothing.
+  createSession(session: NewSession): Promise<"created" | "over-budget">;
   // Deletes a session begin refused before it issued any URL or answered
   // with its id: nothing can complete it or read its plan, and a row kept
   // until retention would let refused begins fill D1 past the open-session
@@ -310,7 +325,10 @@ export type PublishStore = {
     minCreatedAt: number;
     limit: number;
   }): Promise<UserObjectRef[]>;
-  deleteObjectRows(keys: UserObjectRef[]): Promise<number>;
+  // Drops the rows of objects whose keys GC deleted: those still `deleting`
+  // and held by no session (by `now`), which it returns the count of. A held
+  // one is kept, unverified and no longer deleting (see the SQL).
+  deleteObjectRows(keys: UserObjectRef[], now: number): Promise<number>;
   // Sites whose pointer is behind their head version, longest waiting first.
   sitesBehindPointer(limit: number): Promise<SiteRow[]>;
   // Takes the lock of a site that has never committed (head_version 0), for
@@ -466,7 +484,8 @@ const join = (parts: SQL[]) => sql.join(parts, sql`, `);
 const values = <T>(rows: T[], row: (r: T) => SQL) => join(rows.map(row));
 const bit = (b: boolean) => (b ? 1 : 0);
 
-// A statement's live holds: sessions whose upload URLs still work.
+// A statement's live holds: sessions whose upload URLs still work, or whose
+// PUTs may still be landing (hold_until is UPLOAD_PUT_GRACE_MS past expiry).
 const heldBySession = (so: SQL, now: number) => sql`EXISTS (
   SELECT 1 FROM publish_session_object pso JOIN publish_session ps ON ps.id = pso.session_id
   WHERE pso.user_id = ${so}.user_id AND pso.kind = ${so}.kind AND pso.sha256 = ${so}.sha256
@@ -595,13 +614,38 @@ export const d1PublishStore = (db: Db): PublishStore => {
       return released;
     },
 
+    async sessionObjectsInWindow(userId, now, windowMs) {
+      const row = await first(sql`SELECT window_start, session_objects FROM publish_budget
+        WHERE user_id = ${userId}`);
+      if (!row || num(row.window_start) <= now - windowMs) {
+        return { used: 0, resetsAt: now + windowMs };
+      }
+      return { used: num(row.session_objects), resetsAt: num(row.window_start) + windowMs };
+    },
+
     async createSession(s) {
+      const { windowMs, maxObjects } = s.budget;
+      // The charge first, starting a new window once the last has ended (SET
+      // reads the row as it was). Past the budget the session's status is
+      // NULL, which its NOT NULL refuses, and D1 rolls the batch back whole:
+      // concurrent begins cannot pass the budget together, and a refused one
+      // writes nothing.
+      const lapsed = sql`publish_budget.window_start <= ${s.now - windowMs}`;
       const statements: SQL[] = [
+        sql`INSERT INTO publish_budget (user_id, window_start, session_objects)
+          VALUES (${s.userId}, ${s.now}, ${s.objects.length})
+          ON CONFLICT(user_id) DO UPDATE SET
+            session_objects = CASE WHEN ${lapsed} THEN excluded.session_objects
+              ELSE publish_budget.session_objects + excluded.session_objects END,
+            window_start = CASE WHEN ${lapsed} THEN excluded.window_start
+              ELSE publish_budget.window_start END`,
         sql`INSERT INTO publish_session
             (id, user_id, site_id, base_version, status, plan, expires_at, hold_until,
              site_upload_bytes, created_at)
-          VALUES (${s.id}, ${s.userId}, ${s.siteId}, ${s.baseVersion}, 'pending', ${s.plan},
-            ${s.expiresAt}, ${s.holdUntil}, ${s.siteUploadBytes}, ${s.now})`,
+          VALUES (${s.id}, ${s.userId}, ${s.siteId}, ${s.baseVersion},
+            CASE WHEN (SELECT session_objects FROM publish_budget WHERE user_id = ${s.userId})
+              <= ${maxObjects} THEN 'pending' ELSE NULL END,
+            ${s.plan}, ${s.expiresAt}, ${s.holdUntil}, ${s.siteUploadBytes}, ${s.now})`,
       ];
       const objects = jsonChunks(s.objects.map((o) => [o.kind, o.sha256, o.size]));
       for (const json of objects) {
@@ -625,7 +669,15 @@ export const d1PublishStore = (db: Db): PublishStore => {
             SET size = max(stored_object.size, excluded.size)
           WHERE stored_object.verified = 0 AND stored_object.deleting = 0`);
       }
-      await batch(statements);
+      try {
+        await batch(statements);
+        return "created";
+      } catch (error) {
+        if (/NOT NULL constraint failed: publish_session\.status/.test(errorText(error))) {
+          return "over-budget";
+        }
+        throw error;
+      }
     },
 
     async discardSession(sessionId) {
@@ -780,9 +832,14 @@ export const d1PublishStore = (db: Db): PublishStore => {
       statements.push(
         // GC's age floor for a verified object runs from its last commit, so
         // it outlasts every upload URL the committing session was given
-        // (UPLOAD_URL_TTL_S): the hold that kept GC off them ends here.
+        // (UPLOAD_URL_TTL_S): the hold that kept GC off them ends here. A
+        // row verified by a commit less than GC_MIN_AGE_REFRESH_MS ago is
+        // left as it is: its floor already ends long after that, and
+        // rewriting it would cost a D1 write per object every commit.
         sql`UPDATE stored_object SET verified = 1, created_at = max(created_at, ${v.now})
-          WHERE deleting = 0 AND (user_id, kind, sha256) IN
+          WHERE deleting = 0
+            AND (verified = 0 OR created_at < ${v.now - GC_MIN_AGE_REFRESH_MS})
+            AND (user_id, kind, sha256) IN
             (SELECT user_id, kind, sha256 FROM publish_session_object
               WHERE session_id = ${v.sessionId})`,
         sql`UPDATE site SET head_version = ${next},
@@ -954,17 +1011,33 @@ export const d1PublishStore = (db: Db): PublishStore => {
       ).map(toUserObject);
     },
 
-    // One D1 batch, a statement per JSON chunk (a thousand keys fit one).
+    // One D1 batch, two statements per JSON chunk (a thousand keys fit one).
     // `+deleting` keeps the planner on the primary key: the partial index
-    // would have it walk every row GC has marked.
-    async deleteObjectRows(keys) {
-      return batch(
-        jsonChunks(keys.map((k) => [k.userId, k.kind, k.sha256])).map(
-          (json) => sql`DELETE FROM stored_object WHERE +deleting = 1
-            AND (user_id, kind, sha256) IN
-              (SELECT ${col(0)}, ${col(1)}, ${col(2)} FROM json_each(${json}) j)`,
-        ),
-      );
+    // would have it walk every row GC has marked. A row a live session holds
+    // (a begin that found it deleting signed an upload URL for it after the
+    // claim) stays, unverified and counted again at the largest size a holder
+    // declared: that session's PUT may land after the key was deleted, and
+    // its bytes must stay tracked (its complete HEADs them, or GC claims the
+    // row again once the hold ends). Deleting it would leave them in R2 with
+    // no row that counts or collects them.
+    async deleteObjectRows(keys, now) {
+      const so = sql.raw("stored_object");
+      const statements: SQL[] = [];
+      for (const json of jsonChunks(keys.map((k) => [k.userId, k.kind, k.sha256]))) {
+        const listed = sql`(user_id, kind, sha256) IN
+          (SELECT ${col(0)}, ${col(1)}, ${col(2)} FROM json_each(${json}) j)`;
+        statements.push(
+          sql`UPDATE stored_object SET deleting = 0, verified = 0,
+              size = max(size, (SELECT max(pso.size) FROM publish_session_object pso
+                JOIN publish_session ps ON ps.id = pso.session_id
+                WHERE pso.user_id = stored_object.user_id AND pso.kind = stored_object.kind
+                  AND pso.sha256 = stored_object.sha256 AND ps.hold_until > ${now}))
+            WHERE +deleting = 1 AND ${listed} AND ${heldBySession(so, now)}`,
+          sql`DELETE FROM stored_object WHERE +deleting = 1 AND ${listed}`,
+        );
+      }
+      const changed = await batchEach(statements);
+      return changed.filter((_, i) => i % 2 === 1).reduce((sum, n) => sum + n, 0);
     },
 
     async sitesBehindPointer(limit) {

@@ -4,6 +4,7 @@
 // D1 store over node:sqlite where that is available), so a divergence between
 // the two shows up as a test that passes on one and fails on the other.
 import { utf8Bytes } from "../lib/paths";
+import { GC_MIN_AGE_REFRESH_MS } from "../lib/publish-limits";
 import {
   PLAN_RESERVED_ROW_BYTES_KEY,
   PLAN_STUB,
@@ -39,6 +40,7 @@ export type MemoryPublishState = {
   objects: Map<string, StoredObjectRow>;
   sessions: Map<string, SessionRow>;
   sessionObjects: SessionObject[];
+  budgets: Map<string, { windowStart: number; sessionObjects: number }>;
 };
 
 // publish.store.ts's graceCandidate.
@@ -56,6 +58,7 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
     objects: new Map(),
     sessions: new Map(),
     sessionObjects: [],
+    budgets: new Map(),
   };
   const copy = <T>(row: T | undefined | null): T | null => (row ? { ...row } : null);
 
@@ -176,8 +179,23 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
       return released;
     },
 
+    async sessionObjectsInWindow(userId, now, windowMs) {
+      const budget = state.budgets.get(userId);
+      if (!budget || budget.windowStart <= now - windowMs) {
+        return { used: 0, resetsAt: now + windowMs };
+      }
+      return { used: budget.sessionObjects, resetsAt: budget.windowStart + windowMs };
+    },
+
     async createSession(s) {
       if (state.sessions.has(s.id)) throw new Error("UNIQUE constraint failed: publish_session.id");
+      const budget = state.budgets.get(s.userId);
+      const charged =
+        !budget || budget.windowStart <= s.now - s.budget.windowMs
+          ? { windowStart: s.now, sessionObjects: s.objects.length }
+          : { ...budget, sessionObjects: budget.sessionObjects + s.objects.length };
+      if (charged.sessionObjects > s.budget.maxObjects) return "over-budget";
+      state.budgets.set(s.userId, charged);
       state.sessions.set(s.id, {
         id: s.id,
         userId: s.userId,
@@ -207,6 +225,7 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
           row.size = Math.max(row.size, o.size);
         }
       }
+      return "created";
     },
     async discardSession(sessionId) {
       deleteSessions((s) => s.id === sessionId);
@@ -336,7 +355,11 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
         state.siteFiles.push({ ...f, versionId: v.id, userId: v.userId });
       for (const so of state.sessionObjects.filter((o) => o.sessionId === v.sessionId)) {
         const row = state.objects.get(objectId(so));
-        if (row && !row.deleting) {
+        if (
+          row &&
+          !row.deleting &&
+          (!row.verified || row.createdAt < v.now - GC_MIN_AGE_REFRESH_MS)
+        ) {
           row.verified = true;
           row.createdAt = Math.max(row.createdAt, v.now);
         }
@@ -483,14 +506,29 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
         return { userId: o.userId, kind: o.kind, sha256: o.sha256 };
       });
     },
-    async deleteObjectRows(keys) {
+    async deleteObjectRows(keys, now) {
       let n = 0;
       for (const k of keys) {
         const id = objectId(k);
-        if (state.objects.get(id)?.deleting) {
-          state.objects.delete(id);
-          n++;
+        const row = state.objects.get(id);
+        if (!row?.deleting) continue;
+        if (heldBySession(row, now)) {
+          row.deleting = false;
+          row.verified = false;
+          for (const so of state.sessionObjects) {
+            if (
+              so.userId === row.userId &&
+              so.kind === row.kind &&
+              so.sha256 === row.sha256 &&
+              (state.sessions.get(so.sessionId)?.holdUntil ?? 0) > now
+            ) {
+              row.size = Math.max(row.size, so.size);
+            }
+          }
+          continue;
         }
+        state.objects.delete(id);
+        n++;
       }
       return n;
     },

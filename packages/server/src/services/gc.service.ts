@@ -176,11 +176,17 @@ const deleteKeys = async (store: ObjectStore, keys: string[]) => {
 //
 // Invariant: this is the only code that deletes an account object's key, and
 // it deletes only keys whose rows claimGcObjects already marked deleting (and
-// unverified), never one a live session holds. So a row that is verified and
-// not deleting always has its bytes in R2, and a held object a complete found
-// stays there: begin skips uploads and complete skips HEADs on that alone
-// (publish.service.ts, findMissing). Anything new that deletes object keys
-// must mark their rows the same way first.
+// unverified), never one a live session held at the claim. So a row that is
+// verified and not deleting always has its bytes in R2, and a held object a
+// complete found stays there: begin skips uploads and complete skips HEADs on
+// that alone (publish.service.ts, findMissing). Anything new that deletes
+// object keys must mark their rows the same way first.
+//
+// And no row goes while a PUT could still write its key: a session holds its
+// objects until UPLOAD_PUT_GRACE_MS after its URLs expire, and a row a
+// session came to hold after the claim (a begin signs URLs for deleting
+// rows) is kept by deleteObjectRows, unverified, rather than deleted. Bytes
+// in R2 without a row would count toward nothing and never be collected.
 const collectObjects = async (run: Run) => {
   let taken = 0;
   while (taken < run.limits.objectsPerRun) {
@@ -223,7 +229,7 @@ const collectObjectClaim = async (run: Run, limit: number): Promise<number | "st
       behind(run, "objects");
       return "stopped";
     }
-    report.deletedObjects += await deps.store.deleteObjectRows(batch);
+    report.deletedObjects += await deps.store.deleteObjectRows(batch, holdCutoff(now));
   }
   return todo.length;
 };
@@ -334,8 +340,9 @@ export const runGc = async (deps: GcDeps, when: Date): Promise<GcReport> => {
   };
 
   await step("expire-sessions", () =>
-    // A session's expiry is its hold's end until something ends the hold
-    // sooner; expiring it fails a commit its (lagging) complete would pass.
+    // Expiring a session fails a commit its complete, judging the expiry by
+    // its own (possibly lagging) clock, would pass: the margin applies here
+    // too. Its hold outlasts the expiry (UPLOAD_PUT_GRACE_MS).
     repeat(run, "expire-sessions", limits.sessionStatementsPerRun, async () => {
       const n = await deps.store.expireSessions(holdCutoff(now), limits.sessionsPerStatement);
       report.expiredSessions += n;

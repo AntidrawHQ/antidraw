@@ -18,13 +18,16 @@ import {
   MAX_OPEN_SESSIONS_PER_ACCOUNT,
   MAX_PENDING_SITE_BYTES,
   MAX_PLAN_JSON_BYTES,
+  MAX_SESSION_OBJECTS_PER_WINDOW,
   MAX_SITE_BYTES,
   MAX_SITES_PER_ACCOUNT,
   MAX_SNAPSHOT_BYTES,
   MAX_STORED_SITE_BYTES,
   OBJECT_ROW_BYTES,
   QUOTA_BYTES,
+  SESSION_HOLD_MS,
   SESSION_OBJECT_ROW_BYTES,
+  SESSION_OBJECT_WINDOW_MS,
   SESSION_ROW_BYTES,
   SESSION_TTL_MS,
   SITE_ROW_BYTES,
@@ -73,7 +76,8 @@ import { syncPointer } from "./site-pointer";
 // Begin validates the plan, finds or creates the workspace's site, works out
 // which objects the server lacks (the snapshot's source and blobs, and the
 // site files' contents, each content-addressed per account), records a
-// session that holds its objects for as long as its upload URLs work, and
+// session that holds its objects for as long as a PUT through one of its
+// upload URLs may land (UPLOAD_PUT_GRACE_MS past their expiry), and
 // signs those URLs. Complete verifies every object of the session, commits
 // the version row and its site files under a guard that fails the whole batch
 // if the head moved, the lock was lost or an object vanished, and then writes
@@ -83,10 +87,15 @@ import { syncPointer } from "./site-pointer";
 // the contract and §3 for the SQL (publish.store.ts).
 
 // Tests shrink these.
-export type PublishCaps = { accountRowBytes: number; beginHeads: number };
+export type PublishCaps = {
+  accountRowBytes: number;
+  beginHeads: number;
+  sessionObjectsPerWindow: number;
+};
 const PUBLISH_CAPS: PublishCaps = {
   accountRowBytes: MAX_ACCOUNT_ROW_BYTES,
   beginHeads: MAX_BEGIN_HEADS,
+  sessionObjectsPerWindow: MAX_SESSION_OBJECTS_PER_WINDOW,
 };
 
 export type PublishDeps = {
@@ -486,9 +495,12 @@ const readObjects = async (
 // Which account objects need an upload. A verified row is trusted (see
 // findMissing). An object without a row is not in R2 either (GC deletes a
 // key before its row, and a row goes without its key only when no session
-// that could have uploaded it holds it), so it is asked for without a HEAD;
-// only an unverified row is looked up in R2, so bytes an earlier session
-// uploaded but never committed are not sent twice. At most `maxHeads` of
+// that could have uploaded it holds it, UPLOAD_PUT_GRACE_MS past its URLs'
+// expiry), so it is asked for without a HEAD. So is one whose row GC is
+// deleting: this session's hold keeps that row once GC has deleted the key
+// (deleteObjectRows), so an upload landing after that stays tracked. Only an
+// unverified row is looked up in R2, so bytes an earlier session uploaded
+// but never committed are not sent twice. At most `maxHeads` of
 // them, the largest first: the rest are asked for again, which costs the
 // client an upload rather than the operator an unbounded run of HEADs.
 const resolveUploads = async (
@@ -518,6 +530,26 @@ const tooManyOpen = (count: number) =>
     "RATE_LIMITED",
     "Too many unfinished publishes. Finish or cancel one, or try again later.",
     { reason: "open-sessions", limit: MAX_OPEN_SESSIONS_PER_ACCOUNT, open: count },
+  );
+
+const sessionObjectsSpent = (
+  limit: number,
+  used: number,
+  publishObjects: number,
+  resetsAt: number,
+  now: number,
+) =>
+  apiError(
+    429,
+    "RATE_LIMITED",
+    "You have published too many files in the last hour. Try again later.",
+    {
+      reason: "session-objects",
+      limit,
+      used,
+      publishObjects,
+      retryAfterSeconds: Math.max(1, Math.ceil((resetsAt - now) / 1000)),
+    },
   );
 
 const siteStorageExceeded = (usedBytes: number, publishBytes: number) =>
@@ -601,7 +633,31 @@ export const beginPublish = (
       );
     }
 
-    const objectsResult = await readObjects(deps, userId, planObjects(plan));
+    // What begin writes grows with the plan (a session object per plan
+    // object, deleted again by the commit or abort), so the account's window
+    // is charged by that, not only by the call (the limiter above). Checked
+    // here so a spent window costs nothing more; the insert's batch enforces
+    // it.
+    const needed = planObjects(plan);
+    const checkedAt = deps.now().getTime();
+    const window = await deps.store.sessionObjectsInWindow(
+      userId,
+      checkedAt,
+      SESSION_OBJECT_WINDOW_MS,
+    );
+    if (window.used + needed.length > caps.sessionObjectsPerWindow) {
+      return err(
+        sessionObjectsSpent(
+          caps.sessionObjectsPerWindow,
+          window.used,
+          needed.length,
+          window.resetsAt,
+          checkedAt,
+        ),
+      );
+    }
+
+    const objectsResult = await readObjects(deps, userId, needed);
     if (objectsResult.isErr()) return err(objectsResult.error);
     const objects = objectsResult.value;
     const added = (keep: (o: ObjectState) => boolean) =>
@@ -659,7 +715,7 @@ export const beginPublish = (
     const uploads = needs.filter((o) => o.upload);
     const objectUploads = uploads.filter((o) => o.kind !== "site");
     const siteUploads = uploads.filter((o) => o.kind === "site");
-    await deps.store.createSession({
+    const created = await deps.store.createSession({
       id: sessionId,
       userId,
       siteId: site.id,
@@ -673,11 +729,26 @@ export const beginPublish = (
         [PLAN_RESERVED_ROW_BYTES_KEY]: reservedRowBytes,
       }),
       expiresAt,
-      holdUntil: expiresAt,
+      // Past the expiry, for a PUT that started in time but is still landing.
+      holdUntil: now + SESSION_HOLD_MS,
       now,
       objects: objects.map(({ kind, sha256, size }) => ({ kind, sha256, size })),
       siteUploadBytes,
+      budget: { windowMs: SESSION_OBJECT_WINDOW_MS, maxObjects: caps.sessionObjectsPerWindow },
     });
+    // Concurrent begins spent the window first; this one wrote nothing.
+    if (created === "over-budget") {
+      const spent = await deps.store.sessionObjectsInWindow(userId, now, SESSION_OBJECT_WINDOW_MS);
+      return err(
+        sessionObjectsSpent(
+          caps.sessionObjectsPerWindow,
+          spent.used,
+          objects.length,
+          spent.resetsAt,
+          now,
+        ),
+      );
+    }
 
     // No URL was issued and the client never learns the session's id, so a
     // refused session is deleted outright (its plan with it: kept, refused
@@ -1099,8 +1170,9 @@ export const getPublishSession = (
 
 // Upload URLs already handed out stay usable until they expire and cannot be
 // revoked, so an abort keeps the session's hold: its objects stay safe from
-// GC and its site bytes counted until then. A session that was never given
-// any URL has nothing in flight, and its hold ends at once (spec §10, Q9).
+// GC and its site bytes counted until then (and UPLOAD_PUT_GRACE_MS past it,
+// for a PUT still landing). A session that was never given any URL has
+// nothing in flight, and its hold ends at once (spec §10, Q9).
 // Nothing visitors see changed, whatever it uploaded.
 export const abortPublish = (
   deps: PublishDeps,
@@ -1112,6 +1184,12 @@ export const abortPublish = (
     if (sessionResult.isErr()) return err(sessionResult.error);
     const session = sessionResult.value;
     if (session.status !== "pending") return ok({ ok: true as const });
+    // An abort writes (a no-upload one deletes the session's objects too):
+    // counted with the begins whose sessions it ends.
+    const { success } = await deps.publishLimiter.limit({ key: userId });
+    if (!success) {
+      return err(apiError(429, "RATE_LIMITED", "Too many publishes. Try again in a minute."));
+    }
 
     let plan: { objectUploads?: unknown; siteUploads?: unknown } = {};
     try {

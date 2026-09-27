@@ -24,7 +24,8 @@ export type UploadProgress = {
 };
 
 export type UploadError = {
-  code: "UPLOAD_FAILED" | "CANCELLED";
+  // EXPIRED: the session's upload URLs expire too soon (startBy/stopBy).
+  code: "UPLOAD_FAILED" | "CANCELLED" | "EXPIRED";
   message: string;
   label?: string;
   status?: number;
@@ -69,6 +70,13 @@ export const uploadAll = async (
     attempts?: number;
     backoffMs?: number; // first retry delay, doubled per attempt; tests shorten it
     signal?: AbortSignal;
+    // Epoch ms. No attempt (first or retry) starts at or after `startBy`,
+    // and any still running at `stopBy` is stopped: both end the batch with
+    // EXPIRED. A PUT is checked when it arrives but may stream for as long as
+    // the client sends, so one started just before its URL expires can land
+    // long after, when the server may no longer track it.
+    startBy?: number;
+    stopBy?: number;
     onProgress?: (p: UploadProgress) => void;
     fetchImpl?: typeof fetch;
   } = {},
@@ -157,8 +165,15 @@ export const uploadAll = async (
     }
   };
 
+  const expired: UploadError = {
+    code: "EXPIRED",
+    message: "The publish took too long and its uploads expired",
+  };
+  const tooLate = () => opts.startBy !== undefined && Date.now() >= opts.startBy;
+
   const uploadOne = async (task: UploadTask): Promise<Result<void, UploadError>> => {
     for (let n = 1; ; n++) {
+      if (tooLate()) return err({ ...expired, label: task.label });
       const outcome = await attempt(task);
       if (outcome.kind === "ok") {
         progress.uploadedFiles += 1;
@@ -186,6 +201,16 @@ export const uploadAll = async (
 
   let next = 0;
   const state: { failure: UploadError | null } = { failure: null };
+  let stopTimer: ReturnType<typeof setTimeout> | undefined;
+  if (opts.stopBy !== undefined && tasks.length > 0) {
+    // setTimeout fires at once past 2^31-1 ms; nothing waits that long here.
+    const delay = Math.min(Math.max(0, opts.stopBy - Date.now()), 2 ** 31 - 1);
+    stopTimer = setTimeout(() => {
+      if (!state.failure || state.failure.code === "CANCELLED") state.failure = expired;
+      batch.abort();
+    }, delay);
+    (stopTimer as { unref?: () => void }).unref?.();
+  }
   const worker = async () => {
     while (!state.failure && !batch.signal.aborted && next < tasks.length) {
       const task = tasks[next++]!;
@@ -208,6 +233,7 @@ export const uploadAll = async (
       Array.from({ length: Math.min(concurrency, tasks.length) }, worker),
     );
   } finally {
+    clearTimeout(stopTimer);
     opts.signal?.removeEventListener("abort", onOuterAbort);
   }
 
