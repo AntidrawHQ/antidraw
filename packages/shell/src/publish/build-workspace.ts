@@ -1,13 +1,15 @@
 // One publish build of a workspace, run as a child process in the workspace's
 // source directory:
 //
-//   node build-workspace.ts <out dir> <runtime src dir>
+//   node build-workspace.ts <out dir> <runtime src dir> [<cache dir>]
 //
 // It builds with the workspace's own Vite and vite.config.ts (React,
 // Tailwind, the runtime plugin's @ alias and dedupe) plus the app's publish
 // plugins (vite-plugins.ts), with the preview page taken from <runtime src
 // dir>: the app's copy of @antidrawapp/runtime/src. The workspace's cwd
-// matters: the runtime plugin resolves its @ alias from it.
+// matters: the runtime plugin resolves its @ alias from it. With a cache dir,
+// Vite keeps its cache there rather than in the workspace's node_modules
+// (which the app's publish reaches through a symlink).
 
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -19,9 +21,9 @@ import {
   type BrokenFiles,
 } from "./vite-plugins.ts";
 
-const [outDir, runtimeSrc] = process.argv.slice(2);
+const [outDir, runtimeSrc, cacheDir] = process.argv.slice(2);
 if (!outDir || !runtimeSrc) {
-  console.error("usage: build-workspace.ts <out dir> <runtime src dir>");
+  console.error("usage: build-workspace.ts <out dir> <runtime src dir> [<cache dir>]");
   process.exit(1);
 }
 
@@ -70,6 +72,7 @@ for (;;) {
       // The site is served from the root of its own origin, whatever base
       // the workspace's config names.
       base: "/",
+      ...(cacheDir ? { cacheDir: path.resolve(cacheDir) } : {}),
       plugins: publishPlugins(vite, path.resolve(runtimeSrc), path.resolve(outDir), broken),
       build: siteBuild,
       // A workspace config can set the client environment's build apart

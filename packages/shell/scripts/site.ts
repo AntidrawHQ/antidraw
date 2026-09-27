@@ -16,7 +16,8 @@
 // It has to be the origin root, not a path under one: components refer to
 // their public files by absolute path ("/clip.mp4"). `serve` answers the same
 // way the publish Worker (packages/publish-worker) does, for checking a site
-// locally.
+// locally. Turning a build into a site, and listing a site's files, are
+// src/publish/site-build.ts, which the app's Publish shares.
 //
 // upload reads R2 credentials from the environment, or from packages/shell/
 // .env.site: R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET,
@@ -40,27 +41,24 @@ import { DatabaseSync } from "node:sqlite";
 import { parseArgs, promisify } from "node:util";
 import { AwsClient } from "aws4fetch";
 import type { CanvasFile } from "../src/viewer/canvas-file.ts";
+import { contentType } from "../src/publish/content-types.ts";
+import {
+  assembleSite,
+  checkOutDir,
+  emptyOutDir,
+  IMMUTABLE_CACHE_CONTROL,
+  isBuiltSite,
+  listFiles,
+  listSiteFiles,
+  makeCanvasFile,
+  readCanvasComponents,
+  SITE_ENTRY_FILES,
+} from "../src/publish/site-build.ts";
 
 const execFileAsync = promisify(execFile);
 const shellDir = path.resolve(import.meta.dirname, "..");
 const RUNTIME_SRC = path.resolve(shellDir, "../plugin-runtime/src");
 const antidrawRoot = process.env.ANTIDRAW_ROOT ?? path.join(os.homedir(), ".antidraw");
-const USER_COMPONENTS_DIR = "src/components/user-components";
-// Same rule as the runtime plugin: names Preview cannot load.
-const UNUSABLE_NAME_RE = /[/\\?#\0]/;
-// Where the publish plugins list the files the build emitted (EMITTED_FILES
-// in src/publish/vite-plugins.ts).
-const BUILD_EMITTED = ".vite/antidraw-emitted.json";
-// The workspace build's content-hashed files, which upload caches for a year.
-// Only upload reads it; it is not uploaded.
-const HASHED_FILES = ".hashed-files.json";
-// What the publish plugins name emitted files: Rollup's [hash] is 8 characters.
-// (A manualChunks name can put a chunk in a folder under assets/.)
-const HASHED_NAME_RE = /^assets\/.+-[A-Za-z0-9_-]{8}\.[A-Za-z0-9]+$/;
-
-// A site this script built: a canvas.json alone could be anyone's.
-const isBuiltSite = (dir: string) =>
-  fs.existsSync(path.join(dir, "canvas.json")) && fs.existsSync(path.join(dir, HASHED_FILES));
 
 const fail = (message: string): never => {
   console.error(`error: ${message}`);
@@ -118,13 +116,9 @@ const findWorkspace = (target: string): Workspace => {
   return { id, name, sourceDir: path.join(antidrawRoot, "workspaces", id, "source") };
 };
 
+// The same canvas.json the app's Publish writes (makeCanvasFile), with the
+// frames from the app's database.
 const readCanvasFile = (workspace: Workspace): CanvasFile => {
-  const dir = path.join(workspace.sourceDir, USER_COMPONENTS_DIR);
-  const components = (fs.existsSync(dir) ? fs.readdirSync(dir) : [])
-    .filter((f) => f.endsWith(".tsx"))
-    .map((f) => ({ name: f.slice(0, -".tsx".length) }))
-    .filter(({ name }) => name && !UNUSABLE_NAME_RE.test(name));
-
   const layouts = workspace.id
     ? (openDb()
         ?.prepare(
@@ -133,16 +127,7 @@ const readCanvasFile = (workspace: Workspace): CanvasFile => {
         )
         .all(workspace.id) as CanvasFile["layouts"] | undefined) ?? []
     : [];
-
-  // Only the frames of components the site has: the table keeps rows for
-  // deleted and renamed ones, whose names are not the site's to publish.
-  const names = new Set(components.map((c) => c.name));
-  return {
-    version: 1,
-    name: workspace.name,
-    components,
-    layouts: layouts.filter((l) => names.has(l.componentName)),
-  };
+  return makeCanvasFile(workspace.name, readCanvasComponents(workspace.sourceDir), layouts);
 };
 
 const build = (target: string, out: string | undefined) => {
@@ -152,18 +137,8 @@ const build = (target: string, out: string | undefined) => {
 
   const outDir = path.resolve(out ?? path.join(shellDir, "sites", workspace.id ?? workspace.name));
   // The build empties outDir first, so it must be a site built before, or new.
-  const contains = (dir: string, inner: string) =>
-    inner === dir || inner.startsWith(dir + path.sep);
-  if (contains(outDir, shellDir) || contains(outDir, sourceDir)) {
-    fail(`${outDir} holds the app or the workspace; pick another --out`);
-  }
-  if (
-    fs.existsSync(outDir) &&
-    fs.readdirSync(outDir).some((name) => name !== ".git") &&
-    !isBuiltSite(outDir)
-  ) {
-    fail(`${outDir} is not empty and is not a built site, and the build would empty it; pick another --out`);
-  }
+  const problem = checkOutDir(outDir, { appDir: shellDir, sourceDir });
+  if (problem) fail(problem);
   console.log(`Building "${workspace.name}" → ${outDir}\n`);
 
   run([viteBin(shellDir), "build", "-c", "vite.viewer.config.ts", "--logLevel", "warn"], shellDir);
@@ -171,14 +146,8 @@ const build = (target: string, out: string | undefined) => {
   // page from this repo's runtime source (the app will ship its own copy).
   // A build that fails after Vite emptied outDir (copying public/, say)
   // leaves it half-built, which the next build would refuse as not a site.
-  // Emptied the way Vite empties it, keeping a .git.
-  const emptyOutDir = () => {
-    for (const name of fs.existsSync(outDir) ? fs.readdirSync(outDir) : []) {
-      if (name !== ".git") fs.rmSync(path.join(outDir, name), { recursive: true, force: true });
-    }
-  };
   const removeHalfBuilt = () => {
-    if (!isBuiltSite(outDir)) emptyOutDir();
+    if (!isBuiltSite(outDir)) emptyOutDir(outDir);
   };
   run(
     [path.join(shellDir, "src/publish/build-workspace.ts"), outDir, RUNTIME_SRC],
@@ -186,42 +155,15 @@ const build = (target: string, out: string | undefined) => {
     removeHalfBuilt,
   );
 
-  // Everything the viewer adds must be free in the workspace build.
-  const viewerDir = path.join(shellDir, "dist-viewer");
-  for (const name of ["preview.html", "canvas.json", HASHED_FILES, ...fs.readdirSync(viewerDir)]) {
-    if (name === "index.html") continue;
-    if (fs.existsSync(path.join(outDir, name))) {
-      // Not left half-built: the next build would refuse it as not a site.
-      emptyOutDir();
-      fail(`the workspace build has its own ${name} (from public/?), which the site needs`);
-    }
-  }
-  // The rest turns the build into a site; should any of it fail, the out dir
-  // is emptied rather than left for the next build to refuse.
-  let canvasFile: CanvasFile;
-  try {
-    if (!fs.existsSync(path.join(outDir, "index.html"))) {
-      throw new Error("the workspace build wrote no index.html");
-    }
-    fs.renameSync(path.join(outDir, "index.html"), path.join(outDir, "preview.html"));
-    // The files the build emitted are content-hashed; the rest are public/
-    // files, which a republish may change (see upload). The publish plugins
-    // name every emitted file assets/[name]-[hash]; one a plugin emits under a
-    // fixed name of its own (robots.txt) is not hashed.
-    const emitted = JSON.parse(
-      fs.readFileSync(path.join(outDir, BUILD_EMITTED), "utf8"),
-    ) as string[];
-    const hashed = new Set(emitted.filter((f) => HASHED_NAME_RE.test(f)));
-    fs.rmSync(path.join(outDir, ".vite"), { recursive: true, force: true });
-    fs.writeFileSync(path.join(outDir, HASHED_FILES), JSON.stringify([...hashed].sort(), null, 2));
-    fs.cpSync(viewerDir, outDir, { recursive: true });
-
-    canvasFile = readCanvasFile(workspace);
-    fs.writeFileSync(path.join(outDir, "canvas.json"), JSON.stringify(canvasFile, null, 2));
-  } catch (e) {
-    emptyOutDir();
-    return fail((e as Error).message);
-  }
+  // Turns the build into a site (the viewer, canvas.json); should any of it
+  // fail, the out dir is emptied rather than left for the next build to refuse.
+  const canvasFile = readCanvasFile(workspace);
+  const assembled = assembleSite({
+    outDir,
+    viewerDir: path.join(shellDir, "dist-viewer"),
+    canvas: canvasFile,
+  });
+  if (assembled.isErr()) fail(assembled.error.message);
 
   const { files, bytes } = listFiles(outDir).reduce(
     (acc, f) => ({ files: acc.files + 1, bytes: acc.bytes + fs.statSync(path.join(outDir, f)).size }),
@@ -238,48 +180,6 @@ const build = (target: string, out: string | undefined) => {
 // ---------------------------------------------------------------------------
 // serve
 // ---------------------------------------------------------------------------
-
-const CONTENT_TYPES: Record<string, string> = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".mjs": "text/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".map": "application/json; charset=utf-8",
-  ".txt": "text/plain; charset=utf-8",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".gif": "image/gif",
-  ".webp": "image/webp",
-  ".avif": "image/avif",
-  ".ico": "image/x-icon",
-  ".woff": "font/woff",
-  ".woff2": "font/woff2",
-  ".ttf": "font/ttf",
-  ".otf": "font/otf",
-  ".mp4": "video/mp4",
-  ".webm": "video/webm",
-  ".mov": "video/quicktime",
-  ".mp3": "audio/mpeg",
-  ".wav": "audio/wav",
-  ".ogg": "audio/ogg",
-  ".m4a": "audio/mp4",
-  ".aac": "audio/aac",
-  ".flac": "audio/flac",
-  ".m4v": "video/mp4",
-  ".vtt": "text/vtt; charset=utf-8",
-  ".xml": "application/xml",
-  ".webmanifest": "application/manifest+json",
-  ".pdf": "application/pdf",
-  ".wasm": "application/wasm",
-  ".glb": "model/gltf-binary",
-  ".gltf": "model/gltf+json",
-};
-
-const contentType = (file: string) =>
-  CONTENT_TYPES[path.extname(file).toLowerCase()] ?? "application/octet-stream";
 
 // As the publish Worker decodes paths: a "%" that starts no valid escape stays.
 const decodePath = (pathname: string) => {
@@ -348,24 +248,8 @@ const serve = (dir: string, port: number) => {
 // upload
 // ---------------------------------------------------------------------------
 
-const listFiles = (root: string): string[] =>
-  (fs.readdirSync(root, { recursive: true, withFileTypes: true }) as fs.Dirent[])
-    .filter((d) => d.isFile())
-    .map((d) => path.relative(root, path.join(d.parentPath, d.name)).split(path.sep).join("/"));
-
 const formatBytes = (n: number) =>
   n < 1024 ** 2 ? `${(n / 1024).toFixed(0)} KB` : n < 1024 ** 3 ? `${(n / 1024 ** 2).toFixed(1)} MB` : `${(n / 1024 ** 3).toFixed(2)} GB`;
-
-const IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable";
-// The viewer's build output, all content-hashed (it has no public/ files).
-const VIEWER_ASSETS_DIR = "_antidraw/";
-
-// The pages and the canvas refer to everything else, so they go up last: a
-// visitor never gets a page whose files are not there yet. They go one at a
-// time, in this order, so an upload that stops partway leaves the viewer
-// (index.html) on the previous canvas.json, and that on a preview.html that
-// has all its components.
-const ENTRY_FILES = ["preview.html", "canvas.json", "index.html"];
 
 // A single PUT takes up to 5 GiB; larger files would need a multipart upload.
 // wrangler refuses files over 300 MiB.
@@ -451,24 +335,13 @@ const upload = async (
   if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(id)) fail(`"${id}" cannot be a publish id`);
 
   const { bucket, put } = via === "s3" ? r2Put() : wranglerPut(via);
-  const hashedFile = path.join(root, HASHED_FILES);
-  const hashed = new Set<string>(
-    fs.existsSync(hashedFile) ? JSON.parse(fs.readFileSync(hashedFile, "utf8")) : [],
-  );
-  // Dotfiles are not the site's (a Finder .DS_Store, a stray .env in
-  // public/), except .well-known/ itself, which is there to be served, and
-  // what the build emitted (a component named .Dot.tsx).
-  const hidden = (f: string) =>
-    !hashed.has(f) &&
-    f
-      .split("/")
-      .slice(f.startsWith(".well-known/") ? 1 : 0)
-      .some((part) => part.startsWith("."));
-  const listed = listFiles(root).filter((f) => f !== HASHED_FILES);
-  const skipped = listed.filter(hidden);
-  if (skipped.length) console.log(`Skipping hidden files:\n  ${skipped.join("\n  ")}`);
-  const files = listed.filter((f) => !hidden(f));
-  const sizes = new Map(files.map((f) => [f, fs.statSync(path.join(root, f)).size]));
+  // The pages and the canvas go up last (see SITE_ENTRY_FILES); hidden files
+  // not at all (see listSiteFiles).
+  const site = await listSiteFiles(root).catch((e: Error) => fail(e.message));
+  if (site.skipped.length) console.log(`Skipping hidden files:\n  ${site.skipped.join("\n  ")}`);
+  const siteFiles = new Map([...site.files, ...site.entries].map((f) => [f.path, f]));
+  const files = [...siteFiles.keys()];
+  const sizes = new Map(files.map((f) => [f, siteFiles.get(f)!.size]));
   const maxBytes = via === "s3" ? MAX_PUT_BYTES.s3 : MAX_PUT_BYTES.wrangler;
   const tooBig = files.filter((f) => sizes.get(f)! > maxBytes);
   if (tooBig.length) {
@@ -489,11 +362,11 @@ const upload = async (
   const queue: string[] = [];
   const worker = async () => {
     for (let file = queue.shift(); file; file = queue.shift()) {
+      const siteFile = siteFiles.get(file)!;
       const meta = {
-        contentType: contentType(file),
-        cacheControl:
-          file.startsWith(VIEWER_ASSETS_DIR) || hashed.has(file) ? IMMUTABLE_CACHE_CONTROL : undefined,
-        size: sizes.get(file)!,
+        contentType: siteFile.contentType,
+        cacheControl: siteFile.immutable ? IMMUTABLE_CACHE_CONTROL : undefined,
+        size: siteFile.size,
       };
       for (let attempt = 1; ; attempt++) {
         try {
@@ -516,10 +389,8 @@ const upload = async (
     queue.push(...batch);
     return Promise.all(Array.from({ length: UPLOAD_CONCURRENCY }, worker));
   };
-  await uploadAll(files.filter((f) => !ENTRY_FILES.includes(f)));
-  for (const entry of ENTRY_FILES) {
-    if (files.includes(entry)) await uploadAll([entry]);
-  }
+  await uploadAll(site.files.map((f) => f.path));
+  for (const entry of SITE_ENTRY_FILES) await uploadAll([entry]);
   console.log(`\nDone: ${bucket}/${id}/`);
   if (via === "local") {
     console.log(`  npm run dev -w @antidraw/publish-worker, then open http://${id}.localhost:8787/`);

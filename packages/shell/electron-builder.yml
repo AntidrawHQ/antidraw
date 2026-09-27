@@ -15,6 +15,16 @@ asarUnpack:
   - node_modules/npm/**
   - node_modules/@anthropic-ai/claude-agent-sdk/**
   - resources/**
+  # Publish's build child: main runs it as Node, whose ES module loader
+  # cannot load a file from inside the asar.
+  - dist/publish-child/**
+# Publish copies the viewer into every site, and the build child takes the
+# preview page from the runtime source (src/main/services/publish/resources.ts).
+extraResources:
+  - from: ../plugin-runtime/src
+    to: publish/runtime-src
+  - from: dist-viewer
+    to: publish/viewer
 mac:
   category: public.app-category.developer-tools
   hardenedRuntime: true
