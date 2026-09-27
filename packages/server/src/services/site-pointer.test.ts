@@ -16,12 +16,19 @@ import { buildPointer, syncPointer } from "./site-pointer";
 
 const USER = "user-1";
 
-const row = (version: number, path: string, sha = `${version}${path}`): VersionSiteFileRow => ({
+// Immutable by default where the build names files by content.
+const row = (
+  version: number,
+  path: string,
+  sha = `${version}${path}`,
+  immutable = /^(assets|_antidraw)\//.test(path),
+): VersionSiteFileRow => ({
   version,
   path,
   sha256: hex(sha),
   size: version,
   contentType: "text/plain",
+  immutable,
 });
 
 describe("buildPointer", () => {
@@ -32,6 +39,7 @@ describe("buildPointer", () => {
       row(6, "index.html"),
       row(6, "assets/app-BBBBBBBB.js"),
       row(6, "logo.png"), // not immutable: an older version's is never served
+      row(6, "assets/logo-original.png", undefined, false), // a public file: looks hashed, is not
       row(5, "_antidraw/viewer-CCCCCCCC.js"),
       row(5, "assets/app-AAAAAAAA.js", "older"), // the head defines it
       row(3, "assets/app-DDDDDDDD.js"),
@@ -56,7 +64,9 @@ describe("buildPointer", () => {
       h: hex("7assets/app-AAAAAAAA.js"),
       s: 7,
       t: "text/plain",
+      i: 1,
     });
+    expect(pointer.files["index.html"]).toEqual({ h: hex("7index.html"), s: 7, t: "text/plain" });
     expect(built).toMatchObject({ graceEntries: 3, droppedGrace: 0 });
   });
 

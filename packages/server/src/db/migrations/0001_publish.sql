@@ -24,6 +24,7 @@ CREATE TABLE `publish_session_object` (
 	`kind` text NOT NULL,
 	`sha256` text NOT NULL,
 	`size` integer NOT NULL,
+	`present` integer DEFAULT false NOT NULL,
 	PRIMARY KEY(`session_id`, `kind`, `sha256`),
 	FOREIGN KEY (`session_id`) REFERENCES `publish_session`(`id`) ON UPDATE no action ON DELETE cascade
 );
@@ -59,6 +60,7 @@ CREATE TABLE `site_version` (
 	`file_count` integer NOT NULL,
 	`site_file_count` integer NOT NULL,
 	`site_bytes` integer NOT NULL,
+	`site_file_row_bytes` integer DEFAULT 0 NOT NULL,
 	`allow_remix` integer DEFAULT true NOT NULL,
 	`keep` integer DEFAULT false NOT NULL,
 	`publish_session_id` text NOT NULL,
@@ -103,6 +105,7 @@ CREATE TABLE `version_site_file` (
 	`sha256` text NOT NULL,
 	`size` integer NOT NULL,
 	`content_type` text NOT NULL,
+	`immutable` integer DEFAULT false NOT NULL,
 	PRIMARY KEY(`version_id`, `path`),
 	FOREIGN KEY (`version_id`) REFERENCES `site_version`(`id`) ON UPDATE no action ON DELETE cascade,
 	FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade

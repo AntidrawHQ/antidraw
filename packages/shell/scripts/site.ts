@@ -266,7 +266,9 @@ type Pointer = {
   v: 1;
   version: number;
   u: string;
-  files: Record<string, { h: string; s: number; t: string }>;
+  // "i": 1 marks a file the build named by its content, which the Worker
+  // caches for a year (never a public file, whatever its name).
+  files: Record<string, { h: string; s: number; t: string; i?: 1 }>;
 };
 
 // A single PUT takes up to 5 GiB; larger files would need a multipart upload.
@@ -482,7 +484,10 @@ const upload = async (
     version: (previous?.version ?? 0) + 1,
     u: OWNER,
     files: Object.fromEntries(
-      files.map((f) => [f.path, { h: f.sha256, s: f.size, t: f.contentType }]),
+      files.map((f) => [
+        f.path,
+        { h: f.sha256, s: f.size, t: f.contentType, ...(f.immutable ? { i: 1 as const } : {}) },
+      ]),
     ),
   };
   const body = JSON.stringify(pointer);

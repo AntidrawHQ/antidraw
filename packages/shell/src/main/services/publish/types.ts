@@ -50,7 +50,11 @@ export type PublishErrorCode =
   | "CANCELLED"
   | "INTERNAL_ERROR";
 
-export type PublishRefusalReason = "pending-site" | "open-sessions";
+export type PublishRefusalReason =
+  | "pending-site"
+  | "open-sessions"
+  | "site-storage"
+  | "site-files";
 
 export type PublishErrorDetails = {
   largestFiles?: { path: string; size: number }[]; // PUBLISH_TOO_LARGE, QUOTA_EXCEEDED
@@ -66,7 +70,9 @@ export type PublishErrorDetails = {
   siteBytes?: number;
   // Which server limit refused a begin, when the code alone is ambiguous:
   // "pending-site" (QUOTA_EXCEEDED: site files waiting on unfinished
-  // publishes), "open-sessions" (RATE_LIMITED: too many unfinished
+  // publishes), "site-storage" (QUOTA_EXCEEDED: all the account's site
+  // contents), "site-files" (QUOTA_EXCEEDED: the files its sites' retained
+  // versions list), "open-sessions" (RATE_LIMITED: too many unfinished
   // publishes).
   reason?: PublishRefusalReason;
   collisions?: string[][]; // CASE_COLLISION

@@ -145,6 +145,14 @@ const deleteKeys = async (store: ObjectStore, keys: string[]) => {
 // twice keeps its rows `deleting` (never `verified`, so no commit can lean on
 // them meanwhile), and so does every batch the run did not reach: the next
 // run takes them first, as leftovers.
+//
+// Invariant: this is the only code that deletes an account object's key, and
+// it deletes only keys whose rows claimGcObjects already marked deleting (and
+// unverified), never one a live session holds. So a row that is verified and
+// not deleting always has its bytes in R2, and a held object a complete found
+// stays there: begin skips uploads and complete skips HEADs on that alone
+// (publish.service.ts, findMissing). Anything new that deletes object keys
+// must mark their rows the same way first.
 const collectObjects = async (run: Run) => {
   const { deps, limits, now, report } = run;
   const leftovers = await deps.store.leftoverDeletingObjects(limits.objectsPerRun);

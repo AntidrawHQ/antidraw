@@ -51,17 +51,20 @@ const decodePath = (pathname: string) => {
 export const siteFile = (pathname: string) =>
   pathname === "/" ? "index.html" : pathname === "/preview" ? "preview.html" : pathname.slice(1);
 
-// The files whose name changes with their content, cached for a year: the
-// viewer's build (_antidraw/) and the workspace build's hashed output, which
-// the publish build names assets/[name]-[hash] with Rollup's 8-character hash
-// (HASHED_NAME_RE in packages/shell/src/publish/site-build.ts). Anything else
-// (pages, canvas.json, public files) may change when the site is published
-// again.
+// The files whose name changes with their content, cached for a year: those
+// the pointer marks immutable ("i", which the build decides), and only where
+// such files are named: the viewer's build (_antidraw/) and the workspace
+// build's hashed output, which the publish build names assets/[name]-[hash]
+// with Rollup's 8-character hash (HASHED_NAME_RE in
+// packages/shell/src/publish/site-build.ts). The name alone is not enough: a
+// public file (public/assets/logo-original.png) can look hashed and still be
+// replaced on the next publish. Anything else (pages, canvas.json, public
+// files) may change when the site is published again.
 const HASHED_NAME_RE = /^assets\/.+-[A-Za-z0-9_-]{8}\.[A-Za-z0-9]+$/;
 export const IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable";
 export const DEFAULT_CACHE_CONTROL = "public, max-age=60";
-export const cacheControlFor = (path: string) =>
-  path.startsWith("_antidraw/") || HASHED_NAME_RE.test(path)
+export const cacheControlFor = (path: string, immutable: boolean) =>
+  immutable && (path.startsWith("_antidraw/") || HASHED_NAME_RE.test(path))
     ? IMMUTABLE_CACHE_CONTROL
     : DEFAULT_CACHE_CONTROL;
 
@@ -157,7 +160,7 @@ const headersFor = (path: string, entry: PointerEntry, etag: string) =>
     "Content-Type": entry.t,
     ETag: etag,
     "Accept-Ranges": "bytes",
-    "Cache-Control": cacheControlFor(path),
+    "Cache-Control": cacheControlFor(path, entry.i),
   });
 
 export const createWorker = (pointers: PointerCache = createPointerCache()) =>
@@ -221,8 +224,9 @@ export const createWorker = (pointers: PointerCache = createPointerCache()) =>
         }
         return new Response(object.body, { headers });
       } catch (e) {
-        // R2 being unavailable, or a pointer that cannot be read. The log
-        // names the site, never the owner id in the content key.
+        // R2 being unavailable, a pointer that cannot be read, or pointer
+        // loads at their memory budget (PointerBusyError). The log names the
+        // site, never the owner id in the content key.
         console.error(`${slug}/${path.slice(0, 200)}`, e);
         return text(503, "Service unavailable", { "Retry-After": "5" });
       }

@@ -72,6 +72,11 @@ export const siteVersion = sqliteTable(
     fileCount: integer("file_count").notNull(),
     siteFileCount: integer("site_file_count").notNull(),
     siteBytes: integer("site_bytes").notNull(),
+    // The estimated D1 bytes of the version's version_site_file rows still
+    // retained (siteFileRowBytes in publish.store.ts): counted toward the
+    // account's MAX_SITE_FILE_ROW_BYTES, and lowered when the rows no pointer
+    // can use any more are pruned.
+    siteFileRowBytes: integer("site_file_row_bytes").notNull().default(0),
     // A record of the setting at commit only; remix reads site.allow_remix.
     allowRemix: integer("allow_remix", { mode: "boolean" }).notNull().default(true),
     keep: integer("keep", { mode: "boolean" }).notNull().default(false),
@@ -105,7 +110,9 @@ export const versionLargeFile = sqliteTable(
 );
 
 // A version's site files: what its pointer lists. The content is the
-// account's `stored_object` of kind "site" with this sha256.
+// account's `stored_object` of kind "site" with this sha256. Once the site's
+// pointer has moved past a version, only its rows a pointer's grace entries
+// can use (the immutable ones) are kept.
 export const versionSiteFile = sqliteTable(
   "version_site_file",
   {
@@ -119,6 +126,10 @@ export const versionSiteFile = sqliteTable(
     sha256: text("sha256").notNull(),
     size: integer("size").notNull(),
     contentType: text("content_type").notNull(),
+    // The build named it by its content (plan immutable, at an
+    // isImmutableSitePath): the pointer marks it "i", which the publish Worker
+    // caches for a year, and older versions' such rows are its grace entries.
+    immutable: integer("immutable", { mode: "boolean" }).notNull().default(false),
   },
   (t) => [
     primaryKey({ columns: [t.versionId, t.path] }),
@@ -199,6 +210,10 @@ export const publishSessionObject = sqliteTable(
     kind: text("kind", { enum: ["source", "blob", "site"] }).notNull(),
     sha256: text("sha256").notNull(),
     size: integer("size").notNull(),
+    // An earlier complete of the session found the object in R2 (a HEAD of
+    // the declared size and sha256): a retried complete does not HEAD it
+    // again. Only GC deletes objects, and never one a session holds.
+    present: integer("present", { mode: "boolean" }).notNull().default(false),
   },
   (t) => [
     primaryKey({ columns: [t.sessionId, t.kind, t.sha256] }),

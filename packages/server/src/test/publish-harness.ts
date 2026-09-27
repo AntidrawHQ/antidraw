@@ -9,7 +9,7 @@ import type { BeginPublishRequest, UploadInstruction } from "../lib/publish.sche
 import { pointerKey, type UrlSigner } from "../lib/storage";
 import type { GcDeps } from "../services/gc.service";
 import type { PublishDeps } from "../services/publish.service";
-import { d1PublishStore, type PublishStore } from "../services/publish.store";
+import { d1PublishStore, type ObjectRef, type PublishStore } from "../services/publish.store";
 import { createD1Shim, hasNodeSqlite, insertUser } from "./d1-sqlite";
 import { memoryObjectStore, sha256Hex, type MemoryBucket } from "./memory-object-store";
 import { memoryPublishStore } from "./memory-publish-store";
@@ -23,6 +23,10 @@ export type Harness = {
   sessionRows(userId: string): Promise<{ count: number; planBytes: number }>;
   // Deletes one session object row, as nothing but GC's retire does.
   dropSessionObject(sessionId: string, kind: "source" | "blob"): Promise<void>;
+  // Marks a stored object as GC's claim does (deleting, unverified).
+  markDeleting(userId: string, ref: ObjectRef): Promise<void>;
+  // The site's retained version_site_file rows, as "<version>:<path>", sorted.
+  siteFileRows(siteId: string): Promise<string[]>;
 };
 
 const memoryHarness = (): Harness => {
@@ -49,6 +53,22 @@ const memoryHarness = (): Harness => {
         (o) => o.sessionId === sessionId && o.kind === kind,
       );
       if (i >= 0) store.state.sessionObjects.splice(i, 1);
+    },
+    async markDeleting(userId, ref) {
+      const row = store.state.objects.get(`${userId}|${ref.kind}|${ref.sha256}`);
+      if (row) {
+        row.deleting = true;
+        row.verified = false;
+      }
+    },
+    async siteFileRows(siteId) {
+      const versions = new Map(
+        store.state.versions.filter((v) => v.siteId === siteId).map((v) => [v.id, v.version]),
+      );
+      return store.state.siteFiles
+        .filter((f) => versions.has(f.versionId))
+        .map((f) => `${versions.get(f.versionId)}:${f.path}`)
+        .sort();
     },
   };
 };
@@ -87,6 +107,26 @@ const d1Harness = (): Harness => {
             FROM publish_session_object WHERE session_id = ? AND kind = ? LIMIT 1)`,
         )
         .run(sessionId, kind);
+    },
+    async markDeleting(userId, ref) {
+      shim.sqlite
+        .prepare(
+          `UPDATE stored_object SET deleting = 1, verified = 0
+            WHERE user_id = ? AND kind = ? AND sha256 = ?`,
+        )
+        .run(userId, ref.kind, ref.sha256);
+    },
+    async siteFileRows(siteId) {
+      return (
+        shim.sqlite
+          .prepare(
+            `SELECT v.version, f.path FROM version_site_file f
+              JOIN site_version v ON v.id = f.version_id WHERE v.site_id = ?`,
+          )
+          .all(siteId) as { version: number; path: string }[]
+      )
+        .map((r) => `${r.version}:${r.path}`)
+        .sort();
     },
   };
 };
@@ -260,7 +300,7 @@ type PointerJson = {
   v: 1;
   version: number;
   u: string;
-  files: Record<string, { h: string; s: number; t: string }>;
+  files: Record<string, { h: string; s: number; t: string; i?: 1 }>;
 };
 
 // The site's pointer as the publish Worker would read it, or null.
@@ -280,6 +320,19 @@ export const performUploads = (deps: TestDeps, uploads: UploadInstruction[]) => 
       contentType: u.headers["content-type"],
     });
   }
+};
+
+// Records the key of every R2 HEAD the services make from here on.
+export const recordHeads = (deps: TestDeps): string[] => {
+  const keys: string[] = [];
+  for (const store of [deps.sites, deps.sources]) {
+    const head = store.head.bind(store);
+    store.head = async (key) => {
+      keys.push(key);
+      return head(key);
+    };
+  }
+  return keys;
 };
 
 export { LARGE_FILE_BYTES };

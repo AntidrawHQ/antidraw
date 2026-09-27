@@ -5,6 +5,8 @@ import { AccountRequestError } from "@/renderer/lib/account-ops";
 import {
   FailureContent,
   PublishingLabel,
+  isStillFinishing,
+  panelDismisses,
   panelTakesFocus,
   publishClickAction,
   publishingAnnouncement,
@@ -134,5 +136,35 @@ describe("the publishing label keeps the progress for keyboard users", () => {
     expect(publishingAnnouncement({ step: "uploading", percent: 42 }, true)).toBe(
       "Cancelling publish",
     );
+  });
+});
+
+describe("a 'Still finishing' panel", () => {
+  const unknown = new AccountRequestError("PUBLISH_OUTCOME_UNKNOWN", "The publish may still finish.", {
+    publishId: "pub_9",
+  });
+
+  test("is still finishing until the session is known to have ended", () => {
+    expect(isStillFinishing(unknown, null)).toBe(true);
+    expect(isStillFinishing(unknown, "pending")).toBe(true);
+    expect(isStillFinishing(unknown, "failed")).toBe(true);
+    expect(isStillFinishing(unknown, "ended")).toBe(false);
+    expect(isStillFinishing(new AccountRequestError("UPLOAD_FAILED", "x"), null)).toBe(false);
+  });
+
+  test("a click outside it or an Escape elsewhere does not close it", () => {
+    expect(panelDismisses("backdrop", true, false)).toBe(false);
+    expect(panelDismisses("escape", true, false)).toBe(false);
+    expect(panelDismisses("escape", true, true)).toBe(true);
+    // Other panels close on both, as before.
+    expect(panelDismisses("backdrop", false, false)).toBe(true);
+    expect(panelDismisses("escape", false, false)).toBe(true);
+  });
+
+  test("says it keeps trying in the background", () => {
+    const html = render(unknown);
+    expect(html).toContain("Still finishing");
+    expect(html).toContain("keeps trying in the background");
+    expect(html).toContain("Check status");
   });
 });

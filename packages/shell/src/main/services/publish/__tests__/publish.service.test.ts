@@ -210,6 +210,7 @@ afterAll(async () => {
 beforeEach(() => {
   vi.clearAllMocks();
   publishTiming.completeRetryBaseMs = 1;
+  publishTiming.followDelaysMs = []; // main's background retries: off, but where tested
   packedOverrides = {};
   builtOverrides = {};
   stageHook = () => {};
@@ -432,11 +433,19 @@ describe("publishWorkspace: happy path", () => {
     expect(tasks.map((t) => t.label)).toEqual(["logo.png"]);
   });
 
-  test("complete carries nothing but the session", async () => {
+  test("complete carries nothing but the session, and is timed by the plan's objects", async () => {
     await run();
 
     expect(completePublish).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(completePublish).mock.calls[0]).toEqual(["pub_1"]);
+    // Its time limit scales with the distinct objects complete may HEAD: the
+    // source, the blobs and the site contents.
+    const plan = vi.mocked(beginPublish).mock.calls[0]![0];
+    const objects =
+      1 +
+      new Set(plan.snapshot.largeFiles.map((f) => f.sha256)).size +
+      new Set(plan.site.files.map((f) => f.sha256)).size;
+    expect(objects).toBeGreaterThan(1);
+    expect(vi.mocked(completePublish).mock.calls[0]).toEqual(["pub_1", objects]);
   });
 
   test("an upload the plan does not contain is refused, and the session aborted", async () => {
@@ -849,9 +858,14 @@ describe("publishWorkspace: complete", () => {
   });
 
   test("rate limited after an ambiguous failure still asks what became of the session", async () => {
+    const limited = err({ status: 429, code: "RATE_LIMITED", message: "Slow down" } as const);
     vi.mocked(completePublish)
       .mockResolvedValueOnce(err({ status: 502, code: "SERVER_UNREACHABLE", message: "Offline" }))
-      .mockResolvedValue(err({ status: 429, code: "RATE_LIMITED", message: "Slow down" }));
+      .mockResolvedValueOnce(limited)
+      .mockResolvedValueOnce(limited)
+      .mockResolvedValueOnce(limited)
+      .mockResolvedValueOnce(limited)
+      .mockResolvedValue(ok({ site: { ...site, headVersion: 5 }, version: 5 }));
     vi.mocked(getPublishSession).mockResolvedValue(
       ok({ status: "completed", resultVersion: 5, site: { ...site, headVersion: 5 } }),
     );
@@ -877,19 +891,67 @@ describe("publishWorkspace: complete", () => {
     expect(abortPublish).not.toHaveBeenCalled();
   });
 
-  test("no answer after 5 attempts, session completed → done", async () => {
-    vi.mocked(completePublish).mockResolvedValue(
-      err({ status: 502, code: "SERVER_UNREACHABLE", message: "Offline" }),
-    );
+  test("no answer after 5 attempts, session completed → complete confirms it live → done", async () => {
+    const offline = err({ status: 502, code: "SERVER_UNREACHABLE", message: "Offline" } as const);
+    vi.mocked(completePublish)
+      .mockResolvedValueOnce(offline)
+      .mockResolvedValueOnce(offline)
+      .mockResolvedValueOnce(offline)
+      .mockResolvedValueOnce(offline)
+      .mockResolvedValueOnce(offline)
+      .mockResolvedValue(ok({ site: { ...site, headVersion: 7 }, version: 7 }));
     vi.mocked(getPublishSession).mockResolvedValue(
       ok({ status: "completed", resultVersion: 7, site: { ...site, headVersion: 7 } }),
     );
 
     const events = await run();
 
-    expect(completePublish).toHaveBeenCalledTimes(5);
+    expect(completePublish).toHaveBeenCalledTimes(6);
     expect(getPublishSession).toHaveBeenCalledWith("pub_1");
     expect(lastResult(events)).toMatchObject({ version: 7, url: site.url });
+  });
+
+  // The server commits, then switches the site over; complete answers only
+  // once visitors see the version. A committed session whose switch-over
+  // keeps failing is not live, whatever the session read says.
+  test("session completed but the site never switched over → PUBLISH_OUTCOME_UNKNOWN, not published", async () => {
+    vi.mocked(completePublish).mockResolvedValue(
+      err({ status: 500, code: "STORAGE_FAILED", message: "saved, but not switched over" }),
+    );
+    vi.mocked(getPublishSession).mockResolvedValue(
+      ok({ status: "completed", resultVersion: 4, site: { ...site, headVersion: 4 } }),
+    );
+
+    const events = await run();
+    const error = lastError(events);
+
+    expect(events.some((e) => e.type === "done")).toBe(false);
+    expect(error.code).toBe("PUBLISH_OUTCOME_UNKNOWN");
+    expect(error.message).toBe(
+      "The publish was saved, but the site hasn't switched over to it yet. Check again in a moment.",
+    );
+    expect(error.details?.publishId).toBe("pub_1");
+    // Five attempts, then one more once the session read says it committed.
+    expect(completePublish).toHaveBeenCalledTimes(6);
+    expect(abortPublish).not.toHaveBeenCalled();
+  });
+
+  test("session completed, and complete then refuses for good → that refusal, not published", async () => {
+    vi.mocked(completePublish)
+      .mockResolvedValueOnce(err({ status: 500, code: "STORAGE_FAILED", message: "x" }))
+      .mockResolvedValueOnce(err({ status: 500, code: "STORAGE_FAILED", message: "x" }))
+      .mockResolvedValueOnce(err({ status: 500, code: "STORAGE_FAILED", message: "x" }))
+      .mockResolvedValueOnce(err({ status: 500, code: "STORAGE_FAILED", message: "x" }))
+      .mockResolvedValueOnce(err({ status: 500, code: "STORAGE_FAILED", message: "x" }))
+      .mockResolvedValue(err({ status: 404, code: "SITE_NOT_FOUND", message: "Gone" }));
+    vi.mocked(getPublishSession).mockResolvedValue(
+      ok({ status: "completed", resultVersion: 4, site: { ...site, headVersion: 4 } }),
+    );
+
+    const error = lastError(await run());
+
+    expect(error.code).toBe("INTERNAL_ERROR");
+    expect(error.details?.serverCode).toBe("SITE_NOT_FOUND");
   });
 
   test("no answer after 5 attempts, session pending → PUBLISH_OUTCOME_UNKNOWN", async () => {
@@ -990,6 +1052,59 @@ describe("publishWorkspace: cancel and time limits around server calls", () => {
   });
 });
 
+describe("main finishes a publish left unfinished in the background", () => {
+  const pending = { status: "pending" as const, resultVersion: null, site };
+  const later = new Date(Date.now() + 60 * 60_000).toISOString();
+  const waitFor = async (check: () => boolean) => {
+    for (let i = 0; i < 200 && !check(); i++) await new Promise((r) => setTimeout(r, 5));
+    expect(check()).toBe(true);
+  };
+  const leaveUnfinished = async () => {
+    vi.mocked(beginPublish).mockResolvedValue(
+      ok({ ...beginResponse(), publish: { ...beginResponse().publish, expiresAt: later } }),
+    );
+    vi.mocked(completePublish).mockResolvedValue(
+      err({ status: 502, code: "SERVER_UNREACHABLE", message: "Offline" }),
+    );
+    vi.mocked(getPublishSession).mockResolvedValue(ok(pending));
+    expect(lastError(await run()).code).toBe("PUBLISH_OUTCOME_UNKNOWN");
+    vi.mocked(completePublish).mockClear();
+  };
+  afterEach(() => {
+    publishTiming.followDelaysMs = [];
+  });
+
+  test("keeps sending complete, with nothing asking, until the publish is live", async () => {
+    publishTiming.followDelaysMs = [5];
+    await leaveUnfinished();
+    await waitFor(() => vi.mocked(completePublish).mock.calls.length >= 2);
+    expect(vi.mocked(completePublish).mock.calls[0]).toEqual(["pub_1", 7]);
+
+    vi.mocked(completePublish).mockResolvedValue(ok({ site: { ...site, headVersion: 4 }, version: 4 }));
+    const before = vi.mocked(completePublish).mock.calls.length;
+    await waitFor(() => vi.mocked(completePublish).mock.calls.length > before);
+    // Live: the record is dropped, and nothing more is sent.
+    const settled = vi.mocked(completePublish).mock.calls.length;
+    await new Promise((r) => setTimeout(r, 40));
+    expect(vi.mocked(completePublish).mock.calls.length).toBe(settled);
+    vi.mocked(getPublishSession).mockResolvedValue(
+      ok({ status: "completed", resultVersion: 4, site }),
+    );
+    await getPublishOutcome(WS, "pub_1");
+    expect(vi.mocked(completePublish).mock.calls.length).toBe(settled);
+  });
+
+  test("stops once the workspace publishes again", async () => {
+    publishTiming.followDelaysMs = [20];
+    await leaveUnfinished();
+    vi.mocked(completePublish).mockResolvedValue(ok({ site, version: 4 }));
+    await run(); // takes the workspace over: one complete, its own
+    expect(completePublish).toHaveBeenCalledTimes(1);
+    await new Promise((r) => setTimeout(r, 60));
+    expect(completePublish).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("getPublishOutcome: finishing a publish left pending", () => {
   const pending = { status: "pending" as const, resultVersion: null, site };
 
@@ -1019,13 +1134,61 @@ describe("getPublishOutcome: finishing a publish left pending", () => {
       resultVersion: 4,
       site: { ...site, headVersion: 4 },
     });
-    expect(vi.mocked(completePublish).mock.calls).toEqual([["pub_1"]]);
+    // Timed by the run's plan, as the run's own completes were.
+    expect(vi.mocked(completePublish).mock.calls).toEqual([["pub_1", 7]]);
 
     // Done: later checks only read.
     vi.mocked(getPublishSession).mockResolvedValue(
       ok({ status: "completed", resultVersion: 4, site }),
     );
     await getPublishOutcome(WS, publishId);
+    expect(completePublish).toHaveBeenCalledTimes(1);
+  });
+
+  test("a session committed but not yet live reads pending until complete confirms it", async () => {
+    vi.mocked(completePublish).mockResolvedValue(
+      err({ status: 500, code: "STORAGE_FAILED", message: "saved, but not switched over" }),
+    );
+    const committed = { status: "completed" as const, resultVersion: 4, site: { ...site, headVersion: 4 } };
+    vi.mocked(getPublishSession).mockResolvedValue(ok(committed));
+    const error = lastError(await run());
+    expect(error.code).toBe("PUBLISH_OUTCOME_UNKNOWN");
+    vi.mocked(completePublish).mockClear();
+
+    // The switch-over still fails: not live, so pending, and nothing aborted.
+    expect((await getPublishOutcome(WS, error.details!.publishId!))._unsafeUnwrap()).toEqual({
+      ...committed,
+      status: "pending",
+    });
+    expect(completePublish).toHaveBeenCalledWith("pub_1", 7);
+    expect(abortPublish).not.toHaveBeenCalled();
+
+    // It goes through: live.
+    vi.mocked(completePublish).mockResolvedValue(ok({ site: { ...site, headVersion: 4 }, version: 4 }));
+    expect((await getPublishOutcome(WS, "pub_1"))._unsafeUnwrap()).toEqual(committed);
+    expect(completePublish).toHaveBeenCalledTimes(2);
+
+    // Done: later checks only read.
+    await getPublishOutcome(WS, "pub_1");
+    expect(completePublish).toHaveBeenCalledTimes(2);
+  });
+
+  test("a committed session complete refuses for good is let go with that refusal, not aborted", async () => {
+    vi.mocked(completePublish).mockResolvedValue(
+      err({ status: 500, code: "STORAGE_FAILED", message: "saved, but not switched over" }),
+    );
+    const committed = { status: "completed" as const, resultVersion: 4, site };
+    vi.mocked(getPublishSession).mockResolvedValue(ok(committed));
+    expect(lastError(await run()).code).toBe("PUBLISH_OUTCOME_UNKNOWN");
+    vi.mocked(completePublish)
+      .mockClear()
+      .mockResolvedValue(err({ status: 404, code: "SITE_NOT_FOUND", message: "Gone" }));
+
+    expect((await getPublishOutcome(WS, "pub_1"))._unsafeUnwrapErr().code).toBe("INTERNAL_ERROR");
+    expect(abortPublish).not.toHaveBeenCalled();
+
+    // Let go: the next check only reads.
+    expect((await getPublishOutcome(WS, "pub_1"))._unsafeUnwrap().status).toBe("completed");
     expect(completePublish).toHaveBeenCalledTimes(1);
   });
 
@@ -1410,6 +1573,28 @@ describe("error mapping", () => {
       usedBytes: 1000,
       publishBytes: 100,
     });
+
+    // The account's published sites, as a whole: their own copy, not the
+    // storage quota's.
+    for (const [reason, message] of [
+      ["site-storage", "Your published sites use all the storage they are allowed."],
+      ["site-files", "Your published sites have too many files between them."],
+    ] as const) {
+      const refused = mapCloudError(
+        cloud(413, "QUOTA_EXCEEDED", {
+          reason,
+          quotaBytes: 4096,
+          usedBytes: 4000,
+          publishBytes: 200,
+        }),
+        manifest,
+      );
+      expect(refused).toEqual({
+        code: "QUOTA_EXCEEDED",
+        message,
+        details: { reason, quotaBytes: 4096, usedBytes: 4000, publishBytes: 200 },
+      });
+    }
 
     // A site size refusal is only ever about this canvas's own site: the
     // site's files are stored by content, so nothing an earlier version left

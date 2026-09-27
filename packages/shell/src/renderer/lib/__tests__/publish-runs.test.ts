@@ -27,6 +27,9 @@ const {
   checkPublishStatus,
   dismissPublishRun,
   judgeOutcome,
+  stopFollowing,
+  FOLLOW_DELAYS_MS,
+  FOLLOW_MAX_MS,
 } = await import("../publish-runs");
 const { publishStatusQueryOptions } = await import("../account-ops");
 
@@ -118,6 +121,10 @@ beforeEach(() => {
     push(workspaceId, fail("CANCELLED"));
     return ok(true);
   });
+});
+
+afterEach(() => {
+  stopFollowing();
 });
 
 describe("runs belong to the workspace they were started for", () => {
@@ -449,5 +456,133 @@ describe("cancel", () => {
     void startPublish(queryClient, "A");
     expect(await startPublish(queryClient, "A")).toBe("already-publishing");
     expect(mockPublish).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("a publish that may still finish is finished in the background", () => {
+  // main sends complete again each time it is asked about the session; the
+  // renderer must keep asking whether or not the "Still finishing" panel is up.
+  const unknownWith = (publishId: string) =>
+    ({
+      type: "error",
+      error: { code: "PUBLISH_OUTCOME_UNKNOWN", message: "m", details: { publishId } },
+    }) as PublishEvent;
+  const pending = () => ok({ status: "pending" as const, resultVersion: null, site: site("A", 1) });
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const failUnknown = async () => {
+    heads = { A: 1 };
+    const a = startPublish(queryClient, "A");
+    push("A", unknownWith("pub_9"));
+    expect(await a).toBe("failed");
+  };
+
+  test("closing the panel does not stop it: the session is asked about until it completes", async () => {
+    await failUnknown();
+    dismissPublishRun("A"); // backdrop, Escape or the X
+    expect(runOf("A")).toBeUndefined();
+
+    mockSession.mockResolvedValueOnce(pending());
+    await vi.advanceTimersByTimeAsync(FOLLOW_DELAYS_MS[0]!);
+    expect(mockSession).toHaveBeenCalledTimes(1);
+    expect(mockSession).toHaveBeenLastCalledWith("A", "pub_9");
+    expect(runOf("A")).toBeUndefined();
+
+    mockSession.mockResolvedValueOnce(
+      ok({ status: "completed", resultVersion: 2, site: site("A", 2) }),
+    );
+    await vi.advanceTimersByTimeAsync(FOLLOW_DELAYS_MS[1]!);
+    expect(mockSession).toHaveBeenCalledTimes(2);
+    // The published toast comes back.
+    expect(runOf("A")).toMatchObject({ phase: "published", url: "https://A.example.test", result: null });
+    expect(queryClient.getQueryData(queryKeys.publish.status("A"))).toEqual(site("A", 2));
+
+    await vi.advanceTimersByTimeAsync(FOLLOW_MAX_MS);
+    expect(mockSession).toHaveBeenCalledTimes(2);
+  });
+
+  test("while the panel is up, a completion shows on it", async () => {
+    await failUnknown();
+    mockSession.mockResolvedValueOnce(
+      ok({ status: "completed", resultVersion: 2, site: site("A", 2) }),
+    );
+    await vi.advanceTimersByTimeAsync(FOLLOW_DELAYS_MS[0]!);
+    expect(runOf("A")).toMatchObject({ phase: "published", result: null });
+  });
+
+  test("a session that ended brings back 'did not go live' after the panel was closed", async () => {
+    await failUnknown();
+    dismissPublishRun("A");
+    mockSession.mockResolvedValueOnce(
+      ok({ status: "expired", resultVersion: null, site: site("A", 1) }),
+    );
+    await vi.advanceTimersByTimeAsync(FOLLOW_DELAYS_MS[0]!);
+    expect(runOf("A")).toMatchObject({
+      phase: "failed",
+      error: { code: "PUBLISH_OUTCOME_UNKNOWN" },
+      check: "ended",
+      checking: false,
+    });
+  });
+
+  test("asks that fail keep going, backing off, until the session must have expired", async () => {
+    await failUnknown();
+    dismissPublishRun("A");
+    mockSession.mockResolvedValue(err({ status: 502 as 500, code: "SERVER_UNREACHABLE", message: "down" }));
+    await vi.advanceTimersByTimeAsync(FOLLOW_DELAYS_MS.reduce((a, b) => a + b, 0));
+    expect(mockSession).toHaveBeenCalledTimes(FOLLOW_DELAYS_MS.length);
+
+    await vi.advanceTimersByTimeAsync(FOLLOW_MAX_MS);
+    const asked = mockSession.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(FOLLOW_MAX_MS);
+    expect(mockSession.mock.calls.length).toBe(asked);
+    expect(runOf("A")).toBeUndefined();
+  });
+
+  test("publishing the workspace again stops following the old session", async () => {
+    await failUnknown();
+    void startPublish(queryClient, "A");
+    await vi.advanceTimersByTimeAsync(FOLLOW_MAX_MS);
+    expect(mockSession).not.toHaveBeenCalled();
+    expect(runOf("A")?.phase).toBe("publishing");
+  });
+
+  test("a final answer from Check status ends the follow", async () => {
+    await failUnknown();
+    mockSession.mockResolvedValueOnce(
+      ok({ status: "aborted", resultVersion: null, site: site("A", 1) }),
+    );
+    await checkPublishStatus(queryClient, "A");
+    expect(runOf("A")).toMatchObject({ phase: "failed", check: "ended" });
+    await vi.advanceTimersByTimeAsync(FOLLOW_MAX_MS);
+    expect(mockSession).toHaveBeenCalledTimes(1);
+  });
+
+  test("an answer does not replace a newer run of the workspace", async () => {
+    await failUnknown();
+    dismissPublishRun("A");
+    let answer!: (v: Awaited<ReturnType<typeof api.getPublishSession>>) => void;
+    mockSession.mockImplementationOnce(() => new Promise((r) => (answer = r)));
+    await vi.advanceTimersByTimeAsync(FOLLOW_DELAYS_MS[0]!);
+    expect(mockSession).toHaveBeenCalledTimes(1);
+
+    void startPublish(queryClient, "A");
+    answer(ok({ status: "completed", resultVersion: 2, site: site("A", 2) }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(runOf("A")?.phase).toBe("publishing");
+  });
+
+  test("other failures are not followed", async () => {
+    const a = startPublish(queryClient, "A");
+    push("A", fail("BUILD_FAILED"));
+    await a;
+    await vi.advanceTimersByTimeAsync(FOLLOW_MAX_MS);
+    expect(mockSession).not.toHaveBeenCalled();
   });
 });

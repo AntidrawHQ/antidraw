@@ -125,6 +125,8 @@ export const startPublish = async (
   workspaceId: string,
 ): Promise<PublishOutcome> => {
   if (getRun(workspaceId)?.phase === "publishing") return "already-publishing";
+  // Main lets an unfinished session go as the workspace publishes again.
+  stopFollowing(workspaceId);
   const id = nextRunId++;
   setRun(workspaceId, {
     id,
@@ -190,7 +192,10 @@ export const startPublish = async (
       return error.code === "SIGNED_OUT" ? "signed-out" : "cancelled";
     }
     console.error("Publish failed:", error);
-    if (current) setRun(workspaceId, { id, phase: "failed", error, checking: false, check: null });
+    if (current) {
+      setRun(workspaceId, { id, phase: "failed", error, checking: false, check: null });
+      follow(queryClient, workspaceId, id, error);
+    }
     return "failed";
   } finally {
     clearTimeout(arm);
@@ -222,6 +227,119 @@ const showPublished = (workspaceId: string, id: number, url: string) => {
   }
 };
 
+// ── Finishing in the background ─────────────────────────────
+// A publish that ended PUBLISH_OUTCOME_UNKNOWN is finished by main sending
+// complete again: on its own backoff (followUnfinished in main's
+// publish.service.ts), and on each ask about the session. Only asking tells
+// the user how it turned out, so that must not depend on the "Still
+// finishing" panel staying open (it opens on its own, and closes on the X).
+// Until the server gives a final answer, the session is asked about on a
+// backoff whether or not the panel is showing; the answer then shows on the
+// run, or brings it back if it was closed: the published toast, or "did not
+// go live".
+
+// The delays between asks: the last one repeats.
+export const FOLLOW_DELAYS_MS = [5_000, 10_000, 20_000, 30_000, 60_000];
+// Past the session's lifetime on the server (2 h), by when it is expired.
+export const FOLLOW_MAX_MS = 150 * 60_000;
+
+type Follow = {
+  queryClient: QueryClient;
+  runId: number;
+  error: AccountRequestError;
+  publishId: string;
+  startedAt: number;
+  asks: number;
+  timer: ReturnType<typeof setTimeout> | null;
+};
+const follows = new Map<string, Follow>();
+
+// Whether a failure is followed in the background (exported for the panel):
+// main names the session, and only then can asking finish it.
+export const isFollowedFailure = (error: AccountRequestError) =>
+  error.code === "PUBLISH_OUTCOME_UNKNOWN" && !!error.details?.publishId;
+
+// Stops following a workspace's unfinished publish, or every one.
+export const stopFollowing = (workspaceId?: string) => {
+  for (const [ws, f] of follows) {
+    if (workspaceId !== undefined && ws !== workspaceId) continue;
+    if (f.timer) clearTimeout(f.timer);
+    follows.delete(ws);
+  }
+};
+
+const follow = (
+  queryClient: QueryClient,
+  workspaceId: string,
+  runId: number,
+  error: AccountRequestError,
+) => {
+  const publishId = error.details?.publishId;
+  if (!isFollowedFailure(error) || !publishId) return;
+  stopFollowing(workspaceId);
+  const f: Follow = {
+    queryClient,
+    runId,
+    error,
+    publishId,
+    startedAt: Date.now(),
+    asks: 0,
+    timer: null,
+  };
+  follows.set(workspaceId, f);
+  scheduleAsk(workspaceId, f);
+};
+
+const scheduleAsk = (workspaceId: string, f: Follow) => {
+  const delay = FOLLOW_DELAYS_MS[Math.min(f.asks, FOLLOW_DELAYS_MS.length - 1)] ?? 60_000;
+  f.timer = setTimeout(() => void ask(workspaceId, f), delay);
+};
+
+const ask = async (workspaceId: string, f: Follow) => {
+  f.timer = null;
+  if (follows.get(workspaceId) !== f) return;
+  f.asks++;
+  const session = await getPublishSession(workspaceId, f.publishId);
+  if (follows.get(workspaceId) !== f) return;
+  if (session.isOk() && session.value.status !== "pending") {
+    settleFollowed(workspaceId, f, session.value);
+    return;
+  }
+  // Pending, or not readable now (offline, signed out): ask again later,
+  // until the session must have expired.
+  if (Date.now() - f.startedAt >= FOLLOW_MAX_MS) {
+    follows.delete(workspaceId);
+    return;
+  }
+  scheduleAsk(workspaceId, f);
+};
+
+// The server's final answer about a followed session. Shown on its run while
+// that is still up; brought back when it was closed, unless the workspace has
+// a newer run.
+const settleFollowed = (
+  workspaceId: string,
+  f: Follow,
+  { status, site }: { status: string; site: SiteStatus },
+) => {
+  stopFollowing(workspaceId);
+  const run = getRun(workspaceId);
+  const shown = run?.id === f.runId && run.phase === "failed";
+  if (run && !shown) return;
+  if (status === "completed") {
+    f.queryClient.setQueryData(queryKeys.publish.status(workspaceId), site);
+    setRun(workspaceId, { id: f.runId, phase: "published", url: site.url, result: null });
+  } else {
+    setRun(workspaceId, {
+      id: f.runId,
+      phase: "failed",
+      error: f.error,
+      checking: false,
+      check: "ended",
+    });
+  }
+};
+
 // PUBLISH_OUTCOME_UNKNOWN: the server may still commit. Main names the
 // session in the error (details.publishId), and the server's answer about it
 // is exact. Without one, live only when the site's head moved past the
@@ -243,6 +361,10 @@ export const checkPublishStatus = async (
       return;
     }
     const { status, site } = session.value;
+    // Final: nothing left to finish in the background.
+    if (status !== "pending" && follows.get(workspaceId)?.runId === id) {
+      stopFollowing(workspaceId);
+    }
     if (status === "completed") {
       queryClient.setQueryData(queryKeys.publish.status(workspaceId), site);
       showPublished(workspaceId, id, site.url);
@@ -275,7 +397,8 @@ export const checkPublishStatus = async (
   }
 };
 
-// Closes a failure panel or a published toast. A publish in flight stays.
+// Closes a failure panel or a published toast. A publish in flight stays, and
+// so does the background follow of one that may still finish.
 export const dismissPublishRun = (workspaceId: string) => {
   if (getRun(workspaceId)?.phase === "publishing") return;
   setRun(workspaceId, null);

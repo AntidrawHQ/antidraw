@@ -1,4 +1,4 @@
-import { isImmutableSitePath, utf8Bytes } from "../lib/paths";
+import { utf8Bytes } from "../lib/paths";
 import { KEEP_VERSIONS, MAX_POINTER_BYTES } from "../lib/publish-limits";
 import { pointerKey, type ObjectStore } from "../lib/storage";
 import type { PublishStore, SiteRow, VersionSiteFileRow } from "./publish.store";
@@ -8,25 +8,28 @@ import type { PublishStore, SiteRow, VersionSiteFileRow } from "./publish.store"
 // from. Each file names its content by sha256, stored at c/<owner>/<sha256>:
 //
 //   { "v": 1, "version": 7, "u": "<owner id>",
-//     "files": { "index.html": { "h": "<sha256>", "s": 1234, "t": "text/html; charset=utf-8" } } }
+//     "files": { "index.html": { "h": "<sha256>", "s": 1234, "t": "text/html; charset=utf-8" },
+//                "assets/index-AbC12345.js": { "h": "…", "s": 99, "t": "…", "i": 1 } } }
 //
-// It lists every file of the head version, plus "grace" entries: the
-// immutable paths (isImmutableSitePath) of the previous KEEP_VERSIONS - 1
-// versions that the head does not define, so a tab still open on an older
-// version can lazy-load its chunks. Those versions are the ones retention
+// "i": 1 marks an immutable file (version_site_file.immutable: the build named
+// it by its content), which the Worker caches for a year. The pointer lists
+// every file of the head version, plus "grace" entries: the immutable files of
+// the previous KEEP_VERSIONS - 1 versions that the head does not define, so a
+// tab still open on an older version can lazy-load its chunks. A file the
+// build did not name by content (a public file, even one whose name looks
+// hashed) is never a grace entry, so removing it takes it off the site. Those versions are the ones retention
 // keeps, so their contents are still referenced. A publish switches the site
 // over by writing the whole pointer in one put, after its commit, and only
 // forward: an older version never replaces a newer pointer.
 
-type PointerEntry = { h: string; s: number; t: string };
+type PointerEntry = { h: string; s: number; t: string; i?: 1 };
 
 export type BuiltPointer = { json: string; graceEntries: number; droppedGrace: number };
 
-const entryOf = (f: VersionSiteFileRow): PointerEntry => ({
-  h: f.sha256,
-  s: f.size,
-  t: f.contentType,
-});
+const entryOf = (f: VersionSiteFileRow): PointerEntry =>
+  f.immutable
+    ? { h: f.sha256, s: f.size, t: f.contentType, i: 1 }
+    : { h: f.sha256, s: f.size, t: f.contentType };
 
 // The pointer for `site` at `head`, from its versions' site files (newest
 // first, as pointerFiles returns them). Null when the head has no files (its
@@ -53,7 +56,7 @@ export const buildPointer = (
   let droppedGrace = 0;
   const oldest = head - (KEEP_VERSIONS - 1);
   const grace = rows
-    .filter((f) => f.version < head && f.version >= oldest && isImmutableSitePath(f.path))
+    .filter((f) => f.version < head && f.version >= oldest && f.immutable)
     .sort((a, b) => b.version - a.version);
   for (const f of grace) {
     if (files.has(f.path)) continue; // the head's, or a newer version's

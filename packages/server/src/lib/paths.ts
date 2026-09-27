@@ -95,9 +95,12 @@ export const isPublishableSitePath = (p: string, immutable: boolean): boolean =>
     );
 };
 
-// A path whose name changes with its content: the viewer's build (_antidraw/)
-// and the workspace build's hashed output (assets/[name]-[hash], Rollup's
-// 8-character hash). The publish Worker caches these for a year (its
+// Where a file whose name changes with its content is named: the viewer's
+// build (_antidraw/) and the workspace build's hashed output
+// (assets/[name]-[hash], Rollup's 8-character hash). The name alone does not
+// make a file immutable (a public file can look hashed): a site file is
+// immutable when the plan says the build named it (SiteFile.immutable) and it
+// is at such a path. The publish Worker caches those for a year (its
 // cacheControlFor, packages/publish-worker), and a pointer keeps those of
 // older versions a while (grace entries), so a tab still open on an older
 // version can lazy-load its chunks.

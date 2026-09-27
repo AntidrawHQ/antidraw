@@ -18,6 +18,7 @@ import {
   cancelPublishRun,
   checkPublishStatus,
   dismissPublishRun,
+  isFollowedFailure,
   startPublish,
   usePublishRuns,
   type PublishProgress,
@@ -171,6 +172,22 @@ export const panelTakesFocus = (
   publishButton: Element | null,
 ): boolean => !!active && !!publishButton && publishButton.contains(active);
 
+// A "Still finishing" panel (exported for tests): the publish may yet go live,
+// and publish-runs keeps finishing it in the background whether or not the
+// panel is up. It opens on its own, often while the user is working, so it
+// does not act as a modal: clicks outside it go through to the app, and only
+// the X, or Escape from inside it, closes it.
+export const isStillFinishing = (error: AccountRequestError, check: StatusCheck | null) =>
+  isFollowedFailure(error) && check !== "ended" && check !== "unknown";
+
+// Whether a click on the backdrop or an Escape closes the panel (exported for
+// tests). The X always does.
+export const panelDismisses = (
+  via: "backdrop" | "escape",
+  stillFinishing: boolean,
+  focusInPanel: boolean,
+): boolean => !stillFinishing || (via === "escape" && focusInPanel);
+
 function GoogleG({ size = 16 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 48 48" className="shrink-0" aria-hidden>
@@ -201,6 +218,7 @@ export function FailureContent({
 }) {
   const details = error.details ?? {};
   const outcomeUnknown = error.code === "PUBLISH_OUTCOME_UNKNOWN";
+  const stillFinishing = isStillFinishing(error, check);
   // Checking again can't tell without the site's version from before the
   // publish, and a session that ended will never go live: either way the next
   // useful step is publishing again.
@@ -306,6 +324,13 @@ export function FailureContent({
         </Collapsible>
       )}
 
+      {stillFinishing && (
+        <p className="mt-1.5 text-[12px] leading-[1.6] text-[#9a9a9a]">
+          AntiDraw keeps trying in the background and lets you know how it turns out. You can
+          close this.
+        </p>
+      )}
+
       {outcomeUnknown && check !== null && (
         <p className="mt-3 text-[12px] leading-[1.6] text-[#9a9a9a]">
           {check === "pending"
@@ -375,6 +400,7 @@ export const PublishButton = ({
   const [pointerHeld, setPointerHeld] = useState(false);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const publishButtonRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   // Stable, so it runs once as a panel's button mounts, not on every render.
   const focusIfAtPublish = useCallback((el: HTMLButtonElement | null) => {
     if (el && panelTakesFocus(document.activeElement, publishButtonRef.current)) el.focus();
@@ -519,13 +545,18 @@ export const PublishButton = ({
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || linked || detailsOpen) return;
       if (step === "waiting") backToSignIn();
-      else if (step === "signin" || step === "error" || step === "failed") close();
+      else if (step === "signin" || step === "error") close();
+      else if (step === "failed") {
+        const focusInPanel = !!panelRef.current?.contains(document.activeElement);
+        if (panelDismisses("escape", stillFinishing, focusInPanel)) close();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   });
 
   const failed = !signInStep && run?.phase === "failed" ? run : null;
+  const stillFinishing = !!failed && isStillFinishing(failed.error, failed.check);
   const published = !signInStep && run?.phase === "published" ? run : null;
   const result = published?.result ?? null;
   const modalOpen =
@@ -587,20 +618,27 @@ export const PublishButton = ({
           <AnimatePresence initial={false}>
             {modalOpen && (
               <motion.div
-                className={PANEL_CLASS}
+                className={cn(PANEL_CLASS, stillFinishing && "pointer-events-none")}
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0, transition: EXIT }}
                 transition={{ duration: 0.15, ease: EASE_OUT }}
                 onMouseDown={(e) => {
-                  if (e.target === e.currentTarget && step !== "waiting") close();
+                  if (
+                    e.target === e.currentTarget &&
+                    step !== "waiting" &&
+                    panelDismisses("backdrop", stillFinishing, false)
+                  ) {
+                    close();
+                  }
                 }}
               >
                 <motion.div
+                  ref={panelRef}
                   role={failed ? "alertdialog" : "dialog"}
-                  aria-modal
+                  aria-modal={!stillFinishing}
                   aria-labelledby={failed ? "publish-failed-title" : "publish-handshake-title"}
-                  className={`relative flex ${failed ? "w-[360px]" : "w-[320px]"} origin-top-right flex-col items-start rounded-[14px] border border-[#2d2d2d] bg-[#2c2c2c] p-5 text-left shadow-[0_24px_80px_-20px_rgba(0,0,0,0.8)]`}
+                  className={`pointer-events-auto relative flex ${failed ? "w-[360px]" : "w-[320px]"} origin-top-right flex-col items-start rounded-[14px] border border-[#2d2d2d] bg-[#2c2c2c] p-5 text-left shadow-[0_24px_80px_-20px_rgba(0,0,0,0.8)]`}
                   initial={{ opacity: 0, scale: reduce ? 1 : 0.97, y: reduce ? 0 : -4 }}
                   animate={{ opacity: 1, scale: 1, y: 0 }}
                   exit={{ opacity: 0, scale: reduce ? 1 : 0.98, transition: EXIT }}

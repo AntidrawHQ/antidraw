@@ -34,8 +34,10 @@ export const HASHED_FILES = ".hashed-files.json";
 // in vite-plugins.ts).
 export const BUILD_EMITTED = ".vite/antidraw-emitted.json";
 // What the publish plugins name emitted files: Rollup's [hash] is 8 characters.
-// (A manualChunks name can put a chunk in a folder under assets/.) The publish
-// Worker caches the same names for a year (cacheControlFor in
+// (A manualChunks name can put a chunk in a folder under assets/.) The name
+// alone does not make a file immutable: the plan's `immutable` (from
+// HASHED_FILES) does, and the publish Worker caches only files the pointer
+// marks so ("i") for a year (cacheControlFor in
 // packages/publish-worker/src/serve.ts).
 export const HASHED_NAME_RE = /^assets\/.+-[A-Za-z0-9_-]{8}\.[A-Za-z0-9]+$/;
 // The viewer's build output, all content-hashed (it has no public/ files).

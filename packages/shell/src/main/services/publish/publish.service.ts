@@ -63,7 +63,13 @@ const ENTRY_FILES = ["preview.html", "canvas.json", "index.html"] as const;
 const COMPLETE_ATTEMPTS = 5;
 
 // Complete's retry backoff is base·2^(n-1) (2, 4, 8, 16 s). Tests shorten it.
-export const publishTiming = { completeRetryBaseMs: 2_000 };
+// followDelaysMs: the waits between main's own background retries of a
+// publish left unfinished (see followUnfinished), the last one repeating; an
+// empty list turns them off (tests do, except where they test them).
+export const publishTiming = {
+  completeRetryBaseMs: 2_000,
+  followDelaysMs: [15_000, 30_000, 60_000, 120_000] as number[],
+};
 
 // ============================================================================
 // Errors
@@ -77,6 +83,10 @@ const publishError = (
 
 const CANCELLED = publishError("CANCELLED", "Publishing was cancelled.");
 const SIGNED_OUT = publishError("SIGNED_OUT", "Sign in to publish.");
+// A session that committed while its site has not been switched over to the
+// new version yet (spec §11.3): visitors still get the previous one.
+const NOT_LIVE_YET =
+  "The publish was saved, but the site hasn't switched over to it yet. Check again in a moment.";
 const WORKSPACE_BUSY = publishError(
   "WORKSPACE_BUSY",
   "Claude is still working. Publish when the turn finishes.",
@@ -161,6 +171,21 @@ export const mapCloudError = (
           "Too many site files are waiting on unfinished publishes. Try again in an hour or two.",
           {
             reason: "pending-site",
+            ...pickNumbers(details, ["quotaBytes", "usedBytes", "publishBytes"]),
+          },
+        );
+      }
+      // The account's published sites, apart from the storage quota: all
+      // their contents GC has not removed ("site-storage"), and the files
+      // their retained versions list ("site-files").
+      if (details.reason === "site-storage" || details.reason === "site-files") {
+        return publishError(
+          "QUOTA_EXCEEDED",
+          details.reason === "site-storage"
+            ? "Your published sites use all the storage they are allowed."
+            : "Your published sites have too many files between them.",
+          {
+            reason: details.reason,
             ...pickNumbers(details, ["quotaBytes", "usedBytes", "publishBytes"]),
           },
         );
@@ -335,21 +360,27 @@ type Run = {
 // One run per workspace; a second gets PUBLISH_IN_PROGRESS.
 const runs = new Map<string, Run>();
 
-// A run that ended PUBLISH_OUTCOME_UNKNOWN with its session still pending
-// (or unreadable), one per workspace: what getPublishOutcome needs to send
-// complete again. The run's staging is gone by then, but complete needs only
-// the session: everything was uploaded. Dropped once the server
-// reports the session done, when it is aborted, when the workspace publishes
-// again, or once it has expired. Its retry and a run of the same workspace
+// A run that ended PUBLISH_OUTCOME_UNKNOWN with its session still pending,
+// unreadable, or committed but not yet live, one per workspace: what
+// getPublishOutcome needs to send complete again, which main also does on its
+// own (followUnfinished) until the record is dropped. The run's staging is
+// gone by then, but complete needs only the session: everything was uploaded.
+// Dropped once complete answers (live, or refused for good), when the server
+// reports the session aborted or expired, when it is aborted, when the
+// workspace publishes again, or once it has expired. Its retry and a run of the same workspace
 // never overlap: a run waits for a retry in flight before it begins (else the
 // old session could commit after the new one's begin and fail its complete
 // as a conflict), and no retry starts while a run holds the workspace.
 type Unfinished = {
   publishId: string;
   expiresAt: number;
+  // The publish's distinct objects, which complete's time limit scales with.
+  objects: number;
   // The server's definite refusal of complete; only the abort is left to do.
   refused?: CloudError;
   inFlight?: Promise<Result<PublishSessionResponse, PublishError>> | null;
+  // main's next background retry (followUnfinished).
+  follow?: ReturnType<typeof setTimeout> | null;
 };
 const unfinished = new Map<string, Unfinished>();
 // A retry in flight, per workspace, until it settles; kept apart from
@@ -357,18 +388,55 @@ const unfinished = new Map<string, Unfinished>();
 // leave the next one free to begin under it).
 const retries = new Map<string, Promise<unknown>>();
 
+const forgetUnfinished = (workspaceId: string) => {
+  const held = unfinished.get(workspaceId);
+  if (!held) return;
+  if (held.follow) clearTimeout(held.follow);
+  held.follow = null;
+  unfinished.delete(workspaceId);
+};
+
 const keepUnfinished = (workspaceId: string, held: Unfinished) => {
   const now = Date.now();
   for (const [id, other] of unfinished) {
-    if (other.expiresAt < now) unfinished.delete(id);
+    if (other.expiresAt < now) forgetUnfinished(id);
   }
+  forgetUnfinished(workspaceId);
   unfinished.set(workspaceId, held);
+  followUnfinished(workspaceId, held, 0);
 };
 
 // Only while it is still the workspace's record: a retry that settles late
 // must not drop what a newer run left.
 const dropUnfinished = (workspaceId: string, held: Unfinished) => {
-  if (unfinished.get(workspaceId) === held) unfinished.delete(workspaceId);
+  if (unfinished.get(workspaceId) === held) forgetUnfinished(workspaceId);
+};
+
+// main's own retries of a publish left unfinished, so it finishes (or is let
+// go) whether or not anything asks: the renderer's "Check status" and its
+// follow-up survive a closed panel but not a reload or a closed window. Each
+// is getPublishOutcome, which already keeps to one attempt at a time and
+// stays out of a run's way. They stop once the record is dropped (a final
+// answer, or the workspace publishes again) or the session has expired.
+const followUnfinished = (workspaceId: string, held: Unfinished, attempt: number) => {
+  const delays = publishTiming.followDelaysMs;
+  if (delays.length === 0) return;
+  const delay = delays[Math.min(attempt, delays.length - 1)]!;
+  if (Date.now() + delay > held.expiresAt) return;
+  const timer = setTimeout(() => {
+    if (unfinished.get(workspaceId) !== held || held.follow !== timer) return;
+    held.follow = null;
+    void getPublishOutcome(workspaceId, held.publishId)
+      .catch(() => undefined)
+      .finally(() => {
+        if (unfinished.get(workspaceId) === held && !held.follow) {
+          followUnfinished(workspaceId, held, attempt + 1);
+        }
+      });
+  }, delay);
+  // Never what keeps the process up.
+  (timer as { unref?: () => void }).unref?.();
+  held.follow = timer;
 };
 
 export const cancelPublish = (workspaceId: string): boolean => {
@@ -438,7 +506,7 @@ export async function* publishWorkspace(
   // A new publish replaces whatever an earlier one left unfinished, once a
   // "check status" retry of it still in flight has settled.
   const retrying = retries.get(workspaceId) ?? null;
-  unfinished.delete(workspaceId);
+  forgetUnfinished(workspaceId);
 
   const onCallerAbort = () => {
     if (!run.finishing) run.controller.abort();
@@ -718,6 +786,13 @@ const beginRequest = (opts: {
   });
 };
 
+// The distinct objects a plan names (its source, blobs and site contents):
+// what complete may HEAD-check before it commits.
+const planObjectCount = (plan: BeginPublishRequest): number =>
+  1 +
+  new Set(plan.snapshot.largeFiles.map((f) => f.sha256)).size +
+  new Set(plan.site.files.map((f) => f.sha256)).size;
+
 // Upload instructions → local files. Only what this publish planned is
 // uploaded: an instruction for anything else is a contract bug. Site files
 // are stored by content, so a site instruction names a sha256; any planned
@@ -891,6 +966,7 @@ const steps = async (ctx: {
   const publishId = begun.value.publish.id;
   state.session = publishId;
   if (signal.aborted) return err(CANCELLED);
+  const objects = planObjectCount(body.value);
 
   const tasks = uploadTasks(begun.value.uploads, packed, built);
   if (tasks.isErr()) return err(tasks.error);
@@ -948,7 +1024,7 @@ const steps = async (ctx: {
   let onlyRateLimited = true;
   let lastError: CloudError | null = null;
   for (let attempt = 1; attempt <= COMPLETE_ATTEMPTS; attempt++) {
-    const completed = await completePublish(publishId);
+    const completed = await completePublish(publishId, objects);
     if (completed.isOk()) {
       return ok(toResult(completed.value.site, completed.value.version));
     }
@@ -968,27 +1044,37 @@ const steps = async (ctx: {
   // publishId lets "Check status" ask about this session later
   // (getPublishOutcome), rather than guess from the site's version; the
   // session kept here lets it send complete again, since nothing else moves a
-  // pending session on.
-  const outcomeUnknown = (): Result<PublishResult, PublishError> => {
+  // pending session on (and only GC's hourly re-sync would switch a committed
+  // one over).
+  const outcomeUnknown = (
+    message = "The publish may still finish. Check again in a moment.",
+  ): Result<PublishResult, PublishError> => {
     keepUnfinished(workspaceId, {
       publishId,
       expiresAt: Date.parse(begun.value.publish.expiresAt),
+      objects,
     });
-    return err(
-      publishError(
-        "PUBLISH_OUTCOME_UNKNOWN",
-        "The publish may still finish. Check again in a moment.",
-        { publishId },
-      ),
-    );
+    return err(publishError("PUBLISH_OUTCOME_UNKNOWN", message, { publishId }));
   };
   const session = await getPublishSession(publishId);
   if (session.isErr()) {
     return session.error.code === "SIGNED_OUT" ? err(SIGNED_OUT) : outcomeUnknown();
   }
-  const { status, resultVersion, site } = session.value;
+  const { status, resultVersion } = session.value;
   if (status === "completed" && resultVersion !== null) {
-    return ok(toResult(site, resultVersion));
+    // Committed is not live: the server commits, then switches the site
+    // over, and answers complete only once visitors see the version. The
+    // session read cannot tell the two apart, so complete (idempotent: it
+    // re-syncs the switch-over) is what says the publish is live.
+    const confirmed = await completePublish(publishId, objects);
+    if (confirmed.isOk()) {
+      return ok(toResult(confirmed.value.site, confirmed.value.version));
+    }
+    if (confirmed.error.code === "SIGNED_OUT") return err(SIGNED_OUT);
+    if (!isRetryableComplete(confirmed.error)) {
+      return err(mapCloudError(confirmed.error, packed.manifest));
+    }
+    return outcomeUnknown(NOT_LIVE_YET);
   }
   if (status === "pending") return outcomeUnknown();
   // aborted or expired: it can no longer complete.
@@ -1002,11 +1088,14 @@ const steps = async (ctx: {
 // ============================================================================
 
 // What became of a publish session that ended PUBLISH_OUTCOME_UNKNOWN (its
-// publishId is in that error's details). While it is still pending and this
-// process kept its session, it is also the retry: complete is sent once more
-// (it is idempotent), and a session the server now refuses for good is
-// aborted, so the answer is "it will not go live" rather than "pending"
-// until it expires.
+// publishId is in that error's details). While this process kept its session
+// and it is pending, or committed without the answer that it is live, it is
+// also the retry: complete is sent once more (it is idempotent, and switches
+// the site over to a committed version), and a session the server now
+// refuses for good is aborted, so the answer is "it will not go live" rather
+// than "pending" until it expires. A committed session is "completed" only
+// once complete confirms it is live; until then it reads "pending", since
+// visitors still get the previous version.
 export const getPublishOutcome = async (
   workspaceId: string,
   publishId: string,
@@ -1018,7 +1107,7 @@ export const getPublishOutcome = async (
   if (held?.publishId !== publishId || runs.has(workspaceId)) {
     return ok(result.value);
   }
-  if (result.value.status !== "pending") {
+  if (result.value.status !== "pending" && result.value.status !== "completed") {
     dropUnfinished(workspaceId, held);
     return ok(result.value);
   }
@@ -1037,10 +1126,11 @@ export const getPublishOutcome = async (
 const finishUnfinished = async (
   workspaceId: string,
   held: Unfinished,
-  pending: PublishSessionResponse,
+  session: PublishSessionResponse,
 ): Promise<Result<PublishSessionResponse, PublishError>> => {
-  if (!held.refused) {
-    const completed = await completePublish(held.publishId);
+  const committed = session.status === "completed";
+  if (committed || !held.refused) {
+    const completed = await completePublish(held.publishId, held.objects);
     if (completed.isOk()) {
       dropUnfinished(workspaceId, held);
       return ok({
@@ -1049,8 +1139,14 @@ const finishUnfinished = async (
         site: completed.value.site,
       });
     }
-    if (isRetryableComplete(completed.error)) return ok(pending);
+    // Committed but not switched over yet: not live, so still pending.
+    if (isRetryableComplete(completed.error)) return ok({ ...session, status: "pending" });
     if (completed.error.code === "SIGNED_OUT") return err(SIGNED_OUT);
+    // A committed session has nothing to abort; the refusal is the answer.
+    if (committed) {
+      dropUnfinished(workspaceId, held);
+      return err(mapCloudError(completed.error));
+    }
     held.refused = completed.error;
   }
 

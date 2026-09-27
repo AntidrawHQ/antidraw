@@ -194,11 +194,14 @@ URL signing). Wire schemas are in
   (the entry pages `preview.html`, `canvas.json` and `index.html` included),
   immutable; and `m/<slug>.json`, the site's pointer: the manifest of every
   path the site serves (`{ "v": 1, "version", "u": <owner id>, "files": {
-  "<path>": { "h": <sha256>, "s": <size>, "t": <content type> } } }`). It
-  lists the head version's files plus "grace" entries, the hashed
-  `assets/*-<hash>.*` and `_antidraw/*` paths of the four previous versions
-  that the head does not define, so a tab open on an older version can still
-  lazy-load its chunks (capped at ~2 MB, oldest dropped first). Uploads never
+  "<path>": { "h": <sha256>, "s": <size>, "t": <content type>, "i": 1 } } }`).
+  `"i": 1` marks an immutable file: one the build named by its content (the
+  plan's `immutable`) at a hashed `assets/*-<hash>.*` or `_antidraw/*` path,
+  which the publish Worker caches for a year; a public file whose name only
+  looks hashed is not one. The pointer lists the head version's files plus
+  "grace" entries, the immutable files of the four previous versions that the
+  head does not define, so a tab open on an older version can still lazy-load
+  its chunks (capped at ~2 MB, oldest dropped first). Uploads never
   change what visitors see: complete commits the version and then writes the
   pointer in one conditional put (never replacing a newer version's), so a
   site switches over atomically and a failed or cancelled publish leaves it
@@ -217,11 +220,22 @@ bounds what a signed-in client can park before it commits: at most 10
 uncommitted sessions whose upload URLs still work (429 `RATE_LIMITED`,
 `details.reason: "open-sessions"`), and at most 1 GiB of site contents no
 commit has verified across them (413 `QUOTA_EXCEEDED`, `details.reason:
-"pending-site"`).
+"pending-site"`). Site contents are append-only, so begin also bounds what an
+account keeps: at most 4 GiB of site contents GC has not removed, committed
+or not (`details.reason: "site-storage"`; a publish that adds no new content
+passes), and at most 64 MiB of estimated D1 footprint in retained
+`version_site_file` rows (`details.reason: "site-files"`). A version keeps
+all its site-file rows only while the site's pointer may still be at it; once
+the pointer moves past it, only the rows a grace entry can use (its
+immutable files) are kept.
 
 Clients PUT bytes straight to R2 with presigned S3 URLs (aws4fetch), signed
 over `content-length`, the sha256 checksum and the metadata; complete then
-HEAD-checks size and sha256 of every object. Every upload carries its sha256.
+HEAD-checks size and sha256 of every object no commit has verified and no
+earlier attempt of the session found (a verified row always has its bytes:
+only GC deletes object keys, after marking their rows `deleting`), stopping
+once 50 are missing. Begin HEADs only objects with an unverified row: one
+without a row is not in R2. Every upload carries its sha256.
 
 **GC** runs hourly from the cron trigger (`src/scheduled.ts`): expire lapsed
 sessions, drop versions beyond the newest 5 (`keep` ones excepted), re-sync
@@ -267,9 +281,11 @@ presigned PUT, the rate limiters and cron dispatch are not unit-testable.
 ### Deploying publish
 
 - **Workers Paid is required.** Free allows 50 subrequests per request (R2 and
-  D1 binding calls count) and 50 D1 queries per invocation; begin and complete
-  HEAD every object of a publish (up to ~6 000 R2 calls: source, blobs and
-  site contents) and run a few dozen D1 statements. Paid allows 10 000 and 1 000.
+  D1 binding calls count) and 50 D1 queries per invocation; complete HEADs
+  every object of a first publish that no commit has verified (up to ~6 000
+  R2 calls: source, blobs and site contents; begin HEADs only objects an
+  earlier, uncommitted session left) and each runs a few dozen D1 statements.
+  Paid allows 10 000 and 1 000.
 - Create the buckets (`wrangler r2 bucket create antidraw-sites` and
   `antidraw-sources`), and set `R2_ACCOUNT_ID`, `R2_S3_ACCESS_KEY_ID` and
   `R2_S3_SECRET_ACCESS_KEY` (an R2 API token with Object Read & Write on both

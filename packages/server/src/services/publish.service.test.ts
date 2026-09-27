@@ -5,7 +5,9 @@ import {
   MAX_OPEN_SESSIONS_PER_ACCOUNT,
   MAX_PENDING_SITE_BYTES,
   MAX_PLAN_JSON_BYTES,
+  MAX_SITE_FILE_ROW_BYTES,
   MAX_SITES_PER_ACCOUNT,
+  MAX_STORED_SITE_BYTES,
   QUOTA_BYTES,
   SESSION_TTL_MS,
 } from "../lib/publish-limits";
@@ -22,6 +24,7 @@ import {
   MiB,
   performUploads,
   pointerOf,
+  recordHeads,
   workspaceId,
   WORKSPACE,
   type PlanInput,
@@ -37,7 +40,7 @@ import {
   makePublishDeps,
   setAllowRemix,
 } from "./publish.service";
-import { PLAN_STUB } from "./publish.store";
+import { PLAN_STUB, siteFileRowBytes } from "./publish.store";
 
 const USER = "user-1";
 const OTHER = "user-2";
@@ -841,23 +844,95 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       expect(pointerOf(deps, begun.publish.slug)).toBeNull();
     });
 
-    it("catches a verified object removed from R2 out of band", async () => {
+    it("HEADs only objects no commit verified, and none at begin that the account never had", async () => {
       const deps = setup();
       await publish(deps);
-      deps.sourcesBucket.objects.delete(sourceKey(USER, hex("source-1")));
-      deps.sitesBucket.objects.delete(siteContentKey(USER, hex("site-logo.png")));
+      const heads = recordHeads(deps);
+      const begun = (
+        await begin(deps, { files: [{ path: "logo.png", sha256: hex("logo-2") }] })
+      )._unsafeUnwrap();
+      // A content with no row cannot be in R2: asked for without a HEAD.
+      expect(begun.uploads.map((u) => u.path)).toEqual(["logo.png"]);
+      expect(heads).toEqual([]);
+      performUploads(deps, begun.uploads);
+      (await completePublish(deps, USER, begun.publish.id))._unsafeUnwrap();
+      // The source, the blob and the unchanged contents were verified by the
+      // first commit, and only GC deletes a key, after marking its row.
+      expect(heads).toEqual([siteContentKey(USER, hex("logo-2"))]);
+    });
+
+    it("fails the commit when GC marks a verified object between the checks and the commit", async () => {
+      const deps = setup();
+      const { begun: first } = await publish(deps);
       const begun = (await begin(deps))._unsafeUnwrap();
       expect(begun.uploads).toEqual([]);
+      const source = { kind: "source" as const, sha256: hex("source-1") };
+      const commit = deps.store.commitVersion;
+      deps.store.commitVersion = async (v) => {
+        // GC's claim, then its R2 delete, after complete trusted the row.
+        await deps.harness.markDeleting(USER, source);
+        deps.sourcesBucket.objects.delete(sourceKey(USER, source.sha256));
+        return commit(v);
+      };
+      const result = await completePublish(deps, USER, begun.publish.id);
+      deps.store.commitVersion = commit;
+      expect(result._unsafeUnwrapErr()).toMatchObject({
+        status: 409,
+        code: "UPLOAD_INCOMPLETE",
+        details: { missing: [source] },
+      });
+      expect(await deps.harness.versionNumbers(first.publish.siteId)).toEqual([1]);
+      expect(pointerOf(deps, first.publish.slug)?.version).toBe(1);
+      expect((await deps.store.findSiteById(first.publish.siteId))?.completeLock).toBeNull();
+    });
+
+    it("reports a verified object GC is deleting as missing, without a HEAD", async () => {
+      const deps = setup();
+      await publish(deps);
+      const begun = (await begin(deps))._unsafeUnwrap();
+      const source = { kind: "source" as const, sha256: hex("source-1") };
+      await deps.harness.markDeleting(USER, source);
+      const heads = recordHeads(deps);
       const result = await completePublish(deps, USER, begun.publish.id);
       expect(result._unsafeUnwrapErr()).toMatchObject({
         code: "UPLOAD_INCOMPLETE",
-        details: {
-          missing: [
-            { kind: "source", sha256: hex("source-1") },
-            { kind: "site", sha256: hex("site-logo.png"), path: "logo.png" },
-          ],
-        },
+        details: { missing: [source] },
       });
+      expect(heads).toEqual([]);
+    });
+
+    it("does not HEAD again, on a retry, what an earlier attempt found", async () => {
+      const deps = setup();
+      const begun = (await begin(deps))._unsafeUnwrap();
+      const logo = begun.uploads.find((u) => u.path === "logo.png")!;
+      performUploads(
+        deps,
+        begun.uploads.filter((u) => u !== logo),
+      );
+      const heads = recordHeads(deps);
+      const first = await completePublish(deps, USER, begun.publish.id);
+      expect(first._unsafeUnwrapErr()).toMatchObject({
+        code: "UPLOAD_INCOMPLETE",
+        details: { missing: [{ kind: "site", sha256: logo.sha256, path: "logo.png" }] },
+      });
+      expect(heads).toHaveLength(begun.uploads.length);
+
+      heads.length = 0;
+      performUploads(deps, [logo]);
+      expect((await completePublish(deps, USER, begun.publish.id))._unsafeUnwrap().version).toBe(1);
+      expect(heads).toEqual([siteContentKey(USER, logo.sha256)]);
+    });
+
+    it("stops HEADing once it has found as many missing objects as it reports", async () => {
+      const deps = setup();
+      const files = Array.from({ length: 400 }, (_, i) => ({ path: `f/${i}.txt`, size: 0 }));
+      const begun = (await begin(deps, { files }))._unsafeUnwrap();
+      const heads = recordHeads(deps);
+      const error = (await completePublish(deps, USER, begun.publish.id))._unsafeUnwrapErr();
+      expect(error.code).toBe("UPLOAD_INCOMPLETE");
+      expect((error.details as { missing: unknown[] }).missing).toHaveLength(50);
+      // At most one round of HEADs in flight past the 50th miss.
+      expect(heads.length).toBeLessThanOrEqual(100);
     });
 
     it("releases the lock when a store call throws after taking it", async () => {
@@ -1198,6 +1273,183 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       expect((await deps.store.getSession(begun.publish.id))?.holdUntil).toBe(
         deps.clock.now + SESSION_TTL_MS,
       );
+    });
+  });
+
+  describe("stored site bytes", () => {
+    const siteOf = (n: number, size: number): PlanInput => ({
+      workspace: workspaceId(n),
+      files: [{ path: `assets/big-${n}.js`, size, immutable: true }],
+    });
+    // The entry pages' contents, the same for every site here: stored once.
+    const E = Object.values(defaultEntries()).reduce(
+      (a, text) => a + new TextEncoder().encode(text).length,
+      0,
+    );
+
+    it(`refuses a publish that adds site bytes past ${MAX_STORED_SITE_BYTES / MiB} MiB, committed ones included`, async () => {
+      const deps = setup();
+      // Committed contents free the pending-site cap, but still count here.
+      for (let n = 1; n <= 9; n++) await publish(deps, siteOf(n, 450 * MiB));
+      const refused = await begin(deps, siteOf(10, 100 * MiB));
+      expect(refused._unsafeUnwrapErr()).toMatchObject({
+        status: 413,
+        code: "QUOTA_EXCEEDED",
+        details: {
+          reason: "site-storage",
+          quotaBytes: MAX_STORED_SITE_BYTES,
+          usedBytes: 9 * 450 * MiB + E,
+          publishBytes: 100 * MiB,
+        },
+      });
+      // Deleted, holding nothing.
+      expect((await deps.store.openSessions(USER, deps.clock.now)).count).toBe(0);
+      expect(
+        await deps.store.getStoredObjects(USER, [
+          { kind: "site", sha256: hex("site-assets/big-10.js") },
+        ]),
+      ).toEqual([]);
+      // Contents the account already has add nothing.
+      expect((await begin(deps, { ...siteOf(1, 450 * MiB), name: "Again" })).isOk()).toBe(true);
+    });
+
+    it("keeps counting contents no retained version lists until GC removes them", async () => {
+      const deps = setup();
+      for (let v = 1; v <= 9; v++) {
+        await publish(deps, {
+          files: [{ path: `assets/big-${v}.js`, size: 450 * MiB, immutable: true }],
+        });
+      }
+      const site = await deps.store.findSiteByWorkspace(USER, WORKSPACE);
+      // v1 to v4 were pruned; their contents wait out GC's age floor.
+      expect(await deps.harness.versionNumbers(site!.id)).toEqual([5, 6, 7, 8, 9]);
+      const more = { files: [{ path: "x.js", size: 100 * MiB }] };
+      expect((await begin(deps, more))._unsafeUnwrapErr()).toMatchObject({
+        code: "QUOTA_EXCEEDED",
+        details: { reason: "site-storage" },
+      });
+      deps.clock.now += 25 * 3600_000;
+      await runGc(deps.gc, deps.now());
+      expect((await begin(deps, more)).isOk()).toBe(true);
+    });
+
+    it("lets a publish that adds no site bytes through, even over the cap", async () => {
+      const deps = setup();
+      await publish(deps);
+      const stored = deps.store.storedSiteBytes;
+      deps.store.storedSiteBytes = async () => MAX_STORED_SITE_BYTES + 1;
+      expect((await begin(deps)).isOk()).toBe(true);
+      deps.store.storedSiteBytes = stored;
+    });
+  });
+
+  describe("site file rows", () => {
+    const rowBytes = (files: { path: string; contentType: string }[]) =>
+      files.reduce((a, f) => a + siteFileRowBytes(f), 0);
+
+    it("keeps every file of the head, and only the grace candidates of older versions", async () => {
+      const deps = setup();
+      const { begun: first } = await publish(deps);
+      const siteId = first.publish.siteId;
+      await publish(deps, { entries: defaultEntries("v2") });
+      expect(await deps.harness.siteFileRows(siteId)).toEqual([
+        "1:_antidraw/viewer-AbC12345.js",
+        "1:assets/index-AbC12345.js",
+        "2:_antidraw/viewer-AbC12345.js",
+        "2:assets/index-AbC12345.js",
+        "2:canvas.json",
+        "2:index.html",
+        "2:logo.png",
+        "2:preview.html",
+      ]);
+      const head = (await beginRequest({ entries: defaultEntries("v2") })).site.files;
+      const grace = (await beginRequest()).site.files.filter((f) => f.immutable);
+      expect(await deps.store.siteFileRowBytes(USER)).toBe(rowBytes(head) + rowBytes(grace));
+    });
+
+    it("marks only build-named files immutable, and never keeps a public file as a grace entry", async () => {
+      const deps = setup();
+      const files = [
+        { path: "assets/index-AbC12345.js", immutable: true, contentType: "text/javascript" },
+        // A public file whose name looks hashed: the build did not name it.
+        { path: "assets/logo-original.png", contentType: "image/png" },
+        // The build's flag outside where the build names files counts for nothing.
+        { path: "robots.txt", immutable: true, contentType: "text/plain" },
+      ];
+      const { begun } = await publish(deps, { files });
+      const slug = begun.publish.slug;
+      const v1 = pointerOf(deps, slug)!;
+      expect(v1.files["assets/index-AbC12345.js"].i).toBe(1);
+      expect(v1.files["assets/logo-original.png"]).not.toHaveProperty("i");
+      expect(v1.files["robots.txt"]).not.toHaveProperty("i");
+      expect(v1.files["index.html"]).not.toHaveProperty("i");
+
+      // v2 removes the public file and robots.txt: they are off the site at once.
+      await publish(deps, { files: [files[0]], entries: defaultEntries("v2") });
+      const v2 = pointerOf(deps, slug)!;
+      expect(v2.version).toBe(2);
+      expect(Object.keys(v2.files).sort()).toEqual(
+        ["assets/index-AbC12345.js", "canvas.json", "index.html", "preview.html"].sort(),
+      );
+      expect(await deps.harness.siteFileRows(begun.publish.siteId)).toEqual([
+        "1:assets/index-AbC12345.js",
+        "2:assets/index-AbC12345.js",
+        "2:canvas.json",
+        "2:index.html",
+        "2:preview.html",
+      ]);
+    });
+
+    it("keeps every file of the version the pointer is still at", async () => {
+      const deps = setup();
+      const { begun: first } = await publish(deps);
+      const siteId = first.publish.siteId;
+      const slug = first.publish.slug;
+      const begun = (await begin(deps, { entries: defaultEntries("v2") }))._unsafeUnwrap();
+      performUploads(deps, begun.uploads);
+      deps.sitesBucket.failPut = (key) => key === pointerKey(slug);
+      expect((await completePublish(deps, USER, begun.publish.id)).isErr()).toBe(true);
+      expect(pointerOf(deps, slug)?.version).toBe(1);
+      const v1Rows = async () =>
+        (await deps.harness.siteFileRows(siteId)).filter((r) => r.startsWith("1:"));
+      expect(await v1Rows()).toHaveLength(6);
+
+      deps.sitesBucket.failPut = () => false;
+      (await completePublish(deps, USER, begun.publish.id))._unsafeUnwrap();
+      expect(await v1Rows()).toEqual([
+        "1:_antidraw/viewer-AbC12345.js",
+        "1:assets/index-AbC12345.js",
+      ]);
+    });
+
+    it(`refuses a publish that would take the account's rows past ${MAX_SITE_FILE_ROW_BYTES / MiB} MiB`, async () => {
+      const deps = setup();
+      await publish(deps);
+      const req = await beginRequest({ workspace: workspaceId(2), name: "Other" });
+      const adds = rowBytes(req.site.files);
+      const actual = deps.store.siteFileRowBytes;
+      // The account's rows, as if just under the cap before this plan.
+      const room = async (spare: number) => {
+        const used = await actual(USER);
+        deps.store.siteFileRowBytes = async (u) =>
+          (await actual(u)) + MAX_SITE_FILE_ROW_BYTES - used - adds - spare;
+      };
+      await room(-1);
+      const refused = await beginPublish(deps, USER, req);
+      expect(refused._unsafeUnwrapErr()).toMatchObject({
+        status: 413,
+        code: "QUOTA_EXCEEDED",
+        details: {
+          reason: "site-files",
+          quotaBytes: MAX_SITE_FILE_ROW_BYTES,
+          usedBytes: MAX_SITE_FILE_ROW_BYTES - adds + 1,
+          publishBytes: adds,
+        },
+      });
+      // Refused before a site or a session was created.
+      expect(await deps.store.findSiteByWorkspace(USER, workspaceId(2))).toBeNull();
+      await room(0);
+      expect((await beginPublish(deps, USER, req)).isOk()).toBe(true);
     });
   });
 

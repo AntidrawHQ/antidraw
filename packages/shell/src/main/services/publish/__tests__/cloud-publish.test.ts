@@ -10,7 +10,7 @@ import {
   patchSite,
   type BeginPublishRequest,
 } from "../cloud-publish";
-import { cloudTiming } from "../deadline";
+import { cloudTiming, completeTimeoutFor } from "../deadline";
 
 vi.mock("@/main/services/account.service", () => ({
   cloudFetch: vi.fn(),
@@ -281,6 +281,22 @@ describe("cloud-publish", () => {
       const result = await completePublish("pub_1");
 
       expect(result._unsafeUnwrap().version).toBe(4);
+    });
+
+    test("complete's time limit grows with the publish's objects", async () => {
+      cloudTiming.requestTimeoutMs = 20;
+      cloudTiming.completeTimeoutMs = 20;
+      cloudTiming.completePerObjectMs = 1;
+      const slow = () =>
+        vi.mocked(cloudFetch).mockImplementationOnce(
+          () => new Promise((resolve) => setTimeout(() => resolve(ok(json({ site, version: 4 }))), 80)),
+        );
+
+      slow();
+      expect((await completePublish("pub_1"))._unsafeUnwrapErr().code).toBe("SERVER_UNREACHABLE");
+      slow();
+      expect((await completePublish("pub_1", 1_000))._unsafeUnwrap().version).toBe(4);
+      expect(completeTimeoutFor(6_000)).toBe(20 + 6_000);
     });
   });
 });

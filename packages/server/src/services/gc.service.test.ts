@@ -100,7 +100,9 @@ describe.each(harnesses)("gc (%s)", (_name, makeHarness) => {
     expect(await objectRows(deps, v1)).toHaveLength(1); // verified: the 24 h floor applies
 
     const later = await gcAt(deps, T + DAY + HOUR);
-    expect(later.deletedObjects).toBe(4); // and v1's three entry pages
+    // And the entry pages of v1 to v5: the pointer moved past those versions,
+    // and a pointer keeps only immutable paths of older versions.
+    expect(later.deletedObjects).toBe(1 + 5 * 3);
     expect(await objectRows(deps, v1)).toEqual([]);
     expect(deps.sourcesBucket.objects.has(sourceKey(USER, v1.sha256))).toBe(false);
     // Referenced by retained versions.
@@ -198,15 +200,17 @@ describe.each(harnesses)("gc (%s)", (_name, makeHarness) => {
       ].sort(),
     );
 
-    // v1 was pruned: its chunk, its entry pages and its source are
-    // unreferenced, and go once a day old. logo.png is every version's.
+    // v1 was pruned: its chunk and its source are unreferenced, and so are the
+    // entry pages of v1 to v5 (the pointer moved past those versions, and
+    // keeps only their chunks); they go once a day old. logo.png is every
+    // version's.
     const v1 = [
       hex("site-assets/chunk-v1AAAAAA.js"),
       await sha256Hex(defaultEntries("v1")["index.html"]),
     ];
     expect((await gcAt(deps, T + SESSION_TTL_MS + HOUR)).deletedObjects).toBe(0);
     const report = await gcAt(deps, T + DAY + HOUR);
-    expect(report.deletedObjects).toBe(5); // source, chunk, three entry pages
+    expect(report.deletedObjects).toBe(2 + 5 * 3); // source, chunk, 5 x three entry pages
     for (const sha of v1) {
       expect(deps.sitesBucket.objects.has(siteContentKey(USER, sha))).toBe(false);
     }

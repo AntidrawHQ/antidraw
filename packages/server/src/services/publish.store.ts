@@ -2,7 +2,11 @@ import { sql, type SQL } from "drizzle-orm";
 import { SQLiteAsyncDialect } from "drizzle-orm/sqlite-core";
 import type { Db } from "../db";
 import { utf8Bytes } from "../lib/paths";
-import { D1_JSON_PARAM_BYTES, D1_MAX_PARAMS } from "../lib/publish-limits";
+import {
+  D1_JSON_PARAM_BYTES,
+  D1_MAX_PARAMS,
+  SITE_FILE_ROW_OVERHEAD_BYTES,
+} from "../lib/publish-limits";
 
 // Every D1 statement publish + remix + GC run, behind one structural type so
 // services and tests can swap in src/test/memory-publish-store.ts. Raw SQL
@@ -83,6 +87,7 @@ export type VersionRow = {
   fileCount: number;
   siteFileCount: number;
   siteBytes: number;
+  siteFileRowBytes: number;
   allowRemix: boolean;
   keep: boolean;
   publishSessionId: string;
@@ -90,7 +95,21 @@ export type VersionRow = {
 };
 
 export type LargeFileRow = { path: string; sha256: string; size: number; mode: number };
-export type SiteFileRow = { path: string; sha256: string; size: number; contentType: string };
+// `immutable`: the build named it by its content and it is at an
+// isImmutableSitePath (lib/paths.ts). The pointer marks it "i", and only such
+// rows of older versions are grace entries.
+export type SiteFileRow = {
+  path: string;
+  sha256: string;
+  size: number;
+  contentType: string;
+  immutable: boolean;
+};
+
+// A version_site_file row's estimated D1 footprint, toward the account's
+// MAX_SITE_FILE_ROW_BYTES. `siteFileRowWeight` below is the same sum in SQL.
+export const siteFileRowBytes = (f: Pick<SiteFileRow, "path" | "contentType">) =>
+  utf8Bytes(f.path) + utf8Bytes(f.contentType) + SITE_FILE_ROW_OVERHEAD_BYTES;
 // A site file of one of the site's versions, for building its pointer.
 export type VersionSiteFileRow = SiteFileRow & { version: number };
 
@@ -130,6 +149,8 @@ export type NewVersion = {
   siteBytes: number;
   largeFiles: LargeFileRow[];
   siteFiles: SiteFileRow[];
+  // Σ siteFileRowBytes over siteFiles.
+  siteFileRowBytes: number;
   keepVersions: number;
   now: number;
   // How many session objects the session was created with (its plan's
@@ -186,6 +207,12 @@ export type PublishStore = {
   ): Promise<boolean>;
   // The storage quota's use: every source and blob GC has not claimed.
   usedBytes(userId: string): Promise<number>;
+  // Every site content of the account GC has not claimed, toward
+  // MAX_STORED_SITE_BYTES.
+  storedSiteBytes(userId: string): Promise<number>;
+  // Σ site_file_row_bytes of the account's retained versions, toward
+  // MAX_SITE_FILE_ROW_BYTES.
+  siteFileRowBytes(userId: string): Promise<number>;
   // The account's sessions that have not committed and still hold, and the
   // uncommitted site bytes they hold (their site_upload_bytes).
   openSessions(userId: string, now: number): Promise<{ count: number; siteUploadBytes: number }>;
@@ -203,15 +230,22 @@ export type PublishStore = {
   releaseCompleteLock(siteId: string, lock: string): Promise<void>;
   commitVersion(version: NewVersion): Promise<{ ok: true } | ({ ok: false } & CommitFailure)>;
   missingSessionObjects(sessionId: string): Promise<ObjectRef[]>;
+  // The session objects an earlier complete of the session found in R2, and
+  // recording more of them.
+  presentSessionObjects(sessionId: string): Promise<ObjectRef[]>;
+  markSessionObjectsPresent(sessionId: string, refs: ObjectRef[]): Promise<void>;
 
   getHeadVersion(site: Pick<SiteRow, "id" | "headVersion">): Promise<VersionRow | null>;
   getLargeFiles(versionId: string): Promise<LargeFileRow[]>;
   // The site files of the site's versions from `oldest` to `head`: every one
-  // of the head, and of older versions only those that may be immutable (the
-  // caller applies the exact rule). Newest version first.
+  // of the head, and of older versions only the immutable ones (their grace
+  // entries). Newest version first.
   pointerFiles(siteId: string, head: number, oldest: number): Promise<VersionSiteFileRow[]>;
   // Records that the site's pointer is at `version` (never lowering it, nor
-  // raising it past the head).
+  // raising it past the head). The pointer only moves forward, so no pointer
+  // will be at a version it moved past again: those versions' rows that no
+  // grace entry can use are deleted in the same batch, and their
+  // site_file_row_bytes lowered to match.
   setPointerVersion(siteId: string, version: number): Promise<void>;
 
   // GC. Where these ask whether a session has expired or still holds
@@ -341,6 +375,7 @@ const toVersion = (r: Raw): VersionRow => ({
   fileCount: num(r.file_count),
   siteFileCount: num(r.site_file_count),
   siteBytes: num(r.site_bytes),
+  siteFileRowBytes: num(r.site_file_row_bytes ?? 0),
   allowRemix: bool(r.allow_remix),
   keep: bool(r.keep),
   publishSessionId: String(r.publish_session_id),
@@ -381,6 +416,14 @@ const referencedByVersion = (so: SQL) => sql`(
      WHERE f.user_id = ${so}.user_id AND f.sha256 = ${so}.sha256))
   OR (${so}.kind = 'site' AND EXISTS (SELECT 1 FROM version_site_file f
      WHERE f.user_id = ${so}.user_id AND f.sha256 = ${so}.sha256)))`;
+
+// The version_site_file rows a pointer's grace entries may use: the immutable
+// ones, as buildPointer takes them.
+const graceCandidate = (f: SQL) => sql`(${f}.immutable = 1)`;
+// siteFileRowBytes, in SQL. CAST AS BLOB: length() of a TEXT counts characters.
+const siteFileRowWeight = (f: SQL) =>
+  sql`(length(CAST(${f}.path AS BLOB)) + length(CAST(${f}.content_type AS BLOB))
+    + ${SITE_FILE_ROW_OVERHEAD_BYTES})`;
 
 // Column `i` of a json_each row (`j.value`, a JSON array).
 const col = (i: number) => sql.raw(`json_extract(j.value, '$[${i}]')`);
@@ -554,6 +597,19 @@ export const d1PublishStore = (db: Db): PublishStore => {
       return num(row?.used ?? 0);
     },
 
+    // On the primary key, like usedBytes.
+    async storedSiteBytes(userId) {
+      const row = await first(sql`SELECT COALESCE(SUM(size), 0) AS used FROM stored_object
+        WHERE user_id = ${userId} AND kind = 'site' AND deleting = 0`);
+      return num(row?.used ?? 0);
+    },
+
+    async siteFileRowBytes(userId) {
+      const row = await first(sql`SELECT COALESCE(SUM(site_file_row_bytes), 0) AS bytes
+        FROM site_version WHERE user_id = ${userId}`);
+      return num(row?.bytes ?? 0);
+    },
+
     async openSessions(userId, now) {
       const row = await first(sql`SELECT count(*) AS n,
           COALESCE(SUM(site_upload_bytes), 0) AS bytes
@@ -601,12 +657,13 @@ export const d1PublishStore = (db: Db): PublishStore => {
             AND so.deleting = 0))`;
       const statements: SQL[] = [
         sql`INSERT INTO site_version (id, site_id, user_id, version, source_sha256, source_size,
-            snapshot_bytes, file_count, site_file_count, site_bytes, allow_remix, publish_session_id,
-            created_at)
+            snapshot_bytes, file_count, site_file_count, site_bytes, site_file_row_bytes,
+            allow_remix, publish_session_id, created_at)
           SELECT ${v.id}, ${v.siteId}, ${v.userId}, ${next},
             CASE WHEN ${guard} THEN ${v.source.sha256} ELSE NULL END,
             ${v.source.size}, ${v.snapshotBytes}, ${v.fileCount}, ${v.siteFileCount}, ${v.siteBytes},
-            (SELECT allow_remix FROM site WHERE id = ${v.siteId}), ${v.sessionId}, ${v.now}`,
+            ${v.siteFileRowBytes}, (SELECT allow_remix FROM site WHERE id = ${v.siteId}),
+            ${v.sessionId}, ${v.now}`,
       ];
       for (const part of chunk(v.largeFiles, 6)) {
         statements.push(sql`INSERT INTO version_large_file
@@ -617,11 +674,11 @@ export const d1PublishStore = (db: Db): PublishStore => {
           )}`);
       }
       for (const json of jsonChunks(
-        v.siteFiles.map((f) => [f.path, f.sha256, f.size, f.contentType]),
+        v.siteFiles.map((f) => [f.path, f.sha256, f.size, f.contentType, f.immutable ? 1 : 0]),
       )) {
         statements.push(sql`INSERT INTO version_site_file
-            (version_id, user_id, path, sha256, size, content_type)
-          SELECT ${v.id}, ${v.userId}, ${col(0)}, ${col(1)}, ${col(2)}, ${col(3)}
+            (version_id, user_id, path, sha256, size, content_type, immutable)
+          SELECT ${v.id}, ${v.userId}, ${col(0)}, ${col(1)}, ${col(2)}, ${col(3)}, ${col(4)}
             FROM json_each(${json}) j`);
       }
       statements.push(
@@ -659,6 +716,23 @@ export const d1PublishStore = (db: Db): PublishStore => {
 
     missingSessionObjects,
 
+    async presentSessionObjects(sessionId) {
+      return (
+        await all(sql`SELECT kind, sha256 FROM publish_session_object
+          WHERE session_id = ${sessionId} AND present = 1`)
+      ).map((r) => ({ kind: r.kind as ObjectKind, sha256: String(r.sha256) }));
+    },
+
+    async markSessionObjectsPresent(sessionId, refs) {
+      await batch(
+        refChunks(refs).map(
+          (json) => sql`UPDATE publish_session_object SET present = 1
+            WHERE session_id = ${sessionId}
+              AND (kind, sha256) IN (SELECT ${col(0)}, ${col(1)} FROM json_each(${json}) j)`,
+        ),
+      );
+    },
+
     async getHeadVersion(site) {
       if (site.headVersion === 0) return null;
       const row = await first(sql`SELECT * FROM site_version
@@ -680,10 +754,10 @@ export const d1PublishStore = (db: Db): PublishStore => {
 
     async pointerFiles(siteId, head, oldest) {
       return (
-        await all(sql`SELECT v.version, f.path, f.sha256, f.size, f.content_type
+        await all(sql`SELECT v.version, f.path, f.sha256, f.size, f.content_type, f.immutable
           FROM site_version v JOIN version_site_file f ON f.version_id = v.id
           WHERE v.site_id = ${siteId} AND v.version BETWEEN ${oldest} AND ${head}
-            AND (v.version = ${head} OR f.path GLOB '_antidraw/*' OR f.path GLOB 'assets/*')
+            AND (v.version = ${head} OR ${graceCandidate(sql.raw("f"))})
           ORDER BY v.version DESC, f.path`)
       ).map((r) => ({
         version: num(r.version),
@@ -691,13 +765,28 @@ export const d1PublishStore = (db: Db): PublishStore => {
         sha256: String(r.sha256),
         size: num(r.size),
         contentType: String(r.content_type),
+        immutable: bool(r.immutable),
       }));
     },
 
+    // The versions the pointer moves past: from where it was up to where it
+    // now is. Earlier ones were pruned when it moved past them.
     async setPointerVersion(siteId, version) {
-      await changes(sql`UPDATE site
-        SET pointer_version = min(head_version, max(pointer_version, ${version}))
-        WHERE id = ${siteId}`);
+      const at = sql`(SELECT pointer_version FROM site WHERE id = ${siteId})`;
+      const to = sql`min((SELECT head_version FROM site WHERE id = ${siteId}), max(${at}, ${version}))`;
+      const passed = sql`site_id = ${siteId} AND version >= ${at} AND version < ${to}`;
+      const f = sql.raw("version_site_file");
+      await batch([
+        sql`UPDATE site_version SET site_file_row_bytes = max(0, site_file_row_bytes
+            - (SELECT COALESCE(SUM(${siteFileRowWeight(f)}), 0) FROM version_site_file
+                WHERE version_site_file.version_id = site_version.id
+                  AND NOT ${graceCandidate(f)}))
+          WHERE ${passed}`,
+        sql`DELETE FROM version_site_file
+          WHERE version_id IN (SELECT id FROM site_version WHERE ${passed})
+            AND NOT ${graceCandidate(f)}`,
+        sql`UPDATE site SET pointer_version = ${to} WHERE id = ${siteId}`,
+      ]);
     },
 
     async expireSessions(now) {

@@ -8,6 +8,7 @@ import {
   d1PublishStore,
   jsonChunks,
   PLAN_STUB,
+  siteFileRowBytes,
   type NewSession,
   type NewVersion,
   type PublishStore,
@@ -78,7 +79,10 @@ const version = (over: Partial<NewVersion> = {}): NewVersion => ({
   siteFileCount: 1,
   siteBytes: 10,
   largeFiles: [{ path: "a.bin", sha256: hex("blob"), size: 2000, mode: 420 }],
-  siteFiles: [{ path: "index.html", sha256: hex("index"), size: 10, contentType: "text/html" }],
+  siteFiles: [
+    { path: "index.html", sha256: hex("index"), size: 10, contentType: "text/html", immutable: false },
+  ],
+  siteFileRowBytes: siteFileRowBytes({ path: "index.html", contentType: "text/html" }),
   keepVersions: 5,
   now: 20,
   sessionObjects: 2, // session()'s
@@ -536,6 +540,7 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
       sha256: hex(`c${i % 4000}`),
       size: 1 + (i % 4000),
       contentType: "text/javascript",
+      immutable: true,
     }));
     const objects = [
       { kind: "source" as const, sha256: hex("src"), size: 100 },
@@ -560,7 +565,9 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     );
     expect(committed).toEqual({ ok: true });
     expect(shim.log.length - before).toBeLessThanOrEqual(10);
-    expect(q("SELECT count(*) AS n FROM version_site_file")).toEqual([{ n: 5000 }]);
+    expect(q("SELECT count(*) AS n FROM version_site_file WHERE immutable = 1")).toEqual([
+      { n: 5000 },
+    ]);
     expect(q("SELECT count(*) AS n FROM stored_object WHERE verified = 1")).toEqual([{ n: 4001 }]);
     expect(Math.max(...shim.log.map((s) => s.params))).toBeLessThanOrEqual(100);
     expect(await store.releaseUnheldObjects(U, objects, 0)).toBe(0); // verified
@@ -663,7 +670,7 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     expect((await store.sitesBehindPointer(10)).map((s) => s.id)).toEqual(["site_2"]);
   });
 
-  it("reads a pointer's files: the head's, and older versions' asset paths, newest first", async () => {
+  it("reads a pointer's files: the head's, and older versions' immutable ones, newest first", async () => {
     const { store, q } = setup();
     await site(store);
     for (let v = 1; v <= 3; v++) {
@@ -675,15 +682,23 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
         U,
         v,
       );
-      for (const path of ["index.html", `assets/a${v}-AbC12345.js`, `_antidraw/v${v}.js`]) {
+      // A public file whose name looks hashed is not immutable.
+      for (const [path, immutable] of [
+        ["index.html", 0],
+        [`assets/a${v}-AbC12345.js`, 1],
+        [`_antidraw/v${v}.js`, 1],
+        [`assets/logo-${v}AbC1234.png`, 0],
+      ] as const) {
         q(
-          `INSERT INTO version_site_file (version_id, user_id, path, sha256, size, content_type)
-           VALUES (?, ?, ?, ?, ?, 'text/plain')`,
+          `INSERT INTO version_site_file (version_id, user_id, path, sha256, size, content_type,
+             immutable)
+           VALUES (?, ?, ?, ?, ?, 'text/plain', ?)`,
           `ver_${v}`,
           U,
           path,
           hex(`${v}${path}`),
           v,
+          immutable,
         );
       }
     }
@@ -691,17 +706,88 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     expect(rows.map((r) => `${r.version}:${r.path}`)).toEqual([
       "3:_antidraw/v3.js",
       "3:assets/a3-AbC12345.js",
+      "3:assets/logo-3AbC1234.png",
       "3:index.html",
       "2:_antidraw/v2.js",
       "2:assets/a2-AbC12345.js",
     ]);
-    expect(rows[2]).toEqual({
+    expect(rows[3]).toEqual({
       version: 3,
       path: "index.html",
       sha256: hex("3index.html"),
       size: 3,
       contentType: "text/plain",
+      immutable: false,
     });
+    expect(rows[1]).toMatchObject({ path: "assets/a3-AbC12345.js", immutable: true });
+  });
+
+  it("prunes the rows no pointer can use from versions the pointer moved past, and their bytes", async () => {
+    const { store, q } = setup();
+    await site(store);
+    // The last two are immutable; a public file under assets/ is not.
+    const paths = ["index.html", "assets/logo-AbC12345.png", "assets/a-AbC12345.js", "_antidraw/v.js"];
+    const bytes = (ps: string[]) =>
+      ps.reduce((a, path) => a + siteFileRowBytes({ path, contentType: "text/plain" }), 0);
+    for (let v = 1; v <= 3; v++) {
+      q(
+        `INSERT INTO site_version (id, site_id, user_id, version, source_sha256, source_size,
+           snapshot_bytes, file_count, site_file_count, site_bytes, site_file_row_bytes,
+           publish_session_id, created_at)
+         VALUES (?, 'site_1', ?, ?, 'x', 1, 1, 1, 4, 4, ?, 'p', 0)`,
+        `ver_${v}`,
+        U,
+        v,
+        bytes(paths),
+      );
+      for (const path of paths) {
+        q(
+          `INSERT INTO version_site_file (version_id, user_id, path, sha256, size, content_type,
+             immutable)
+           VALUES (?, ?, ?, ?, 1, 'text/plain', ?)`,
+          `ver_${v}`,
+          U,
+          path,
+          hex(`${v}${path}`),
+          paths.indexOf(path) >= 2 ? 1 : 0,
+        );
+      }
+    }
+    q("UPDATE site SET head_version = 3 WHERE id = 'site_1'");
+    const rows = () =>
+      q<{ version: number; n: number; bytes: number }>(
+        `SELECT v.version, count(f.path) AS n, v.site_file_row_bytes AS bytes FROM site_version v
+          LEFT JOIN version_site_file f ON f.version_id = v.id GROUP BY v.id ORDER BY v.version`,
+      ).map((r) => [r.version, r.n, r.bytes]);
+
+    await store.setPointerVersion("site_1", 1); // at version 1: nothing moved past
+    expect(rows()).toEqual([1, 2, 3].map((v) => [v, 4, bytes(paths)]));
+    await store.setPointerVersion("site_1", 3);
+    const grace = bytes(paths.slice(2));
+    expect(rows()).toEqual([
+      [1, 2, grace],
+      [2, 2, grace],
+      [3, 4, bytes(paths)],
+    ]);
+    expect(await store.siteFileRowBytes(U)).toBe(2 * grace + bytes(paths));
+    expect(await store.siteFileRowBytes(V)).toBe(0);
+    await store.setPointerVersion("site_1", 3); // nothing more to prune
+    expect(rows()[0]).toEqual([1, 2, grace]);
+    expect(await store.siteFileRowBytes(U)).toBe(2 * grace + bytes(paths));
+  });
+
+  it("records and reads the session objects a complete found", async () => {
+    const { store } = setup();
+    await site(store);
+    await store.createSession(session());
+    expect(await store.presentSessionObjects("pub_1")).toEqual([]);
+    await store.markSessionObjectsPresent("pub_1", [
+      { kind: "blob", sha256: hex("blob") },
+      { kind: "site", sha256: hex("blob") }, // not the session's
+    ]);
+    expect(await store.presentSessionObjects("pub_1")).toEqual([
+      { kind: "blob", sha256: hex("blob") },
+    ]);
   });
 
   it("claims a site's lock for GC only when it is free or lapsed", async () => {
@@ -722,6 +808,7 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     await lock(store);
     const from = shim.log.length;
     await store.usedBytes(U);
+    await store.storedSiteBytes(U);
     await store.getStoredObjects(U, [{ kind: "blob", sha256: hex("x") }]);
     await store.releaseUnheldObjects(U, [{ kind: "blob", sha256: hex("x") }], 50);
     await store.commitVersion(version());
@@ -731,7 +818,7 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
       .map((s) => s.sql)
       .filter((sql) => /^\s*(select|update|delete)\b[^]*?\bstored_object\b/i.test(sql))
       .filter((sql) => !/^\s*insert/i.test(sql));
-    expect(touching.length).toBeGreaterThanOrEqual(5);
+    expect(touching.length).toBeGreaterThanOrEqual(6);
     for (const sql of touching) {
       const plan = (
         shim.sqlite.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as { detail: string }[]

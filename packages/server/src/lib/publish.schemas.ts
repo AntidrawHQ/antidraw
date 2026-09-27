@@ -35,8 +35,10 @@ export const siteFileSchema = z.object({
   sha256: sha256Hex,
   size: z.number().int().nonnegative(),
   contentType, // what the publish Worker serves it as
-  // The build hashed its name. Only the dotfile gate reads it; the publish
-  // Worker decides caching from the path (isImmutableSitePath).
+  // The build named it by its content. With an isImmutableSitePath, it makes
+  // the file immutable (version_site_file.immutable): the pointer marks it
+  // "i", the publish Worker caches it for a year, and it can be a grace entry.
+  // It also lets a dot segment through the dotfile gate under assets/.
   immutable: z.boolean(),
 });
 

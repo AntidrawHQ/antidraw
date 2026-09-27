@@ -4,12 +4,19 @@
 // so a site switches from one version to the next atomically.
 //
 //   { "v": 1, "version": 7, "u": "<owner id>",
-//     "files": { "index.html": { "h": "<sha256>", "s": 1234, "t": "text/html; charset=utf-8" } } }
+//     "files": { "index.html": { "h": "<sha256>", "s": 1234, "t": "text/html; charset=utf-8" },
+//                "assets/index-AbC12345.js": { "h": "…", "s": 99, "t": "…", "i": 1 } } }
+//
+// "i": 1 marks a file the build named by its content (its hashed output, the
+// viewer's _antidraw/ files), which may be cached for a year. The flag comes
+// from the build, never from the name: a public file can look hashed
+// (public/assets/logo-original.png) and still change on the next publish.
+// Absent, a file is not immutable.
 //
 // The owner id only names where the contents are; it never goes out in a
 // response.
 
-export type PointerEntry = { h: string; s: number; t: string };
+export type PointerEntry = { h: string; s: number; t: string; i: boolean };
 
 export type Pointer = {
   v: 1;
@@ -62,11 +69,12 @@ export const entryFor = (
     !Number.isSafeInteger(entry.s) ||
     (entry.s as number) < 0 ||
     typeof entry.t !== "string" ||
-    !CONTENT_TYPE_RE.test(entry.t)
+    !CONTENT_TYPE_RE.test(entry.t) ||
+    (entry.i !== undefined && entry.i !== 0 && entry.i !== 1)
   ) {
     return "malformed";
   }
-  return { h: entry.h, s: entry.s as number, t: entry.t };
+  return { h: entry.h, s: entry.s as number, t: entry.t, i: entry.i === 1 };
 };
 
 // What a load gives: the pointer (null when the site has none) and when it was
@@ -77,39 +85,82 @@ export type LoadedPointer = { pointer: Pointer | null; written: Date | null };
 type Cached = LoadedPointer & {
   etag: string | null;
   checkedAt: number;
-  bytes: number;
+  // What the parsed pointer is estimated to take of the heap.
+  heap: number;
 };
 
 // How long a cached pointer is served before R2 is asked whether it changed
 // (a conditional get, which costs no body when it has not).
 export const REVALIDATE_MS = 5_000;
-// Pointers are up to ~2 MB; an isolate has 128 MB.
-const MAX_CACHED_BYTES = 32 * 1024 * 1024;
+
+// Memory. An isolate has 128 MB, shared by every request it serves, for any
+// site. The server keeps a pointer under 2 MB (MAX_POINTER_BYTES in
+// packages/server/src/lib/publish-limits.ts); one larger than this is refused
+// unread, as a bug upstream.
+export const MAX_POINTER_BYTES = 2_500_000;
+// A parsed pointer takes about twice its text in heap (measured: 16 pointers
+// of 2 MB held 61 MB), so the cache is charged 2.5 bytes per character.
+export const cachedHeapOf = (text: string) => Math.ceil(text.length * 2.5);
+export const MAX_CACHED_HEAP = 32 * 1024 * 1024;
 const MAX_CACHED_SITES = 1_000;
+// A load holds the text and the parsed pointer at once, before the cache
+// evicts anything: charged 4 bytes per byte of the object, from its size and
+// before its body is read. Loads of different sites run in parallel; past
+// this many bytes between them a load is refused (a 503 the client retries)
+// rather than risk the isolate. A single pointer of the largest size fits
+// twice over.
+export const loadingHeapOf = (size: number) => size * 4;
+export const MAX_LOADING_HEAP = 24 * 1024 * 1024;
 
 export class MalformedPointerError extends Error {}
+// The loads in flight hold as much memory as they may: try again shortly.
+export class PointerBusyError extends Error {}
 
 // A per-isolate cache of pointers, keyed by slug. At most one R2 read per slug
 // is in flight: requests that arrive while one is revalidating wait for it.
 export const createPointerCache = (now: () => number = Date.now) => {
   const cache = new Map<string, Cached>();
   const inflight = new Map<string, Promise<Cached>>();
-  let cachedBytes = 0;
+  let cachedHeap = 0;
+  let loadingHeap = 0;
 
   const store = (slug: string, entry: Cached) => {
     const previous = cache.get(slug);
     if (previous) {
-      cachedBytes -= previous.bytes;
+      cachedHeap -= previous.heap;
       cache.delete(slug);
     }
     cache.set(slug, entry);
-    cachedBytes += entry.bytes;
+    cachedHeap += entry.heap;
     // Oldest first: a Map iterates in insertion order, and a hit re-inserts.
     for (const [key, old] of cache) {
-      if (cachedBytes <= MAX_CACHED_BYTES && cache.size <= MAX_CACHED_SITES) break;
+      if (cachedHeap <= MAX_CACHED_HEAP && cache.size <= MAX_CACHED_SITES) break;
       if (key === slug) continue;
       cache.delete(key);
-      cachedBytes -= old.bytes;
+      cachedHeap -= old.heap;
+    }
+  };
+
+  // Reads and parses a pointer's body, within the loading budget.
+  const read = async (slug: string, object: R2ObjectBody) => {
+    const discard = () => object.body.cancel().catch(() => {});
+    if (object.size > MAX_POINTER_BYTES) {
+      await discard();
+      throw new MalformedPointerError(`pointer of ${slug} is ${object.size} bytes`);
+    }
+    const reserved = loadingHeapOf(object.size);
+    if (loadingHeap + reserved > MAX_LOADING_HEAP) {
+      await discard();
+      throw new PointerBusyError(`pointer loads are at their memory budget (${slug})`);
+    }
+    loadingHeap += reserved;
+    try {
+      const text = await object.text();
+      const pointer = parsePointer(text);
+      if (!pointer) throw new MalformedPointerError(`pointer of ${slug} is malformed`);
+      return { pointer, heap: cachedHeapOf(text) };
+    } finally {
+      loadingHeap -= reserved;
     }
   };
 
@@ -123,21 +174,13 @@ export const createPointerCache = (now: () => number = Date.now) => {
     if (object === null) {
       // No pointer: the site does not exist (or no longer does). Cached too,
       // so a stream of requests for a missing site does not each read R2.
-      entry = { pointer: null, written: null, etag: null, checkedAt: now(), bytes: 0 };
+      entry = { pointer: null, written: null, etag: null, checkedAt: now(), heap: 0 };
     } else if (!("body" in object)) {
       // Unchanged since the cached copy.
       entry = { ...cached!, checkedAt: now() };
     } else {
-      const text = await object.text();
-      const pointer = parsePointer(text);
-      if (!pointer) throw new MalformedPointerError(`pointer of ${slug} is malformed`);
-      entry = {
-        pointer,
-        written: object.uploaded,
-        etag: object.etag,
-        checkedAt: now(),
-        bytes: text.length,
-      };
+      const { pointer, heap } = await read(slug, object);
+      entry = { pointer, written: object.uploaded, etag: object.etag, checkedAt: now(), heap };
     }
     store(slug, entry);
     return entry;
@@ -159,7 +202,12 @@ export const createPointerCache = (now: () => number = Date.now) => {
     return pending;
   };
 
-  return { load, size: () => cache.size };
+  return {
+    load,
+    size: () => cache.size,
+    cachedHeap: () => cachedHeap,
+    loadingHeap: () => loadingHeap,
+  };
 };
 
 export type PointerCache = ReturnType<typeof createPointerCache>;

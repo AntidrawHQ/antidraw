@@ -3,9 +3,15 @@ import {
   contentKey,
   createPointerCache,
   entryFor,
+  cachedHeapOf,
+  loadingHeapOf,
   MalformedPointerError,
+  MAX_CACHED_HEAP,
+  MAX_LOADING_HEAP,
+  MAX_POINTER_BYTES,
   parsePointer,
   pointerKey,
+  PointerBusyError,
   REVALIDATE_MS,
 } from "../src/pointer";
 import { createMemoryR2 } from "./memory-r2";
@@ -50,6 +56,9 @@ describe("entryFor", () => {
       u: "u",
       files: {
         "index.html": { h: SHA, s: 10, t: "text/html; charset=utf-8" },
+        "assets/index-AbC12345.js": { h: SHA, s: 5, t: "text/javascript", i: 1 },
+        "assets/logo-original.png": { h: SHA, s: 5, t: "image/png", i: 0 },
+        "bad-immutable": { h: SHA, s: 1, t: "text/plain", i: true },
         "bad-sha": { h: "A".repeat(64), s: 1, t: "text/plain" },
         "bad-size": { h: SHA, s: -1, t: "text/plain" },
         "bad-type": { h: SHA, s: 1, t: "text/plain\r\nSet-Cookie: x=1" },
@@ -63,7 +72,13 @@ describe("entryFor", () => {
       h: SHA,
       s: 10,
       t: "text/html; charset=utf-8",
+      i: false,
     });
+  });
+
+  test("immutable only where the pointer says so, never from the name", () => {
+    expect(entryFor(pointer, "assets/index-AbC12345.js")).toMatchObject({ i: true });
+    expect(entryFor(pointer, "assets/logo-original.png")).toMatchObject({ i: false });
   });
 
   test("a path the site does not have", () => {
@@ -76,7 +91,7 @@ describe("entryFor", () => {
     expect(entryFor(pointer, "hasOwnProperty")).toBeUndefined();
   });
 
-  test.each(["bad-sha", "bad-size", "bad-type", "not-an-object"])("%s is malformed", (path) => {
+  test.each(["bad-immutable", "bad-sha", "bad-size", "bad-type", "not-an-object"])("%s is malformed", (path) => {
     expect(entryFor(pointer, path)).toBe("malformed");
   });
 });
@@ -177,5 +192,66 @@ describe("createPointerCache", () => {
     const { r2, cache } = setup();
     r2.put("m/s.json", "{ not json");
     await expect(cache.load(r2.bucket, "s")).rejects.toBeInstanceOf(MalformedPointerError);
+  });
+
+  // A pointer text of about `bytes` bytes.
+  const sized = (version: number, bytes: number) =>
+    JSON.stringify({ v: 1, version, u: "user_1", files: {}, pad: "x".repeat(bytes - 60) });
+
+  test("a pointer past MAX_POINTER_BYTES rejects without being cached", async () => {
+    const { r2, cache } = setup();
+    r2.put("m/s.json", sized(1, MAX_POINTER_BYTES + 100));
+    await expect(cache.load(r2.bucket, "s")).rejects.toBeInstanceOf(MalformedPointerError);
+    expect(cache.size()).toBe(0);
+    expect(cache.loadingHeap()).toBe(0);
+  });
+
+  test("the cache is charged for a parsed pointer's heap, not its text length", async () => {
+    const { r2, cache } = setup();
+    const text = sized(1, 1_000_000);
+    r2.put("m/s.json", text);
+    await cache.load(r2.bucket, "s");
+    expect(cache.cachedHeap()).toBe(cachedHeapOf(text));
+    expect(cachedHeapOf(text)).toBeGreaterThanOrEqual(text.length * 2.5);
+  });
+
+  test("the cache holds no more estimated heap than its budget", async () => {
+    const { r2, cache } = setup();
+    const count = 20;
+    for (let n = 0; n < count; n++) r2.put(`m/s${n}.json`, sized(1, 2_000_000));
+    for (let n = 0; n < count; n++) await cache.load(r2.bucket, `s${n}`);
+    expect(cache.cachedHeap()).toBeLessThanOrEqual(MAX_CACHED_HEAP);
+    // 20 pointers of 2 MB are 40 MB of text alone, ~100 MB of heap parsed.
+    expect(cache.size()).toBeLessThan(count);
+    const fits = Math.floor(MAX_CACHED_HEAP / cachedHeapOf(sized(1, 2_000_000)));
+    expect(cache.size()).toBeLessThanOrEqual(fits);
+  });
+
+  test("parallel loads of different sites are capped by memory; past it a load is refused until they finish", async () => {
+    const { r2, cache } = setup();
+    const size = 2_000_000;
+    const fits = Math.floor(MAX_LOADING_HEAP / loadingHeapOf(size));
+    expect(fits).toBeGreaterThanOrEqual(2);
+    const count = fits + 3;
+    for (let n = 0; n < count; n++) r2.put(`m/s${n}.json`, sized(1, size));
+    const results = await Promise.allSettled(
+      Array.from({ length: count }, (_, n) => cache.load(r2.bucket, `s${n}`)),
+    );
+    const refused = results.filter((r) => r.status === "rejected");
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(fits);
+    expect(refused).toHaveLength(count - fits);
+    for (const r of refused) {
+      expect((r as PromiseRejectedResult).reason).toBeInstanceOf(PointerBusyError);
+    }
+    // The reservations are all given back, so a retry loads.
+    expect(cache.loadingHeap()).toBe(0);
+    expect((await cache.load(r2.bucket, `s${count - 1}`)).pointer?.version).toBe(1);
+  });
+
+  test("a refused or failed load gives back its reservation", async () => {
+    const { r2, cache } = setup();
+    r2.put("m/s.json", "{ not json");
+    await expect(cache.load(r2.bucket, "s")).rejects.toBeInstanceOf(MalformedPointerError);
+    expect(cache.loadingHeap()).toBe(0);
   });
 });

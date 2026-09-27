@@ -6,7 +6,7 @@ import {
   IMMUTABLE_CACHE_CONTROL,
   type Env,
 } from "../src/serve";
-import { createPointerCache, REVALIDATE_MS } from "../src/pointer";
+import { createPointerCache, MAX_POINTER_BYTES, REVALIDATE_MS } from "../src/pointer";
 import { createMemoryR2, type MemoryR2 } from "./memory-r2";
 
 const OWNER = "owner_Secret123";
@@ -25,14 +25,21 @@ const sha = (text: string) => {
   return hash;
 };
 
-type Files = Record<string, { body: string; type: string }>;
+// `immutable`: the build named the file by its content ("i": 1 in the pointer).
+type Files = Record<string, { body: string; type: string; immutable?: boolean }>;
 
 const FILES: Files = {
   "index.html": { body: "<!doctype html><title>viewer</title>", type: "text/html; charset=utf-8" },
   "preview.html": { body: "<!doctype html><title>preview</title>", type: "text/html; charset=utf-8" },
   "canvas.json": { body: '{"version":1}', type: "application/json; charset=utf-8" },
-  "assets/index-AbC12345.js": { body: "console.log(1)", type: "text/javascript; charset=utf-8" },
-  "_antidraw/viewer.js": { body: "viewer()", type: "text/javascript; charset=utf-8" },
+  "assets/index-AbC12345.js": {
+    body: "console.log(1)",
+    type: "text/javascript; charset=utf-8",
+    immutable: true,
+  },
+  "_antidraw/viewer.js": { body: "viewer()", type: "text/javascript; charset=utf-8", immutable: true },
+  // A public file (public/assets/logo-original.png) whose name looks hashed.
+  "assets/logo-original.png": { body: "logo", type: "image/png" },
   "clip.mp4": { body: "0123456789", type: "video/mp4" },
   "100%.png": { body: "png", type: "image/png" },
   "a b.txt": { body: "spaced", type: "text/plain; charset=utf-8" },
@@ -41,11 +48,12 @@ const FILES: Files = {
 // Publishes `files` the way the server does: every content under
 // c/<owner>/<sha256>, then the pointer.
 const publish = (r2: MemoryR2, slug: string, files: Files, version = 1, written = WRITTEN) => {
-  const entries: Record<string, { h: string; s: number; t: string }> = {};
-  for (const [path, { body, type }] of Object.entries(files)) {
+  const entries: Record<string, { h: string; s: number; t: string; i?: 1 }> = {};
+  for (const [path, { body, type, immutable }] of Object.entries(files)) {
     const h = sha(body);
     r2.put(`c/${OWNER}/${h}`, body);
     entries[path] = { h, s: new TextEncoder().encode(body).length, t: type };
+    if (immutable) entries[path]!.i = 1;
   }
   r2.put(`m/${slug}.json`, JSON.stringify({ v: 1, version, u: OWNER, files: entries }), written);
 };
@@ -118,14 +126,24 @@ describe("routes", () => {
     }
   });
 
+  test("a public file whose name looks hashed is not immutable: the build did not mark it", async () => {
+    const response = await fetchSite("/assets/logo-original.png");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe(DEFAULT_CACHE_CONTROL);
+  });
+
   test("cacheControlFor", () => {
-    expect(cacheControlFor("assets/index-AbC12345.js")).toBe(IMMUTABLE_CACHE_CONTROL);
-    expect(cacheControlFor("assets/nested/chunk-AbC_1-45.css")).toBe(IMMUTABLE_CACHE_CONTROL);
-    expect(cacheControlFor("_antidraw/any.js")).toBe(IMMUTABLE_CACHE_CONTROL);
-    expect(cacheControlFor("assets/logo.png")).toBe(DEFAULT_CACHE_CONTROL);
-    expect(cacheControlFor("public/assets/index-AbC12345.js")).toBe(DEFAULT_CACHE_CONTROL);
-    expect(cacheControlFor("index.html")).toBe(DEFAULT_CACHE_CONTROL);
-    expect(cacheControlFor("canvas.json")).toBe(DEFAULT_CACHE_CONTROL);
+    expect(cacheControlFor("assets/index-AbC12345.js", true)).toBe(IMMUTABLE_CACHE_CONTROL);
+    expect(cacheControlFor("assets/nested/chunk-AbC_1-45.css", true)).toBe(IMMUTABLE_CACHE_CONTROL);
+    expect(cacheControlFor("_antidraw/any.js", true)).toBe(IMMUTABLE_CACHE_CONTROL);
+    // Only what the build marked.
+    expect(cacheControlFor("assets/index-AbC12345.js", false)).toBe(DEFAULT_CACHE_CONTROL);
+    expect(cacheControlFor("_antidraw/any.js", false)).toBe(DEFAULT_CACHE_CONTROL);
+    // And only where such files are named, whatever the mark.
+    expect(cacheControlFor("assets/logo.png", true)).toBe(DEFAULT_CACHE_CONTROL);
+    expect(cacheControlFor("public/assets/index-AbC12345.js", true)).toBe(DEFAULT_CACHE_CONTROL);
+    expect(cacheControlFor("index.html", true)).toBe(DEFAULT_CACHE_CONTROL);
+    expect(cacheControlFor("canvas.json", true)).toBe(DEFAULT_CACHE_CONTROL);
   });
 });
 
@@ -340,6 +358,16 @@ describe("R2 failures", () => {
     const response = await fetchSite("/", {}, "bad-entry.antidraw.app");
     expect(response.status).toBe(503);
     await expectNoOwner(response);
+    errors.mockRestore();
+  });
+
+  test("a pointer past MAX_POINTER_BYTES is a 503, and its body is not read", async () => {
+    const errors = quiet();
+    const pad = "x".repeat(MAX_POINTER_BYTES);
+    r2.put("m/huge.json", JSON.stringify({ v: 1, version: 1, u: OWNER, files: {}, pad }));
+    const response = await fetchSite("/", {}, "huge.antidraw.app");
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Retry-After")).toBe("5");
     errors.mockRestore();
   });
 

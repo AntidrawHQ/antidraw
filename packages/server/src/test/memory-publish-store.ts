@@ -5,6 +5,7 @@
 // the two shows up as a test that passes on one and fails on the other.
 import {
   PLAN_STUB,
+  siteFileRowBytes,
   type CommitFailure,
   type LargeFileRow,
   type SiteFileRow,
@@ -23,6 +24,7 @@ type SessionObject = {
   kind: ObjectRef["kind"];
   sha256: string;
   size: number;
+  present?: boolean;
 };
 type LargeFile = LargeFileRow & { versionId: string; userId: string };
 type SiteFile = SiteFileRow & { versionId: string; userId: string };
@@ -36,6 +38,9 @@ export type MemoryPublishState = {
   sessions: Map<string, SessionRow>;
   sessionObjects: SessionObject[];
 };
+
+// publish.store.ts's graceCandidate.
+const graceCandidate = (f: { immutable: boolean }) => f.immutable;
 
 const objectId = (o: { userId: string; kind: string; sha256: string }) =>
   `${o.userId}|${o.kind}|${o.sha256}`;
@@ -220,6 +225,16 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
         .filter((o) => o.userId === userId && o.kind !== "site" && !o.deleting)
         .reduce((sum, o) => sum + o.size, 0);
     },
+    async storedSiteBytes(userId) {
+      return [...state.objects.values()]
+        .filter((o) => o.userId === userId && o.kind === "site" && !o.deleting)
+        .reduce((sum, o) => sum + o.size, 0);
+    },
+    async siteFileRowBytes(userId) {
+      return state.versions
+        .filter((v) => v.userId === userId)
+        .reduce((sum, v) => sum + v.siteFileRowBytes, 0);
+    },
     async openSessions(userId, now) {
       const open = [...state.sessions.values()].filter(
         (s) => s.userId === userId && s.status !== "completed" && s.holdUntil > now,
@@ -285,6 +300,7 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
         fileCount: v.fileCount,
         siteFileCount: v.siteFileCount,
         siteBytes: v.siteBytes,
+        siteFileRowBytes: v.siteFileRowBytes,
         allowRemix: site.allowRemix,
         keep: false,
         publishSessionId: v.sessionId,
@@ -314,6 +330,17 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
       return { ok: true };
     },
     missingSessionObjects,
+    async presentSessionObjects(sessionId) {
+      return state.sessionObjects
+        .filter((o) => o.sessionId === sessionId && o.present)
+        .map(({ kind, sha256 }) => ({ kind, sha256 }));
+    },
+    async markSessionObjectsPresent(sessionId, refs) {
+      const marked = new Set(refs.map((r) => `${r.kind}|${r.sha256}`));
+      for (const o of state.sessionObjects) {
+        if (o.sessionId === sessionId && marked.has(`${o.kind}|${o.sha256}`)) o.present = true;
+      }
+    },
 
     async getHeadVersion(site) {
       if (site.headVersion === 0) return null;
@@ -336,24 +363,33 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
       );
       return state.siteFiles
         .filter((f) => versions.has(f.versionId))
-        .map(({ path, sha256, size, contentType, versionId }) => ({
+        .map(({ path, sha256, size, contentType, immutable, versionId }) => ({
           version: versions.get(versionId)!,
           path,
           sha256,
           size,
           contentType,
+          immutable,
         }))
-        .filter(
-          (f) =>
-            f.version === head || f.path.startsWith("_antidraw/") || f.path.startsWith("assets/"),
-        )
+        .filter((f) => f.version === head || graceCandidate(f))
         .sort((a, b) => b.version - a.version || (a.path < b.path ? -1 : 1));
     },
     async setPointerVersion(siteId, version) {
       const site = state.sites.get(siteId);
-      if (site) {
-        site.pointerVersion = Math.min(site.headVersion, Math.max(site.pointerVersion, version));
-      }
+      if (!site) return;
+      const to = Math.min(site.headVersion, Math.max(site.pointerVersion, version));
+      const passed = new Map(
+        state.versions
+          .filter((v) => v.siteId === siteId && v.version >= site.pointerVersion && v.version < to)
+          .map((v) => [v.id, v]),
+      );
+      state.siteFiles = state.siteFiles.filter((f) => {
+        const v = passed.get(f.versionId);
+        if (!v || graceCandidate(f)) return true;
+        v.siteFileRowBytes = Math.max(0, v.siteFileRowBytes - siteFileRowBytes(f));
+        return false;
+      });
+      site.pointerVersion = to;
     },
 
     async expireSessions(now) {

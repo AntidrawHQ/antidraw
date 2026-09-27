@@ -6,6 +6,7 @@ import {
   caseKey,
   ENTRY_PATHS,
   isExcludedSnapshotPath,
+  isImmutableSitePath,
   isPublishableSitePath,
   utf8Bytes,
 } from "../lib/paths";
@@ -16,8 +17,10 @@ import {
   MAX_PENDING_SITE_BYTES,
   MAX_PLAN_JSON_BYTES,
   MAX_SITE_BYTES,
+  MAX_SITE_FILE_ROW_BYTES,
   MAX_SITES_PER_ACCOUNT,
   MAX_SNAPSHOT_BYTES,
+  MAX_STORED_SITE_BYTES,
   QUOTA_BYTES,
   SESSION_TTL_MS,
 } from "../lib/publish-limits";
@@ -44,6 +47,7 @@ import {
 } from "../lib/storage";
 import {
   d1PublishStore,
+  siteFileRowBytes,
   type ObjectKind,
   type ObjectRef,
   type PublishStore,
@@ -195,6 +199,9 @@ const mapLimit = async <T, R>(items: T[], limit: number, fn: (item: T) => Promis
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
   return out;
 };
+// Workers run about 6 subrequests of an invocation at once and queue the
+// rest, so this bounds what is queued rather than what runs: HEADs cost about
+// (count / 6) round trips, hence the effort to skip them (findMissing).
 const HEAD_CONCURRENCY = 50;
 
 // Every account object a plan needs: its source archive, each distinct blob
@@ -383,9 +390,12 @@ const findOrCreateSite = async (
 // `committed`: a commit verified its row, so it is neither new nor pending.
 type ObjectNeed = SizedObjectRef & { upload: boolean; committed: boolean };
 
-// Which account objects need an upload. A verified row is trusted (complete
-// re-checks it anyway); a missing or unverified one is looked up in R2, so
-// bytes an earlier session uploaded but never committed are not sent twice.
+// Which account objects need an upload. A verified row is trusted (see
+// findMissing). An object without a row is not in R2 either (GC deletes a
+// key before its row, and a row goes without its key only when no session
+// that could have uploaded it holds it), so it is asked for without a HEAD;
+// only an unverified row is looked up in R2, so bytes an earlier session
+// uploaded but never committed are not sent twice.
 const resolveObjects = async (
   deps: PublishDeps,
   userId: string,
@@ -403,8 +413,9 @@ const resolveObjects = async (
   return ok(
     await mapLimit(needed, HEAD_CONCURRENCY, async (o): Promise<ObjectNeed> => {
       const row = rows.get(refKey(o));
-      if (row?.deleting) return { ...o, upload: true, committed: false }; // GC is removing it
-      if (row?.verified) return { ...o, upload: false, committed: true };
+      // No row, or GC is removing it.
+      if (!row || row.deleting) return { ...o, upload: true, committed: false };
+      if (row.verified) return { ...o, upload: false, committed: true };
       const info = await headObject(deps, userId, o);
       const present = info !== null && info.size === o.size && info.sha256 === o.sha256;
       return { ...o, upload: !present, committed: false };
@@ -419,6 +430,22 @@ const tooManyOpen = (count: number) =>
     "Too many unfinished publishes. Finish or cancel one, or try again later.",
     { reason: "open-sessions", limit: MAX_OPEN_SESSIONS_PER_ACCOUNT, open: count },
   );
+
+const siteStorageExceeded = (usedBytes: number, publishBytes: number) =>
+  apiError(413, "QUOTA_EXCEEDED", "Your published sites use all the storage they are allowed.", {
+    reason: "site-storage",
+    quotaBytes: MAX_STORED_SITE_BYTES,
+    usedBytes,
+    publishBytes,
+  });
+
+const siteFilesExceeded = (usedBytes: number, publishBytes: number) =>
+  apiError(413, "QUOTA_EXCEEDED", "Your published sites have too many files between them.", {
+    reason: "site-files",
+    quotaBytes: MAX_SITE_FILE_ROW_BYTES,
+    usedBytes,
+    publishBytes,
+  });
 
 const pendingSiteExceeded = (usedBytes: number, publishBytes: number) =>
   apiError(
@@ -469,6 +496,15 @@ export const beginPublish = (
       );
     }
 
+    // Every retained version keeps rows for its site files in D1 (rows the
+    // pointer can no longer use are pruned as it moves on), so the account's
+    // total is bounded, not only each plan's.
+    const rowBytesBefore = await deps.store.siteFileRowBytes(userId);
+    const rowBytes = req.site.files.reduce((a, f) => a + siteFileRowBytes(f), 0);
+    if (rowBytesBefore + rowBytes > MAX_SITE_FILE_ROW_BYTES) {
+      return err(siteFilesExceeded(rowBytesBefore, rowBytes));
+    }
+
     const siteResult = await findOrCreateSite(deps, userId, req);
     if (siteResult.isErr()) return err(siteResult.error);
     const site = siteResult.value;
@@ -494,6 +530,7 @@ export const beginPublish = (
     const objectUploads = uploads.filter((o) => o.kind !== "site");
     const siteUploads = uploads.filter((o) => o.kind === "site");
     const usedBefore = await deps.store.usedBytes(userId);
+    const siteStoredBefore = await deps.store.storedSiteBytes(userId);
     await deps.store.createSession({
       id: sessionId,
       userId,
@@ -532,6 +569,12 @@ export const beginPublish = (
           publishBytes: used - usedBefore,
         }),
       );
+    }
+    // Checked after the insert, like the quota. A publish that adds no site
+    // bytes (its contents all stored already) is let through at the cap.
+    const siteStored = await deps.store.storedSiteBytes(userId);
+    if (siteStored > MAX_STORED_SITE_BYTES && siteStored > siteStoredBefore) {
+      return refuse(siteStorageExceeded(siteStoredBefore, siteStored - siteStoredBefore));
     }
     const open = await deps.store.openSessions(userId, now);
     if (open.siteUploadBytes > MAX_PENDING_SITE_BYTES) {
@@ -586,9 +629,12 @@ const inProgress = () =>
   apiError(409, "PUBLISH_IN_PROGRESS", "Another publish of this site is finishing. Try again.");
 const publishExpired = () =>
   apiError(410, "PUBLISH_EXPIRED", "This publish expired. Publish again.");
+// UPLOAD_INCOMPLETE names at most this many missing objects, and complete
+// stops looking once it has found them.
+const MAX_REPORTED_MISSING = 50;
 const uploadIncomplete = (missing: { kind: string; sha256: string; path?: string }[]) =>
   apiError(409, "UPLOAD_INCOMPLETE", "Some uploads did not arrive", {
-    missing: missing.slice(0, 50),
+    missing: missing.slice(0, MAX_REPORTED_MISSING),
   });
 
 const loadOwnSession = async (
@@ -631,27 +677,55 @@ const claimLock = async (
   return err(reread.headVersion !== session.baseVersion ? conflict() : inProgress());
 };
 
-// Every account object the session references, whatever its verified flag:
-// its row is there, not being deleted and of the declared size, and R2 has
-// the bytes.
+// Every account object the session references: its row is there, not being
+// deleted and of the declared size, and R2 has the bytes. R2 is asked (a HEAD
+// of size and sha256) only about objects whose bytes nothing has vouched for:
+//
+// - A verified row that is not deleting has its bytes in R2. A commit checked
+//   them, keys are content-addressed and never rewritten, and the only thing
+//   that deletes one is GC (gc.service.ts, collectObjects), which first marks
+//   its row deleting (clearing verified) in the statement that checks nothing
+//   references or holds it, and deletes the row only after the key. Should GC
+//   mark it between here and the commit, the commit guard (deleting = 0)
+//   fails the batch.
+// - An object an earlier complete of this session found (`present`): the
+//   session holds it since, so GC cannot have claimed it.
+//
+// Stops asking once MAX_REPORTED_MISSING are missing, and records what it
+// found for a retry.
 const findMissing = async (deps: PublishDeps, session: SessionRow, plan: StoredPlan) => {
   const objects = planObjects(plan);
   const rows = new Map<string, StoredObjectRow>();
   for (const row of await deps.store.getStoredObjects(session.userId, objects)) {
     rows.set(refKey(row), row);
   }
-  const checks = await mapLimit(objects, HEAD_CONCURRENCY, async (o) => {
+  const found = new Set((await deps.store.presentSessionObjects(session.id)).map(refKey));
+  const confirmed: ObjectRef[] = [];
+  let missingCount = 0;
+  // true: present; false: missing; null: not looked at (enough were missing).
+  const checks = await mapLimit(objects, HEAD_CONCURRENCY, async (o): Promise<boolean | null> => {
     const row = rows.get(refKey(o));
-    if (!row || row.deleting || row.size !== o.size) return false;
+    if (!row || row.deleting || row.size !== o.size) {
+      missingCount++;
+      return false;
+    }
+    if (row.verified || found.has(refKey(o))) return true;
+    if (missingCount >= MAX_REPORTED_MISSING) return null;
     const info = await headObject(deps, session.userId, o);
-    return info !== null && info.size === o.size && info.sha256 === o.sha256;
+    const present = info !== null && info.size === o.size && info.sha256 === o.sha256;
+    if (present) confirmed.push({ kind: o.kind, sha256: o.sha256 });
+    else missingCount++;
+    return present;
   });
   const missing: { kind: ObjectKind; sha256: string; path?: string }[] = [];
   objects.forEach((o, i) => {
-    if (checks[i]) return;
+    if (checks[i] !== false) return;
     const path = o.kind === "site" ? sitePathOf(plan, o.sha256) : undefined;
     missing.push({ kind: o.kind, sha256: o.sha256, ...(path !== undefined ? { path } : {}) });
   });
+  if (missing.length > 0 && confirmed.length > 0) {
+    await deps.store.markSessionObjectsPresent(session.id, confirmed);
+  }
   return missing;
 };
 
@@ -738,12 +812,17 @@ const verifyAndCommit = async (
         size,
         mode,
       })),
-      siteFiles: plan.site.files.map(({ path, sha256, size, contentType }) => ({
+      siteFiles: plan.site.files.map(({ path, sha256, size, contentType, immutable }) => ({
         path,
         sha256,
         size,
         contentType,
+        // The build's word, and only where such files are named: the Worker
+        // caches these for a year, and they are an older version's grace
+        // entries. A public file whose name looks hashed is neither.
+        immutable: immutable && isImmutableSitePath(path),
       })),
+      siteFileRowBytes: plan.site.files.reduce((a, f) => a + siteFileRowBytes(f), 0),
       keepVersions: KEEP_VERSIONS,
       now: deps.now().getTime(),
       // begin created one session object per plan object.
@@ -792,7 +871,8 @@ export const completePublish = (
     const plan = parsePlan(session.plan);
     if (!plan) return err(storeFailure(new Error(`unreadable plan for ${session.id}`)));
 
-    // Verification costs an R2 HEAD per object: up to ~6 000.
+    // Verification costs an R2 HEAD per object no commit has verified and no
+    // earlier attempt found: up to ~6 000 on a first publish.
     const { success } = await deps.completeLimiter.limit({ key: userId });
     if (!success) {
       return err(

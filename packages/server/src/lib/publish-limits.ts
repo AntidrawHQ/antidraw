@@ -21,6 +21,24 @@ export const QUOTA_BYTES = 1024 * MiB;
 // are outside QUOTA_BYTES, so without this a client could park any amount of
 // them until GC removes them.
 export const MAX_PENDING_SITE_BYTES = 1024 * MiB;
+// Per account: every site content GC has not claimed, committed or not (what
+// retained versions list, what sessions hold, and what waits out GC's age
+// floor after the versions that listed it were pruned). Site contents are
+// append-only and outside QUOTA_BYTES, so without this an account could keep
+// 50 sites x KEEP_VERSIONS x MAX_SITE_BYTES referenced, and churn fresh
+// contents through commits faster than GC collects them. Begin refuses a
+// publish that adds site bytes past it.
+export const MAX_STORED_SITE_BYTES = 4096 * MiB;
+// Per account: the D1 footprint of retained site-file rows (version_site_file),
+// estimated per row as its path and content type bytes plus
+// SITE_FILE_ROW_OVERHEAD_BYTES (the sha256, ids, size and both indexes). A
+// version keeps every row while its site's pointer may still be at it, and
+// after that only the rows a pointer's grace entries can use, but an account
+// can make every path look immutable: this bounds what its retained versions
+// keep in the database the auth tables share. Begin checks it, so concurrent
+// begins can pass it together by at most MAX_OPEN_SESSIONS_PER_ACCOUNT plans.
+export const MAX_SITE_FILE_ROW_BYTES = 64 * MiB;
+export const SITE_FILE_ROW_OVERHEAD_BYTES = 256;
 // Per account: sessions that are not completed and still hold (their upload
 // URLs work). Each keeps a plan of up to MAX_PLAN_JSON_BYTES in D1.
 export const MAX_OPEN_SESSIONS_PER_ACCOUNT = 10;

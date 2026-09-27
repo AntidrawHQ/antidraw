@@ -124,9 +124,11 @@ const sessionParamSchema = z.object({
 
 // What became of a publish that ended PUBLISH_OUTCOME_UNKNOWN: the session's
 // status ("pending", "completed", "aborted", "expired"), the version it
-// committed, and the site as it is now. A session still pending is also
-// nudged: main sends its (idempotent) complete again, so asking is what lets
-// it finish.
+// committed, and the site as it is now. A session still pending, or
+// committed but not yet switched live, is also nudged: main sends its
+// (idempotent) complete again, so asking is what lets it finish. For the
+// session main kept, "completed" means live; committed but not live reads
+// "pending".
 publishController.get(
   "/:workspaceId/session/:publishId",
   zValidator("param", sessionParamSchema),

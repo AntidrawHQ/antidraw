@@ -1,7 +1,7 @@
 import { err, ok, type Result } from "neverthrow";
 import { z } from "zod";
 import { cloudFetch } from "@/main/services/account.service";
-import { ABORTED, cloudTiming, untilAborted } from "./deadline";
+import { ABORTED, cloudTiming, completeTimeoutFor, untilAborted } from "./deadline";
 
 // Typed client for the server's publish API (packages/server, spec §2). The
 // schemas mirror packages/server/src/lib/publish.schemas.ts by name; neither
@@ -225,14 +225,15 @@ export const beginPublish = (
     ...opts,
   });
 
-// Not cancellable (the server may be committing), only time-limited. It
-// carries nothing: every file, entry pages included, was uploaded, and the
+// Not cancellable (the server may be committing), only time-limited, by how
+// many distinct objects the publish has (`objects`, see completeTimeoutFor).
+// It carries nothing: every file, entry pages included, was uploaded, and the
 // server switches the site over by writing one pointer after the commit.
-export const completePublish = (publishId: string) =>
+export const completePublish = (publishId: string, objects?: number) =>
   request(`${sessionPath(publishId)}/complete`, completePublishResponse, {
     method: "POST",
     body: {},
-    timeoutMs: cloudTiming.completeTimeoutMs,
+    timeoutMs: completeTimeoutFor(objects),
   });
 
 export const getPublishSession = (publishId: string) =>
