@@ -50,7 +50,9 @@ export const createIgnoreRules = (rootDir: string) => {
         try {
           // Only a regular file: a .gitignore symlink could point anywhere
           if (!(await fs.lstat(abs)).isFile()) return null;
-          const contents = await fs.readFile(abs, "utf8");
+          // NFC on both sides, like git's core.precomposeunicode (the macOS default): a rule typed
+          // in an editor must match a name Finder stored decomposed
+          const contents = (await fs.readFile(abs, "utf8")).normalize("NFC");
           return { base: relDir, ig: ignore({ ignorecase: true }).add(contents), ignoreFile };
         } catch (e) {
           if (isMissing(e)) return null;
@@ -81,7 +83,7 @@ export const createIgnoreRules = (rootDir: string) => {
     let verdict: IgnoreVerdict = { ignored: false };
     for (const m of await chainFor(parentOf(relPath))) {
       const local = (m.base ? relPath.slice(m.base.length + 1) : relPath) + (isDir ? "/" : "");
-      const r = directTest(m.ig, local);
+      const r = directTest(m.ig, local.normalize("NFC"));
       if (r.ignored) verdict = { ignored: true, rule: r.rule?.pattern, ignoreFile: m.ignoreFile };
       else if (r.unignored) verdict = { ignored: false };
     }

@@ -451,6 +451,32 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       expect(await deps.store.usedBytes(USER)).toBe(500 * MiB);
     });
 
+    it("keeps the largest declared size of an unverified object (a smaller redeclaration cannot undercount)", async () => {
+      const deps = setup();
+      const round = async (n: number) => {
+        const big = (
+          await begin(deps, {
+            workspace: workspaceId(n),
+            largeFiles: [{ path: "x.bin", sha256: hex(`X${n}`), size: 490 * MiB }],
+          })
+        )._unsafeUnwrap();
+        performUploads(deps, big.uploads); // the 490 MiB URL is used
+        return begin(deps, {
+          workspace: workspaceId(n),
+          largeFiles: [{ path: "x.bin", sha256: hex(`X${n}`), size: 1 * MiB }],
+        });
+      };
+      expect((await round(1)).isOk()).toBe(true);
+      expect(await deps.store.usedBytes(USER)).toBe(490 * MiB + 1000);
+      // The second 490 MiB object fits; a third would pass 1 GiB.
+      expect((await round(2)).isOk()).toBe(true);
+      const third = await begin(deps, {
+        workspace: workspaceId(3),
+        largeFiles: [{ path: "x.bin", sha256: hex("X3"), size: 490 * MiB }],
+      });
+      expect(third._unsafeUnwrapErr().code).toBe("QUOTA_EXCEEDED");
+    });
+
     it("refuses a verified object declared with another size", async () => {
       const deps = setup();
       await publish(deps);
@@ -796,81 +822,299 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       expect(keys).toContain(`${first.publish.slug}/assets/index-AbC12345.js`);
     });
 
-    it("unions protected_files, retrying once when it changed underneath", async () => {
+    it("protects the plan's paths only once every upload is verified, and a commit clears them", async () => {
       const deps = setup();
       const { begun: first } = await publish(deps);
-      const begun = (await begin(deps, { entries: defaultEntries("v2") }))._unsafeUnwrap();
-      await deps.harness.setProtected(first.publish.siteId, JSON.stringify(["older.js"]));
-      const claim = deps.store.claimCompleteLock;
-      let calls = 0;
-      let seenBySecond: string | null = null;
-      deps.store.claimCompleteLock = async (c) => {
-        calls++;
-        if (calls === 1) {
-          await deps.harness.setProtected(c.siteId, JSON.stringify(["older.js", "racer.js"]));
-        }
-        if (calls === 2) seenBySecond = c.protectedFiles;
-        return claim(c);
+      const siteId = first.publish.siteId;
+      const input = {
+        entries: defaultEntries("v2"),
+        files: [
+          { path: "assets/next-ZyX98765.js", immutable: true, contentType: "text/javascript" },
+        ],
       };
-      // Fail verification so the lock claim's protected_files stays visible.
-      deps.sitesBucket.objects.delete(`${first.publish.slug}/logo.png`);
-      const result = await completePublish(
+      await deps.harness.setProtected(siteId, JSON.stringify(["older.js"]));
+
+      // Nothing uploaded: nothing verified, so nothing more to protect.
+      const begun = (await begin(deps, input))._unsafeUnwrap();
+      const incomplete = await completePublish(
         deps,
         USER,
         begun.publish.id,
-        completeRequest(defaultEntries("v2")),
+        completeRequest(input.entries),
       );
-      expect(result._unsafeUnwrapErr().code).toBe("UPLOAD_INCOMPLETE");
-      expect(calls).toBe(2);
-      expect(JSON.parse(seenBySecond!)).toEqual(
-        expect.arrayContaining(["older.js", "racer.js", "logo.png"]),
-      );
-      deps.store.claimCompleteLock = claim;
+      expect(incomplete._unsafeUnwrapErr().code).toBe("UPLOAD_INCOMPLETE");
+      expect((await deps.store.findSiteById(siteId))?.protectedFiles).toBe('["older.js"]');
 
-      // A commit clears it.
-      performUploads(deps, [
-        {
-          kind: "site",
-          sha256: hex("site-logo.png"),
-          size: 102,
-          path: "logo.png",
-          url: `https://upload.test/sites/${first.publish.slug}/logo.png`,
-          method: "PUT",
-          headers: { "content-type": "image/png" },
-        },
+      // Verified, then index.html fails to write: the union stays.
+      performUploads(deps, begun.uploads);
+      deps.sitesBucket.failPut = (key) => key.endsWith("/index.html");
+      const failed = await completePublish(
+        deps,
+        USER,
+        begun.publish.id,
+        completeRequest(input.entries),
+      );
+      expect(failed._unsafeUnwrapErr().code).toBe("STORAGE_FAILED");
+      deps.sitesBucket.failPut = () => false;
+      expect(JSON.parse((await deps.store.findSiteById(siteId))!.protectedFiles!)).toEqual([
+        "assets/next-ZyX98765.js",
+        "canvas.json",
+        "index.html",
+        "older.js",
+        "preview.html",
       ]);
+
       (
-        await completePublish(deps, USER, begun.publish.id, completeRequest(defaultEntries("v2")))
+        await completePublish(deps, USER, begun.publish.id, completeRequest(input.entries))
       )._unsafeUnwrap();
-      expect((await deps.store.findSiteById(first.publish.siteId))?.protectedFiles).toBeNull();
+      expect((await deps.store.findSiteById(siteId))?.protectedFiles).toBeNull();
     });
 
-    it("gives up with PUBLISH_IN_PROGRESS when protected_files keeps changing", async () => {
+    it("leaves nothing protected after failed verifications, so GC removes a published site's junk", async () => {
+      const deps = setup();
+      const { begun: first } = await publish(deps);
+      const slug = first.publish.slug;
+      const junk = Array.from({ length: 12 }, (_, i) => ({
+        path: `junk/${"j".repeat(200)}/${"k".repeat(200)}-${i}.js`,
+        immutable: true,
+        contentType: "text/javascript",
+      }));
+      for (let round = 0; round < 2; round++) {
+        const begun = (
+          await begin(deps, { entries: defaultEntries(`junk${round}`), files: junk })
+        )._unsafeUnwrap();
+        // Every file but one arrives, so complete verifies and fails.
+        performUploads(deps, begun.uploads.slice(1));
+        const result = await completePublish(
+          deps,
+          USER,
+          begun.publish.id,
+          completeRequest(defaultEntries(`junk${round}`)),
+        );
+        expect(result._unsafeUnwrapErr().code).toBe("UPLOAD_INCOMPLETE");
+      }
+      expect((await deps.store.findSiteById(first.publish.siteId))?.protectedFiles).toBeNull();
+      expect(deps.sitesBucket.keys(`${slug}/junk/`).length).toBeGreaterThan(0);
+
+      deps.clock.now += SESSION_TTL_MS + 2 * 3600_000;
+      await runGc(deps.gc, new Date(deps.clock.now));
+      expect(deps.sitesBucket.keys(`${slug}/junk/`)).toEqual([]);
+      expect(deps.sitesBucket.keys(`${slug}/`)).toContain(`${slug}/assets/index-AbC12345.js`);
+    });
+
+    it("narrows protection to its own paths once its entries are live, which also clears *", async () => {
+      const deps = setup();
+      const { begun: first } = await publish(deps);
+      const siteId = first.publish.siteId;
+      const slug = first.publish.slug;
+      await deps.harness.setProtected(siteId, "*");
+      deps.sitesBucket.upload(`${slug}/stale.js`, { size: 1, sha256: hex("stale") });
+
+      const input = {
+        entries: defaultEntries("v2"),
+        files: [
+          { path: "assets/next-ZyX98765.js", immutable: true, contentType: "text/javascript" },
+        ],
+      };
+      const begun = (await begin(deps, input))._unsafeUnwrap();
+      performUploads(deps, begun.uploads);
+      const commit = deps.store.commitVersion;
+      deps.store.commitVersion = async () => ({
+        ok: false,
+        reason: "other",
+        error: new Error("D1 down"),
+      });
+      const broken = await completePublish(
+        deps,
+        USER,
+        begun.publish.id,
+        completeRequest(input.entries),
+      );
+      deps.store.commitVersion = commit;
+      expect(broken._unsafeUnwrapErr().code).toBe("PUBLISH_STORE_FAILED");
+      const site = await deps.store.findSiteById(siteId);
+      expect(site?.completeLock).toBeNull();
+      expect(JSON.parse(site!.protectedFiles!)).toEqual([
+        "assets/next-ZyX98765.js",
+        "canvas.json",
+        "index.html",
+        "preview.html",
+      ]);
+
+      // GC works on the site again: the live pages' paths stay, the rest goes.
+      deps.clock.now += SESSION_TTL_MS + 2 * 3600_000;
+      await runGc(deps.gc, new Date(deps.clock.now));
+      const keys = deps.sitesBucket.keys(`${slug}/`);
+      expect(keys).not.toContain(`${slug}/stale.js`);
+      expect(keys).toContain(`${slug}/assets/next-ZyX98765.js`);
+      expect(keys).toContain(`${slug}/assets/index-AbC12345.js`); // live_files (v1)
+    });
+
+    it("answers PUBLISH_IN_PROGRESS, writing nothing, when protected_files changed under its lock", async () => {
       const deps = setup();
       const begun = (await begin(deps))._unsafeUnwrap();
       performUploads(deps, begun.uploads);
-      const claim = deps.store.claimCompleteLock;
-      let n = 0;
-      deps.store.claimCompleteLock = async (c) => {
-        await deps.harness.setProtected(c.siteId, JSON.stringify([`racer-${++n}.js`]));
-        return claim(c);
+      const head = deps.sources.head.bind(deps.sources);
+      deps.sources.head = async (key) => {
+        await deps.harness.setProtected(begun.publish.siteId, JSON.stringify(["racer.js"]));
+        return head(key);
       };
+      const writes = deps.sitesBucket.writes.length;
       const result = await completePublish(deps, USER, begun.publish.id, completeRequest());
-      expect(result._unsafeUnwrapErr().code).toBe("PUBLISH_IN_PROGRESS");
-      expect(n).toBe(2);
+      expect(result._unsafeUnwrapErr()).toMatchObject({ status: 409, code: "PUBLISH_IN_PROGRESS" });
+      expect(deps.sitesBucket.writes.length).toBe(writes);
+      const site = await deps.store.findSiteById(begun.publish.siteId);
+      expect(site?.completeLock).toBeNull();
+      expect(site?.protectedFiles).toBe('["racer.js"]');
     });
 
     it("collapses protected_files to * once too large", async () => {
       const deps = setup();
       const begun = (await begin(deps))._unsafeUnwrap();
+      performUploads(deps, begun.uploads);
       const huge = JSON.stringify(
         Array.from({ length: 2100 }, (_, i) => `${i}-${"p".repeat(850)}`),
       );
       await deps.harness.setProtected(begun.publish.siteId, huge);
-      // Verification fails, so the claimed value stays for us to see.
+      // A failed entry write keeps the union for us to see.
+      deps.sitesBucket.failPut = (key) => key.endsWith("/index.html");
       const result = await completePublish(deps, USER, begun.publish.id, completeRequest());
-      expect(result._unsafeUnwrapErr().code).toBe("UPLOAD_INCOMPLETE");
+      expect(result._unsafeUnwrapErr().code).toBe("STORAGE_FAILED");
       expect((await deps.store.findSiteById(begun.publish.siteId))?.protectedFiles).toBe("*");
+    });
+
+    it("collapses to * when live_files and protected_files together would not fit D1's row", async () => {
+      const deps = setup();
+      const { begun: first } = await publish(deps);
+      const siteId = first.publish.siteId;
+      // Each well under MAX_PROTECTED_JSON_BYTES; together just under 2 MB.
+      const paths = (n: number, tag: string) =>
+        JSON.stringify(Array.from({ length: n }, (_, i) => `${tag}/${i}-${"x".repeat(990)}`));
+      await deps.harness.setLiveFiles(siteId, paths(1200, "live"));
+      await deps.harness.setProtected(siteId, paths(780, "old"));
+      const long = (i: number) => `assets/${"a".repeat(240)}/${"b".repeat(240)}/${i}.js`;
+      const input = {
+        entries: defaultEntries("v2"),
+        files: Array.from({ length: 20 }, (_, i) => ({ path: long(i), immutable: true })),
+      };
+      const begun = (await begin(deps, input))._unsafeUnwrap();
+      performUploads(deps, begun.uploads);
+      deps.sitesBucket.failPut = (key) => key.endsWith("/index.html");
+      const failed = await completePublish(
+        deps,
+        USER,
+        begun.publish.id,
+        completeRequest(input.entries),
+      );
+      deps.sitesBucket.failPut = () => false;
+      expect(failed._unsafeUnwrapErr().code).toBe("STORAGE_FAILED");
+      expect((await deps.store.findSiteById(siteId))?.protectedFiles).toBe("*");
+
+      // And the site can still be published.
+      const done = await completePublish(
+        deps,
+        USER,
+        begun.publish.id,
+        completeRequest(input.entries),
+      );
+      expect(done._unsafeUnwrap().version).toBe(2);
+      expect((await deps.store.findSiteById(siteId))?.protectedFiles).toBeNull();
+    });
+
+    it("releases the lock when a store call throws after taking it", async () => {
+      const deps = setup();
+      const begun = (await begin(deps))._unsafeUnwrap();
+      performUploads(deps, begun.uploads);
+      const setProtected = deps.store.setProtectedFiles;
+      deps.store.setProtectedFiles = async () => {
+        throw new Error("D1 hiccup");
+      };
+      const failed = await completePublish(deps, USER, begun.publish.id, completeRequest());
+      deps.store.setProtectedFiles = setProtected;
+      expect(failed._unsafeUnwrapErr()).toMatchObject({
+        status: 500,
+        code: "PUBLISH_STORE_FAILED",
+      });
+      expect((await deps.store.findSiteById(begun.publish.siteId))?.completeLock).toBeNull();
+      expect(
+        (await completePublish(deps, USER, begun.publish.id, completeRequest()))._unsafeUnwrap()
+          .version,
+      ).toBe(1);
+    });
+
+    it("lets a session take back the lock a dead request of it left, but no other session", async () => {
+      const deps = setup();
+      const other = (
+        await begin(deps, { entries: defaultEntries("other") })
+      )._unsafeUnwrap();
+      const begun = (await begin(deps))._unsafeUnwrap();
+      performUploads(deps, [...other.uploads, ...begun.uploads]);
+      // A request of `begun` that died holding the lock.
+      const now = deps.clock.now;
+      expect(
+        await deps.store.claimCompleteLock({
+          siteId: begun.publish.siteId,
+          sessionId: begun.publish.id,
+          baseVersion: 0,
+          now,
+          expiresAt: now + 600_000,
+        }),
+      ).not.toBeNull();
+      deps.clock.now += 5_000;
+      const busy = await completePublish(
+        deps,
+        USER,
+        other.publish.id,
+        completeRequest(defaultEntries("other")),
+      );
+      expect(busy._unsafeUnwrapErr().code).toBe("PUBLISH_IN_PROGRESS");
+      expect(
+        (await completePublish(deps, USER, begun.publish.id, completeRequest()))._unsafeUnwrap()
+          .version,
+      ).toBe(1);
+    });
+
+    it("answers a retry that lost the commit to its own session's request with the result", async () => {
+      const deps = setup();
+      const begun = (await begin(deps))._unsafeUnwrap();
+      performUploads(deps, begun.uploads);
+      const commit = deps.store.commitVersion;
+      let raced = false;
+      deps.store.commitVersion = async (v) => {
+        if (!raced) {
+          raced = true;
+          // The request this one retried commits first.
+          (
+            await completePublish(deps, USER, begun.publish.id, completeRequest())
+          )._unsafeUnwrap();
+        }
+        return commit(v);
+      };
+      const result = await completePublish(deps, USER, begun.publish.id, completeRequest());
+      deps.store.commitVersion = commit;
+      expect(result._unsafeUnwrap()).toMatchObject({ version: 1, site: { headVersion: 1 } });
+      expect(await deps.harness.versionNumbers(begun.publish.siteId)).toEqual([1]);
+    });
+
+    it("refuses when the complete limiter says so, before touching storage", async () => {
+      const deps = setup();
+      const begun = (await begin(deps))._unsafeUnwrap();
+      performUploads(deps, begun.uploads);
+      deps.limits.complete = false;
+      let heads = 0;
+      const head = deps.sources.head.bind(deps.sources);
+      deps.sources.head = async (key) => {
+        heads++;
+        return head(key);
+      };
+      const result = await completePublish(deps, USER, begun.publish.id, completeRequest());
+      expect(result._unsafeUnwrapErr()).toMatchObject({ status: 429, code: "RATE_LIMITED" });
+      expect(heads).toBe(0);
+      expect((await deps.store.findSiteById(begun.publish.siteId))?.completeLock).toBeNull();
+      deps.limits.complete = true;
+      expect((await completePublish(deps, USER, begun.publish.id, completeRequest())).isOk()).toBe(
+        true,
+      );
     });
   });
 

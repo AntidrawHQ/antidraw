@@ -5,6 +5,7 @@ import { getWorkspaceSourcePath } from "@/main/api/init";
 import { getWorkspace } from "@/main/api/services/workspace.service";
 import { getAccount, type AccountError } from "@/main/services/account.service";
 import {
+  LARGE_FILE_BYTES,
   MAX_SNAPSHOT_BYTES,
   MAX_SNAPSHOT_FILES,
   MAX_UNCOMPRESSED_BYTES,
@@ -16,6 +17,7 @@ import {
   type PackedSnapshot,
   type SnapshotError,
   type SnapshotManifest,
+  type SnapshotPlan,
   type StagedSnapshot,
 } from "@/main/lib/snapshot";
 import {
@@ -33,6 +35,7 @@ import {
   type BeginPublishRequest,
   type CloudError,
   type CompletePublishRequest,
+  type PublishSessionResponse,
 } from "./cloud-publish";
 import { uploadAll, type UploadError, type UploadTask } from "./uploader";
 import { watchWorkspaceActivity, type ActivityWatch } from "./workspace-busy";
@@ -243,6 +246,13 @@ export const mapSnapshotError = (e: SnapshotError): PublishError => {
         paths ? { paths } : undefined,
       );
     }
+    case "TOO_LARGE":
+      // Files grew past the limit between the scan and the copy.
+      return publishError(
+        "PUBLISH_TOO_LARGE",
+        "This canvas's files add up to more than can be published.",
+        { limitBytes: MAX_SNAPSHOT_BYTES },
+      );
     case "CANCELLED":
       return CANCELLED;
     default:
@@ -278,10 +288,13 @@ const fromUploadError = (e: UploadError): PublishError =>
 
 // Complete is idempotent (a completed session answers with its result), so
 // anything that leaves its outcome unknown is worth another try.
+// RATE_LIMITED: the server refused before touching the session, so waiting
+// and asking again is safe.
 const isRetryableComplete = (e: CloudError) =>
   e.code === "SERVER_UNREACHABLE" ||
   (e.status >= 500 && e.code !== "SIGNED_OUT") ||
-  (e.status === 409 && e.code === "PUBLISH_IN_PROGRESS");
+  (e.status === 409 && e.code === "PUBLISH_IN_PROGRESS") ||
+  (e.status === 429 && e.code === "RATE_LIMITED");
 
 // ============================================================================
 // Runs
@@ -489,38 +502,68 @@ const notesFor = (excluded: ExclusionReport): PublishNote[] => {
     : [];
 };
 
-const sumSizes = (files: { size: number }[]) =>
+const sumSizes = (files: readonly { size: number }[]) =>
   files.reduce((sum, f) => sum + f.size, 0);
 
 // The pre-checks mirror the server's limits, so an oversized publish is
-// refused before anything is uploaded.
-const checkSnapshotLimits = (
-  packed: PackedSnapshot,
-): Result<void, PublishError> => {
-  const largeFileCount = packed.manifest.files.filter(
-    (f) => f.storage === "blob",
-  ).length;
+// refused before anything is uploaded. `snapshotBytes` (archive + distinct
+// blobs) is known only after packing; everything else is decided by sizes and
+// counts, which the scan plan already has.
+const snapshotLimitsError = (totals: {
+  uncompressedBytes: number;
+  fileCount: number;
+  largeFileCount: number;
+  snapshotBytes?: number;
+  largest: () => { path: string; size: number }[];
+}): PublishError | null => {
+  const { uncompressedBytes, fileCount, largeFileCount, snapshotBytes } = totals;
   const reason =
-    packed.snapshotBytes > MAX_SNAPSHOT_BYTES
+    snapshotBytes !== undefined && snapshotBytes > MAX_SNAPSHOT_BYTES
       ? "This canvas is too large to publish."
-      : packed.uncompressedBytes > MAX_UNCOMPRESSED_BYTES
+      : uncompressedBytes > MAX_UNCOMPRESSED_BYTES
         ? "This canvas's files add up to more than can be published."
-        : packed.fileCount > MAX_SNAPSHOT_FILES
+        : fileCount > MAX_SNAPSHOT_FILES
           ? "This canvas has more files than can be published."
           : largeFileCount > MAX_LARGE_FILES
             ? "This canvas has more large files than can be published."
             : null;
-  if (!reason) return ok(undefined);
-  return err(
-    publishError("PUBLISH_TOO_LARGE", reason, {
-      largestFiles: largestFiles(packed.manifest),
-      limitBytes: MAX_SNAPSHOT_BYTES,
-      snapshotBytes: packed.snapshotBytes,
-      uncompressedBytes: packed.uncompressedBytes,
-      fileCount: packed.fileCount,
-      largeFileCount,
-    }),
-  );
+  if (!reason) return null;
+  return publishError("PUBLISH_TOO_LARGE", reason, {
+    largestFiles: totals.largest(),
+    limitBytes: MAX_SNAPSHOT_BYTES,
+    ...(snapshotBytes !== undefined ? { snapshotBytes } : {}),
+    uncompressedBytes,
+    fileCount,
+    largeFileCount,
+  });
+};
+
+// Before staging: a canvas over the limits is refused without copying,
+// hashing or packing any of it. Scan-time sizes; stage decides blob storage
+// by the same LARGE_FILE_BYTES threshold.
+const checkPlanLimits = (plan: SnapshotPlan): Result<void, PublishError> => {
+  const error = snapshotLimitsError({
+    uncompressedBytes: sumSizes(plan.files),
+    fileCount: plan.files.length,
+    largeFileCount: plan.files.filter((f) => f.size >= LARGE_FILE_BYTES).length,
+    largest: () => largestFiles(plan),
+  });
+  return error ? err(error) : ok(undefined);
+};
+
+// After packing: the staged sizes (files may have grown since the scan) and
+// the packed size.
+const checkSnapshotLimits = (
+  packed: PackedSnapshot,
+): Result<void, PublishError> => {
+  const error = snapshotLimitsError({
+    uncompressedBytes: packed.uncompressedBytes,
+    fileCount: packed.fileCount,
+    largeFileCount: packed.manifest.files.filter((f) => f.storage === "blob").length,
+    snapshotBytes: packed.snapshotBytes,
+    largest: () => largestFiles(packed.manifest),
+  });
+  return error ? err(error) : ok(undefined);
 };
 
 const checkSiteLimits = (built: BuiltSite): Result<void, PublishError> => {
@@ -656,21 +699,38 @@ const steps = async (ctx: {
   const sourceDir = getWorkspaceSourcePath(workspaceId);
   const plan = await scanWorkspace(sourceDir, { signal });
   if (plan.isErr()) return err(mapSnapshotError(plan.error));
+  const planLimits = checkPlanLimits(plan.value);
+  if (planLimits.isErr()) return err(planLimits.error);
 
   const stagedDir = path.join(staging, "source");
-  const stagedResult = await stageSnapshot(plan.value, stagedDir, { signal });
-  if (stagedResult.isErr()) return err(mapSnapshotError(stagedResult.error));
+  const stagedResult = await stageSnapshot(plan.value, stagedDir, {
+    signal,
+    maxBytes: MAX_UNCOMPRESSED_BYTES,
+  });
+  if (stagedResult.isErr()) {
+    const mapped = mapSnapshotError(stagedResult.error);
+    return err(
+      mapped.code === "PUBLISH_TOO_LARGE"
+        ? { ...mapped, details: { ...mapped.details, largestFiles: largestFiles(plan.value) } }
+        : mapped,
+    );
+  }
   const staged: StagedSnapshot = stagedResult.value;
 
   // A turn that ran or queued during scan/stage may have left the staged tree
   // between two states.
   const idleAfterStage = await ensureIdle(watch);
   if (idleAfterStage.isErr()) return err(idleAfterStage.error);
+  if (signal.aborted) return err(CANCELLED);
 
-  const packedResult = await packSnapshot(staged, {
-    archiveFile: path.join(staging, "snapshot.tar.gz"),
-    blobDir: path.join(staging, "blobs"),
-  });
+  const packedResult = await packSnapshot(
+    staged,
+    {
+      archiveFile: path.join(staging, "snapshot.tar.gz"),
+      blobDir: path.join(staging, "blobs"),
+    },
+    { signal },
+  );
   if (packedResult.isErr()) return err(mapSnapshotError(packedResult.error));
   const packed = packedResult.value;
 
@@ -771,6 +831,11 @@ const steps = async (ctx: {
     notes: notesFor(staged.excluded),
   });
 
+  // Whether every attempt was refused by the rate limiter, which answers
+  // before the server does anything: then the publish certainly did not
+  // commit, and "rate limited" is the answer rather than "outcome unknown".
+  let onlyRateLimited = true;
+  let lastError: CloudError | null = null;
   for (let attempt = 1; attempt <= COMPLETE_ATTEMPTS; attempt++) {
     const completed = await completePublish(publishId, { entries });
     if (completed.isOk()) {
@@ -779,35 +844,32 @@ const steps = async (ctx: {
     if (!isRetryableComplete(completed.error)) {
       return err(mapCloudError(completed.error, packed.manifest));
     }
+    lastError = completed.error;
+    if (completed.error.code !== "RATE_LIMITED") onlyRateLimited = false;
     if (attempt < COMPLETE_ATTEMPTS) {
       await sleep(publishTiming.completeRetryBaseMs * 2 ** (attempt - 1));
     }
   }
 
+  if (onlyRateLimited && lastError) return err(mapCloudError(lastError));
+
   // Still no definite answer: ask the server what became of the session.
+  // publishId lets "Check status" ask about this session later
+  // (getPublishOutcome), rather than guess from the site's version.
+  const outcomeUnknown = publishError(
+    "PUBLISH_OUTCOME_UNKNOWN",
+    "The publish may still finish. Check again in a moment.",
+    { publishId },
+  );
   const session = await getPublishSession(publishId);
   if (session.isErr()) {
-    return err(
-      session.error.code === "SIGNED_OUT"
-        ? SIGNED_OUT
-        : publishError(
-            "PUBLISH_OUTCOME_UNKNOWN",
-            "The publish may still finish. Check again in a moment.",
-          ),
-    );
+    return err(session.error.code === "SIGNED_OUT" ? SIGNED_OUT : outcomeUnknown);
   }
   const { status, resultVersion, site } = session.value;
   if (status === "completed" && resultVersion !== null) {
     return ok(toResult(site, resultVersion));
   }
-  if (status === "pending") {
-    return err(
-      publishError(
-        "PUBLISH_OUTCOME_UNKNOWN",
-        "The publish may still finish. Check again in a moment.",
-      ),
-    );
-  }
+  if (status === "pending") return err(outcomeUnknown);
   // aborted or expired: it can no longer complete.
   return err(
     mapCloudError({ status: 410, code: "PUBLISH_EXPIRED", message: `Session ${status}` }),
@@ -817,6 +879,16 @@ const steps = async (ctx: {
 // ============================================================================
 // Site status
 // ============================================================================
+
+// What became of a publish session that ended PUBLISH_OUTCOME_UNKNOWN (its
+// publishId is in that error's details).
+export const getPublishOutcome = async (
+  publishId: string,
+): Promise<Result<PublishSessionResponse, PublishError>> => {
+  const result = await getPublishSession(publishId);
+  if (result.isErr()) return err(mapCloudError(result.error));
+  return ok(result.value);
+};
 
 // null when the canvas was never published, or when signed out.
 export const getPublishStatus = async (

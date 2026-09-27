@@ -43,6 +43,14 @@ describe("isExcludedSnapshotPath (the table shared with the server)", () => {
     ["a/.env.d/x", true],
     ["sub/.dev.vars.local", true],
     ["deck.key", false],
+    // Names APFS case-folds onto a denylisted one (ſ → s, K → k), which toLowerCase misses
+    ["node_module\u017f/x", true],
+    [".\u017f\u017fh/id", true],
+    ["a/.aw\u017f/credentials", true],
+    [".dev.var\u017f", true],
+    [".git-credential\u017f", true],
+    ["k/id_r\u017fa", true],
+    ["a/.DS_\u017ftore", true],
   ])("%s → %s", (p, excluded) => {
     expect(isExcludedSnapshotPath(p)).toBe(excluded);
   });
@@ -61,6 +69,14 @@ describe("isExcludedSnapshotPath (the table shared with the server)", () => {
     expect(findCaseCollisions(["README.md", "src/a.ts", "Readme.md", nfc, nfd, "SRC/b.ts"])).toEqual([
       ["README.md", "Readme.md"],
       [nfd, nfc],
+    ]);
+  });
+
+  test("findCaseCollisions folds like APFS (ſ = s, K = k, ß = ss)", () => {
+    expect(findCaseCollisions(["s.txt", "\u017f.txt", "k.txt", "\u212A.txt", "stra\u00dfe", "STRASSE", "b.txt"])).toEqual([
+      ["s.txt", "\u017f.txt"],
+      ["k.txt", "\u212A.txt"],
+      ["STRASSE", "stra\u00dfe"],
     ]);
   });
 
@@ -97,6 +113,25 @@ describe("scanWorkspace", () => {
     expect(exclusion(plan, "a.log")).toMatchObject({ reason: "gitignored", rule: "*.log", ignoreFile: ".gitignore" });
     expect(reasonOf(plan, ".env.local")).toBe("always-excluded");
     expect(reasonOf(plan, "dist/")).toBe("always-excluded");
+  });
+
+  test("rules match file names stored decomposed (NFD), as git's core.precomposeunicode does", async () => {
+    const dir = makeTmp();
+    const nfdFile = "cafe\u0301-secret.txt";
+    const nfdDir = "re\u0301sume\u0301";
+    writeTree(dir, {
+      ".gitignore": "caf\u00e9-secret.txt\ndocs/r\u00e9sum\u00e9/\n",
+      [nfdFile]: "secret",
+      [`docs/${nfdDir}/cv.pdf`]: "cv",
+      "docs/readme.md": "hi",
+    });
+    const names = fs.readdirSync(dir);
+    // Skip where the filesystem normalizes names itself; the case under test is a stored NFD name
+    if (!names.includes(nfdFile)) return;
+    const plan = await scan(dir);
+    expect(paths(plan)).toEqual([".gitignore", "docs/readme.md"]);
+    expect(exclusion(plan, nfdFile)).toMatchObject({ reason: "gitignored", rule: "caf\u00e9-secret.txt" });
+    expect(reasonOf(plan, `docs/${nfdDir}/`)).toBe("gitignored");
   });
 
   test("a nested .gitignore re-includes with !, and ignored directories are not descended into", async () => {

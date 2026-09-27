@@ -16,6 +16,7 @@ export type Bindings = {
   SOURCES: R2Bucket; // antidraw-sources: private snapshots, per account
   PUBLISH_RATE_LIMITER: RateLimit;
   REMIX_RATE_LIMITER: RateLimit;
+  COMPLETE_RATE_LIMITER: RateLimit;
   SITE_URL_TEMPLATE: string; // "https://{slug}.antidraw.app"
   // Must match r2_buckets; used in presigned S3 URLs.
   SITES_BUCKET_NAME: string;

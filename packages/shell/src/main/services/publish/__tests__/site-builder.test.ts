@@ -40,8 +40,17 @@ const write = (file: string, content = "") => {
   fs.writeFileSync(file, content);
 };
 
-const setMode = (mode: "ok" | "fail" | "hang", lines = 0) =>
-  write(path.join(staged, "fake-build.json"), JSON.stringify({ mode, lines }));
+const setMode = (mode: "ok" | "fail" | "hang", lines = 0, grandchild?: "group" | "escaped") =>
+  write(path.join(staged, "fake-build.json"), JSON.stringify({ mode, lines, grandchild }));
+
+const grandchildPid = () => Number(fs.readFileSync(path.join(staged, "fake-build.grandchild.pid"), "utf8"));
+const killQuietly = (pid: number) => {
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // Already gone.
+  }
+};
 
 const build = (overrides: Partial<Parameters<typeof buildWorkspaceSite>[0]> = {}) =>
   buildWorkspaceSite({
@@ -178,6 +187,57 @@ describe("buildWorkspaceSite", () => {
     expect(result._unsafeUnwrapErr().code).toBe("CANCELLED");
     const pid = Number(fs.readFileSync(path.join(staged, "fake-build.pid"), "utf8"));
     expect(isAlive(pid)).toBe(false);
+  });
+
+  test.skipIf(process.platform === "win32")(
+    "abort also stops a grandchild holding the output pipes, promptly",
+    async () => {
+      setMode("hang", 0, "group");
+      const controller = new AbortController();
+      const t0 = Date.now();
+      const result = await build({
+        signal: controller.signal,
+        onLog: (line) => {
+          if (line === "hanging") controller.abort();
+        },
+      });
+
+      expect(result._unsafeUnwrapErr().code).toBe("CANCELLED");
+      expect(Date.now() - t0).toBeLessThan(5000);
+      const pid = grandchildPid();
+      await new Promise((r) => setTimeout(r, 100));
+      expect(isAlive(pid)).toBe(false);
+    },
+  );
+
+  test("abort settles when the child exits, even if an escaped grandchild keeps the pipes open", async () => {
+    setMode("hang", 0, "escaped");
+    const controller = new AbortController();
+    const t0 = Date.now();
+    try {
+      const result = await build({
+        signal: controller.signal,
+        onLog: (line) => {
+          if (line === "hanging") controller.abort();
+        },
+      });
+      expect(result._unsafeUnwrapErr().code).toBe("CANCELLED");
+      expect(Date.now() - t0).toBeLessThan(5000);
+    } finally {
+      killQuietly(grandchildPid());
+    }
+  });
+
+  test("a build that exits while an escaped grandchild keeps the pipes open still finishes", async () => {
+    setMode("ok", 0, "escaped");
+    const t0 = Date.now();
+    try {
+      const result = await build();
+      expect(result.isOk()).toBe(true);
+      expect(Date.now() - t0).toBeLessThan(6000);
+    } finally {
+      killQuietly(grandchildPid());
+    }
   });
 
   test("an already aborted signal starts no build", async () => {

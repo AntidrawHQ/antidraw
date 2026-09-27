@@ -103,10 +103,18 @@ export const buildEnv = (): NodeJS.ProcessEnv => {
 
 type ChildOutcome = "ok" | "failed" | "timeout" | "cancelled" | { spawnError: string };
 
-// Runs the build child to its end. Cancelling or timing out sends SIGTERM,
-// then SIGKILL if it is still running KILL_GRACE_MS later; either way this
-// settles only once the child has exited, so nothing writes to the out dir
-// afterwards.
+// After the child exits, how long its pipes may stay open (held by a
+// grandchild it left behind) before the outcome is taken from the exit code.
+const EXIT_PIPE_GRACE_MS = 2000;
+
+// Runs the build child to its end. The child leads its own process group
+// (not on win32), so cancelling or timing out signals everything it started:
+// SIGTERM, then SIGKILL if it is still running KILL_GRACE_MS later. A stopped
+// build settles as soon as the child exits, or KILL_GRACE_MS after SIGKILL
+// whatever happens; a build that ends on its own settles on 'close' (every
+// log line read), or EXIT_PIPE_GRACE_MS after exit if a grandchild keeps the
+// pipes open. On settling, whatever is left of the group is killed, so
+// nothing writes to the out dir afterwards.
 const runBuildChild = (
   args: string[],
   opts: {
@@ -117,23 +125,70 @@ const runBuildChild = (
   },
 ) =>
   new Promise<ChildOutcome>((resolve) => {
+    const useGroup = process.platform !== "win32";
     const child = spawn(getNodeElectronPath(), args, {
       cwd: opts.cwd,
       env: buildEnv(),
       stdio: ["ignore", "pipe", "pipe"],
+      detached: useGroup,
     });
 
+    const signalAll = (sig: NodeJS.Signals) => {
+      if (useGroup && child.pid !== undefined) {
+        try {
+          process.kill(-child.pid, sig);
+          return;
+        } catch {
+          // ESRCH: the group is gone; fall through for the child itself.
+        }
+      }
+      try {
+        child.kill(sig);
+      } catch {
+        // Already gone.
+      }
+    };
+    const closePipes = () => {
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+    };
+
+    let settled = false;
     let stopped: "timeout" | "cancelled" | null = null;
-    let killTimer: NodeJS.Timeout | undefined;
+    let exitCode: number | null | undefined;
+    const timers: NodeJS.Timeout[] = [];
+    const later = (ms: number, fn: () => void) => timers.push(setTimeout(fn, ms));
+
+    const settle = (outcome: ChildOutcome) => {
+      if (settled) return;
+      settled = true;
+      for (const t of timers) clearTimeout(t);
+      opts.signal?.removeEventListener("abort", onAbort);
+      if (child.pid !== undefined) {
+        // Anything the build left running.
+        if (useGroup) signalAll("SIGKILL");
+        closePipes();
+      }
+      resolve(outcome);
+    };
+    const finished = () => stopped ?? (exitCode === 0 ? "ok" : "failed");
+
     const stop = (reason: "timeout" | "cancelled") => {
-      if (stopped) return;
+      if (stopped || settled) return;
       stopped = reason;
-      child.kill("SIGTERM");
-      killTimer = setTimeout(() => child.kill("SIGKILL"), KILL_GRACE_MS);
+      if (exitCode !== undefined) {
+        settle(reason);
+        return;
+      }
+      signalAll("SIGTERM");
+      later(KILL_GRACE_MS, () => {
+        signalAll("SIGKILL");
+        later(KILL_GRACE_MS, () => settle(reason));
+      });
     };
     const onAbort = () => stop("cancelled");
     opts.signal?.addEventListener("abort", onAbort, { once: true });
-    const timeout = setTimeout(() => stop("timeout"), opts.timeoutMs);
+    later(opts.timeoutMs, () => stop("timeout"));
 
     for (const stream of ["stdout", "stderr"] as const) {
       readline
@@ -141,20 +196,19 @@ const runBuildChild = (
         .on("line", (line) => opts.onLine(line.replace(ANSI_COLOR_RE, ""), stream));
     }
 
-    let settled = false;
-    const settle = (outcome: ChildOutcome) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      clearTimeout(killTimer);
-      opts.signal?.removeEventListener("abort", onAbort);
-      resolve(outcome);
-    };
     child.on("error", (e) => {
       // Spawning failed; there is no process to wait for.
       if (child.pid === undefined) settle({ spawnError: e.message });
     });
-    child.on("close", (code) => settle(stopped ?? (code === 0 ? "ok" : "failed")));
+    child.on("exit", (code) => {
+      exitCode = code;
+      if (stopped) settle(stopped);
+      else later(EXIT_PIPE_GRACE_MS, () => settle(finished()));
+    });
+    child.on("close", (code) => {
+      if (exitCode === undefined) exitCode = code;
+      settle(finished());
+    });
   });
 
 // Builds the staged workspace into a site in outDir: the workspace build in a

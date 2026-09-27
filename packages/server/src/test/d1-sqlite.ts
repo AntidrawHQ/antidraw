@@ -2,10 +2,11 @@
 // A D1Database over node:sqlite, for store tests that need real SQL semantics
 // (row values, RETURNING, constraint failures, batch rollback) without
 // wrangler. It applies this package's migrations, enforces foreign keys as D1
-// does, and throws on the two D1 limits the store must respect: more than 100
-// bound parameters in one statement (also inside a batch) and more than
-// 100 000 bytes of SQL. It covers SQL semantics only; real D1 is covered by
-// the local end-to-end recipe (README → Publish).
+// does, and throws on the D1 limits the store must respect: more than 100
+// bound parameters in one statement (also inside a batch), more than
+// 100 000 bytes of SQL, and a row over 2 000 000 bytes. It covers SQL
+// semantics only; real D1 is covered by the local end-to-end recipe
+// (README → Publish).
 //
 // node:sqlite needs Node >= 22.5, so callers guard with `hasNodeSqlite`.
 import { readdirSync, readFileSync } from "node:fs";
@@ -28,6 +29,9 @@ export const hasNodeSqlite = sqlite !== null;
 
 export const D1_MAX_BOUND_PARAMS = 100;
 export const D1_MAX_SQL_BYTES = 100_000;
+// D1 caps a string, a BLOB and a whole row (the record SQLite builds for it)
+// at this many bytes.
+export const D1_MAX_ROW_BYTES = 2_000_000;
 
 const MIGRATIONS_DIR = fileURLToPath(new URL("../db/migrations/", import.meta.url));
 
@@ -48,6 +52,30 @@ const checkLimits = (sql: string, params: unknown[]) => {
   }
   if (Buffer.byteLength(sql, "utf8") > D1_MAX_SQL_BYTES) {
     throw new Error(`D1 limit: statement longer than ${D1_MAX_SQL_BYTES} bytes`);
+  }
+};
+
+// node:sqlite cannot lower SQLITE_LIMIT_LENGTH, so a trigger per table
+// refuses an INSERT or UPDATE whose values add up to more than D1's row
+// limit, with SQLite's own message for it.
+const quoteIdent = (name: string) => `"${name.replace(/"/g, '""')}"`;
+const enforceRowLimit = (db: DatabaseSync) => {
+  const tables = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+    .all() as { name: string }[];
+  for (const { name } of tables) {
+    const columns = db.prepare(`PRAGMA table_info(${quoteIdent(name)})`).all() as {
+      name: string;
+    }[];
+    const bytes = columns
+      .map((c) => `coalesce(length(CAST(NEW.${quoteIdent(c.name)} AS BLOB)), 0)`)
+      .join(" + ");
+    for (const event of ["INSERT", "UPDATE"]) {
+      db.exec(`CREATE TRIGGER ${quoteIdent(`d1_row_limit_${event}_${name}`)}
+        BEFORE ${event} ON ${quoteIdent(name)}
+        WHEN ${bytes} > ${D1_MAX_ROW_BYTES}
+        BEGIN SELECT RAISE(ABORT, 'string or blob too big'); END`);
+    }
   }
 };
 
@@ -153,6 +181,7 @@ export const createD1Shim = (): D1Shim => {
       if (statement.trim()) db.exec(statement);
     }
   }
+  enforceRowLimit(db);
 
   const log: Log = [];
   const shim = {

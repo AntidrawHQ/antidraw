@@ -26,6 +26,7 @@ export const env: Bindings = {
   SOURCES: unavailable<R2Bucket>("R2 (SOURCES)"),
   PUBLISH_RATE_LIMITER: allowAll,
   REMIX_RATE_LIMITER: allowAll,
+  COMPLETE_RATE_LIMITER: allowAll,
   SITE_URL_TEMPLATE: "http://{slug}.localhost:8787",
   SITES_BUCKET_NAME: "antidraw-sites",
   SOURCES_BUCKET_NAME: "antidraw-sources",

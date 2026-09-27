@@ -68,6 +68,7 @@ export type PublishErrorDetails = {
   timedOut?: boolean; // BUILD_FAILED from BUILD_TIMEOUT
   siteLimit?: number; // SITE_LIMIT
   serverCode?: string; // INTERNAL_ERROR / SERVER_ERROR: the server's own code
+  publishId?: string; // PUBLISH_OUTCOME_UNKNOWN: the session "Check status" asks about
   // Any failure after uploads started: public files (fixed names such as
   // /logo.png) go live as they upload, before the pages switch over.
   publicFilesMayHaveChanged?: boolean;

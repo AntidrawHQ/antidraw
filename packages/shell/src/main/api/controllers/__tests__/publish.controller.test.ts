@@ -207,6 +207,31 @@ describe("publish controller", () => {
     expect(res.status).toBe(400);
   });
 
+  test("GET session answers what became of a publish session", async () => {
+    vi.mocked(cloudFetch).mockResolvedValue(
+      ok(json({ status: "completed", resultVersion: 3, site: { ...site, headVersion: 3 } })),
+    );
+
+    const res = await app.request(`/api/publish/${WS}/session/pub_1`);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      status: "completed",
+      resultVersion: 3,
+      site: { ...site, headVersion: 3 },
+    });
+    expect(vi.mocked(cloudFetch).mock.calls[0]![0]).toBe("/api/publish/sessions/pub_1");
+  });
+
+  test("GET session while signed out is a 401 envelope", async () => {
+    vi.mocked(cloudFetch).mockResolvedValue(signedOut());
+
+    const res = await app.request(`/api/publish/${WS}/session/pub_1`);
+
+    expect(res.status).toBe(401);
+    expect((await res.json()).error.code).toBe("SIGNED_OUT");
+  });
+
   test("cancel answers ok and cancels the run", async () => {
     const cancel = vi.spyOn(publishService, "cancelPublish");
 

@@ -90,8 +90,6 @@ const lock = (store: PublishStore, sessionId = "pub_1", baseVersion = 0) =>
     baseVersion,
     now: 15,
     expiresAt: 15 + 600_000,
-    protectedFiles: '["index.html"]',
-    seenProtected: null,
   });
 
 describe("chunk", () => {
@@ -139,6 +137,22 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     });
   });
 
+  it("the shim refuses a row over D1's 2 000 000 bytes, counting every column", async () => {
+    const { shim, store, q } = setup();
+    await site(store);
+    // Each value alone is fine; together they are not.
+    q("UPDATE site SET live_files = ? WHERE id = 'site_1'", "l".repeat(1_200_000));
+    expect(() =>
+      q("UPDATE site SET protected_files = ? WHERE id = 'site_1'", "p".repeat(1_000_000)),
+    ).toThrow(/string or blob too big/);
+    await expect(
+      shim
+        .prepare("UPDATE site SET protected_files = ? WHERE id = 'site_1'")
+        .bind("p".repeat(700_000))
+        .run(),
+    ).resolves.toBeTruthy();
+  });
+
   it("inserts a site once per workspace, and reports a taken slug", async () => {
     const { store } = setup();
     await site(store);
@@ -170,7 +184,7 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     });
   });
 
-  it("upserts stored objects: unverified rows take the new size, verified and deleting rows do not", async () => {
+  it("upserts stored objects: unverified rows keep the largest size, verified and deleting rows do not change", async () => {
     const { store, q } = setup();
     await site(store);
     await store.createSession(session());
@@ -188,6 +202,12 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
       { kind: "blob", size: 5000 },
       { kind: "source", size: 100 },
     ]);
+    // A smaller size declared later does not shrink it: an upload URL signed
+    // for 5000 bytes may still be in use.
+    await store.createSession(
+      session({ id: "pub_s", objects: [{ kind: "blob", sha256: hex("blob"), size: 10 }] }),
+    );
+    expect(q("SELECT size FROM stored_object WHERE kind = 'blob'")).toEqual([{ size: 5000 }]);
     q("UPDATE stored_object SET deleting = 1, verified = 0 WHERE kind = 'blob'");
     await store.createSession(
       session({ id: "pub_3", objects: [{ kind: "blob", sha256: hex("blob"), size: 7 }] }),
@@ -221,7 +241,7 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     const { store, q } = setup();
     await site(store);
     await store.createSession(session());
-    expect(await lock(store)).toBe(true);
+    expect(await lock(store)).not.toBeNull();
     expect(await store.commitVersion(version())).toEqual({ ok: true });
     expect(q("SELECT version, source_sha256, allow_remix FROM site_version")).toEqual([
       { version: 1, source_sha256: hex("src"), allow_remix: 1 },
@@ -310,7 +330,7 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     expect(q("SELECT id FROM site_version")).toEqual([{ id: "ver_x" }]);
   });
 
-  it("claims the lock only against the expected head, a free lock and the seen protected_files", async () => {
+  it("claims the lock only against the expected head and a free, lapsed or own lock", async () => {
     const { store } = setup();
     await site(store);
     const claim = (over: Partial<Parameters<PublishStore["claimCompleteLock"]>[0]> = {}) =>
@@ -320,21 +340,46 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
         baseVersion: 0,
         now: 100,
         expiresAt: 700,
-        protectedFiles: '["a"]',
-        seenProtected: null,
         ...over,
       });
-    expect(await claim({ baseVersion: 1 })).toBe(false);
-    expect(await claim({ seenProtected: '["b"]' })).toBe(false);
-    expect(await claim()).toBe(true);
-    expect(await claim({ sessionId: "pub_2", seenProtected: '["a"]' })).toBe(false); // live lock
-    expect(await store.checkCompleteLock("site_1", "pub_1", 100, 600)).toBe(true);
-    expect(await store.checkCompleteLock("site_1", "pub_1", 100, 601)).toBe(false);
-    expect(await claim({ sessionId: "pub_2", now: 701, seenProtected: '["a"]' })).toBe(true); // lapsed
+    expect(await claim({ baseVersion: 1 })).toBeNull();
+    expect(await claim()).toMatchObject({ id: "site_1", completeLock: "pub_1" });
+    expect(await claim({ sessionId: "pub_2" })).toBeNull(); // live lock
+    // The session's own live lock (a request of it died holding it).
+    expect(await claim({ now: 200, expiresAt: 800 })).toMatchObject({
+      completeLockExpiresAt: 800,
+    });
+    expect(await store.checkCompleteLock("site_1", "pub_1", 200, 600)).toBe(true);
+    expect(await store.checkCompleteLock("site_1", "pub_1", 200, 601)).toBe(false);
+    expect(await claim({ sessionId: "pub_2", now: 801, expiresAt: 1400 })).toMatchObject({
+      completeLock: "pub_2",
+    }); // lapsed
     await store.releaseCompleteLock("site_1", "pub_1"); // not ours any more: no-op
     expect((await store.findSiteById("site_1"))?.completeLock).toBe("pub_2");
     await store.releaseCompleteLock("site_1", "pub_2");
     expect((await store.findSiteById("site_1"))?.completeLock).toBeNull();
+  });
+
+  it("sets protected_files only under the lock, against the seen value and the fence", async () => {
+    const { store } = setup();
+    await site(store);
+    const set = (over: Partial<Parameters<PublishStore["setProtectedFiles"]>[0]> = {}) =>
+      store.setProtectedFiles({
+        siteId: "site_1",
+        lock: "pub_1",
+        protectedFiles: '["a"]',
+        seenProtected: null,
+        ...over,
+      });
+    expect(await set()).toBe(false); // not locked
+    await lock(store);
+    expect(await set({ lock: "pub_2" })).toBe(false);
+    expect(await set({ seenProtected: '["b"]' })).toBe(false);
+    expect(await set({ fence: { now: 15, minRemainingMs: 600_001 } })).toBe(false);
+    expect(await set({ fence: { now: 15, minRemainingMs: 600_000 } })).toBe(true);
+    expect((await store.findSiteById("site_1"))?.protectedFiles).toBe('["a"]');
+    expect(await set({ protectedFiles: "*", seenProtected: '["a"]' })).toBe(true);
+    expect((await store.findSiteById("site_1"))?.protectedFiles).toBe("*");
   });
 
   it("chunks a begin of 1 source + 499 blobs and a commit of 1 000 large files", async () => {

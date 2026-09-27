@@ -1,4 +1,9 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+} from "@tanstack/react-query";
 import type {
   Account,
   PublishErrorDetails,
@@ -81,71 +86,79 @@ export const useSignOut = () => {
 // Runs a publish to its end. `onProgress` sees every event as it arrives
 // (steps, build log, upload progress); the mutation settles with the result
 // or an AccountRequestError carrying the PublishError's code and details.
-export const usePublishWorkspace = () => {
-  const queryClient = useQueryClient();
-
-  return useMutation<
-    PublishResult,
-    AccountRequestError,
-    {
-      workspaceId: string;
-      allowRemix?: boolean;
-      onProgress?: (event: PublishEvent) => void;
-    }
-  >({
-    mutationFn: async ({ workspaceId, allowRemix, onProgress }) => {
-      try {
-        for await (const event of publishWorkspace(workspaceId, { allowRemix })) {
-          onProgress?.(event);
-          if (event.type === "done") return event.result;
-          if (event.type === "error") {
-            const { code, message, details } = event.error;
-            throw new AccountRequestError(code, message, details);
-          }
+// Options rather than a hook: publish-runs.ts runs it outside any component,
+// so a publish outlives a workspace switch and several can run at once.
+export const publishMutationOptions = (queryClient: QueryClient) => ({
+  mutationFn: async ({
+    workspaceId,
+    allowRemix,
+    onProgress,
+  }: PublishVariables): Promise<PublishResult> => {
+    try {
+      for await (const event of publishWorkspace(workspaceId, { allowRemix })) {
+        onProgress?.(event);
+        if (event.type === "done") return event.result;
+        if (event.type === "error") {
+          const { code, message, details } = event.error;
+          throw new AccountRequestError(code, message, details);
         }
-      } catch (e) {
-        if (e instanceof AccountRequestError) throw e;
-        throw new AccountRequestError(
-          "INTERNAL_ERROR",
-          "Lost contact with the publish. Check its status in a moment.",
-        );
       }
+    } catch (e) {
+      if (e instanceof AccountRequestError) throw e;
       throw new AccountRequestError(
         "INTERNAL_ERROR",
-        "The publish stopped before it finished.",
+        "Lost contact with the publish. Check its status in a moment.",
       );
-    },
-    onSuccess: (result, { workspaceId }) => {
-      queryClient.setQueryData(queryKeys.publish.status(workspaceId), result.status);
-    },
-    onError: (error, { workspaceId }) => {
-      // The stored token died; main already dropped it.
-      if (error.code === "SIGNED_OUT") {
-        queryClient.setQueryData(queryKeys.account, null);
-        return;
-      }
-      // A failed publish may still have changed the site (a complete whose
-      // answer was lost), so the cached status is not to be trusted.
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.publish.status(workspaceId),
-      });
-    },
-  });
+    }
+    throw new AccountRequestError(
+      "INTERNAL_ERROR",
+      "The publish stopped before it finished.",
+    );
+  },
+  onSuccess: (result: PublishResult, { workspaceId }: PublishVariables) => {
+    queryClient.setQueryData(queryKeys.publish.status(workspaceId), result.status);
+  },
+  onError: (error: AccountRequestError, { workspaceId }: PublishVariables) => {
+    // The stored token died; main already dropped it.
+    if (error.code === "SIGNED_OUT") {
+      queryClient.setQueryData(queryKeys.account, null);
+      return;
+    }
+    // A failed publish may still have changed the site (a complete whose
+    // answer was lost), so the cached status is not to be trusted.
+    void queryClient.invalidateQueries({
+      queryKey: queryKeys.publish.status(workspaceId),
+    });
+  },
+});
+
+export type PublishVariables = {
+  workspaceId: string;
+  allowRemix?: boolean;
+  onProgress?: (event: PublishEvent) => void;
 };
 
-// The published site for a workspace, or null. Only asked while signed in.
+// The published site for a workspace, or null. One retry: it only feeds the
+// toast's remix toggle, and a failed read must not hold anything up. Callers
+// that need a fresh answer at once (publish-runs.ts) pass `retry: false`.
+export const publishStatusQueryOptions = (workspaceId: string) => ({
+  queryKey: queryKeys.publish.status(workspaceId),
+  queryFn: async (): Promise<SiteStatus | null> => {
+    const result = await getPublishStatus(workspaceId);
+    if (result.isErr()) {
+      throw new AccountRequestError(result.error.code, result.error.message);
+    }
+    return result.value;
+  },
+  retry: 1,
+});
+
+// Only asked while signed in.
 export const usePublishStatus = (workspaceId: string) => {
   const { data: account } = useAccount();
 
   return useQuery<SiteStatus | null, AccountRequestError>({
-    queryKey: queryKeys.publish.status(workspaceId),
-    queryFn: async () => {
-      const result = await getPublishStatus(workspaceId);
-      if (result.isErr()) {
-        throw new AccountRequestError(result.error.code, result.error.message);
-      }
-      return result.value;
-    },
+    ...publishStatusQueryOptions(workspaceId),
     enabled: !!account,
   });
 };

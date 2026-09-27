@@ -319,13 +319,29 @@ describe("extractSnapshot rejects hostile archives and leaves nothing behind", (
 });
 
 describe("extractSnapshot refuses paths scan would exclude", () => {
-  test.each([".claude/settings.json", ".git/config", "node_modules/x/index.js", ".env", "sub/.npmrc", "dist/x"])(
+  test.each([
+    ".claude/settings.json",
+    ".git/config",
+    "node_modules/x/index.js",
+    ".env",
+    "sub/.npmrc",
+    "dist/x",
+    // APFS case-folds these onto node_modules, .ssh and .dev.vars (ſ → s)
+    "node_module\u017f/react/index.js",
+    ".\u017fsh/authorized_keys",
+    "sub/.dev.var\u017f",
+  ])(
     "%s → UNSAFE_ENTRY (with correct hashes)",
     async (p) => {
       const { file } = await snapshotArchive([...valid, { path: p, content: "payload" }]);
       await expectRejected(file, "UNSAFE_ENTRY");
     },
   );
+
+  test("paths that differ only by APFS case folding (s.txt, ſ.txt) → CASE_COLLISION", async () => {
+    const { file } = await snapshotArchive([...valid, { path: "s.txt", content: "a" }, { path: "\u017f.txt", content: "b" }]);
+    await expectRejected(file, "CASE_COLLISION");
+  });
 
   test("an excluded tar entry not in the manifest → UNSAFE_ENTRY", async () => {
     const file = archivePath();

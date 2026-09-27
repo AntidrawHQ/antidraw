@@ -1053,6 +1053,40 @@ export const getPublishStatus = async (workspaceId: string) => {
   }
 };
 
+// What became of a publish that ended PUBLISH_OUTCOME_UNKNOWN (its
+// publishId is in that error's details).
+export type PublishSessionOutcome = {
+  status: "pending" | "completed" | "aborted" | "expired";
+  resultVersion: number | null;
+  site: SiteStatus;
+};
+
+export const getPublishSession = async (workspaceId: string, publishId: string) => {
+  try {
+    const response = await fetch(
+      `antidraw://app/api/publish/${workspaceId}/session/${encodeURIComponent(publishId)}`,
+    );
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      return err({
+        status: response.status as 500,
+        code: (errorBody?.error?.code as string) ?? "FETCH_ERROR",
+        message: (errorBody?.error?.message as string) ?? response.statusText,
+      });
+    }
+
+    const data: PublishSessionOutcome = await response.json();
+    return ok(data);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "NETWORK_ERROR",
+      message: "Failed to check the publish",
+    });
+  }
+};
+
 // Takes effect at once, for the live site; a publish in flight can't undo it.
 export const setPublishAllowRemix = async (
   workspaceId: string,

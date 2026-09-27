@@ -42,7 +42,10 @@
   },
   "ratelimits": [
     { "name": "PUBLISH_RATE_LIMITER", "namespace_id": "1001", "simple": { "limit": 20, "period": 60 } },
-    { "name": "REMIX_RATE_LIMITER", "namespace_id": "1002", "simple": { "limit": 10, "period": 60 } }
+    { "name": "REMIX_RATE_LIMITER", "namespace_id": "1002", "simple": { "limit": 10, "period": 60 } },
+    // Each complete HEADs every object of its session (up to 500) and lists
+    // the site; a publish needs one, plus the app's few retries.
+    { "name": "COMPLETE_RATE_LIMITER", "namespace_id": "1003", "simple": { "limit": 30, "period": 60 } }
   ],
   // Nightly publish GC (src/scheduled.ts).
   "triggers": { "crons": ["17 3 * * *"] }

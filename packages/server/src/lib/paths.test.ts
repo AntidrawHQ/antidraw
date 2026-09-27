@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isExcludedSnapshotPath, isPublishableSitePath, isSafeSnapshotPath } from "./paths";
+import { caseKey, isExcludedSnapshotPath, isPublishableSitePath, isSafeSnapshotPath } from "./paths";
 
 describe("isSafeSnapshotPath", () => {
   it.each([
@@ -100,7 +100,25 @@ describe("isExcludedSnapshotPath", () => {
     [".gitignore", false],
     ["public/logo.png", false],
     ["environment.ts", false],
+    // Names APFS case-folds onto a denylisted one (ſ → s, K → k), which toLowerCase misses
+    ["node_module\u017f/x", true],
+    [".\u017f\u017fh/id", true],
+    ["a/.aw\u017f/credentials", true],
+    [".dev.var\u017f", true],
+    [".git-credential\u017f", true],
+    ["k/id_r\u017fa", true],
+    ["a/.DS_\u017ftore", true],
   ])("%j -> %s", (p, excluded) => {
     expect(isExcludedSnapshotPath(p)).toBe(excluded);
+  });
+});
+
+describe("caseKey", () => {
+  it("folds like APFS: ſ = s, K = k, ß = ss, NFD = NFC", () => {
+    expect(caseKey("\u017f.txt")).toBe(caseKey("S.txt"));
+    expect(caseKey("\u212a.bin")).toBe(caseKey("k.bin"));
+    expect(caseKey("stra\u00dfe")).toBe(caseKey("STRASSE"));
+    expect(caseKey("cafe\u0301")).toBe(caseKey("CAF\u00c9"));
+    expect(caseKey("a.txt")).not.toBe(caseKey("b.txt"));
   });
 });

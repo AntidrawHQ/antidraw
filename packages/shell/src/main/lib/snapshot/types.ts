@@ -74,7 +74,14 @@ export type PackedSnapshot = {
 };
 
 export type SnapshotError = {
-  code: "SOURCE_MISSING" | "SCAN_FAILED" | "CASE_COLLISION" | "STAGE_FAILED" | "PACK_FAILED" | "CANCELLED";
+  code:
+    | "SOURCE_MISSING"
+    | "SCAN_FAILED"
+    | "CASE_COLLISION"
+    | "STAGE_FAILED"
+    | "PACK_FAILED"
+    | "TOO_LARGE" // stage: the copied files passed the byte budget
+    | "CANCELLED";
   message: string;
   paths?: string[][] | string[]; // CASE_COLLISION: groups of colliding paths
 };

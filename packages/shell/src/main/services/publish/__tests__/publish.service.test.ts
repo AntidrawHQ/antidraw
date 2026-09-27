@@ -8,6 +8,7 @@ import type {
   PackedSnapshot,
   SnapshotError,
   SnapshotManifest,
+  ScannedFile,
   SnapshotPlan,
   StagedSnapshot,
 } from "@/main/lib/snapshot";
@@ -75,14 +76,15 @@ vi.mock("@/main/lib/conversation-store", async (importOriginal) => {
 });
 
 vi.mock("@/main/lib/snapshot", () => ({
+  LARGE_FILE_BYTES: 1024 * 1024,
   MAX_SNAPSHOT_BYTES: 500 * 1024 * 1024,
   MAX_UNCOMPRESSED_BYTES: 1000 * 1024 * 1024,
   MAX_SNAPSHOT_FILES: 100_000,
   scanWorkspace: vi.fn(),
   stageSnapshot: vi.fn(),
   packSnapshot: vi.fn(),
-  largestFiles: vi.fn((manifest: SnapshotManifest, n = 10) =>
-    [...manifest.files]
+  largestFiles: vi.fn((list: { files: readonly { path: string; size: number }[] }, n = 10) =>
+    [...list.files]
       .sort((a, b) => b.size - a.size)
       .slice(0, n)
       .map(({ path, size }) => ({ path, size })),
@@ -577,6 +579,75 @@ describe("publishWorkspace: refusals before anything is uploaded", () => {
       expect(beginPublish).not.toHaveBeenCalled();
     });
 
+    describe("from the scan plan, before anything is staged", () => {
+      const scanned = (p: string, size: number): ScannedFile => ({
+        path: p,
+        absPath: `/ws/${p}`,
+        size,
+        mode: 0o644,
+        viaSymlink: false,
+        dev: 1,
+        ino: 1,
+      });
+      const planOf = (files: ScannedFile[]) =>
+        vi.mocked(scanWorkspace).mockImplementation(async (sourceDir) =>
+          ok({ sourceDir, files, excluded } satisfies SnapshotPlan),
+        );
+      const expectNothingStaged = async () => {
+        expect(stageSnapshot).not.toHaveBeenCalled();
+        expect(packSnapshot).not.toHaveBeenCalled();
+        expect(buildWorkspaceSite).not.toHaveBeenCalled();
+        expect(beginPublish).not.toHaveBeenCalled();
+        expect(await stagingDirs()).toEqual([]);
+      };
+
+      test("uncompressed bytes over 1000 MiB, with the plan's largest files", async () => {
+        planOf([
+          scanned("src/App.tsx", 500),
+          scanned("assets/a.mp4", 600 * MiB),
+          scanned("assets/b.mp4", 400 * MiB + 1),
+        ]);
+        const error = lastError(await run());
+        expect(error.code).toBe("PUBLISH_TOO_LARGE");
+        expect(error.details).toMatchObject({
+          uncompressedBytes: 1000 * MiB + 501,
+          fileCount: 3,
+          largeFileCount: 2,
+          largestFiles: [
+            { path: "assets/a.mp4", size: 600 * MiB },
+            { path: "assets/b.mp4", size: 400 * MiB + 1 },
+            { path: "src/App.tsx", size: 500 },
+          ],
+        });
+        expect(error.details?.snapshotBytes).toBeUndefined();
+        await expectNothingStaged();
+      });
+
+      test("more than 100 000 files", async () => {
+        planOf(Array.from({ length: 100_001 }, (_, i) => scanned(`gen/${i}.txt`, 1)));
+        const error = lastError(await run());
+        expect(error.code).toBe("PUBLISH_TOO_LARGE");
+        expect(error.details?.fileCount).toBe(100_001);
+        expect(error.details?.largestFiles).toHaveLength(10);
+        await expectNothingStaged();
+      });
+
+      test("more than 1 000 files at or over the large-file size", async () => {
+        planOf(Array.from({ length: 1001 }, (_, i) => scanned(`big/${i}.bin`, MiB)));
+        const error = lastError(await run());
+        expect(error.code).toBe("PUBLISH_TOO_LARGE");
+        expect(error.details?.largeFileCount).toBe(1001);
+        await expectNothingStaged();
+      });
+
+      test("a plan exactly at the limits is staged", async () => {
+        // 1000 large files adding up to exactly 1000 MiB.
+        planOf(Array.from({ length: 1000 }, (_, i) => scanned(`big/${i}.bin`, MiB)));
+        lastResult(await run());
+        expect(stageSnapshot).toHaveBeenCalled();
+      });
+    });
+
     test("more than 5 000 site files → SITE_TOO_LARGE", async () => {
       builtOverrides = {
         files: Array.from({ length: 5001 }, (_, i) => ({
@@ -692,6 +763,40 @@ describe("publishWorkspace: complete", () => {
     expect(abortPublish).not.toHaveBeenCalled();
   });
 
+  test("is retried on 429 RATE_LIMITED, then succeeds", async () => {
+    vi.mocked(completePublish)
+      .mockResolvedValueOnce(err({ status: 429, code: "RATE_LIMITED", message: "Slow down" }))
+      .mockResolvedValueOnce(ok({ site, version: 4 }));
+
+    expect(lastResult(await run()).version).toBe(4);
+    expect(completePublish).toHaveBeenCalledTimes(2);
+  });
+
+  test("rate limited on every attempt → RATE_LIMITED, not an unknown outcome", async () => {
+    vi.mocked(completePublish).mockResolvedValue(
+      err({ status: 429, code: "RATE_LIMITED", message: "Slow down" }),
+    );
+
+    const error = lastError(await run());
+
+    expect(error.code).toBe("RATE_LIMITED");
+    expect(completePublish).toHaveBeenCalledTimes(5);
+    expect(getPublishSession).not.toHaveBeenCalled();
+    expect(abortPublish).not.toHaveBeenCalled();
+  });
+
+  test("rate limited after an ambiguous failure still asks what became of the session", async () => {
+    vi.mocked(completePublish)
+      .mockResolvedValueOnce(err({ status: 502, code: "SERVER_UNREACHABLE", message: "Offline" }))
+      .mockResolvedValue(err({ status: 429, code: "RATE_LIMITED", message: "Slow down" }));
+    vi.mocked(getPublishSession).mockResolvedValue(
+      ok({ status: "completed", resultVersion: 5, site: { ...site, headVersion: 5 } }),
+    );
+
+    expect(lastResult(await run()).version).toBe(5);
+    expect(getPublishSession).toHaveBeenCalledWith("pub_1");
+  });
+
   test("cancel during finishing is ignored, and abort is never sent", async () => {
     const caller = new AbortController();
     let cancelled: boolean | undefined;
@@ -736,6 +841,7 @@ describe("publishWorkspace: complete", () => {
 
     expect(error.code).toBe("PUBLISH_OUTCOME_UNKNOWN");
     expect(error.message).toBe("The publish may still finish. Check again in a moment.");
+    expect(error.details?.publishId).toBe("pub_1");
     expect(abortPublish).not.toHaveBeenCalled();
   });
 
@@ -828,6 +934,54 @@ describe("publishWorkspace: staging", () => {
     expect(await stagingDirs()).toEqual([]);
   });
 
+  test("staging gets the byte budget and the signal, and packing gets the signal", async () => {
+    const caller = new AbortController();
+    await run({ signal: caller.signal });
+
+    const stageOpts = vi.mocked(stageSnapshot).mock.calls[0]![2];
+    expect(stageOpts?.maxBytes).toBe(1000 * MiB);
+    expect(stageOpts?.signal).toBeInstanceOf(AbortSignal);
+    const packOpts = vi.mocked(packSnapshot).mock.calls[0]![2];
+    expect(packOpts?.signal).toBe(stageOpts?.signal);
+  });
+
+  test("files that grew past the budget while staging → PUBLISH_TOO_LARGE with the plan's largest", async () => {
+    vi.mocked(scanWorkspace).mockImplementation(async (sourceDir) =>
+      ok({
+        sourceDir,
+        files: [
+          { path: "a.bin", absPath: "/ws/a.bin", size: 5, mode: 0o644, viaSymlink: false, dev: 1, ino: 1 },
+          { path: "b.bin", absPath: "/ws/b.bin", size: 9, mode: 0o644, viaSymlink: false, dev: 1, ino: 2 },
+        ],
+        excluded,
+      } satisfies SnapshotPlan),
+    );
+    vi.mocked(stageSnapshot).mockResolvedValueOnce(
+      err({ code: "TOO_LARGE", message: "The files add up to more than 1048576000 bytes" }),
+    );
+
+    const error = lastError(await run());
+
+    expect(error.code).toBe("PUBLISH_TOO_LARGE");
+    expect(error.details?.largestFiles).toEqual([
+      { path: "b.bin", size: 9 },
+      { path: "a.bin", size: 5 },
+    ]);
+    expect(packSnapshot).not.toHaveBeenCalled();
+    expect(await stagingDirs()).toEqual([]);
+  });
+
+  test("a cancel during staging stops before packing", async () => {
+    const caller = new AbortController();
+    stageHook = () => caller.abort();
+
+    const error = lastError(await run({ signal: caller.signal }));
+
+    expect(error.code).toBe("CANCELLED");
+    expect(packSnapshot).not.toHaveBeenCalled();
+    expect(await stagingDirs()).toEqual([]);
+  });
+
   test("a thrown error becomes an error event", async () => {
     vi.mocked(packSnapshot).mockRejectedValueOnce(new Error("disk full"));
 
@@ -908,6 +1062,7 @@ describe("error mapping", () => {
     ["SCAN_FAILED", "SNAPSHOT_FAILED"],
     ["STAGE_FAILED", "SNAPSHOT_FAILED"],
     ["PACK_FAILED", "SNAPSHOT_FAILED"],
+    ["TOO_LARGE", "PUBLISH_TOO_LARGE"],
     ["CANCELLED", "CANCELLED"],
   ])("snapshot %s → %s", (code, expected) => {
     expect(mapSnapshotError({ code, message: "m" }).code).toBe(expected);

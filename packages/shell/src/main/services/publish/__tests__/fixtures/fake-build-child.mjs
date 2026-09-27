@@ -5,14 +5,29 @@
 // Run in the staged source dir, it writes a minimal workspace build into
 // <out dir>, as the real one does. The build's environment is allowlisted, so
 // the test steers it with fake-build.json in the working directory:
-//   { "mode": "ok" | "fail" | "hang", "lines"?: number }
+//   { "mode": "ok" | "fail" | "hang", "lines"?: number,
+//     "grandchild"?: "group" | "escaped" }
+// With "grandchild", it first starts a sleeping grandchild that shares its
+// stdout/stderr (as a stray watcher or esbuild service would), in its process
+// group or in a group of its own, and writes the grandchild's pid to
+// fake-build.grandchild.pid.
 // It prints the names of the variables it got, and where node_modules leads.
 
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
 const [outDir, runtimeSrc, cacheDir] = process.argv.slice(2);
-const { mode = "ok", lines = 0 } = JSON.parse(fs.readFileSync("fake-build.json", "utf8"));
+const { mode = "ok", lines = 0, grandchild } = JSON.parse(fs.readFileSync("fake-build.json", "utf8"));
+
+if (grandchild) {
+  const g = spawn(process.execPath, ["-e", "setTimeout(() => {}, 10000)"], {
+    stdio: ["ignore", "inherit", "inherit"],
+    detached: grandchild === "escaped",
+  });
+  fs.writeFileSync("fake-build.grandchild.pid", String(g.pid));
+  g.unref();
+}
 
 console.log(`ENV ${JSON.stringify(Object.keys(process.env).sort())}`);
 console.log(`ARGS ${JSON.stringify({ outDir, runtimeSrc, cacheDir })}`);

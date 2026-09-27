@@ -24,8 +24,13 @@ export const isSafeSnapshotPath = (p: string): boolean => {
     .every((s) => s !== "" && s !== "." && s !== ".." && Buffer.byteLength(s, "utf8") <= MAX_SEGMENT_BYTES);
 };
 
+// A name as a case-insensitive filesystem compares it. APFS uses full Unicode case folding, which
+// toLowerCase alone misses: "ſ" (long s) and "ß" fold to "s"/"ss", so `node_moduleſ` opens
+// `node_modules`. Upper-then-lower applies those foldings; over-folding only excludes more
+export const foldName = (s: string): string => s.normalize("NFC").toUpperCase().toLowerCase().normalize("NFC");
+
 // Key for case-insensitive collision checks (APFS and NTFS default to case-insensitive)
-export const caseKey = (p: string): string => p.normalize("NFC").toLowerCase();
+export const caseKey = (p: string): string => foldName(p);
 
 // Groups of paths that differ only by case or Unicode normalization, each sorted by bytes
 export const findCaseCollisions = (paths: string[]): string[][] => {
@@ -42,18 +47,18 @@ export const findCaseCollisions = (paths: string[]): string[][] => {
 };
 
 // Why scan would never put `p` in a snapshot, whatever the .gitignore files say; null when it may.
-// Segments are compared case-insensitively. `isDir` marks `p` itself as a directory, so a root
-// `dist` directory is excluded while a root file named `dist` is not
+// Segments are compared as the filesystem folds them (foldName). `isDir` marks `p` itself as a
+// directory, so a root `dist` directory is excluded while a root file named `dist` is not
 export const snapshotExclusionReason = (p: string, isDir = false): "always-excluded" | "secret" | null => {
   const segments = p.split("/");
   let reason: "always-excluded" | "secret" | null = null;
   for (const [i, segment] of segments.entries()) {
-    const lower = segment.toLowerCase();
-    if (secretDirs.has(lower) || isSensitiveFile(segment)) return "secret";
+    const folded = foldName(segment);
+    if (secretDirs.has(folded) || isSensitiveFile(folded)) return "secret";
     if (
-      anyDepthDirs.has(lower) ||
-      (i === 0 && (segments.length > 1 || isDir) && rootDirs.has(lower)) ||
-      isAlwaysExcludedFile(segment)
+      anyDepthDirs.has(folded) ||
+      (i === 0 && (segments.length > 1 || isDir) && rootDirs.has(folded)) ||
+      isAlwaysExcludedFile(folded)
     ) {
       reason = "always-excluded";
     }

@@ -156,14 +156,25 @@ export type PublishStore = {
   ): Promise<boolean>;
   usedBytes(userId: string): Promise<number>;
 
+  // Takes the site's lock for a session against the expected head, when the
+  // lock is free, lapsed, or already the session's own (a request of the
+  // session that died without releasing it). The site row as claimed, or null.
   claimCompleteLock(claim: {
     siteId: string;
     sessionId: string;
     baseVersion: number;
     now: number;
     expiresAt: number;
+  }): Promise<SiteRow | null>;
+  // Sets protected_files while `lock` holds the site's lock (with at least
+  // `fence.minRemainingMs` left, when given) and protected_files is still
+  // `seenProtected`. False, changing nothing, otherwise.
+  setProtectedFiles(p: {
+    siteId: string;
+    lock: string;
     protectedFiles: string;
     seenProtected: string | null;
+    fence?: { now: number; minRemainingMs: number };
   }): Promise<boolean>;
   // True when `lock` holds the site's lock with at least `minRemainingMs` left.
   checkCompleteLock(
@@ -424,10 +435,12 @@ export const d1PublishStore = (db: Db): PublishStore => {
             (session_id, user_id, kind, sha256, size)
           VALUES ${values(part, (o) => sql`(${s.id}, ${s.userId}, ${o.kind}, ${o.sha256}, ${o.size})`)}`);
       }
-      // An unverified row takes the latest declared size: that is what quota
-      // counts and what complete verifies, so declaring a tiny size first
-      // cannot undercount a large object. A verified row keeps its size (begin
-      // refused a mismatch), and a row GC is deleting is left alone.
+      // An unverified row takes the largest size any begin declared: that is
+      // what quota counts, and an upload URL signed for the larger size may
+      // still be in use, so neither order of declarations can undercount (a
+      // plan that declared the smaller size then fails complete's size
+      // check). A verified row keeps its size (begin refused a mismatch), and
+      // a row GC is deleting is left alone.
       for (const part of chunk(s.objects, 5)) {
         statements.push(sql`INSERT INTO stored_object
             (user_id, kind, sha256, size, verified, deleting, created_at)
@@ -435,7 +448,8 @@ export const d1PublishStore = (db: Db): PublishStore => {
             part,
             (o) => sql`(${s.userId}, ${o.kind}, ${o.sha256}, ${o.size}, 0, 0, ${s.now})`,
           )}
-          ON CONFLICT(user_id, kind, sha256) DO UPDATE SET size = excluded.size
+          ON CONFLICT(user_id, kind, sha256) DO UPDATE
+            SET size = max(stored_object.size, excluded.size)
           WHERE stored_object.verified = 0 AND stored_object.deleting = 0`);
       }
       statements.push(sql`UPDATE site
@@ -469,12 +483,23 @@ export const d1PublishStore = (db: Db): PublishStore => {
     },
 
     async claimCompleteLock(c) {
+      const row = await first(sql`UPDATE site SET complete_lock = ${c.sessionId},
+          complete_lock_expires_at = ${c.expiresAt}
+        WHERE id = ${c.siteId} AND head_version = ${c.baseVersion}
+          AND (complete_lock IS NULL OR complete_lock_expires_at < ${c.now}
+            OR complete_lock = ${c.sessionId})
+        RETURNING *`);
+      return row ? toSite(row) : null;
+    },
+
+    async setProtectedFiles(p) {
+      const fence = p.fence
+        ? sql` AND complete_lock_expires_at >= ${p.fence.now + p.fence.minRemainingMs}`
+        : sql``;
       return (
-        (await changes(sql`UPDATE site SET complete_lock = ${c.sessionId},
-            complete_lock_expires_at = ${c.expiresAt}, protected_files = ${c.protectedFiles}
-          WHERE id = ${c.siteId} AND head_version = ${c.baseVersion}
-            AND (complete_lock IS NULL OR complete_lock_expires_at < ${c.now})
-            AND protected_files IS ${c.seenProtected}`)) > 0
+        (await changes(sql`UPDATE site SET protected_files = ${p.protectedFiles}
+          WHERE id = ${p.siteId} AND complete_lock = ${p.lock}
+            AND protected_files IS ${p.seenProtected}${fence}`)) > 0
       );
     },
 

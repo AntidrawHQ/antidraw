@@ -20,7 +20,14 @@ export const isSafeSnapshotPath = (p: string): boolean => {
     .every((s) => s !== "" && s !== "." && s !== ".." && utf8Bytes(s) <= MAX_SEGMENT_BYTES);
 };
 
-export const caseKey = (p: string): string => p.normalize("NFC").toLowerCase();
+// A name as a case-insensitive filesystem compares it. APFS uses full Unicode
+// case folding, which toLowerCase alone misses: "ſ" (long s) and "ß" fold to
+// "s"/"ss", so `node_moduleſ` opens `node_modules`. Upper-then-lower applies
+// those foldings; over-folding only refuses more. Same as the app's foldName.
+export const foldName = (s: string): string =>
+  s.normalize("NFC").toUpperCase().toLowerCase().normalize("NFC");
+
+export const caseKey = (p: string): string => foldName(p);
 
 const ANY_DEPTH_EXCLUDED_DIRS = new Set([
   ".git",
@@ -56,12 +63,13 @@ const isSensitiveFile = (name: string) =>
 export const isExcludedSnapshotPath = (p: string): boolean => {
   const segments = p.split("/");
   return segments.some((segment, i) => {
-    const lower = segment.toLowerCase();
+    // Compared as the filesystem folds it (foldName): a /i regex misses ſ too.
+    const folded = foldName(segment);
     return (
-      ANY_DEPTH_EXCLUDED_DIRS.has(lower) ||
-      (i === 0 && segments.length > 1 && ROOT_EXCLUDED_DIRS.has(lower)) ||
-      isAlwaysExcludedFile(segment) ||
-      isSensitiveFile(segment)
+      ANY_DEPTH_EXCLUDED_DIRS.has(folded) ||
+      (i === 0 && segments.length > 1 && ROOT_EXCLUDED_DIRS.has(folded)) ||
+      isAlwaysExcludedFile(folded) ||
+      isSensitiveFile(folded)
     );
   });
 };

@@ -28,6 +28,20 @@ const workspace = (tree: Record<string, TreeNode>) => {
 
 const big = (fill: number, size = LARGE_FILE_BYTES) => Buffer.alloc(size, fill);
 
+// A signal that reads as aborted from its `after`+1-th check on: a cancel that lands partway
+const abortsAfter = (after: number) => {
+  let checks = 0;
+  return {
+    get aborted() {
+      checks += 1;
+      return checks > after;
+    },
+    get checks() {
+      return checks;
+    },
+  } as unknown as AbortSignal & { checks: number };
+};
+
 describe("stageSnapshot", () => {
   test("copies exactly the scanned files, with their bytes and modes", async () => {
     const dir = workspace({
@@ -126,6 +140,83 @@ describe("stageSnapshot", () => {
     const dest = path.join(makeTmp(), "source");
     expect((await stageSnapshot(plan, dest, { signal: controller.signal }))._unsafeUnwrapErr().code).toBe("CANCELLED");
     expect(fs.existsSync(dest)).toBe(false);
+  });
+});
+
+describe("stageSnapshot: cancel and byte budget", () => {
+  test("a cancel partway through a large file stops that copy → CANCELLED, staging dir removed", async () => {
+    const plan = await scan(workspace({ "movie.bin": big(3, 3 * LARGE_FILE_BYTES) }));
+    const dest = path.join(makeTmp(), "source");
+    // 1: before the file; 2: before its first chunk; 3: before its second chunk
+    const signal = abortsAfter(2);
+    const result = await stageSnapshot(plan, dest, { signal });
+    expect(result._unsafeUnwrapErr().code).toBe("CANCELLED");
+    expect(signal.checks).toBe(3);
+    expect(fs.existsSync(dest)).toBe(false);
+  });
+
+  test("files adding up to more than maxBytes → TOO_LARGE without copying the rest", async () => {
+    const plan = await scan(workspace({ "a.bin": big(1, 600_000), "b.bin": big(2, 600_000), "c.bin": big(3, 600_000) }));
+    const dest = path.join(makeTmp(), "source");
+    const result = await stageSnapshot(plan, dest, { maxBytes: 1_000_000 });
+    expect(result._unsafeUnwrapErr().code).toBe("TOO_LARGE");
+    expect(fs.existsSync(dest)).toBe(false);
+  });
+
+  test("a file that grew past the budget after the scan → TOO_LARGE", async () => {
+    const dir = workspace({ "a.txt": "small" });
+    const plan = await scan(dir);
+    fs.appendFileSync(path.join(dir, "a.txt"), big(4, 2 * LARGE_FILE_BYTES));
+    const result = await stageSnapshot(plan, path.join(makeTmp(), "source"), { maxBytes: LARGE_FILE_BYTES });
+    expect(result._unsafeUnwrapErr().code).toBe("TOO_LARGE");
+  });
+
+  test("exactly maxBytes is staged", async () => {
+    const plan = await scan(workspace({ "a.bin": big(1, 1000), "b.bin": big(2, 24) }));
+    const result = await stageSnapshot(plan, path.join(makeTmp(), "source"), { maxBytes: 1024 });
+    expect(result.isOk()).toBe(true);
+  });
+});
+
+describe("packSnapshot: cancel", () => {
+  const outs = () => {
+    const out = makeTmp();
+    return { archiveFile: path.join(out, "snapshot.tar.gz"), blobDir: path.join(out, "blobs") };
+  };
+
+  test("an aborted signal → CANCELLED, nothing left behind", async () => {
+    const staged = await stage(await scan(workspace({ "a.txt": "a" })));
+    const controller = new AbortController();
+    controller.abort();
+    const out = outs();
+    const result = await packSnapshot(staged, out, { signal: controller.signal });
+    expect(result._unsafeUnwrapErr().code).toBe("CANCELLED");
+    expect(fs.existsSync(out.archiveFile)).toBe(false);
+    expect(fs.existsSync(out.blobDir)).toBe(false);
+  });
+
+  test("a cancel between archive entries → CANCELLED, outputs removed", async () => {
+    const staged = await stage(await scan(workspace({ "a.txt": "a", "b.txt": "b", "c.txt": "c" })));
+    const out = outs();
+    // 1: before the archive; 2: before a.txt; 3: before b.txt
+    const signal = abortsAfter(2);
+    const result = await packSnapshot(staged, out, { signal });
+    expect(result._unsafeUnwrapErr().code).toBe("CANCELLED");
+    expect(signal.checks).toBe(3);
+    expect(fs.existsSync(out.archiveFile)).toBe(false);
+    expect(fs.existsSync(out.blobDir)).toBe(false);
+  });
+
+  test("a cancel between blob copies → CANCELLED, outputs removed", async () => {
+    const staged = await stage(await scan(workspace({ "one.bin": big(1), "two.bin": big(2) })));
+    const out = outs();
+    // 1: before the archive (no archive files); 2: before the first blob; 3: before the second
+    const signal = abortsAfter(2);
+    const result = await packSnapshot(staged, out, { signal });
+    expect(result._unsafeUnwrapErr().code).toBe("CANCELLED");
+    expect(signal.checks).toBe(3);
+    expect(fs.existsSync(out.archiveFile)).toBe(false);
+    expect(fs.existsSync(out.blobDir)).toBe(false);
   });
 });
 

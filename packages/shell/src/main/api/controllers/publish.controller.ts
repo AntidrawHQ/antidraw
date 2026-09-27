@@ -5,6 +5,7 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
 import {
   cancelPublish,
+  getPublishOutcome,
   getPublishStatus,
   publishWorkspace,
   setAllowRemix,
@@ -113,6 +114,27 @@ publishController.patch(
     if (result.isErr()) return respondError(ctx, result.error);
 
     return ctx.json({ site: result.value });
+  },
+);
+
+const sessionParamSchema = z.object({
+  workspaceId: z.uuid(),
+  publishId: z.string().min(1).max(128),
+});
+
+// What became of a publish that ended PUBLISH_OUTCOME_UNKNOWN: the session's
+// status ("pending", "completed", "aborted", "expired"), the version it
+// committed, and the site as it is now.
+publishController.get(
+  "/:workspaceId/session/:publishId",
+  zValidator("param", sessionParamSchema),
+  async (ctx) => {
+    const { publishId } = ctx.req.valid("param");
+    const result = await getPublishOutcome(publishId);
+
+    if (result.isErr()) return respondError(ctx, result.error);
+
+    return ctx.json(result.value);
   },
 );
 

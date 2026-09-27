@@ -6,6 +6,7 @@ import { isExcludedSnapshotPath, isSafeSnapshotPath } from "./paths";
 import { createIgnoreRules, isIncludableTarget, type IgnoreRules } from "./scan";
 import {
   LARGE_FILE_BYTES,
+  MAX_UNCOMPRESSED_BYTES,
   type ManifestEntry,
   type ScannedFile,
   type SnapshotError,
@@ -72,17 +73,36 @@ const openScanned = async (
   return handle;
 };
 
+const cancelled = () => new StageFailure({ code: "CANCELLED", message: "Snapshot cancelled" });
+
+// Bytes copied so far across every file, against the most a snapshot may hold
+type CopyBudget = { copied: number; maxBytes: number };
+
 // Stream-copies one file, hashing the copied bytes. They define the size and sha256; they may
-// differ from the scan-time size, the inode may not
-const copyHashed = async (src: FileHandle, dest: string, mode: number): Promise<{ size: number; sha256: string }> => {
+// differ from the scan-time size, the inode may not. Stops between chunks on cancel, or once
+// the snapshot as a whole (files may have grown since the scan) is over the budget
+const copyHashed = async (
+  src: FileHandle,
+  dest: string,
+  mode: number,
+  opts: { signal?: AbortSignal; budget: CopyBudget },
+): Promise<{ size: number; sha256: string }> => {
   const hash = createHash("sha256");
   const buf = Buffer.allocUnsafe(COPY_CHUNK);
   let size = 0;
   const out = await fs.open(dest, "wx", mode);
   try {
     for (;;) {
+      if (opts.signal?.aborted) throw cancelled();
       const { bytesRead } = await src.read(buf, 0, buf.length, null);
       if (bytesRead === 0) break;
+      opts.budget.copied += bytesRead;
+      if (opts.budget.copied > opts.budget.maxBytes) {
+        throw new StageFailure({
+          code: "TOO_LARGE",
+          message: `The files add up to more than ${opts.budget.maxBytes} bytes`,
+        });
+      }
       const chunk = buf.subarray(0, bytesRead);
       hash.update(chunk);
       await out.write(chunk);
@@ -95,11 +115,13 @@ const copyHashed = async (src: FileHandle, dest: string, mode: number): Promise<
   return { size, sha256: hash.digest("hex") };
 };
 
-// Copies exactly the scanned files into `destDir` (which must not exist) and builds the manifest
+// Copies exactly the scanned files into `destDir` (which must not exist) and builds the manifest.
+// Refuses with TOO_LARGE, without copying the rest, once the copied bytes pass `maxBytes`
+// (default MAX_UNCOMPRESSED_BYTES)
 export const stageSnapshot = async (
   plan: SnapshotPlan,
   destDir: string,
-  opts?: { signal?: AbortSignal },
+  opts?: { signal?: AbortSignal; maxBytes?: number },
 ): Promise<Result<StagedSnapshot, SnapshotError>> => {
   try {
     await fs.mkdir(destDir, { mode: 0o700 });
@@ -112,15 +134,16 @@ export const stageSnapshot = async (
     const rules = createIgnoreRules(realRoot);
     const files = [...plan.files].sort((a, b) => byteCompare(a.path, b.path));
     const entries: ManifestEntry[] = [];
+    const budget: CopyBudget = { copied: 0, maxBytes: opts?.maxBytes ?? MAX_UNCOMPRESSED_BYTES };
 
     for (const file of files) {
-      if (opts?.signal?.aborted) throw new StageFailure({ code: "CANCELLED", message: "Snapshot cancelled" });
+      if (opts?.signal?.aborted) throw cancelled();
 
       const src = await openScanned(file, realRoot, rules);
       try {
         const dest = nativePath(destDir, file.path);
         await fs.mkdir(path.dirname(dest), { recursive: true });
-        const { size, sha256 } = await copyHashed(src, dest, file.mode);
+        const { size, sha256 } = await copyHashed(src, dest, file.mode, { signal: opts?.signal, budget });
         entries.push({
           path: file.path,
           size,

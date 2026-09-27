@@ -17,6 +17,7 @@ import {
   MAX_PLAN_JSON_BYTES,
   MAX_PROTECTED_JSON_BYTES,
   MAX_SITE_BYTES,
+  MAX_SITE_ROW_PATHS_BYTES,
   MAX_SITES_PER_ACCOUNT,
   MAX_SNAPSHOT_BYTES,
   QUOTA_BYTES,
@@ -73,6 +74,7 @@ export type PublishDeps = {
   signer: UrlSigner;
   publishLimiter: RateLimit;
   remixLimiter: RateLimit;
+  completeLimiter: RateLimit;
   siteUrl: (slug: string) => string;
   now: () => Date;
   newId: (prefix: "site" | "pub" | "ver") => string;
@@ -134,6 +136,7 @@ export const makePublishDeps = (env: Bindings): Result<PublishDeps, ApiError> =>
       signer,
       publishLimiter: env.PUBLISH_RATE_LIMITER,
       remixLimiter: env.REMIX_RATE_LIMITER,
+      completeLimiter: env.COMPLETE_RATE_LIMITER,
       siteUrl: (slug: string) => env.SITE_URL_TEMPLATE.replace("{slug}", slug),
       now,
       newId: (prefix: string) => randomId(prefix),
@@ -555,8 +558,13 @@ const loadOwnSession = async (
 
 // The paths this plan's live entries may refer to, added to what the site
 // already protects. "*" once the union gets too big to store (GC then skips
-// the site until the next commit clears it).
-export const unionProtected = (current: string | null, paths: string[]): string => {
+// the site until a complete replaces it): over MAX_PROTECTED_JSON_BYTES, or
+// too big to share the site row with `liveFiles` under D1's row limit.
+export const unionProtected = (
+  current: string | null,
+  paths: string[],
+  liveFiles: string | null = null,
+): string => {
   if (current === "*") return "*";
   let existing: string[] = [];
   if (current) {
@@ -567,38 +575,42 @@ export const unionProtected = (current: string | null, paths: string[]): string 
     }
   }
   const json = JSON.stringify([...new Set([...existing, ...paths])].sort());
-  return utf8Bytes(json) > MAX_PROTECTED_JSON_BYTES ? "*" : json;
+  const budget = Math.min(
+    MAX_PROTECTED_JSON_BYTES,
+    MAX_SITE_ROW_PATHS_BYTES - utf8Bytes(liveFiles ?? ""),
+  );
+  return utf8Bytes(json) > budget ? "*" : json;
 };
 
+// The session's own live lock can be taken again: it is one a request of
+// this session left behind (the Worker died, or a D1 call failed where no
+// release could run), and until it lapsed the session's retries would all be
+// refused.
 const claimLock = async (
   deps: PublishDeps,
   session: SessionRow,
-  paths: string[],
 ): Promise<Result<SiteRow, ApiError>> => {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const site = await deps.store.findSiteById(session.siteId);
-    if (!site) return err(notFound());
-    if (site.headVersion !== session.baseVersion) return err(conflict());
-    const now = deps.now().getTime();
-    if (site.completeLock !== null && (site.completeLockExpiresAt ?? 0) >= now) {
-      return err(inProgress());
-    }
-    const claimed = await deps.store.claimCompleteLock({
-      siteId: site.id,
-      sessionId: session.id,
-      baseVersion: session.baseVersion,
-      now,
-      expiresAt: now + COMPLETE_LOCK_TTL_MS,
-      protectedFiles: unionProtected(site.protectedFiles, paths),
-      seenProtected: site.protectedFiles,
-    });
-    if (claimed) return ok(site);
-    // Lost a race: the next pass re-reads and says which one. Only a changed
-    // protected_files is worth a second try.
-  }
   const site = await deps.store.findSiteById(session.siteId);
   if (!site) return err(notFound());
-  return err(site.headVersion !== session.baseVersion ? conflict() : inProgress());
+  if (site.headVersion !== session.baseVersion) return err(conflict());
+  const now = deps.now().getTime();
+  const lockedByOther =
+    site.completeLock !== null &&
+    site.completeLock !== session.id &&
+    (site.completeLockExpiresAt ?? 0) >= now;
+  if (lockedByOther) return err(inProgress());
+  const claimed = await deps.store.claimCompleteLock({
+    siteId: site.id,
+    sessionId: session.id,
+    baseVersion: session.baseVersion,
+    now,
+    expiresAt: now + COMPLETE_LOCK_TTL_MS,
+  });
+  if (claimed) return ok(claimed);
+  // Lost a race: re-read to say which one.
+  const reread = await deps.store.findSiteById(session.siteId);
+  if (!reread) return err(notFound());
+  return err(reread.headVersion !== session.baseVersion ? conflict() : inProgress());
 };
 
 // Every account object the session references, whatever its verified flag,
@@ -635,6 +647,140 @@ const findMissing = async (
   return missing;
 };
 
+// The answer for a session that has committed: complete is idempotent.
+const completedResult = async (
+  deps: PublishDeps,
+  session: SessionRow,
+): Promise<Result<CompletePublishResponse, ApiError> | null> => {
+  if (session.status !== "completed" || session.resultVersion === null) return null;
+  const site = await deps.store.findSiteById(session.siteId);
+  if (!site) return err(notFound());
+  return ok({ site: await siteStatusOf(deps, site), version: session.resultVersion });
+};
+
+// A conflict may be this session's own commit, made by another request of it
+// (a retry racing the request it retried).
+const conflictOrCompleted = async (
+  deps: PublishDeps,
+  sessionId: string,
+): Promise<Result<CompletePublishResponse, ApiError>> => {
+  const session = await deps.store.getSession(sessionId);
+  return (session && (await completedResult(deps, session))) ?? err(conflict());
+};
+
+// Steps 4-7 of complete, under the lock `claimLock` took. Every way out that
+// does not commit releases the lock, a throw included (run() turns that into
+// a 500), so a failed complete never leaves the site locked.
+const verifyAndCommit = async (
+  deps: PublishDeps,
+  session: SessionRow,
+  site: SiteRow,
+  plan: StoredPlan,
+  entries: Map<string, Uint8Array>,
+): Promise<Result<void, ApiError>> => {
+  const release = () => deps.store.releaseCompleteLock(site.id, session.id);
+  try {
+    const missing = await findMissing(deps, session, site, plan);
+    if (missing.length > 0) {
+      await release();
+      return err(uploadIncomplete(missing));
+    }
+
+    // From here the live entries may refer to this plan's paths, so they are
+    // protected from GC until a commit replaces them. Only now, once every
+    // upload is verified: a complete that fails before this point wrote
+    // nothing, and must not grow what GC has to keep.
+    //
+    // Fence: in the same statement, a stale complete must not write entries
+    // after its lock lapsed, or it could interleave with GC or a newer
+    // complete.
+    const paths = planSitePaths(plan);
+    const protectedFiles = unionProtected(site.protectedFiles, paths, site.liveFiles);
+    const fenced = await deps.store.setProtectedFiles({
+      siteId: site.id,
+      lock: session.id,
+      protectedFiles,
+      seenProtected: site.protectedFiles,
+      fence: { now: deps.now().getTime(), minRemainingMs: COMPLETE_FENCE_MS },
+    });
+    if (!fenced) {
+      await release();
+      return err(inProgress());
+    }
+    for (const path of ENTRY_PATHS) {
+      const bytes = entries.get(path)!;
+      try {
+        await deps.sites.put(siteKey(site.slug, path), bytes, {
+          size: bytes.length,
+          sha256: plan.site.entries.find((e) => e.path === path)!.sha256,
+          contentType: ENTRY_CONTENT_TYPES[path],
+        });
+      } catch (error) {
+        console.error(error);
+        await release();
+        return err(apiError(500, "STORAGE_FAILED", "Could not write the site's pages"));
+      }
+    }
+
+    const now = deps.now().getTime();
+    const blobs = planObjects(plan).filter((o) => o.kind === "blob");
+    const committed = await deps.store.commitVersion({
+      id: deps.newId("ver"),
+      siteId: site.id,
+      userId: session.userId,
+      sessionId: session.id,
+      baseVersion: session.baseVersion,
+      source: plan.source,
+      snapshotBytes: plan.source.size + blobs.reduce((a, b) => a + b.size, 0),
+      fileCount: plan.fileCount,
+      siteFileCount: plan.site.files.length,
+      siteBytes:
+        plan.site.files.reduce((a, f) => a + f.size, 0) +
+        plan.site.entries.reduce((a, e) => a + e.size, 0),
+      largeFiles: plan.largeFiles.map(({ path, sha256, size, mode }) => ({
+        path,
+        sha256,
+        size,
+        mode,
+      })),
+      liveFiles: JSON.stringify([...paths].sort()),
+      keepVersions: KEEP_VERSIONS,
+      cleanupAfter: now + SITE_CLEANUP_DELAY_MS,
+      now,
+    });
+    if (committed.ok) return ok(undefined);
+
+    // Every entry is this plan's now, so the live pages refer to this plan's
+    // paths only: what earlier failed completes protected is no longer
+    // needed (this is also what clears a "*"). Only while the lock is still
+    // ours, i.e. nobody has written entries since.
+    await deps.store.setProtectedFiles({
+      siteId: site.id,
+      lock: session.id,
+      protectedFiles: unionProtected(null, paths, site.liveFiles),
+      seenProtected: protectedFiles,
+    });
+    await release();
+    switch (committed.reason) {
+      case "conflict":
+        return (await conflictOrCompleted(deps, session.id)).map(() => undefined);
+      case "objects-gone":
+        return err(uploadIncomplete(committed.missing));
+      case "lock-lost":
+        return err(inProgress());
+      default:
+        return err(storeFailure(committed.error));
+    }
+  } catch (error) {
+    try {
+      await release();
+    } catch (releaseError) {
+      console.error(releaseError);
+    }
+    throw error;
+  }
+};
+
 export const completePublish = (
   deps: PublishDeps,
   userId: string,
@@ -646,11 +792,8 @@ export const completePublish = (
     if (sessionResult.isErr()) return err(sessionResult.error);
     const session = sessionResult.value;
 
-    if (session.status === "completed" && session.resultVersion !== null) {
-      const site = await deps.store.findSiteById(session.siteId);
-      if (!site) return err(notFound());
-      return ok({ site: await siteStatusOf(deps, site), version: session.resultVersion });
-    }
+    const done = await completedResult(deps, session);
+    if (done) return done;
     if (session.status !== "pending" || session.expiresAt < deps.now().getTime()) {
       return err(apiError(410, "PUBLISH_EXPIRED", "This publish expired. Publish again."));
     }
@@ -675,92 +818,21 @@ export const completePublish = (
       entries.set(planned.path, bytes);
     }
 
-    // From here the live entries may refer to this plan's paths, so the lock
-    // claim also protects them from GC until a commit replaces them.
-    const locked = await claimLock(deps, session, planSitePaths(plan));
-    if (locked.isErr()) return err(locked.error);
+    // Verification costs up to ~500 R2 HEADs and a listing of the site.
+    const { success } = await deps.completeLimiter.limit({ key: userId });
+    if (!success) {
+      return err(apiError(429, "RATE_LIMITED", "Too many publish attempts. Try again in a minute."));
+    }
+
+    const locked = await claimLock(deps, session);
+    if (locked.isErr()) {
+      return locked.error.code === "PUBLISH_CONFLICT"
+        ? conflictOrCompleted(deps, session.id)
+        : err(locked.error);
+    }
     const site = locked.value;
-    const release = () => deps.store.releaseCompleteLock(site.id, session.id);
-
-    let missing: Awaited<ReturnType<typeof findMissing>>;
-    try {
-      missing = await findMissing(deps, session, site, plan);
-    } catch (error) {
-      await release();
-      throw error;
-    }
-    if (missing.length > 0) {
-      await release();
-      return err(uploadIncomplete(missing));
-    }
-
-    // Fence: a stale complete must not write entries after its lock lapsed,
-    // or it could interleave with GC or a newer complete.
-    if (
-      !(await deps.store.checkCompleteLock(
-        site.id,
-        session.id,
-        deps.now().getTime(),
-        COMPLETE_FENCE_MS,
-      ))
-    ) {
-      await release();
-      return err(inProgress());
-    }
-    for (const path of ENTRY_PATHS) {
-      const bytes = entries.get(path)!;
-      try {
-        await deps.sites.put(siteKey(site.slug, path), bytes, {
-          size: bytes.length,
-          sha256: plan.site.entries.find((e) => e.path === path)!.sha256,
-          contentType: ENTRY_CONTENT_TYPES[path],
-        });
-      } catch (error) {
-        console.error(error);
-        await release();
-        return err(apiError(500, "STORAGE_FAILED", "Could not write the site's pages"));
-      }
-    }
-
-    const now = deps.now().getTime();
-    const blobs = planObjects(plan).filter((o) => o.kind === "blob");
-    const committed = await deps.store.commitVersion({
-      id: deps.newId("ver"),
-      siteId: site.id,
-      userId,
-      sessionId: session.id,
-      baseVersion: session.baseVersion,
-      source: plan.source,
-      snapshotBytes: plan.source.size + blobs.reduce((a, b) => a + b.size, 0),
-      fileCount: plan.fileCount,
-      siteFileCount: plan.site.files.length,
-      siteBytes:
-        plan.site.files.reduce((a, f) => a + f.size, 0) +
-        plan.site.entries.reduce((a, e) => a + e.size, 0),
-      largeFiles: plan.largeFiles.map(({ path, sha256, size, mode }) => ({
-        path,
-        sha256,
-        size,
-        mode,
-      })),
-      liveFiles: JSON.stringify(planSitePaths(plan).sort()),
-      keepVersions: KEEP_VERSIONS,
-      cleanupAfter: now + SITE_CLEANUP_DELAY_MS,
-      now,
-    });
-    if (!committed.ok) {
-      await release();
-      switch (committed.reason) {
-        case "conflict":
-          return err(conflict());
-        case "objects-gone":
-          return err(uploadIncomplete(committed.missing));
-        case "lock-lost":
-          return err(inProgress());
-        default:
-          return err(storeFailure(committed.error));
-      }
-    }
+    const committed = await verifyAndCommit(deps, session, site, plan, entries);
+    if (committed.isErr()) return err(committed.error);
 
     const updated = await deps.store.findSiteById(site.id);
     if (!updated) return err(notFound());

@@ -24,6 +24,7 @@ export type Harness = {
   versionNumbers(siteId: string): Promise<number[]>;
   setKeep(siteId: string, version: number): Promise<void>;
   setProtected(siteId: string, value: string | null): Promise<void>;
+  setLiveFiles(siteId: string, value: string | null): Promise<void>;
 };
 
 const memoryHarness = (): Harness => {
@@ -44,6 +45,10 @@ const memoryHarness = (): Harness => {
     async setProtected(siteId, value) {
       const site = store.state.sites.get(siteId);
       if (site) site.protectedFiles = value;
+    },
+    async setLiveFiles(siteId, value) {
+      const site = store.state.sites.get(siteId);
+      if (site) site.liveFiles = value;
     },
   };
 };
@@ -68,6 +73,9 @@ const d1Harness = (): Harness => {
     },
     async setProtected(siteId, value) {
       shim.sqlite.prepare("UPDATE site SET protected_files = ? WHERE id = ?").run(value, siteId);
+    },
+    async setLiveFiles(siteId, value) {
+      shim.sqlite.prepare("UPDATE site SET live_files = ? WHERE id = ?").run(value, siteId);
     },
   };
 };
@@ -102,7 +110,7 @@ export type TestDeps = PublishDeps & {
   clock: { now: number };
   sitesBucket: MemoryBucket;
   sourcesBucket: MemoryBucket;
-  limits: { publish: boolean; remix: boolean };
+  limits: { publish: boolean; remix: boolean; complete: boolean };
   gc: GcDeps;
   harness: Harness;
 };
@@ -111,7 +119,7 @@ export const makeTestDeps = (harness: Harness): TestDeps => {
   const clock = { now: T0 };
   const sites = memoryObjectStore({ pageSize: 3 });
   const sources = memoryObjectStore();
-  const limits = { publish: true, remix: true };
+  const limits = { publish: true, remix: true, complete: true };
   let ids = 0;
   let suffix = 0;
   const deps: TestDeps = {
@@ -121,6 +129,7 @@ export const makeTestDeps = (harness: Harness): TestDeps => {
     signer: fakeSigner,
     publishLimiter: { limit: async () => ({ success: limits.publish }) },
     remixLimiter: { limit: async () => ({ success: limits.remix }) },
+    completeLimiter: { limit: async () => ({ success: limits.complete }) },
     siteUrl: (slug) => `https://${slug}.antidraw.test`,
     now: () => new Date(clock.now),
     newId: (prefix) => `${prefix}_${String(++ids).padStart(4, "0")}`,

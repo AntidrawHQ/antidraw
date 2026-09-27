@@ -176,8 +176,9 @@ const cleanSite = async (
       const { deleted } = await deleteSiteKeys(deps, site, lock, keep, clock);
       report.deletedSiteKeys += deleted;
     } else {
-      // Nothing is deleted until a commit makes the paths knowable again;
-      // come back tomorrow rather than head every night's batch.
+      // Nothing is deleted until a commit, or a complete whose entries all
+      // went live, makes the paths knowable again; come back tomorrow rather
+      // than head every night's batch.
       next = Math.max(next ?? 0, now + GC_MIN_AGE_MS);
     }
     report.cleanedSites++;

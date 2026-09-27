@@ -1,19 +1,27 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { skipToken, useQuery } from "@tanstack/react-query";
+import { skipToken, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, Check, ChevronRight, Copy, Globe, LoaderCircle, X } from "lucide-react";
 import antidrawIcon from "@/renderer/assets/antidraw-icon.svg";
-import type { Conversation, PublishResult, PublishStep } from "@/main/api";
+import type { Conversation } from "@/main/api";
 import {
   AccountRequestError,
   useAccount,
   useCancelSignIn,
   usePublishStatus,
-  usePublishWorkspace,
   useSetAllowRemix,
   useSignIn,
 } from "@/renderer/lib/account-ops";
+import {
+  cancelPublishRun,
+  checkPublishStatus,
+  dismissPublishRun,
+  startPublish,
+  usePublishRuns,
+  type PublishProgress,
+  type StatusCheck,
+} from "@/renderer/lib/publish-runs";
 import { queryKeys } from "@/renderer/lib/query-keys";
 import {
   Collapsible,
@@ -31,7 +39,8 @@ import {
    sign-in panel anchored under the button: AntiDraw icon, one-line
    title, a single "Sign in with Google" button that carries every
    state. On success the panel closes and publishing continues.
-   While publishing, the label follows the steps; a failure opens
+   While publishing, the label follows the steps and hovering it
+   offers Cancel (until "Finishing"); a failure opens
    a panel in the same place with what went wrong and "Try again";
    success shows a toast with the link, the remix setting and what
    was left out.
@@ -51,6 +60,8 @@ const tint = (c: string, p: number) => `color-mix(in oklch, ${c} ${p}%, transpar
 const LINKED_BEAT_MS = 500;
 const PUBLISHED_TOAST_MS = 4900;
 
+type SignInStep = "signin" | "waiting" | "error";
+
 type Step =
   | "closed"
   | "signin"
@@ -60,9 +71,7 @@ type Step =
   | "published"
   | "failed";
 
-type Progress = { step: PublishStep; percent: number | null };
-
-const progressLabel = ({ step, percent }: Progress) => {
+const progressLabel = ({ step, percent }: PublishProgress) => {
   switch (step) {
     case "checking":
       return "Publishing";
@@ -98,16 +107,20 @@ function FailureContent({
   onRetry,
   onCheckStatus,
   checking,
-  stillFinishing,
+  check,
 }: {
   error: AccountRequestError;
   onRetry: () => void;
   onCheckStatus: () => void;
-  checking: boolean;
-  stillFinishing: boolean;
+  checking: boolean; // a "Check status" is in flight
+  check: StatusCheck | null;
 }) {
   const details = error.details ?? {};
   const outcomeUnknown = error.code === "PUBLISH_OUTCOME_UNKNOWN";
+  // Checking again can't tell without the site's version from before the
+  // publish, and a session that ended will never go live: either way the next
+  // useful step is publishing again.
+  const canCheck = outcomeUnknown && check !== "unknown" && check !== "ended";
   const message =
     error.code === "WORKSPACE_BUSY"
       ? "Claude is still working. Publish when the turn finishes."
@@ -208,15 +221,21 @@ function FailureContent({
         <p className="mt-3 text-[12px] leading-[1.6] text-[#9a9a9a]">{PUBLIC_FILES_NOTE}</p>
       )}
 
-      {stillFinishing && (
+      {outcomeUnknown && check !== null && (
         <p className="mt-3 text-[12px] leading-[1.6] text-[#9a9a9a]">
-          Not live yet. Check again in a moment.
+          {check === "pending"
+            ? "Not live yet. Check again in a moment."
+            : check === "failed"
+              ? "Couldn't check right now. Try again in a moment."
+              : check === "ended"
+                ? "This publish did not go live. Publish again."
+                : "Couldn't tell whether this publish went live. Publish again to be sure."}
         </p>
       )}
 
       <button
         type="button"
-        onClick={outcomeUnknown ? onCheckStatus : onRetry}
+        onClick={canCheck ? onCheckStatus : onRetry}
         disabled={checking}
         autoFocus
         className="mt-5 flex h-10 w-full items-center justify-center gap-2.5 rounded-[10px] border border-white/[0.12] bg-white/[0.08] text-sm font-medium text-[#e0e0e0] transition-colors hover:border-white/[0.24] hover:bg-white/[0.12] focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-white/20 disabled:hover:border-white/[0.12] disabled:hover:bg-white/[0.08]"
@@ -226,8 +245,10 @@ function FailureContent({
             <LoaderCircle size={15} className="animate-spin text-[#9a9a9a]" />
             <span className="text-[#9a9a9a]">Checking…</span>
           </>
-        ) : outcomeUnknown ? (
+        ) : canCheck ? (
           "Check status"
+        ) : outcomeUnknown ? (
+          "Publish again"
         ) : (
           "Try again"
         )}
@@ -244,31 +265,38 @@ export const PublishButton = ({
   workspaceName: string;
 }) => {
   const reduce = !!useReducedMotion();
-  const [step, setStep] = useState<Step>("closed");
+  const queryClient = useQueryClient();
+  // The publish itself lives in publish-runs, per workspace; this component
+  // only shows the active workspace's run. Sign-in is a panel of this view.
+  const run = usePublishRuns((s) => s.runs[workspaceId]);
+  // Tagged with its workspace, so a switch never shows it on another one.
+  const [signInState, setSignInState] = useState<{ workspaceId: string; step: SignInStep } | null>(
+    null,
+  );
+  const signInStep = signInState?.workspaceId === workspaceId ? signInState.step : null;
+  const setSignInStep = (next: SignInStep | null | ((s: SignInStep | null) => SignInStep | null)) =>
+    setSignInState((prev) => {
+      const current = prev?.workspaceId === workspaceId ? prev.step : null;
+      const step = typeof next === "function" ? next(current) : next;
+      return step ? { workspaceId, step } : null;
+    });
   const [linked, setLinked] = useState(false); // brief green beat before the modal closes
   const [copied, setCopied] = useState(false);
-  const [link, setLink] = useState<string | null>(null);
-  const [progress, setProgress] = useState<Progress>({ step: "checking", percent: null });
-  // The last successful publish, for the toast's details. Null when the
-  // success was found by "Check status", which has no result to show.
-  const [result, setResult] = useState<PublishResult | null>(null);
-  const [failure, setFailure] = useState<AccountRequestError | null>(null);
-  const [stillFinishing, setStillFinishing] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
-  // The site's version before this publish, to tell whether a publish whose
-  // outcome was unknown did land.
-  const headBefore = useRef(0);
+  const [toastHeld, setToastHeld] = useState(false); // pointer on the toast
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
-  // For mutation callbacks, which outlive the render that started them.
+  const step: Step = signInStep ?? run?.phase ?? "closed";
+  // For callbacks, which outlive the render that started them.
   const stepRef = useRef(step);
+  const workspaceRef = useRef(workspaceId);
   useEffect(() => {
     stepRef.current = step;
+    workspaceRef.current = workspaceId;
   });
 
   const { data: account } = useAccount();
   const signInMutation = useSignIn();
   const cancelSignInMutation = useCancelSignIn();
-  const publishMutation = usePublishWorkspace();
   const statusQuery = usePublishStatus(workspaceId);
   const setAllowRemixMutation = useSetAllowRemix();
 
@@ -284,73 +312,14 @@ export const PublishButton = ({
     timers.current.forEach(clearTimeout);
     timers.current = [];
   };
-  useEffect(() => clear, []);
   const later = (ms: number, fn: () => void) => timers.current.push(setTimeout(fn, ms));
 
-  const scheduleToastClose = () =>
-    later(PUBLISHED_TOAST_MS, () => setStep((s) => (s === "published" ? "closed" : s)));
-
-  const publish = () => {
+  const publish = (id: string) => {
     setLinked(false);
-    setFailure(null);
-    setStillFinishing(false);
-    setProgress({ step: "checking", percent: null });
-    headBefore.current = statusQuery.data?.headVersion ?? 0;
-    setStep("publishing");
-    publishMutation.mutate(
-      {
-        workspaceId,
-        onProgress: (event) => {
-          if (event.type === "step") {
-            setProgress({ step: event.step, percent: null });
-          } else if (event.type === "upload-progress") {
-            setProgress({
-              step: "uploading",
-              percent:
-                event.totalBytes > 0
-                  ? Math.min(100, Math.floor((event.uploadedBytes / event.totalBytes) * 100))
-                  : null,
-            });
-          }
-        },
-      },
-      {
-        onSuccess: (published) => {
-          setResult(published);
-          setLink(published.url);
-          setStep("published");
-          scheduleToastClose();
-        },
-        onError: (error) => {
-          if (error.code === "SIGNED_OUT") {
-            setStep("signin");
-            return;
-          }
-          if (error.code === "CANCELLED") {
-            setStep("closed");
-            return;
-          }
-          console.error("Publish failed:", error);
-          setFailure(error);
-          setStep("failed");
-        },
-      },
-    );
-  };
-
-  // PUBLISH_OUTCOME_UNKNOWN: the server may still have committed.
-  const checkStatus = async () => {
-    setStillFinishing(false);
-    const { data } = await statusQuery.refetch();
-    if (stepRef.current !== "failed") return;
-    if (data && data.headVersion > headBefore.current) {
-      setResult(null);
-      setLink(data.url);
-      setStep("published");
-      scheduleToastClose();
-    } else {
-      setStillFinishing(true);
-    }
+    setSignInStep(null);
+    void startPublish(queryClient, id).then((outcome) => {
+      if (outcome === "signed-out" && workspaceRef.current === id) setSignInStep("signin");
+    });
   };
 
   // Ends the browser flow main is waiting on, if there is one.
@@ -358,28 +327,55 @@ export const PublishButton = ({
     if (stepRef.current === "waiting") cancelSignInMutation.mutate();
   };
 
+  // Leaving a workspace (or unmounting) ends its sign-in flow and pending
+  // timers; its publish carries on in publish-runs.
+  useEffect(
+    () => () => {
+      clear();
+      abandonSignIn();
+      setSignInState(null);
+      setLinked(false);
+      setDetailsOpen(false);
+      setToastHeld(false);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [workspaceId],
+  );
+
+  const publishing = run?.phase === "publishing" ? run : null;
+  const canCancel =
+    !!publishing && !publishing.cancelling && publishing.progress.step !== "finishing";
+
   const onPublishClick = () => {
+    if (publishing) {
+      if (canCancel) void cancelPublishRun(workspaceId);
+      return;
+    }
     clear();
-    if (step === "publishing") return;
     abandonSignIn();
-    setLinked(false);
-    if (account) publish();
-    else setStep("signin");
+    dismissPublishRun(workspaceId);
+    if (account) publish(workspaceId);
+    else {
+      setLinked(false);
+      setSignInStep("signin");
+    }
   };
 
   const signIn = () => {
     clear();
-    setStep("waiting");
+    const id = workspaceId;
+    setSignInStep("waiting");
     signInMutation.mutate(undefined, {
       onSuccess: () => {
-        // Closed or cancelled while the browser was finishing: stay signed in, don't publish.
-        if (stepRef.current !== "waiting") return;
+        // Closed, cancelled or switched away while the browser was
+        // finishing: stay signed in, don't publish.
+        if (stepRef.current !== "waiting" || workspaceRef.current !== id) return;
         setLinked(true);
-        later(LINKED_BEAT_MS, publish);
+        later(LINKED_BEAT_MS, () => publish(id));
       },
       onError: (error) => {
         if (error.code === "CANCELLED") return;
-        setStep((s) => (s === "waiting" ? "error" : s));
+        setSignInStep((s) => (s === "waiting" ? "error" : s));
       },
     });
   };
@@ -388,14 +384,16 @@ export const PublishButton = ({
     clear();
     abandonSignIn();
     setLinked(false);
-    setStep("signin");
+    setSignInStep("signin");
   };
 
   const close = () => {
     clear();
     abandonSignIn();
     setLinked(false);
-    setStep("closed");
+    setSignInStep(null);
+    setToastHeld(false);
+    dismissPublishRun(workspaceId);
   };
 
   useEffect(() => {
@@ -403,6 +401,17 @@ export const PublishButton = ({
     const t = setTimeout(() => setCopied(false), 1400);
     return () => clearTimeout(t);
   }, [copied]);
+
+  // The toast closes itself unless the pointer or the details hold it.
+  useEffect(() => {
+    if (step !== "published") {
+      setToastHeld(false);
+      return;
+    }
+    if (toastHeld || detailsOpen) return;
+    const t = setTimeout(() => dismissPublishRun(workspaceId), PUBLISHED_TOAST_MS);
+    return () => clearTimeout(t);
+  }, [step, toastHeld, detailsOpen, workspaceId]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -414,37 +423,50 @@ export const PublishButton = ({
     return () => window.removeEventListener("keydown", onKey);
   });
 
-  const failed = step === "failed" && failure !== null;
-  const modalOpen = step === "signin" || step === "waiting" || step === "error" || failed;
+  const failed = !signInStep && run?.phase === "failed" ? run : null;
+  const published = !signInStep && run?.phase === "published" ? run : null;
+  const result = published?.result ?? null;
+  const modalOpen =
+    step === "signin" || step === "waiting" || step === "error" || failed !== null;
   const allowRemix = statusQuery.data?.allowRemix ?? result?.allowRemix ?? true;
   const notIncluded = result ? countNotIncluded(result.excluded) : 0;
   const hasDetails =
     !!result && (notIncluded > 0 || result.site.skipped.length > 0 || result.notes.length > 0);
-
-  const openDetails = () => {
-    clear();
-    setDetailsOpen(true);
-  };
-  const onDetailsOpenChange = (open: boolean) => {
-    setDetailsOpen(open);
-    if (!open) scheduleToastClose();
-  };
 
   return (
     <>
       <button
         type="button"
         onClick={onPublishClick}
-        disabled={agentBusy && step !== "publishing"}
-        title={agentBusy && step !== "publishing" ? "Claude is still working" : undefined}
-        className="flex h-[26px] min-w-[84px] items-center justify-center gap-1.5 rounded-lg bg-[#e0e0e0] px-2.5 text-[13px] font-medium text-neutral-900 tabular-nums transition-colors hover:bg-white disabled:opacity-50 disabled:hover:bg-[#e0e0e0]"
+        disabled={agentBusy && !publishing}
+        title={
+          publishing
+            ? canCancel
+              ? "Cancel publishing"
+              : undefined
+            : agentBusy
+              ? "Claude is still working"
+              : undefined
+        }
+        className="group flex h-[26px] min-w-[84px] items-center justify-center gap-1.5 rounded-lg bg-[#e0e0e0] px-2.5 text-[13px] font-medium text-neutral-900 tabular-nums transition-colors hover:bg-white disabled:opacity-50 disabled:hover:bg-[#e0e0e0]"
         style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
       >
-        {step === "publishing" ? (
-          <>
-            <LoaderCircle size={13} className="animate-spin" />
-            {progressLabel(progress)}
-          </>
+        {publishing ? (
+          // Both labels share one cell, so hovering to "Cancel" keeps the width.
+          <span className="grid">
+            <span
+              className={`flex items-center justify-center gap-1.5 [grid-area:1/1] ${canCancel ? "group-hover:invisible group-focus-visible:invisible" : ""}`}
+            >
+              <LoaderCircle size={13} className="animate-spin" />
+              {publishing.cancelling ? "Cancelling" : progressLabel(publishing.progress)}
+            </span>
+            {canCancel && (
+              <span className="invisible flex items-center justify-center gap-1.5 [grid-area:1/1] group-hover:visible group-focus-visible:visible">
+                <X size={13} strokeWidth={2.5} />
+                Cancel
+              </span>
+            )}
+          </span>
         ) : step === "published" ? (
           <>
             <Check size={13} strokeWidth={2.5} />
@@ -494,11 +516,11 @@ export const PublishButton = ({
 
                   {failed ? (
                     <FailureContent
-                      error={failure}
-                      onRetry={publish}
-                      onCheckStatus={() => void checkStatus()}
-                      checking={statusQuery.isFetching}
-                      stillFinishing={stillFinishing}
+                      error={failed.error}
+                      onRetry={() => publish(workspaceId)}
+                      onCheckStatus={() => void checkPublishStatus(queryClient, workspaceId)}
+                      checking={failed.checking}
+                      check={failed.check}
                     />
                   ) : (
                     <>
@@ -564,7 +586,7 @@ export const PublishButton = ({
 
           {/* published toast */}
           <AnimatePresence>
-            {step === "published" && link && (
+            {published && (
               <motion.div
                 className="fixed bottom-5 right-5 z-50 flex flex-col gap-1.5 rounded-[10px] border border-[#2d2d2d] bg-[#2c2c2c] py-2 pl-3 pr-2 shadow-[0_16px_48px_-12px_rgba(0,0,0,0.7)]"
                 initial={{ opacity: 0, y: reduce ? 0 : 8 }}
@@ -572,21 +594,19 @@ export const PublishButton = ({
                 exit={{ opacity: 0, y: reduce ? 0 : 4, transition: EXIT }}
                 transition={SPRING}
                 // Held open while the pointer is on it: it has controls now.
-                onMouseEnter={clear}
-                onMouseLeave={() => {
-                  if (!detailsOpen) scheduleToastClose();
-                }}
+                onMouseEnter={() => setToastHeld(true)}
+                onMouseLeave={() => setToastHeld(false)}
               >
                 <div className="flex items-center gap-3">
                   <span className="flex h-5 w-5 items-center justify-center rounded-full" style={{ background: tint(GREEN, 16), color: GREEN }}>
                     <Check size={11} strokeWidth={3} />
                   </span>
                   <span className="text-[13px] text-[#e0e0e0]">Published</span>
-                  <span className="font-mono text-[11px] text-neutral-500">{link.replace(/^https?:\/\//, "")}</span>
+                  <span className="font-mono text-[11px] text-neutral-500">{published.url.replace(/^https?:\/\//, "")}</span>
                   <button
                     type="button"
                     onClick={() => {
-                      navigator.clipboard?.writeText(link).catch(() => {});
+                      navigator.clipboard?.writeText(published.url).catch(() => {});
                       setCopied(true);
                     }}
                     className="flex h-7 items-center gap-1.5 rounded-md bg-white/[0.08] px-2.5 text-[12px] font-medium text-neutral-200 transition-colors hover:bg-white/[0.12]"
@@ -632,7 +652,7 @@ export const PublishButton = ({
                   {hasDetails && (
                     <button
                       type="button"
-                      onClick={openDetails}
+                      onClick={() => setDetailsOpen(true)}
                       className="text-neutral-500 transition-colors hover:text-neutral-300"
                     >
                       {notIncluded > 0 ? `${notIncluded} files not included · ` : ""}Details
@@ -644,7 +664,7 @@ export const PublishButton = ({
           </AnimatePresence>
 
           {result && (
-            <PublishDetails open={detailsOpen} onOpenChange={onDetailsOpenChange} result={result} />
+            <PublishDetails open={detailsOpen} onOpenChange={setDetailsOpen} result={result} />
           )}
         </>,
         document.body,

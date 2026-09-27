@@ -27,6 +27,11 @@ export const MAX_LARGE_FILES = 1_000;
 export const MAX_PLAN_JSON_BYTES = 1_500_000;
 // A larger protected_files union collapses to "*".
 export const MAX_PROTECTED_JSON_BYTES = 1_800_000;
+// D1 refuses a row whose record is over 2 000 000 bytes (SQLITE_MAX_LENGTH
+// applies to the whole record, not each value). live_files and
+// protected_files share the site row, so together they stay under this,
+// leaving room for the row's other columns.
+export const MAX_SITE_ROW_PATHS_BYTES = 1_900_000;
 
 export const KEEP_VERSIONS = 5;
 export const SESSION_TTL_MS = 2 * 60 * 60 * 1000;

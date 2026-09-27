@@ -23,6 +23,11 @@ const GZIP_OS_OFFSET = 9;
 const GZIP_OS_UNKNOWN = 0xff;
 
 class PackFailure extends Error {}
+class PackCancelled extends Error {}
+
+const throwIfAborted = (signal: AbortSignal | undefined) => {
+  if (signal?.aborted) throw new PackCancelled("Snapshot cancelled");
+};
 
 // zlib writes the OS byte of the gzip header from the build platform; pin it so the same tree
 // gives the same bytes everywhere. zlib already writes MTIME = 0
@@ -77,7 +82,7 @@ const readStaged = async (dir: string, entry: ManifestEntry): Promise<Buffer> =>
   }
 };
 
-const writeArchive = async (staged: StagedSnapshot, archiveFile: string) => {
+const writeArchive = async (staged: StagedSnapshot, archiveFile: string, signal?: AbortSignal) => {
   const hash = createHash("sha256");
   const counter = { bytes: 0 };
   const pack = tarPack();
@@ -112,6 +117,7 @@ const writeArchive = async (staged: StagedSnapshot, archiveFile: string) => {
     await addEntry(MANIFEST_ENTRY, Buffer.from(JSON.stringify(staged.manifest)), 0o644);
     for (const entry of staged.manifest.files) {
       if (entry.storage !== "archive") continue;
+      throwIfAborted(signal);
       await addEntry(FILES_PREFIX + entry.path, await readStaged(staged.dir, entry), entry.mode);
     }
     pack.finalize();
@@ -126,7 +132,7 @@ const writeArchive = async (staged: StagedSnapshot, archiveFile: string) => {
 
 // Private copies of the blob files: the build that runs next may write into the staged tree, but
 // it cannot change what is uploaded
-const copyBlobs = async (staged: StagedSnapshot, blobDir: string): Promise<PackedBlob[]> => {
+const copyBlobs = async (staged: StagedSnapshot, blobDir: string, signal?: AbortSignal): Promise<PackedBlob[]> => {
   const bySha = new Map<string, ManifestEntry[]>();
   for (const entry of staged.manifest.files) {
     if (entry.storage !== "blob") continue;
@@ -137,6 +143,7 @@ const copyBlobs = async (staged: StagedSnapshot, blobDir: string): Promise<Packe
 
   const blobs: PackedBlob[] = [];
   for (const sha256 of [...bySha.keys()].sort()) {
+    throwIfAborted(signal);
     const group = bySha.get(sha256) ?? [];
     const [first] = group;
     if (!first) continue;
@@ -154,10 +161,12 @@ const copyBlobs = async (staged: StagedSnapshot, blobDir: string): Promise<Packe
 };
 
 // Deterministic .tar.gz of the staged snapshot plus private blob copies. `archiveFile` and
-// `blobDir` must not exist; blobDir is created 0700. Limits are the caller's to enforce
+// `blobDir` must not exist; blobDir is created 0700. Limits are the caller's to enforce. A
+// cancel is noticed between archive entries and between blob copies
 export const packSnapshot = async (
   staged: StagedSnapshot,
   out: { archiveFile: string; blobDir: string },
+  opts?: { signal?: AbortSignal },
 ): Promise<Result<PackedSnapshot, SnapshotError>> => {
   const unsafe = staged.manifest.files.filter((f) => !isSafeSnapshotPath(f.path) || isExcludedSnapshotPath(f.path));
   if (unsafe.length > 0) {
@@ -177,8 +186,9 @@ export const packSnapshot = async (
   }
 
   try {
-    const { archiveSha256, archiveSize } = await writeArchive(input, out.archiveFile);
-    const blobs = await copyBlobs(input, out.blobDir);
+    throwIfAborted(opts?.signal);
+    const { archiveSha256, archiveSize } = await writeArchive(input, out.archiveFile, opts?.signal);
+    const blobs = await copyBlobs(input, out.blobDir, opts?.signal);
     return ok({
       archiveFile: out.archiveFile,
       archiveSha256,
@@ -194,13 +204,17 @@ export const packSnapshot = async (
       fs.rm(out.archiveFile, { force: true }),
       fs.rm(out.blobDir, { recursive: true, force: true }),
     ]);
+    if (e instanceof PackCancelled) return err({ code: "CANCELLED", message: e.message });
     return err({ code: "PACK_FAILED", message: `Couldn't pack the snapshot: ${errorMessage(e)}` });
   }
 };
 
-// The biggest files, for the "too large" panel
-export const largestFiles = (manifest: SnapshotManifest, n = 10): { path: string; size: number }[] =>
-  [...manifest.files]
+// The biggest files, for the "too large" panel: of a manifest, or of a scan plan
+export const largestFiles = (
+  list: { files: readonly { path: string; size: number }[] },
+  n = 10,
+): { path: string; size: number }[] =>
+  [...list.files]
     .sort((a, b) => b.size - a.size || byteCompare(a.path, b.path))
     .slice(0, n)
     .map(({ path, size }) => ({ path, size }));

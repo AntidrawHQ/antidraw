@@ -189,7 +189,7 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
             createdAt: s.now,
           });
         } else if (!row.verified && !row.deleting) {
-          row.size = o.size;
+          row.size = Math.max(row.size, o.size);
         }
       }
       const site = state.sites.get(s.siteId);
@@ -216,14 +216,26 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
       if (
         !site ||
         site.headVersion !== c.baseVersion ||
-        !lockFree(site, c.now) ||
-        site.protectedFiles !== c.seenProtected
+        !(lockFree(site, c.now) || site.completeLock === c.sessionId)
       ) {
-        return false;
+        return null;
       }
       site.completeLock = c.sessionId;
       site.completeLockExpiresAt = c.expiresAt;
-      site.protectedFiles = c.protectedFiles;
+      return copy(site);
+    },
+    async setProtectedFiles(p) {
+      const site = state.sites.get(p.siteId);
+      if (
+        !site ||
+        site.completeLock !== p.lock ||
+        site.protectedFiles !== p.seenProtected ||
+        (p.fence &&
+          (site.completeLockExpiresAt ?? 0) < p.fence.now + p.fence.minRemainingMs)
+      ) {
+        return false;
+      }
+      site.protectedFiles = p.protectedFiles;
       return true;
     },
     async checkCompleteLock(siteId, lock, now, minRemainingMs) {
