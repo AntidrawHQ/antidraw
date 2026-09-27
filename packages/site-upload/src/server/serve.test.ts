@@ -350,6 +350,92 @@ describe("cache-control", () => {
   });
 });
 
+describe("service workers", () => {
+  const WORKER = { headers: { "service-worker": "script" } };
+  // What a browser's install or update check for a worker script gets back.
+  const script = async (s: SiteServer, path: string, key = site) => {
+    const response = await s.fetch(new Request(`https://example.test${path}`, WORKER), key);
+    const body = await response.text();
+    return {
+      status: response.status,
+      type: response.headers.get("content-type"),
+      body: body.includes("unregister()") ? "<unregisters itself>" : body,
+    };
+  };
+
+  it("are off by default: a worker script request gets one that unregisters itself", async () => {
+    await publish("p1", { "index.html": "home", "sw.js": "attacker worker" });
+    const s = server();
+    expect({
+      worker: await script(s, "/sw.js"),
+      "same file, as a plain request": (await get(s, "/sw.js")).status,
+      "never published": await script(s, "/sw.js", uniqueSite()),
+    }).toMatchInlineSnapshot(`
+      {
+        "never published": {
+          "body": "<unregisters itself>",
+          "status": 200,
+          "type": "text/javascript; charset=utf-8",
+        },
+        "same file, as a plain request": 200,
+        "worker": {
+          "body": "<unregisters itself>",
+          "status": 200,
+          "type": "text/javascript; charset=utf-8",
+        },
+      }
+    `);
+  });
+
+  it("when allowed, serve only live files; a worker the live version dropped is unregistered", async () => {
+    const other = uniqueSite();
+    const s = server({ serviceWorkers: (key) => key === site });
+    await publish("p1", { "index.html": "home", "sw.js": "old worker" }, ["sw.js"]);
+    const live = await script(s, "/sw.js");
+    clock += 10_000;
+    // A teammate is removed and the site republished without their worker.
+    // It is flagged immutable, so it stays servable as a retained file.
+    await publish("p2", { "index.html": "home 2", "about/index.html": "about" });
+    expect({
+      live,
+      "dropped by the next publish": await script(s, "/sw.js"),
+      "retained, as a plain request": (await get(s, "/sw.js")).status,
+      "never uploaded": await script(s, "/other-sw.js"),
+      "a folder that redirects": await script(s, "/about"),
+      "a site not allowed them": await script(s, "/sw.js", other),
+    }).toMatchInlineSnapshot(`
+      {
+        "a folder that redirects": {
+          "body": "<unregisters itself>",
+          "status": 200,
+          "type": "text/javascript; charset=utf-8",
+        },
+        "a site not allowed them": {
+          "body": "<unregisters itself>",
+          "status": 200,
+          "type": "text/javascript; charset=utf-8",
+        },
+        "dropped by the next publish": {
+          "body": "<unregisters itself>",
+          "status": 200,
+          "type": "text/javascript; charset=utf-8",
+        },
+        "live": {
+          "body": "old worker",
+          "status": 200,
+          "type": "text/javascript; charset=utf-8",
+        },
+        "never uploaded": {
+          "body": "<unregisters itself>",
+          "status": 200,
+          "type": "text/javascript; charset=utf-8",
+        },
+        "retained, as a plain request": 200,
+      }
+    `);
+  });
+});
+
 describe("conditional requests and ranges", () => {
   beforeEach(() => publish("p1", SITE));
   const homeTag = `"${sha256("<h1>home</h1>")}"`;

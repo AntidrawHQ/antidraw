@@ -41,6 +41,14 @@ export type SiteServerOptions = {
    * a year for immutable files, else revalidate on every use.
    */
   cacheControl?: (file: { site: string; path: string; immutable: boolean }) => string;
+  /**
+   * Whether `site` may run service workers. Default false: a service worker
+   * script request (`Service-Worker: script`) gets a script that unregisters
+   * whatever worker is installed. When allowed, only a live file is served as
+   * one; any other path gets the same script, so a worker left by an earlier
+   * publish or a slug's previous owner goes away on its next update check.
+   */
+  serviceWorkers?: boolean | ((site: string) => boolean);
   now?: () => number;
 };
 
@@ -64,6 +72,20 @@ const IMMUTABLE = "public, max-age=31536000, immutable";
 const CACHE_ORIGIN = "https://site-upload.cache";
 const REVALIDATE = "public, max-age=0, must-revalidate";
 
+// Sent for service worker scripts that aren't allowed or aren't live. A 404
+// only fails the update check and leaves the old worker in control; this
+// replaces it with one that unregisters itself and reloads the pages it ran.
+const UNREGISTER_WORKER = `self.addEventListener("install", () => self.skipWaiting());
+self.addEventListener("activate", (event) => {
+  event.waitUntil(
+    self.registration
+      .unregister()
+      .then(() => self.clients.matchAll({ type: "window" }))
+      .then((clients) => Promise.all(clients.map((client) => client.navigate(client.url)))),
+  );
+});
+`;
+
 export class SiteServer {
   private readonly store: SiteStore;
   private readonly pointerTtlMs: number;
@@ -71,6 +93,7 @@ export class SiteServer {
   private readonly notFound: NotFoundMode;
   private readonly now: () => number;
   private readonly cacheControl: NonNullable<SiteServerOptions["cacheControl"]>;
+  private readonly serviceWorkers: (site: string) => boolean;
   private readonly maxCachedPointerBytes: number;
   private readonly pointers = new Map<string, CachedPointer>();
   private readonly loading = new Map<string, Promise<CachedPointer>>();
@@ -88,6 +111,8 @@ export class SiteServer {
     this.notFound = options.notFound ?? "404-page";
     this.now = options.now ?? Date.now;
     this.cacheControl = options.cacheControl ?? (({ immutable }) => (immutable ? IMMUTABLE : REVALIDATE));
+    const serviceWorkers = options.serviceWorkers ?? false;
+    this.serviceWorkers = typeof serviceWorkers === "function" ? serviceWorkers : () => serviceWorkers;
   }
 
   /**
@@ -103,6 +128,7 @@ export class SiteServer {
     const url = new URL(request.url);
     const path = decodePath(url.pathname);
     if (path === null) return text(400, "Bad request");
+    if (workerScript(request) && !this.serviceWorkers(site)) return unregisterWorker();
 
     try {
       let cached = await this.pointer(site, false);
@@ -144,6 +170,10 @@ export class SiteServer {
     resolved: Resolved,
     ctx: WaitUntil | undefined,
   ): Promise<Response | null> {
+    if (workerScript(request) && !(resolved.kind === "file" && pointer?.files[resolved.path] === resolved.entry)) {
+      // Not a live file (missing, a redirect, or a retained old version).
+      return unregisterWorker();
+    }
     if (!pointer) return text(404, "Not found");
     if (resolved.kind === "file") return this.serve(request, site, resolved.path, resolved.entry, 200, ctx);
     if (resolved.kind === "redirect") {
@@ -341,6 +371,13 @@ export function contentType(path: string): string {
 const isPage = (type: string) => /^(text\/html|application\/xhtml\+xml)\b/.test(type);
 
 const unavailable = () => text(503, "Temporarily unavailable", { "retry-after": "1" });
+
+const workerScript = (request: Request) => request.headers.get("service-worker") === "script";
+
+const unregisterWorker = () =>
+  new Response(UNREGISTER_WORKER, {
+    headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" },
+  });
 
 const lastSegment = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 

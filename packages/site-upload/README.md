@@ -65,6 +65,14 @@ a year, `immutable`. To change that, pass `cacheControl({ site, path,
 immutable })`, e.g. to require hashed-looking names, or to answer
 `private, no-cache` for a site only some viewers may see.
 
+**Service workers** are off unless `serviceWorkers` (`true`, or
+`(site) => boolean`) allows them. Browsers fetch a worker script with a
+`Service-Worker: script` header; when the site isn't allowed workers, or the
+path isn't a file in the live version, `SiteServer` answers 200 with a script
+that unregisters the installed worker and reloads its pages. That is how a
+worker left by an earlier publish, a removed teammate or a slug's previous
+owner goes away: a failed update check leaves the old worker in control.
+
 Create one `SiteStore` and one `SiteServer` per isolate (at module scope), not
 per request, so their caches last.
 
@@ -92,8 +100,12 @@ per request, so their caches last.
   is keyed by `site`. Use a permanent internal id as the key and map public
   slugs to it, so a slug that is freed and claimed by someone else never
   reaches the old owner's data. Browsers still keep the old owner's flagged
-  (non-HTML) files for up to a year under the slug's URLs; pages always
-  revalidate, so the new owner's pages are what visitors get.
+  (non-HTML) files for up to a year under the slug's URLs. Pages revalidate,
+  but a service worker the old owner (or a removed teammate) registered keeps
+  answering for the origin in browsers that installed it, until its update
+  check replaces it; a 404 there doesn't. See *Service workers* above. Prefer
+  not handing a freed slug to someone else at all; if you do, the site Worker
+  can also send `Clear-Site-Data: "storage"` on the new owner's first pages.
 - **Rate limits and quotas.** Built-in limits are per publish: 10,000 files,
   95 MiB per file (under the Workers 100 MB request-body limit), 500 MiB total,
   2 MiB of file-list JSON. A site holds its live version, retained chunks and
