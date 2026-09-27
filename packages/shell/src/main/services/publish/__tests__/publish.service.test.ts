@@ -1081,6 +1081,58 @@ describe("getPublishOutcome: finishing a publish left pending", () => {
     expect((await getPublishOutcome(WS, publishId))._unsafeUnwrap().status).toBe("pending");
     expect(completePublish).not.toHaveBeenCalled();
   });
+
+  // A check's complete still in flight when the workspace publishes again: the
+  // new run must not begin until it settles, else the old session can commit
+  // after the new begin and the new complete fails as PUBLISH_CONFLICT.
+  const retryInFlight = async () => {
+    const publishId = await leavePending();
+    vi.mocked(beginPublish).mockClear();
+    vi.mocked(getPublishSession).mockResolvedValue(ok(pending));
+    let answer!: () => void;
+    vi.mocked(completePublish).mockImplementationOnce(
+      () => new Promise((resolve) => (answer = () => resolve(ok({ site, version: 5 })))),
+    );
+    const check = getPublishOutcome(WS, publishId);
+    await vi.waitFor(() => expect(completePublish).toHaveBeenCalledTimes(1));
+    vi.mocked(completePublish).mockResolvedValue(ok({ site, version: 6 }));
+    return { check, answer: () => answer() };
+  };
+
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+  test("a publish started while a check's complete is in flight begins only after it settles", async () => {
+    const { check, answer } = await retryInFlight();
+
+    const publishing = run();
+    await settle();
+    expect(beginPublish).not.toHaveBeenCalled();
+
+    answer();
+    expect((await check)._unsafeUnwrap()).toMatchObject({ status: "completed", resultVersion: 5 });
+    expect(lastResult(await publishing).version).toBe(6);
+    expect(beginPublish).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(completePublish).mock.calls.map(([id]) => id)).toEqual(["pub_1", "pub_1"]);
+  });
+
+  test("cancelling a publish that waits on a check does not free the next one to begin", async () => {
+    const { check, answer } = await retryInFlight();
+
+    const cancelled: PublishEvent[] = [];
+    for await (const event of publishWorkspace(WS, { signal: new AbortController().signal })) {
+      cancelled.push(event);
+      if (event.type === "step" && event.step === "checking") cancelPublish(WS);
+    }
+    expect(lastError(cancelled).code).toBe("CANCELLED");
+
+    const publishing = run();
+    await settle();
+    expect(beginPublish).not.toHaveBeenCalled();
+
+    answer();
+    await check;
+    expect(lastResult(await publishing).version).toBe(6);
+  });
 });
 
 describe("publishWorkspace: staging", () => {

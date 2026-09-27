@@ -47,7 +47,9 @@
     // the site; a publish needs one, plus the app's few retries.
     { "name": "COMPLETE_RATE_LIMITER", "namespace_id": "1003", "simple": { "limit": 30, "period": 60 } }
   ],
-  // Hourly publish GC (src/scheduled.ts). Each run is bounded and leaves the
-  // rest for the next, so throughput follows load.
-  "triggers": { "crons": ["17 * * * *"] }
+  // Publish GC (src/scheduled.ts): every step hourly, and stale-site cleanup
+  // alone every five minutes, each run with its own D1 budget. Each run is
+  // bounded and leaves the rest for the next; the capacity this gives is in
+  // src/lib/publish-limits.ts (GC_CRON, GC_SITE_CLEANUP_CRON must match).
+  "triggers": { "crons": ["17 * * * *", "*/5 * * * *"] }
 }

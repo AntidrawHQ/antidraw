@@ -222,7 +222,9 @@ export type PublishStore = {
   getHeadVersion(site: Pick<SiteRow, "id" | "headVersion">): Promise<VersionRow | null>;
   getLargeFiles(versionId: string): Promise<LargeFileRow[]>;
 
-  // GC
+  // GC. Where these ask whether a session has expired or still holds
+  // (expires_at, hold_until against `now`), GC passes its hold cutoff as
+  // `now`: its clock less GC_CLOCK_SKEW_MARGIN_MS (gc.service.ts).
   expireSessions(now: number): Promise<number>;
   pruneVersions(keepVersions: number): Promise<number>;
   leftoverDeletingObjects(limit: number): Promise<UserObjectRef[]>;
@@ -237,6 +239,13 @@ export type PublishStore = {
   // Sites whose cleanup_after has passed, or whose cleanup has been
   // outstanding since before `deferredBefore`; longest outstanding first.
   sitesDueForCleanup(now: number, deferredBefore: number, limit: number): Promise<SiteRef[]>;
+  // For a begin refused because the site's prefix holds too much: the site's
+  // outstanding cleanup becomes due by min(cleanup_after, dueBy), and queues
+  // ahead of every site whose cleanup was wanted since later than `dueBy`
+  // less `maxDeferMs` (GC's GC_MAX_CLEANUP_DEFER_MS: it backdates
+  // cleanup_since, which sitesDueForCleanup orders by). Nothing when no
+  // cleanup is outstanding.
+  hurrySiteCleanup(siteId: string, dueBy: number, maxDeferMs: number): Promise<void>;
   claimSiteLockForGc(
     siteId: string,
     lock: string,
@@ -763,6 +772,13 @@ export const d1PublishStore = (db: Db): PublishStore => {
           WHERE cleanup_after < ${now} OR cleanup_since < ${deferredBefore}
           ORDER BY coalesce(cleanup_since, cleanup_after), id LIMIT ${limit}`)
       ).map(toSiteRef);
+    },
+
+    async hurrySiteCleanup(siteId, dueBy, maxDeferMs) {
+      await changes(sql`UPDATE site
+        SET cleanup_since = min(coalesce(cleanup_since, cleanup_after),
+          min(cleanup_after, ${dueBy}) - ${maxDeferMs})
+        WHERE id = ${siteId} AND cleanup_after IS NOT NULL`);
     },
 
     async claimSiteLockForGc(siteId, lock, now, expiresAt) {

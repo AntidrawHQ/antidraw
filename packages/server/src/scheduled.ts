@@ -1,6 +1,11 @@
 import type { Bindings } from "./lib/env";
-import { makeGcDeps, runGc } from "./services/gc.service";
+import { gcModeFor, makeGcDeps, runGc } from "./services/gc.service";
 
-// Cron trigger ("17 * * * *" in wrangler.jsonc): the hourly publish GC.
-export const scheduled: ExportedHandlerScheduledHandler<Bindings> = (_controller, env, ctx) =>
-  ctx.waitUntil(runGc(makeGcDeps(env), new Date()).then((report) => console.log("gc", report)));
+// Cron triggers (wrangler.jsonc): the hourly publish GC (GC_CRON), and site
+// cleanup alone every five minutes (GC_SITE_CLEANUP_CRON).
+export const scheduled: ExportedHandlerScheduledHandler<Bindings> = (controller, env, ctx) => {
+  const mode = gcModeFor(controller.cron);
+  ctx.waitUntil(
+    runGc(makeGcDeps(env), new Date(), mode).then((report) => console.log("gc", mode, report)),
+  );
+};

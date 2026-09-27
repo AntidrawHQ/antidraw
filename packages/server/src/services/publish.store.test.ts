@@ -614,6 +614,39 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     });
   });
 
+  it("hurries a site's outstanding cleanup: due by the earlier of cleanup_after and dueBy, queued first", async () => {
+    const { store } = setup();
+    const DEFER = 10_000;
+    await site(store, "site_1");
+    await site(store, "site_2", U, "w2");
+    await site(store, "site_3", U, "w3");
+    await store.createSession(session({ id: "pub_2", siteId: "site_2", objects: [], now: 10 }));
+    await store.createSession(
+      session({ siteId: "site_1", objects: [], now: 20, cleanupAfter: 9000 }),
+    );
+
+    await store.hurrySiteCleanup("site_1", 3000, DEFER);
+    expect((await store.findSiteById("site_1"))?.cleanupSince).toBe(3000 - DEFER);
+    const due = (now: number) => store.sitesDueForCleanup(now, now - DEFER, 10);
+    expect(await due(2999)).toEqual([]);
+    expect(await due(3001)).toEqual([{ id: "site_1", slug: "acme-site_1" }]);
+    // Both due: the hurried site first, though site_2 was wanted earlier.
+    expect((await due(6000)).map((s) => s.id)).toEqual(["site_1", "site_2"]);
+
+    // Never later than cleanup_after, never later than it already was.
+    await store.hurrySiteCleanup("site_2", 99_999, DEFER);
+    expect((await store.findSiteById("site_2"))?.cleanupSince).toBe(5000 - DEFER);
+    await store.hurrySiteCleanup("site_1", 8000, DEFER);
+    expect((await store.findSiteById("site_1"))?.cleanupSince).toBe(3000 - DEFER);
+
+    // Nothing outstanding: nothing to hurry.
+    await store.hurrySiteCleanup("site_3", 3000, DEFER);
+    expect(await store.findSiteById("site_3")).toMatchObject({
+      cleanupAfter: null,
+      cleanupSince: null,
+    });
+  });
+
   // D1 never runs ANALYZE, so the planner has no statistics to steer it off a
   // low-cardinality index. Every per-account stored_object query must use the
   // primary key, not walk all accounts' rows.

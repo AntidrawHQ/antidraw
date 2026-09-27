@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { env as stubEnv } from "cloudflare:workers";
 import {
+  GC_CLOCK_SKEW_MARGIN_MS,
   MAX_OPEN_SESSIONS_PER_ACCOUNT,
   MAX_PENDING_SITE_BYTES,
   MAX_PLAN_JSON_BYTES,
@@ -1169,9 +1170,10 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       let report: Awaited<ReturnType<typeof runGc>> | undefined;
       let lockHeld = false;
       deps.store.commitVersion = async (v) => {
-        // The hold ends and GC claims and deletes the unverified objects, then
-        // retires the session (its session objects go), before the commit.
-        deps.clock.now += 2_000;
+        // The hold ends (GC's margin with it) and GC claims and deletes the
+        // unverified objects, then retires the session (its session objects
+        // go), before the commit.
+        deps.clock.now += 2_000 + GC_CLOCK_SKEW_MARGIN_MS;
         report = await runGc(deps.gc, new Date(deps.clock.now));
         lockHeld = (await deps.store.findSiteById(v.siteId))?.completeLock === v.sessionId;
         return commit(v);
@@ -1209,7 +1211,7 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       ).toBe(false);
     });
 
-    it("refuses with 410 when GC, its clock ahead, retired the session before the commit", async () => {
+    it("commits when GC, its clock ahead by less than its margin, runs as the hold ends", async () => {
       const deps = setup();
       const begun = (await begin(deps))._unsafeUnwrap();
       performUploads(deps, begun.uploads);
@@ -1217,8 +1219,33 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       const commit = deps.store.commitVersion;
       let report: Awaited<ReturnType<typeof runGc>> | undefined;
       deps.store.commitVersion = async (v) => {
-        // This Worker's clock still reads a live hold; GC's does not.
-        report = await runGc(deps.gc, new Date(deps.clock.now + 2_000));
+        // This Worker's clock still reads a live hold; GC's reads it ended a
+        // minute ago, which is within the margin: GC must leave it alone.
+        report = await runGc(deps.gc, new Date(deps.clock.now + 61_000));
+        return commit(v);
+      };
+      const result = await completePublish(deps, USER, begun.publish.id, completeRequest());
+      deps.store.commitVersion = commit;
+      expect(report).toMatchObject({ deletedObjects: 0, retiredSessions: 0 });
+      expect(result._unsafeUnwrap()).toMatchObject({ version: 1 });
+      expect(deps.sourcesBucket.objects.has(sourceKey(USER, hex("source-1")))).toBe(true);
+      expect(deps.sourcesBucket.objects.has(blobKey(USER, hex("blob-1")))).toBe(true);
+      expect(
+        (await deps.store.getStoredObjects(USER, [{ kind: "source", sha256: hex("source-1") }]))[0],
+      ).toMatchObject({ verified: true, deleting: false });
+    });
+
+    it("refuses with 410 when GC, its clock ahead by more than its margin, retired the session before the commit", async () => {
+      const deps = setup();
+      const begun = (await begin(deps))._unsafeUnwrap();
+      performUploads(deps, begun.uploads);
+      deps.clock.now += SESSION_TTL_MS - 1_000;
+      const commit = deps.store.commitVersion;
+      let report: Awaited<ReturnType<typeof runGc>> | undefined;
+      deps.store.commitVersion = async (v) => {
+        // This Worker's clock still reads a live hold; GC's does not, even
+        // with its margin.
+        report = await runGc(deps.gc, new Date(deps.clock.now + GC_CLOCK_SKEW_MARGIN_MS + 2_000));
         return commit(v);
       };
       const result = await completePublish(deps, USER, begun.publish.id, completeRequest());

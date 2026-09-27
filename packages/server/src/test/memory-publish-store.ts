@@ -431,6 +431,14 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
         .slice(0, limit)
         .map(ref);
     },
+    async hurrySiteCleanup(siteId, dueBy, maxDeferMs) {
+      const site = state.sites.get(siteId);
+      if (!site || site.cleanupAfter === null) return;
+      site.cleanupSince = Math.min(
+        site.cleanupSince ?? site.cleanupAfter,
+        Math.min(site.cleanupAfter, dueBy) - maxDeferMs,
+      );
+    },
     async claimSiteLockForGc(siteId, lock, now, expiresAt) {
       const site = state.sites.get(siteId);
       if (!site || !lockFree(site, now)) return false;

@@ -220,7 +220,13 @@ retire sessions whose hold ended (plan stubbed, held objects dropped) and
 forget old ones, and free the slugs of sites that never completed. Each step
 is bounded (`GcLimits` in `src/services/gc.service.ts`) and independent; a
 run that stops with work left says so in `report.backlog` and logs a warning,
-and the next run continues.
+and the next run continues. Stale-site cleanup also runs alone every five
+minutes (a second cron, its own D1 budget: about 650 site visits an hour),
+oldest outstanding site first, except that a site whose begin was refused
+with `SITE_TOO_LARGE` goes to the front, due an hour after the refusal. GC
+treats a session as expired, or its hold as ended, only 5 minutes after the
+fact by its own clock (`GC_CLOCK_SKEW_MARGIN_MS`), so a complete whose
+Worker's clock lags GC's still finds what its commit checks.
 
 ### Local end to end
 
@@ -238,7 +244,8 @@ npm run dev -w @antidraw/publish-worker -- --persist-to "$STATE"   # :8787, same
 ```
 
 Publish from the app, then open `http://<slug>.localhost:8787/`. Run GC with
-`curl "http://localhost:8799/cdn-cgi/handler/scheduled?cron=17+3+*+*+*"`
+`curl "http://localhost:8799/cdn-cgi/handler/scheduled?cron=17+*+*+*+*"`, or
+site cleanup alone with `?cron=*/5+*+*+*+*`
 (age rows first with `wrangler d1 execute antidraw --local --persist-to "$STATE"`
 to see it delete something).
 

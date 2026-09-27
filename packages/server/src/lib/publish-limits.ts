@@ -58,14 +58,33 @@ export const COMPLETE_FENCE_MS = 60 * 1000;
 export const DOWNLOAD_URL_TTL_S = 600;
 export const GC_MIN_AGE_MS = 24 * 60 * 60 * 1000;
 export const GC_LOCK_TTL_MS = 5 * 60 * 1000;
-// GC runs hourly (wrangler.jsonc). Each run stops starting new work after
-// this long, leaving the rest for the next hour; a cron invocation may run for
+// The cron triggers (wrangler.jsonc, dispatched in src/scheduled.ts): every
+// GC step hourly, and the site-cleanup step alone every five minutes, each
+// invocation with its own D1 and subrequest budget. Site cleanup is the step
+// whose work a D1 budget bounds hardest (a visit costs ~10 statements and
+// lists the whole prefix), so it gets 13 runs an hour: 650 site visits an
+// hour, ~15 600 a day, or ~260 an hour for sites of ~5 000 keys. Each site
+// has one outstanding visit however often it is published. Past that the
+// queue waits, oldest first; the next step is a Queue fan-out.
+export const GC_CRON = "17 * * * *";
+export const GC_SITE_CLEANUP_CRON = "*/5 * * * *";
+// GC and the Worker completing a publish each judge a session's hold by their
+// own clock. GC treats a hold as ended only this long after its hold_until
+// (claiming its unverified objects, retiring it, no longer keeping its plan's
+// paths), so a complete whose clock lags GC's by less still finds everything
+// its commit guard checks where it left it.
+export const GC_CLOCK_SKEW_MARGIN_MS = 5 * 60 * 1000;
+// GC runs hourly (GC_CRON). Each run stops starting new work after this
+// long, leaving the rest for the next hour; a cron invocation may run for
 // 15 minutes.
 export const GC_RUN_BUDGET_MS = 10 * 60 * 1000;
+// A site-cleanup run (GC_SITE_CLEANUP_CRON) stops before the next one starts.
+export const GC_SITE_RUN_BUDGET_MS = 4 * 60 * 1000;
 // Objects claimed per run (leftovers included), deleted from R2 in batches
 // of R2_DELETE_BATCH: 10 R2 calls and about 320 D1 statements.
 export const GC_OBJECTS_PER_RUN = 10_000;
-// Stale-site visits per run, and, separately, abandoned sites deleted.
+// Stale-site visits per run (hourly or site-cleanup), and, separately,
+// abandoned sites deleted (hourly only).
 export const GC_SITES_PER_RUN = 50;
 export const GC_ABANDONED_SITES_PER_RUN = 20;
 // Keys one site visit lists, and all visits of a run together; a visit that

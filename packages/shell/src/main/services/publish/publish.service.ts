@@ -354,7 +354,10 @@ const runs = new Map<string, Run>();
 // complete again. The run's staging is gone by then, but complete needs only
 // the entry pages; everything else was uploaded. Dropped once the server
 // reports the session done, when it is aborted, when the workspace publishes
-// again, or once it has expired.
+// again, or once it has expired. Its retry and a run of the same workspace
+// never overlap: a run waits for a retry in flight before it begins (else the
+// old session could commit after the new one's begin and fail its complete
+// as a conflict), and no retry starts while a run holds the workspace.
 type Unfinished = {
   publishId: string;
   entries: CompletePublishRequest["entries"];
@@ -364,6 +367,10 @@ type Unfinished = {
   inFlight?: Promise<Result<PublishSessionResponse, PublishError>> | null;
 };
 const unfinished = new Map<string, Unfinished>();
+// A retry in flight, per workspace, until it settles; kept apart from
+// `unfinished`, which a run drops as it starts (a cancelled run must not
+// leave the next one free to begin under it).
+const retries = new Map<string, Promise<unknown>>();
 
 const keepUnfinished = (workspaceId: string, held: Unfinished) => {
   const now = Date.now();
@@ -371,6 +378,12 @@ const keepUnfinished = (workspaceId: string, held: Unfinished) => {
     if (other.expiresAt < now) unfinished.delete(id);
   }
   unfinished.set(workspaceId, held);
+};
+
+// Only while it is still the workspace's record: a retry that settles late
+// must not drop what a newer run left.
+const dropUnfinished = (workspaceId: string, held: Unfinished) => {
+  if (unfinished.get(workspaceId) === held) unfinished.delete(workspaceId);
 };
 
 export const cancelPublish = (workspaceId: string): boolean => {
@@ -437,7 +450,9 @@ export async function* publishWorkspace(
     staging: null,
   };
   runs.set(workspaceId, run);
-  // A new publish replaces whatever an earlier one left unfinished.
+  // A new publish replaces whatever an earlier one left unfinished, once a
+  // "check status" retry of it still in flight has settled.
+  const retrying = retries.get(workspaceId) ?? null;
   unfinished.delete(workspaceId);
 
   const onCallerAbort = () => {
@@ -447,7 +462,7 @@ export async function* publishWorkspace(
   else opts.signal.addEventListener("abort", onCallerAbort, { once: true });
 
   const channel = createChannel<PublishEvent>();
-  const task = execute(workspaceId, opts.allowRemix, run, channel.push)
+  const task = execute(workspaceId, opts.allowRemix, run, retrying, channel.push)
     .catch((e: unknown) => err(unexpected(e)))
     .then((outcome) =>
       channel.push(
@@ -476,9 +491,19 @@ const execute = async (
   workspaceId: string,
   allowRemix: boolean | undefined,
   run: Run,
+  retrying: Promise<unknown> | null,
   emit: (event: PublishEvent) => void,
 ): Promise<Result<PublishResult, PublishError>> => {
   emit({ type: "step", step: "checking" });
+
+  // Bounded by complete's own time limit (plus an abort and a read).
+  if (retrying) {
+    const settled = await untilAborted(
+      retrying.catch(() => undefined),
+      run.controller.signal,
+    );
+    if (settled === ABORTED) return err(CANCELLED);
+  }
 
   // getAccount takes no signal: stop waiting on a cancel or after the same
   // bound the publish API's requests get.
@@ -998,15 +1023,23 @@ export const getPublishOutcome = async (
   const result = await getPublishSession(publishId);
   if (result.isErr()) return err(mapCloudError(result.error));
   const held = unfinished.get(workspaceId);
-  if (held?.publishId !== publishId) return ok(result.value);
+  // While a run holds the workspace (it let this session go), only read.
+  if (held?.publishId !== publishId || runs.has(workspaceId)) {
+    return ok(result.value);
+  }
   if (result.value.status !== "pending") {
-    unfinished.delete(workspaceId);
+    dropUnfinished(workspaceId, held);
     return ok(result.value);
   }
   // One attempt at a time, however many checks arrive.
-  held.inFlight ??= finishUnfinished(workspaceId, held, result.value).finally(() => {
-    held.inFlight = null;
-  });
+  if (!held.inFlight) {
+    const attempt = finishUnfinished(workspaceId, held, result.value).finally(() => {
+      held.inFlight = null;
+      if (retries.get(workspaceId) === attempt) retries.delete(workspaceId);
+    });
+    held.inFlight = attempt;
+    retries.set(workspaceId, attempt);
+  }
   return held.inFlight;
 };
 
@@ -1018,7 +1051,7 @@ const finishUnfinished = async (
   if (!held.refused) {
     const completed = await completePublish(held.publishId, { entries: held.entries });
     if (completed.isOk()) {
-      unfinished.delete(workspaceId);
+      dropUnfinished(workspaceId, held);
       return ok({
         status: "completed",
         resultVersion: completed.value.version,
@@ -1035,7 +1068,7 @@ const finishUnfinished = async (
   // check tries it again.
   const aborted = await abortPublish(held.publishId);
   if (aborted.isErr()) return err(mapCloudError(held.refused));
-  unfinished.delete(workspaceId);
+  dropUnfinished(workspaceId, held);
   const after = await getPublishSession(held.publishId);
   if (after.isErr()) return err(mapCloudError(after.error));
   return ok(after.value);

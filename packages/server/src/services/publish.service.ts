@@ -12,6 +12,7 @@ import {
 import {
   COMPLETE_FENCE_MS,
   COMPLETE_LOCK_TTL_MS,
+  GC_MAX_CLEANUP_DEFER_MS,
   IMMUTABLE_CACHE_CONTROL,
   KEEP_VERSIONS,
   MAX_OPEN_SESSIONS_PER_ACCOUNT,
@@ -500,6 +501,14 @@ export const beginPublish = (
     // new paths cannot pile up faster than GC removes the stale ones.
     const stored = storedAfter(existing, site.slug, [...siteUploads, ...req.site.entries]);
     if (stored.bytes > MAX_SITE_STORED_BYTES || stored.files > MAX_SITE_STORED_FILES) {
+      // Stale keys wait for GC's visit, oldest site first. One blocked on
+      // them goes to the front, due once the switch-over delay has passed, so
+      // "an hour" does not wait on GC's backlog of other sites.
+      await deps.store.hurrySiteCleanup(
+        site.id,
+        deps.now().getTime() + SITE_CLEANUP_DELAY_MS,
+        GC_MAX_CLEANUP_DEFER_MS,
+      );
       return err(
         apiError(
           413,

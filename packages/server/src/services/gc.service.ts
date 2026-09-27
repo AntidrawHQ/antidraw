@@ -4,6 +4,7 @@ import { ENTRY_PATHS } from "../lib/paths";
 import {
   GC_ABANDONED_SITE_AGE_MS,
   GC_ABANDONED_SITES_PER_RUN,
+  GC_CLOCK_SKEW_MARGIN_MS,
   GC_LOCK_TTL_MS,
   GC_MAX_CLEANUP_DEFER_MS,
   GC_MIN_AGE_MS,
@@ -12,8 +13,10 @@ import {
   GC_SESSION_RETENTION_MS,
   GC_SESSION_STATEMENTS_PER_RUN,
   GC_SESSIONS_PER_STATEMENT,
+  GC_SITE_CLEANUP_CRON,
   GC_SITE_KEYS_PER_RUN,
   GC_SITE_KEYS_PER_VISIT,
+  GC_SITE_RUN_BUDGET_MS,
   GC_SITES_PER_RUN,
   GC_UNCOMMITTED_SESSION_RETENTION_MS,
   GC_UNRESOLVED_ENTRY_MAX_AGE_MS,
@@ -25,17 +28,21 @@ import { blobKey, r2ObjectStore, siteKey, sourceKey, type ObjectStore } from "..
 import { parsePlan, planSitePaths, randomId, unionProtected } from "./publish.service";
 import {
   d1PublishStore,
+  PLAN_STUB,
   type PublishStore,
   type SiteRef,
   type SiteRow,
   type UserObjectRef,
 } from "./publish.store";
 
-// Hourly GC (cron "17 * * * *", src/scheduled.ts). Six independent steps,
-// each bounded (the GcLimits below, and a wall-clock budget for the run) so
-// one run fits the Workers Paid limits, each logging its counts; a failing
-// step does not stop the next. A step that stops with work left names itself
-// in `report.backlog`, and the next run continues.
+// GC (src/scheduled.ts): a "full" run hourly (GC_CRON) takes six
+// independent steps; a "sites" run every five minutes (GC_SITE_CLEANUP_CRON)
+// takes step 4 alone, so site cleanup gets more than one run's budget an hour
+// (publish-limits.ts has the numbers). Each step is bounded (the GcLimits
+// below, and a wall-clock budget for the run) so one run fits the Workers
+// Paid limits, each logging its counts; a failing step does not stop the
+// next. A step that stops with work left names itself in `report.backlog`,
+// and the next run continues.
 //
 //   1. expire lapsed pending sessions
 //   2. drop versions beyond the newest KEEP_VERSIONS (keep=1 excepted)
@@ -47,6 +54,10 @@ import {
 //      passed or whose cleanup has been put off for too long
 //   5. retire sessions whose hold ended, and forget old ones
 //   6. delete sites that never completed a publish, freeing their slugs
+//
+// Every step that asks whether a session has expired or still holds asks it
+// of `holdCutoff`, GC's clock less GC_CLOCK_SKEW_MARGIN_MS: a complete judges
+// the same session by its own Worker's clock, which may lag GC's.
 
 export type GcLimits = {
   runBudgetMs: number;
@@ -71,6 +82,14 @@ export const GC_LIMITS: GcLimits = {
   sessionsPerStatement: GC_SESSIONS_PER_STATEMENT,
   sessionStatementsPerRun: GC_SESSION_STATEMENTS_PER_RUN,
 };
+
+// Which steps a run takes.
+export type GcMode = "full" | "sites";
+
+// Anything but the site-cleanup cron is the hourly run (GC_CRON), so a
+// changed or manually triggered cron still gets the full GC.
+export const gcModeFor = (cron: string): GcMode =>
+  cron === GC_SITE_CLEANUP_CRON ? "sites" : "full";
 
 export type GcDeps = {
   store: PublishStore;
@@ -117,6 +136,10 @@ type Run = {
   siteKeysLeft: number;
 };
 
+// A session holds while its hold_until is past this: GC acts on a hold only
+// once it ended GC_CLOCK_SKEW_MARGIN_MS ago by GC's clock.
+const holdCutoff = (at: number) => at - GC_CLOCK_SKEW_MARGIN_MS;
+
 const behind = (run: Run, step: string) => {
   if (!run.report.backlog.includes(step)) run.report.backlog.push(step);
 };
@@ -138,7 +161,7 @@ const collectObjects = async (run: Run) => {
   const { deps, limits, now, report } = run;
   const leftovers = await deps.store.leftoverDeletingObjects(limits.objectsPerRun);
   const claimed = await deps.store.claimGcObjects({
-    now,
+    now: holdCutoff(now),
     minCreatedAt: now - GC_MIN_AGE_MS,
     limit: limits.objectsPerRun - leftovers.length,
   });
@@ -266,6 +289,9 @@ const keepSet = (
   const keep = new Set([...parsePaths(liveFiles), ...protectedPaths]);
   for (const { plan: raw } of held) {
     if (raw === null) continue; // committed: its paths went live with it
+    // Stubbed while it still holds (within GC's margin): an abort that was
+    // never given a URL, so it has no paths to keep.
+    if (raw === PLAN_STUB) continue;
     const plan = parsePlan(raw);
     if (!plan) return null;
     for (const p of planSitePaths(plan)) keep.add(p);
@@ -285,7 +311,7 @@ const cleanSite = async (run: Run, due: SiteRef) => {
     const site = await deps.store.findSiteById(due.id);
     if (!site) return;
     const seen = site.cleanupAfter;
-    const held = await deps.store.heldSessionPlans(site.id, now);
+    const held = await deps.store.heldSessionPlans(site.id, holdCutoff(now));
     const lastHold = held.reduce((max, s) => Math.max(max, s.holdUntil), 0);
     let next: number | null = lastHold > 0 ? lastHold + SITE_CLEANUP_DELAY_MS : null;
 
@@ -346,7 +372,7 @@ const deleteAbandonedSite = async (run: Run, site: SiteRef) => {
       behind(run, "abandoned-sites");
       return;
     }
-    if (await deps.store.deleteAbandonedSite(site.id, lock, run.clock())) {
+    if (await deps.store.deleteAbandonedSite(site.id, lock, holdCutoff(run.clock()))) {
       report.deletedAbandonedSites++;
     }
   } finally {
@@ -372,11 +398,11 @@ const sweepSessions = async (run: Run) => {
     return total;
   };
   report.retiredSessions = await repeat("retire-sessions", () =>
-    deps.store.retireSessions(now, limits.sessionsPerStatement),
+    deps.store.retireSessions(holdCutoff(now), limits.sessionsPerStatement),
   );
   report.deletedSessions = await repeat("old-sessions", () =>
     deps.store.deleteOldSessions({
-      now,
+      now: holdCutoff(now),
       completedBefore: now - GC_SESSION_RETENTION_MS,
       uncommittedBefore: now - GC_UNCOMMITTED_SESSION_RETENTION_MS,
       limit: limits.sessionsPerStatement,
@@ -384,9 +410,17 @@ const sweepSessions = async (run: Run) => {
   );
 };
 
-export const runGc = async (deps: GcDeps, when: Date): Promise<GcReport> => {
+export const runGc = async (
+  deps: GcDeps,
+  when: Date,
+  mode: GcMode = "full",
+): Promise<GcReport> => {
   const now = when.getTime();
-  const limits = { ...GC_LIMITS, ...deps.limits };
+  const limits = {
+    ...GC_LIMITS,
+    ...(mode === "sites" ? { runBudgetMs: GC_SITE_RUN_BUDGET_MS } : {}),
+    ...deps.limits,
+  };
   const started = performance.now();
   const report: GcReport = {
     expiredSessions: 0,
@@ -436,26 +470,38 @@ export const runGc = async (deps: GcDeps, when: Date): Promise<GcReport> => {
     }
   };
 
+  const cleanSites = () =>
+    step("site-cleanup", async () => {
+      const due = await deps.store.sitesDueForCleanup(
+        now,
+        now - GC_MAX_CLEANUP_DEFER_MS,
+        limits.sitesPerRun,
+      );
+      if (due.length >= limits.sitesPerRun) behind(run, "site-cleanup");
+      await eachSite("site-cleanup", due, (site) => cleanSite(run, site));
+    });
+  if (mode === "sites") {
+    await cleanSites();
+    if (report.backlog.length > 0) {
+      console.warn("gc: sites left for the next run", report.backlog);
+    }
+    return report;
+  }
+
   await step("expire-sessions", async () => {
-    report.expiredSessions = await deps.store.expireSessions(now);
+    // A session's expiry is its hold's end until something ends the hold
+    // sooner; expiring it fails a commit its (lagging) complete would pass.
+    report.expiredSessions = await deps.store.expireSessions(holdCutoff(now));
   });
   await step("prune-versions", async () => {
     report.prunedVersions = await deps.store.pruneVersions(KEEP_VERSIONS);
   });
   await step("objects", () => collectObjects(run));
-  await step("site-cleanup", async () => {
-    const due = await deps.store.sitesDueForCleanup(
-      now,
-      now - GC_MAX_CLEANUP_DEFER_MS,
-      limits.sitesPerRun,
-    );
-    if (due.length >= limits.sitesPerRun) behind(run, "site-cleanup");
-    await eachSite("site-cleanup", due, (site) => cleanSite(run, site));
-  });
+  await cleanSites();
   await step("sessions", () => sweepSessions(run));
   await step("abandoned-sites", async () => {
     const abandoned = await deps.store.abandonedSites(
-      now,
+      holdCutoff(now),
       now - GC_ABANDONED_SITE_AGE_MS,
       limits.abandonedSitesPerRun,
     );

@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  GC_CLOCK_SKEW_MARGIN_MS,
+  GC_CRON,
   GC_MAX_CLEANUP_DEFER_MS,
+  GC_SITE_CLEANUP_CRON,
   GC_SITES_PER_RUN,
+  MAX_SITE_STORED_BYTES,
   GC_UNRESOLVED_ENTRY_MAX_AGE_MS,
   SESSION_TTL_MS,
   SITE_CLEANUP_DELAY_MS,
@@ -20,7 +24,8 @@ import {
   type PlanInput,
   type TestDeps,
 } from "../test/publish-harness";
-import { runGc } from "./gc.service";
+import { readFileSync } from "node:fs";
+import { gcModeFor, runGc } from "./gc.service";
 import { abortPublish, beginPublish, completePublish } from "./publish.service";
 import { PLAN_STUB } from "./publish.store";
 
@@ -71,7 +76,13 @@ describe.each(harnesses)("gc (%s)", (_name, makeHarness) => {
     expect(held).toMatchObject({ expiredSessions: 0, retiredSessions: 0 });
     expect((await deps.store.getSession(begun.publish.id))?.plan).not.toBe(PLAN_STUB);
 
-    const report = await gcAt(deps, T + SESSION_TTL_MS + 1);
+    // Lapsed, but within GC's clock-skew margin: a complete whose clock lags
+    // GC's may still be committing it.
+    const lapsed = await gcAt(deps, T + SESSION_TTL_MS + 1);
+    expect(lapsed).toMatchObject({ expiredSessions: 0, retiredSessions: 0 });
+    expect(await deps.store.getSession(begun.publish.id)).toMatchObject({ status: "pending" });
+
+    const report = await gcAt(deps, T + SESSION_TTL_MS + GC_CLOCK_SKEW_MARGIN_MS + 1);
     expect(report).toMatchObject({ expiredSessions: 1, retiredSessions: 1 });
     // Retired: its plan stubbed, its held objects dropped, hold_until 0.
     expect(await deps.store.getSession(begun.publish.id)).toMatchObject({
@@ -116,8 +127,12 @@ describe.each(harnesses)("gc (%s)", (_name, makeHarness) => {
     expect((await gcAt(deps, T + HOUR)).deletedObjects).toBe(0);
     expect(await objectRows(deps, orphan)).toHaveLength(1);
 
-    // Hold over: gone, though only 2 h old.
-    const report = await gcAt(deps, T + SESSION_TTL_MS + 1);
+    // Hold over, but within GC's clock-skew margin: still spared.
+    expect((await gcAt(deps, T + SESSION_TTL_MS + 1)).deletedObjects).toBe(0);
+    expect(await objectRows(deps, orphan)).toHaveLength(1);
+
+    // Past the margin: gone, though only 2 h old.
+    const report = await gcAt(deps, T + SESSION_TTL_MS + GC_CLOCK_SKEW_MARGIN_MS + 1);
     expect(report.deletedObjects).toBe(2); // the source and the blob
     expect(await objectRows(deps, orphan)).toEqual([]);
     expect(deps.sourcesBucket.objects.has(sourceKey(USER, orphan.sha256))).toBe(false);
@@ -139,7 +154,8 @@ describe.each(harnesses)("gc (%s)", (_name, makeHarness) => {
     performUploads(deps, abandoned.uploads);
     deps.sourcesBucket.failDeletes = 2; // the batch and its one retry
 
-    const failed = await gcAt(deps, T + SESSION_TTL_MS + 1);
+    const holdOver = T + SESSION_TTL_MS + GC_CLOCK_SKEW_MARGIN_MS;
+    const failed = await gcAt(deps, holdOver + 1);
     expect(failed).toMatchObject({ deletedObjects: 0, failedObjectBatches: 1 });
     const rows = await objectRows(
       deps,
@@ -152,7 +168,7 @@ describe.each(harnesses)("gc (%s)", (_name, makeHarness) => {
     ]);
     expect(await deps.store.usedBytes(USER)).toBe(0); // claimed rows no longer count
 
-    const retried = await gcAt(deps, T + SESSION_TTL_MS + 2);
+    const retried = await gcAt(deps, holdOver + 2);
     expect(retried.deletedObjects).toBe(2);
     expect(deps.sourcesBucket.keys()).toEqual([]);
   });
@@ -209,6 +225,33 @@ describe.each(harnesses)("gc (%s)", (_name, makeHarness) => {
     expect(keys).toEqual(
       expect.arrayContaining([`${slug}/assets/index-AbC12345.js`, `${slug}/logo.png`]),
     );
+  });
+
+  it("keeps an uncommitted session's paths until its hold ended GC's clock-skew margin ago", async () => {
+    const deps = setup();
+    const T = deps.clock.now;
+    const live = await publish(deps, { entries: defaultEntries("v1") });
+    const slug = live.publish.slug;
+    const late = await begin(deps, {
+      files: [{ path: "late.js" }, { path: "logo.png" }],
+      entries: defaultEntries("v2"),
+    });
+    performUploads(deps, late.uploads);
+    const holdEnd = T + SESSION_TTL_MS;
+    // Visited early (as a site whose cleanup was put off for a day would be).
+    const due = deps.store.sitesDueForCleanup;
+    deps.store.sitesDueForCleanup = async () => [{ id: live.publish.siteId, slug }];
+
+    // GC's clock reads the hold over; a lagging complete's may not. (A
+    // minute inside the margin: a site visit reads GC's clock as the run's
+    // start plus the real time elapsed, which a loaded test machine stretches.)
+    const within = await gcAt(deps, holdEnd + GC_CLOCK_SKEW_MARGIN_MS - 60_000);
+    expect(within.cleanedSites).toBe(1);
+    expect(deps.sitesBucket.keys(`${slug}/`)).toContain(`${slug}/late.js`);
+
+    await gcAt(deps, holdEnd + GC_CLOCK_SKEW_MARGIN_MS + 1);
+    deps.store.sitesDueForCleanup = due;
+    expect(deps.sitesBucket.keys(`${slug}/`)).not.toContain(`${slug}/late.js`);
   });
 
   it("skips a site whose lock is held, and a site protected with *", async () => {
@@ -490,6 +533,59 @@ describe.each(harnesses)("gc (%s)", (_name, makeHarness) => {
     expect(await deps.store.getSession(done.publish.id)).not.toBeNull();
     expect((await gcAt(deps, T + 8 * DAY)).deletedSessions).toBe(1);
     expect(await deps.store.getSession(done.publish.id)).toBeNull();
+  });
+
+  it("runs site cleanup alone on the five-minute cron", async () => {
+    const deps = setup();
+    const T = deps.clock.now;
+    const live = await publish(deps);
+    const slug = live.publish.slug;
+    deps.sitesBucket.upload(`${slug}/junk.js`, { size: 1, sha256: hex("junk") });
+    const lapsed = await begin(deps, { workspace: workspaceId(2), name: "Lapsed" });
+    const at = T + SESSION_TTL_MS + SITE_CLEANUP_DELAY_MS + 1;
+
+    deps.clock.now = at;
+    const report = await runGc(deps.gc, new Date(at), gcModeFor(GC_SITE_CLEANUP_CRON));
+    // Both sites were due (the lapsed begin scheduled its own).
+    expect(report).toMatchObject({ cleanedSites: 2, deletedSiteKeys: 1 });
+    expect(deps.sitesBucket.keys(`${slug}/`)).not.toContain(`${slug}/junk.js`);
+    // No other step ran: the lapsed session is still pending and holds its objects.
+    expect(report).toMatchObject({ expiredSessions: 0, retiredSessions: 0, deletedObjects: 0 });
+    expect((await deps.store.getSession(lapsed.publish.id))?.status).toBe("pending");
+
+    expect(gcModeFor(GC_CRON)).toBe("full");
+    expect(gcModeFor("0 3 * * *")).toBe("full");
+    const wrangler = readFileSync(new URL("../../wrangler.jsonc", import.meta.url), "utf8");
+    expect(wrangler).toContain(`"crons": ["${GC_CRON}", "${GC_SITE_CLEANUP_CRON}"]`);
+  });
+
+  it("puts a site that begin refused for its stale keys at the front of the cleanup queue", async () => {
+    const deps = setup();
+    const T = deps.clock.now;
+    const big = (path: string) => ({ path, size: 450 * MiB, immutable: true });
+    // Another site, wanted earlier, keeps GC's one visit per run busy.
+    await publish(deps, { workspace: workspaceId(2), name: "Older" });
+    deps.clock.now = T + 4 * HOUR;
+    const v1 = await publish(deps, { files: [big("assets/a.js")], entries: defaultEntries("1") });
+    await publish(deps, { files: [big("assets/b.js")], entries: defaultEntries("2") });
+    const slug = v1.publish.slug;
+    const refusedAt = deps.clock.now;
+    const v3 = { files: [big("assets/c.js")], entries: defaultEntries("3") };
+    const refused = await beginPublish(deps, USER, await beginRequest(v3));
+    expect(refused._unsafeUnwrapErr()).toMatchObject({
+      code: "SITE_TOO_LARGE",
+      details: { reason: "stored", limitBytes: MAX_SITE_STORED_BYTES },
+    });
+
+    // An hour on, the one visit a run allows goes to the blocked site, ahead
+    // of the older one and before its own cleanup_after (v2's begin, 3 h).
+    deps.gc.limits = { sitesPerRun: 1 };
+    const at = refusedAt + SITE_CLEANUP_DELAY_MS + 1;
+    deps.clock.now = at;
+    const report = await runGc(deps.gc, new Date(at), "sites");
+    expect(report).toMatchObject({ cleanedSites: 1, deletedSiteKeys: 1 });
+    expect(deps.sitesBucket.keys(`${slug}/`)).not.toContain(`${slug}/assets/a.js`);
+    expect((await beginPublish(deps, USER, await beginRequest(v3))).isOk()).toBe(true);
   });
 
   describe('a protected "*"', () => {
