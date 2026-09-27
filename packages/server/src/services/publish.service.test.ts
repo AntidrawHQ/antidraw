@@ -419,7 +419,7 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       expect(fits.isOk()).toBe(true);
     });
 
-    it("marks a quota-refused session aborted with no hold", async () => {
+    it("deletes a quota-refused session, holding nothing", async () => {
       const deps = setup();
       (
         await begin(deps, { largeFiles: [{ path: "a.bin", sha256: hex(1), size: 490 * MiB }] })
@@ -440,6 +440,33 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       expect(await deps.store.getStoredObjects(USER, [{ kind: "blob", sha256: hex(3) }])).toEqual(
         [],
       );
+      expect((await deps.harness.sessionRows(USER)).count).toBe(2);
+    });
+
+    it("keeps no plan of a refused begin, so refusals cannot fill D1 past the open-session cap", async () => {
+      const deps = setup();
+      for (const n of [1, 2]) {
+        (
+          await begin(deps, {
+            workspace: workspaceId(n),
+            largeFiles: [{ path: "a.bin", sha256: hex(n), size: 490 * MiB }],
+          })
+        )._unsafeUnwrap();
+      }
+      const held = await deps.harness.sessionRows(USER);
+      const files = Array.from({ length: 200 }, (_, i) => ({
+        path: `assets/${"long-directory-name/".repeat(4)}file-${i}.js`,
+      }));
+      for (let i = 0; i < 30; i++) {
+        const refused = await begin(deps, {
+          workspace: workspaceId(3),
+          largeFiles: [{ path: "c.bin", sha256: hex(1000 + i), size: 100 * MiB }],
+          files,
+        });
+        expect(refused._unsafeUnwrapErr().code).toBe("QUOTA_EXCEEDED");
+      }
+      expect(await deps.harness.sessionRows(USER)).toEqual(held);
+      expect(await deps.store.openSessions(USER, deps.clock.now)).toMatchObject({ count: 2 });
     });
 
     it("counts the latest declared size of an unverified object (no size forgery)", async () => {
@@ -521,9 +548,41 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       const begun = (await begin(deps, { entries: defaultEntries("v2") }))._unsafeUnwrap();
       expect(begun.uploads).toEqual([]);
       (await abortPublish(deps, USER, begun.publish.id))._unsafeUnwrap();
-      expect((await deps.store.getSession(begun.publish.id))?.holdUntil).toBeLessThanOrEqual(
-        deps.clock.now,
-      );
+      expect(await deps.store.getSession(begun.publish.id)).toMatchObject({
+        status: "aborted",
+        holdUntil: deps.clock.now,
+        // It no longer counts as open, so its plan does not wait for GC.
+        plan: PLAN_STUB,
+      });
+    });
+
+    it("keeps a released session's plan while its site is * or it holds the lock", async () => {
+      const deps = setup();
+      const { begun: first } = await publish(deps);
+      const siteId = first.publish.siteId;
+      const noUrls = async (tag: string) => {
+        const begun = (await begin(deps, { entries: defaultEntries(tag) }))._unsafeUnwrap();
+        expect(begun.uploads).toEqual([]);
+        return begun.publish.id;
+      };
+
+      await deps.harness.setProtected(siteId, "*");
+      const starred = await noUrls("v2");
+      (await abortPublish(deps, USER, starred))._unsafeUnwrap();
+      expect((await deps.store.getSession(starred))?.plan).not.toBe(PLAN_STUB);
+      await deps.harness.setProtected(siteId, null);
+
+      // A complete of it is in flight: it may still write entries from this plan.
+      const locked = await noUrls("v3");
+      await deps.store.claimCompleteLock({
+        siteId,
+        sessionId: locked,
+        baseVersion: 1,
+        now: deps.clock.now,
+        expiresAt: deps.clock.now + 60_000,
+      });
+      (await abortPublish(deps, USER, locked))._unsafeUnwrap();
+      expect((await deps.store.getSession(locked))?.plan).not.toBe(PLAN_STUB);
     });
 
     it("answers 404 for an unknown or foreign session", async () => {
@@ -1129,6 +1188,47 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       expect((await deps.store.getSession(begun.publish.id))?.status).toBe("expired");
     });
 
+    it("refuses with 410 when a session object is gone, even while the hold looks live to its clock", async () => {
+      const deps = setup();
+      const begun = (await begin(deps))._unsafeUnwrap();
+      performUploads(deps, begun.uploads);
+      const commit = deps.store.commitVersion;
+      deps.store.commitVersion = async (v) => {
+        // GC, whose clock runs ahead of this Worker's, retired the blob's
+        // session object; the stored objects themselves are still there.
+        await deps.harness.dropSessionObject(v.sessionId, "blob");
+        return commit(v);
+      };
+      const result = await completePublish(deps, USER, begun.publish.id, completeRequest());
+      deps.store.commitVersion = commit;
+      expect(result._unsafeUnwrapErr()).toMatchObject({ status: 410, code: "PUBLISH_EXPIRED" });
+      expect(await deps.harness.versionNumbers(begun.publish.siteId)).toEqual([]);
+      expect(
+        (await deps.store.getStoredObjects(USER, [{ kind: "blob", sha256: hex("blob-1") }]))[0]
+          ?.verified,
+      ).toBe(false);
+    });
+
+    it("refuses with 410 when GC, its clock ahead, retired the session before the commit", async () => {
+      const deps = setup();
+      const begun = (await begin(deps))._unsafeUnwrap();
+      performUploads(deps, begun.uploads);
+      deps.clock.now += SESSION_TTL_MS - 1_000;
+      const commit = deps.store.commitVersion;
+      let report: Awaited<ReturnType<typeof runGc>> | undefined;
+      deps.store.commitVersion = async (v) => {
+        // This Worker's clock still reads a live hold; GC's does not.
+        report = await runGc(deps.gc, new Date(deps.clock.now + 2_000));
+        return commit(v);
+      };
+      const result = await completePublish(deps, USER, begun.publish.id, completeRequest());
+      deps.store.commitVersion = commit;
+      expect(report).toMatchObject({ retiredSessions: 1 });
+      expect(report!.deletedObjects).toBeGreaterThan(0);
+      expect(result._unsafeUnwrapErr()).toMatchObject({ status: 410, code: "PUBLISH_EXPIRED" });
+      expect(await deps.harness.versionNumbers(begun.publish.siteId)).toEqual([]);
+    });
+
     it("refuses when the complete limiter says so, before touching storage", async () => {
       const deps = setup();
       const begun = (await begin(deps))._unsafeUnwrap();
@@ -1202,6 +1302,8 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       expect((await deps.store.openSessions(USER, deps.clock.now)).count).toBe(
         MAX_OPEN_SESSIONS_PER_ACCOUNT,
       );
+      // The refused session is gone, plan and all.
+      expect((await deps.harness.sessionRows(USER)).count).toBe(MAX_OPEN_SESSIONS_PER_ACCOUNT);
     });
 
     it("stubs a session's plan when it commits", async () => {
@@ -1328,6 +1430,7 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       expect(await deps.store.getStoredObjects(USER, [{ kind: "source", sha256: hex("s3") }])).toEqual(
         [],
       );
+      expect((await deps.harness.sessionRows(USER)).count).toBe(2);
     });
 
     it("keeps an aborted session's hold when it was given only site URLs (Q9)", async () => {

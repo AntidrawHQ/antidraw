@@ -9,6 +9,7 @@ import {
 const MAX_SEGMENT_BYTES = 255;
 const MAX_PATH_BYTES = 1024;
 const CONTROL_CHARS = /[\x00-\x1f\x7f]/;
+const ASCII = /^[\x00-\x7f]*$/;
 
 const anyDepthDirs = new Set<string>(ANY_DEPTH_EXCLUDED_DIRS);
 const rootDirs = new Set<string>(ROOT_EXCLUDED_DIRS);
@@ -18,16 +19,20 @@ const secretDirs = new Set<string>(SECRET_DIRS);
 // Same rule as packages/server/src/lib/paths.ts
 export const isSafeSnapshotPath = (p: string): boolean => {
   if (p === "" || p.startsWith("/") || p.includes("\\") || CONTROL_CHARS.test(p)) return false;
-  if (Buffer.byteLength(p, "utf8") > MAX_PATH_BYTES) return false;
-  return p
-    .split("/")
-    .every((s) => s !== "" && s !== "." && s !== ".." && Buffer.byteLength(s, "utf8") <= MAX_SEGMENT_BYTES);
+  // An ASCII string's byte length is its length; measuring each segment of a manifest's paths
+  // otherwise dominates validating it
+  const byteLength = ASCII.test(p) ? (s: string) => s.length : (s: string) => Buffer.byteLength(s, "utf8");
+  if (byteLength(p) > MAX_PATH_BYTES) return false;
+  return p.split("/").every((s) => s !== "" && s !== "." && s !== ".." && byteLength(s) <= MAX_SEGMENT_BYTES);
 };
 
 // A name as a case-insensitive filesystem compares it. APFS uses full Unicode case folding, which
 // toLowerCase alone misses: "ſ" (long s) and "ß" fold to "s"/"ss", so `node_moduleſ` opens
 // `node_modules`. Upper-then-lower applies those foldings; over-folding only excludes more
-export const foldName = (s: string): string => s.normalize("NFC").toUpperCase().toLowerCase().normalize("NFC");
+// ASCII is already NFC and only toLowerCase changes it, so it skips the Unicode work: validating a
+// manifest folds every segment of every path
+export const foldName = (s: string): string =>
+  ASCII.test(s) ? s.toLowerCase() : s.normalize("NFC").toUpperCase().toLowerCase().normalize("NFC");
 
 // Key for case-insensitive collision checks (APFS and NTFS default to case-insensitive)
 export const caseKey = (p: string): string => foldName(p);

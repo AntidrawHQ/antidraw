@@ -191,6 +191,109 @@ describe("extractSnapshot rejects hostile archives and leaves nothing behind", (
     await expectRejected(file, "UNSAFE_ENTRY");
   });
 
+  test("a file that is a directory of a path sorted away from it, or of another case → UNSAFE_ENTRY", async () => {
+    // "a-b" sorts between "a" and "a/b" by code unit
+    const apart = await snapshotArchive([
+      { path: "a", content: "file" },
+      { path: "a-b", content: "sibling" },
+      { path: "a/b/c", content: "nested" },
+    ]);
+    const { error } = await expectRejected(apart.file, "UNSAFE_ENTRY");
+    expect(error.path).toBe("a");
+
+    const cased = archivePath();
+    const manifest = manifestOf([
+      { path: "A", content: "file" },
+      { path: "a/b", content: "nested" },
+    ]);
+    await buildArchive(cased, [manifestJsonEntry(manifest), fileEntry("files/A", "file"), fileEntry("files/a/b", "nested")]);
+    await expectRejected(cased, "UNSAFE_ENTRY");
+  });
+
+  test("paths that only share a name prefix are not directories of each other", async () => {
+    const files: ArchiveFile[] = [
+      { path: "a", content: "1" },
+      { path: "a-b/c", content: "2" },
+      { path: "ab/c", content: "3" },
+      { path: "a.b", content: "4" },
+      { path: "b/a", content: "5" },
+      { path: "b/a-", content: "6" },
+    ];
+    const { file } = await snapshotArchive(files);
+    const { result, destDir } = await extractFrom(file);
+    expect(result._unsafeUnwrap().fileCount).toBe(files.length);
+    expect(Object.keys(readTree(destDir)).sort()).toEqual(files.map((f) => f.path).sort());
+  });
+
+  test("a manifest of many deep paths never blocks the event loop for long", async () => {
+    // 511 one-character segments per path, 1024 bytes each: checking every prefix of every path
+    // is quadratic in depth, and extract runs in the main process. This took over 4 s in one block
+    const files = Array.from({ length: 4000 }, (_, k) => ({
+      path: `${"a/".repeat(510)}${String(k).padStart(4, "0")}`,
+      size: 0,
+      sha256: sha256(""),
+      mode: 0o644,
+      storage: "archive",
+    }));
+    // The files themselves are left out: paths this deep cannot be written on macOS
+    const file = archivePath();
+    await buildArchive(file, [manifestJsonEntry({ version: 1, files })]);
+
+    let longestGap = 0;
+    let last = performance.now();
+    const ticker = setInterval(() => {
+      const now = performance.now();
+      longestGap = Math.max(longestGap, now - last);
+      last = now;
+    }, 5);
+    try {
+      expect((await readSnapshotManifest(file))._unsafeUnwrap().files).toHaveLength(files.length);
+      const { error } = await expectRejected(file, "MANIFEST_MISMATCH");
+      expect(error.message).toMatch(/missing from the archive/);
+    } finally {
+      clearInterval(ticker);
+    }
+    expect(longestGap).toBeLessThan(400);
+  });
+
+  test("a manifest swapped between the passes → MANIFEST_MISMATCH, even one pass 1 would refuse", async () => {
+    const { file, blobs } = await snapshotArchive([
+      ...valid,
+      { path: "big.bin", content: Buffer.alloc(LARGE_FILE_BYTES), storage: "blob" },
+    ]);
+    // Pass 2 does not parse the manifest again, so one it would refuse is caught by its hash
+    const hostile = manifestOf(valid);
+    hostile.files.push({ path: ".git/config", size: 0, sha256: sha256(""), mode: 0o644, storage: "archive" });
+    const swapIn = archivePath();
+    await buildArchive(swapIn, [
+      manifestJsonEntry(hostile),
+      fileEntry("files/package.json", "{}"),
+      fileEntry("files/src/app.ts", "export {}"),
+      fileEntry("files/.git/config", ""),
+    ]);
+
+    const work = makeTmp();
+    const blobPaths = new Map<string, string>();
+    for (const [sha, content] of blobs) {
+      blobPaths.set(sha, path.join(work, sha));
+      fs.writeFileSync(path.join(work, sha), content);
+    }
+    const destDir = path.join(work, "remix", "source");
+    fs.mkdirSync(path.dirname(destDir));
+    // Pass 1 resolves the blob once it has read the whole archive
+    let swapped = false;
+    const blobFile = (sha: string) => {
+      if (!swapped) fs.copyFileSync(swapIn, file);
+      swapped = true;
+      return blobPaths.get(sha);
+    };
+
+    const result = await extractSnapshot({ archiveFile: file, blobFile, destDir });
+    expect(swapped).toBe(true);
+    expect(result._unsafeUnwrapErr()).toMatchObject({ code: "MANIFEST_MISMATCH", message: "Archive changed during extraction" });
+    expect(leftovers(destDir)).toEqual([]);
+  });
+
   test("content that does not match the manifest sha → CHECKSUM_MISMATCH", async () => {
     const file = archivePath();
     const manifest = manifestOf(valid);

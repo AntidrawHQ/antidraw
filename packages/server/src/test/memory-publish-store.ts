@@ -204,6 +204,9 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
         site.cleanupSince ??= s.now;
       }
     },
+    async discardSession(sessionId) {
+      deleteSessions((s) => s.id === sessionId);
+    },
     async getSession(sessionId) {
       return copy(state.sessions.get(sessionId));
     },
@@ -212,6 +215,9 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
       if (!session || (opts.onlyIfPending && session.status !== "pending")) return false;
       session.status = status;
       if (opts.holdUntil !== undefined) session.holdUntil = opts.holdUntil;
+      const site = state.sites.get(session.siteId);
+      const planNeeded = site?.protectedFiles === "*" || site?.completeLock === session.id;
+      if (opts.stubPlan && !planNeeded) session.plan = PLAN_STUB;
       return true;
     },
     async usedBytes(userId) {
@@ -275,7 +281,12 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
       const site = state.sites.get(v.siteId);
       const next = v.baseVersion + 1;
       const current = state.sessions.get(v.sessionId);
-      const live = !!current && current.status === "pending" && current.holdUntil > v.now;
+      const live =
+        !!current &&
+        current.status === "pending" &&
+        current.holdUntil > v.now &&
+        state.sessionObjects.filter((o) => o.sessionId === v.sessionId).length ===
+          v.sessionObjects;
       const guard =
         !!site &&
         site.headVersion === v.baseVersion &&

@@ -2,6 +2,7 @@ import { useCallback, useEffect } from "react";
 import { X } from "lucide-react";
 import { File as DiffsFile } from "@pierre/diffs/react";
 import { cn } from "@/renderer/lib/utils";
+import { LAYER } from "@/renderer/lib/layers";
 import { useWorkspaceStore } from "../store/workspace";
 import { useComponentSource } from "../store/userComponents";
 import { CopyDropdown } from "./CopyDropdown";
@@ -47,7 +48,8 @@ const Sidebar = ({
   return (
     <div
       className={cn(
-        "fixed top-[38px] right-0 bottom-0 w-[420px] flex flex-col bg-[#262626] border-l border-[#2d2d2d] z-[100] transition-transform duration-[320ms] ease-[cubic-bezier(0.16,1,0.3,1)]",
+        "fixed top-[38px] right-0 bottom-0 w-[420px] flex flex-col bg-[#262626] border-l border-[#2d2d2d] transition-transform duration-[320ms] ease-[cubic-bezier(0.16,1,0.3,1)]",
+        LAYER.sidePanel,
         isOpen
           ? "translate-x-0 pointer-events-auto"
           : "translate-x-full pointer-events-none"

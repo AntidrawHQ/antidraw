@@ -83,6 +83,7 @@ const version = (over: Partial<NewVersion> = {}): NewVersion => ({
   keepVersions: 5,
   cleanupAfter: 9000,
   now: 20,
+  sessionObjects: 2, // session()'s
   ...over,
 });
 
@@ -392,6 +393,61 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     expect(await store.commitVersion(version({ now: 19 }))).toEqual({ ok: true });
   });
 
+  it("rolls back when a session object is gone, even while the hold looks live", async () => {
+    const { store, q } = setup();
+    await site(store);
+    await store.createSession(session());
+    await lock(store);
+    // What GC's retire does, seen by a commit whose clock runs behind GC's.
+    q("DELETE FROM publish_session_object WHERE session_id = 'pub_1' AND kind = 'blob'");
+    expect(await store.commitVersion(version())).toEqual(expired);
+    expectRolledBack(q);
+    q("DELETE FROM publish_session_object WHERE session_id = 'pub_1'");
+    expect(await store.commitVersion(version())).toEqual(expired);
+    expectRolledBack(q);
+  });
+
+  it("discards a session with its session objects, leaving the objects and the site", async () => {
+    const { store, q } = setup();
+    await site(store);
+    await store.createSession(session({ plan: JSON.stringify({ big: "x".repeat(10_000) }) }));
+    await store.createSession(session({ id: "pub_2", objects: [] }));
+    await store.discardSession("pub_1");
+    expect(await store.getSession("pub_1")).toBeNull();
+    expect(q("SELECT id FROM publish_session")).toEqual([{ id: "pub_2" }]);
+    expect(q("SELECT * FROM publish_session_object")).toEqual([]);
+    expect(q("SELECT count(*) AS n FROM stored_object")).toEqual([{ n: 2 }]);
+    expect(await store.findSiteById("site_1")).not.toBeNull();
+    // Nothing holds its objects any more.
+    expect(await store.releaseUnheldObjects(U, session().objects, 20)).toBe(2);
+  });
+
+  it("stubs the plan with the status, unless the site is * or the session holds its lock", async () => {
+    const { store, q } = setup();
+    await site(store);
+    const plan = JSON.stringify({ big: "x".repeat(1000) });
+    for (const id of ["pub_1", "pub_2", "pub_3", "pub_4"]) {
+      await store.createSession(session({ id, plan, objects: [] }));
+    }
+    const abort = (id: string) =>
+      store.setSessionStatus(id, "aborted", { onlyIfPending: true, holdUntil: 50, stubPlan: true });
+    expect(await abort("pub_1")).toBe(true);
+    expect(await store.getSession("pub_1")).toMatchObject({
+      status: "aborted",
+      holdUntil: 50,
+      plan: PLAN_STUB,
+    });
+    expect(await store.setSessionStatus("pub_2", "aborted")).toBe(true);
+    expect((await store.getSession("pub_2"))?.plan).toBe(plan);
+    await lock(store, "pub_3");
+    await abort("pub_3");
+    expect((await store.getSession("pub_3"))?.plan).toBe(plan);
+    await store.releaseCompleteLock("site_1", "pub_3");
+    q("UPDATE site SET protected_files = '*' WHERE id = 'site_1'");
+    await abort("pub_4");
+    expect((await store.getSession("pub_4"))?.plan).toBe(plan);
+  });
+
   it("claims the lock only against the expected head and a free, lapsed or own lock", async () => {
     const { store } = setup();
     await site(store);
@@ -468,7 +524,9 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
       size: 1,
       mode: 420,
     }));
-    expect(await store.commitVersion(version({ largeFiles }))).toEqual({ ok: true });
+    expect(await store.commitVersion(version({ largeFiles, sessionObjects: 500 }))).toEqual({
+      ok: true,
+    });
     expect(q("SELECT count(*) AS n FROM version_large_file")).toEqual([{ n: 1000 }]);
     expect(q("SELECT count(*) AS n FROM stored_object WHERE verified = 1")).toEqual([{ n: 500 }]);
     expect(Math.max(...shim.log.map((s) => s.params))).toBeLessThanOrEqual(100);

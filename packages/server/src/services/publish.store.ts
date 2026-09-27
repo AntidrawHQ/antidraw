@@ -129,14 +129,18 @@ export type NewVersion = {
   keepVersions: number;
   cleanupAfter: number;
   now: number;
+  // How many session objects the session was created with (its plan's
+  // source and distinct blobs). The guard requires them all still there, so
+  // a session whose objects GC retired cannot commit whatever the clocks say.
+  sessionObjects: number;
 };
 
 export type CommitFailure =
   | { reason: "conflict" }
   | { reason: "objects-gone"; missing: ObjectRef[] }
   | { reason: "lock-lost" }
-  // The session is no longer pending, or its hold ended: GC may already have
-  // claimed its objects and retired its session objects.
+  // The session is no longer pending, its hold ended, or its session objects
+  // are gone: GC may already have claimed its objects and retired it.
   | { reason: "expired" }
   | { reason: "other"; error: unknown };
 
@@ -163,11 +167,21 @@ export type PublishStore = {
   // One batch: the session, its objects, the stored-object upsert and the
   // site's cleanup_after bump.
   createSession(session: NewSession): Promise<void>;
+  // Deletes a session begin refused before it issued any URL or answered
+  // with its id: nothing can complete it or read its plan, and a row kept
+  // until retention would let refused begins fill D1 past the open-session
+  // cap. Its session objects go with it.
+  discardSession(sessionId: string): Promise<void>;
   getSession(sessionId: string): Promise<SessionRow | null>;
+  // `stubPlan` also replaces the plan with PLAN_STUB, for a session whose
+  // hold ends here: kept only while its site's protected_files is "*" (GC
+  // may need it to resolve that) or the session holds the site's lock (a
+  // complete of it is in flight). Otherwise the plan would stay in D1 until
+  // GC retires the session, outside the open-session cap.
   setSessionStatus(
     sessionId: string,
     status: SessionStatus,
-    opts?: { holdUntil?: number; onlyIfPending?: boolean },
+    opts?: { holdUntil?: number; onlyIfPending?: boolean; stubPlan?: boolean },
   ): Promise<boolean>;
   usedBytes(userId: string): Promise<number>;
   // The account's sessions that have not committed and still hold, and the
@@ -511,6 +525,13 @@ export const d1PublishStore = (db: Db): PublishStore => {
       await batch(statements);
     },
 
+    async discardSession(sessionId) {
+      await batch([
+        sql`DELETE FROM publish_session_object WHERE session_id = ${sessionId}`,
+        sql`DELETE FROM publish_session WHERE id = ${sessionId}`,
+      ]);
+    },
+
     async getSession(sessionId) {
       const row = await first(sql`SELECT * FROM publish_session WHERE id = ${sessionId}`);
       return row ? toSession(row) : null;
@@ -519,6 +540,12 @@ export const d1PublishStore = (db: Db): PublishStore => {
     async setSessionStatus(sessionId, status, opts = {}) {
       const sets = [sql`status = ${status}`];
       if (opts.holdUntil !== undefined) sets.push(sql`hold_until = ${opts.holdUntil}`);
+      if (opts.stubPlan) {
+        sets.push(sql`plan = CASE WHEN EXISTS (SELECT 1 FROM site
+            WHERE site.id = publish_session.site_id
+              AND (site.protected_files = '*' OR site.complete_lock = publish_session.id))
+          THEN plan ELSE ${PLAN_STUB} END`);
+      }
       const onlyPending = opts.onlyIfPending ? sql` AND status = 'pending'` : sql``;
       return (
         (await changes(
@@ -582,11 +609,16 @@ export const d1PublishStore = (db: Db): PublishStore => {
       // (site_id, version) is a second expected-version check. The session
       // must still be pending and holding: once its hold ends, GC may claim
       // its unverified objects and retire (delete) its session objects, after
-      // which the object check below would pass with nothing to check.
+      // which the object check below would pass with nothing to check. The
+      // hold is judged by this Worker's clock and GC's claim by GC's, so the
+      // session objects must also all still be there: that check needs no
+      // clock.
       const guard = sql`EXISTS (SELECT 1 FROM site WHERE id = ${v.siteId}
             AND head_version = ${v.baseVersion} AND complete_lock = ${v.sessionId})
         AND EXISTS (SELECT 1 FROM publish_session WHERE id = ${v.sessionId}
             AND status = 'pending' AND hold_until > ${v.now})
+        AND (SELECT count(*) FROM publish_session_object
+            WHERE session_id = ${v.sessionId}) = ${v.sessionObjects}
         AND NOT EXISTS (SELECT 1 FROM publish_session_object pso
           WHERE pso.session_id = ${v.sessionId}
           AND NOT EXISTS (SELECT 1 FROM stored_object so WHERE so.user_id = pso.user_id
@@ -634,7 +666,9 @@ export const d1PublishStore = (db: Db): PublishStore => {
         const site = await findSiteById(v.siteId);
         if (!site || site.headVersion !== v.baseVersion) return { ok: false, reason: "conflict" };
         const session = await first(sql`SELECT 1 AS live FROM publish_session
-          WHERE id = ${v.sessionId} AND status = 'pending' AND hold_until > ${v.now}`);
+          WHERE id = ${v.sessionId} AND status = 'pending' AND hold_until > ${v.now}
+            AND (SELECT count(*) FROM publish_session_object
+              WHERE session_id = ${v.sessionId}) = ${v.sessionObjects}`);
         if (!session) return { ok: false, reason: "expired" };
         const missing = await missingSessionObjects(v.sessionId);
         if (missing.length > 0) return { ok: false, reason: "objects-gone", missing };

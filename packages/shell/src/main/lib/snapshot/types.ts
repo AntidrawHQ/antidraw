@@ -21,12 +21,13 @@ export const isAlwaysExcludedFile = (name: string): boolean =>
   /^\.env/i.test(name) || name.toLowerCase() === ".ds_store";
 
 const SECRET_NAMES = new Set([".npmrc", ".yarnrc.yml", ".netrc", ".git-credentials", ".pypirc"]);
-const SECRET_PATTERNS = [/^\.dev\.vars/i, /\.pem$/i, /\.p12$/i, /\.pfx$/i, /^id_(rsa|dsa|ecdsa|ed25519)/i];
+// One regex, not one per pattern: extract tests every segment of every manifest path
+const SECRET_PATTERN = /^\.dev\.vars|\.(?:pem|p12|pfx)$|^id_(?:rsa|dsa|ecdsa|ed25519)/i;
 
 // Credential files. Remix is on by default, so a snapshot is effectively public; these are never
 // packed. `*.key` is deliberately absent: it also matches Keynote files.
 export const isSensitiveFile = (name: string): boolean =>
-  SECRET_NAMES.has(name.toLowerCase()) || SECRET_PATTERNS.some((re) => re.test(name));
+  SECRET_NAMES.has(name.toLowerCase()) || SECRET_PATTERN.test(name);
 
 export type ScannedFile = {
   path: string;

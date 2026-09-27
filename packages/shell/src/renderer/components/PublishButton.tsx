@@ -24,6 +24,8 @@ import {
   type StatusCheck,
 } from "@/renderer/lib/publish-runs";
 import { queryKeys } from "@/renderer/lib/query-keys";
+import { LAYER } from "@/renderer/lib/layers";
+import { cn } from "@/renderer/lib/utils";
 import {
   Collapsible,
   CollapsibleContent,
@@ -56,6 +58,17 @@ const EXIT = { duration: 0.12, ease: EASE_OUT };
 const GREEN = "oklch(0.696 0.17 162.48)";
 const RED = "oklch(0.704 0.191 22.216)";
 const tint = (c: string, p: number) => `color-mix(in oklch, ${c} ${p}%, transparent)`;
+
+// The panel and the toast carry the publish result, so they sit above the
+// code side panel, which covers the right edge where both are anchored.
+export const PANEL_CLASS = cn(
+  "fixed inset-0 top-[38px] flex items-start justify-end pr-3 pt-2",
+  LAYER.overlay,
+);
+export const TOAST_CLASS = cn(
+  "fixed bottom-5 right-5 flex flex-col gap-1.5 rounded-[10px] border border-[#2d2d2d] bg-[#2c2c2c] py-2 pl-3 pr-2 shadow-[0_16px_48px_-12px_rgba(0,0,0,0.7)]",
+  LAYER.overlay,
+);
 
 // How long "Connected" shows before publishing starts, and how long the
 // published toast stays up.
@@ -526,7 +539,7 @@ export const PublishButton = ({
           <AnimatePresence initial={false}>
             {modalOpen && (
               <motion.div
-                className="fixed inset-0 top-[38px] z-40 flex items-start justify-end pr-3 pt-2"
+                className={PANEL_CLASS}
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0, transition: EXIT }}
@@ -635,7 +648,7 @@ export const PublishButton = ({
           <AnimatePresence>
             {published && (
               <motion.div
-                className="fixed bottom-5 right-5 z-50 flex flex-col gap-1.5 rounded-[10px] border border-[#2d2d2d] bg-[#2c2c2c] py-2 pl-3 pr-2 shadow-[0_16px_48px_-12px_rgba(0,0,0,0.7)]"
+                className={TOAST_CLASS}
                 initial={{ opacity: 0, y: reduce ? 0 : 8 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: reduce ? 0 : 4, transition: EXIT }}

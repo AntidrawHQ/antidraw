@@ -546,10 +546,13 @@ export const beginPublish = (
       cleanupAfter: expiresAt + SITE_CLEANUP_DELAY_MS,
     });
 
-    // No URL was issued, so a refused session holds nothing, and rows only
-    // this begin needed (for objects R2 does not have) are released again.
+    // No URL was issued and the client never learns the session's id, so a
+    // refused session is deleted outright (its plan with it: kept, refused
+    // begins would pile plans up in D1 outside the open-session cap), and
+    // rows only this begin needed (for objects R2 does not have) are
+    // released again.
     const refuse = async (error: ApiError) => {
-      await deps.store.setSessionStatus(sessionId, "aborted", { holdUntil: 0 });
+      await deps.store.discardSession(sessionId);
       await deps.store.releaseUnheldObjects(userId, objectUploads, now);
       return err(error);
     };
@@ -836,6 +839,8 @@ const verifyAndCommit = async (
       keepVersions: KEEP_VERSIONS,
       cleanupAfter: now + SITE_CLEANUP_DELAY_MS,
       now,
+      // begin created one session object per plan object.
+      sessionObjects: planObjects(plan).length,
     });
     if (committed.ok) return ok(undefined);
 
@@ -979,9 +984,13 @@ export const abortPublish = (
       // Unreadable: keep the hold.
     }
     const releaseHold = plan.objectUploads === 0 && plan.siteUploads === 0;
+    // A released session no longer counts as open, so its plan goes now
+    // rather than at GC's next retire.
     await deps.store.setSessionStatus(session.id, "aborted", {
       onlyIfPending: true,
-      ...(releaseHold ? { holdUntil: Math.min(session.holdUntil, deps.now().getTime()) } : {}),
+      ...(releaseHold
+        ? { holdUntil: Math.min(session.holdUntil, deps.now().getTime()), stubPlan: true }
+        : {}),
     });
     return ok({ ok: true as const });
   });

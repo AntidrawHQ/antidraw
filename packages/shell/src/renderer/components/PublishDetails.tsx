@@ -7,6 +7,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/renderer/components/ui/dialog";
+import { LAYER } from "@/renderer/lib/layers";
+import { cn } from "@/renderer/lib/utils";
 
 /* ────────────────────────────────────────────────────────────
    What a publish left out: files the snapshot skipped (with the
@@ -78,7 +80,14 @@ export const PublishDetails = ({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[min(560px,80vh)] grid-rows-[auto_minmax(0,1fr)] border-[#2d2d2d] bg-[#2c2c2c] font-sans text-[#e0e0e0] antialiased">
+      {/* Opened from the published toast, so it sits on the same layer. */}
+      <DialogContent
+        overlayClassName={LAYER.overlay}
+        className={cn(
+          "max-h-[min(560px,80vh)] grid-rows-[auto_minmax(0,1fr)] border-[#2d2d2d] bg-[#2c2c2c] font-sans text-[#e0e0e0] antialiased",
+          LAYER.overlay,
+        )}
+      >
         <DialogHeader>
           <DialogTitle className="text-base font-medium tracking-[-0.01em] text-[#e0e0e0]">
             What was published

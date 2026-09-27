@@ -51,8 +51,13 @@ function fail(code: ExtractError["code"], message: string, p?: string): never {
 
 type Limits = { maxBytes: number; maxFiles: number };
 
+// Files checked between yields to the event loop. A path has up to 512 segments and each is
+// folded and matched, so a manifest at its cap takes seconds: extract runs in the main process
+const FILES_PER_YIELD = 1000;
+const yieldToEventLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
+
 // Checks the manifest as a whole, before any other entry or blob is read
-const parseManifest = (bytes: Buffer, limits: Limits): SnapshotManifest => {
+const parseManifest = async (bytes: Buffer, limits: Limits): Promise<SnapshotManifest> => {
   let json: unknown;
   try {
     json = JSON.parse(bytes.toString("utf8"));
@@ -72,7 +77,8 @@ const parseManifest = (bytes: Buffer, limits: Limits): SnapshotManifest => {
   const paths = new Set<string>();
   const keys = new Map<string, string>();
   const blobSizes = new Map<string, number>();
-  for (const f of manifest.files) {
+  for (const [i, f] of manifest.files.entries()) {
+    if (i > 0 && i % FILES_PER_YIELD === 0) await yieldToEventLoop();
     // Remix opens the result with Claude Code, git and npm, so anything scan would exclude
     // (.claude hooks, .git/config, node_modules, .env*, credentials) is refused, not skipped
     if (!isSafeSnapshotPath(f.path)) fail("UNSAFE_ENTRY", `Unsafe path in snapshot: ${f.path}`, f.path);
@@ -89,15 +95,24 @@ const parseManifest = (bytes: Buffer, limits: Limits): SnapshotManifest => {
       blobSizes.set(f.sha256, f.size);
     }
   }
-  // A path that is also a directory of another path cannot be written
-  for (const f of manifest.files) {
-    const segments = caseKey(f.path).split("/");
-    for (let i = 1; i < segments.length; i++) {
-      const dir = keys.get(segments.slice(0, i).join("/"));
-      if (dir !== undefined) fail("UNSAFE_ENTRY", `${dir} is both a file and a directory`, dir);
-    }
-  }
+  const dir = findFileUsedAsDir(keys);
+  if (dir !== undefined) fail("UNSAFE_ENTRY", `${dir} is both a file and a directory`, dir);
   return manifest;
+};
+
+// A path that is also a directory of another path cannot be written. Paths never hold control
+// characters, so with "/" read as "\0" every key under `F/` sorts right after F: a conflict is
+// always between neighbours. One sort instead of a lookup per prefix, which a manifest of deep
+// paths makes quadratic in depth. `keys` maps each folded path to its manifest path
+const findFileUsedAsDir = (keys: Map<string, string>): string | undefined => {
+  const sorted = [...keys].map(([key, p]) => [key.replaceAll("/", "\0"), p] as const);
+  sorted.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  for (let i = 1; i < sorted.length; i++) {
+    const [dirKey, dir] = sorted[i - 1]!;
+    const [key] = sorted[i]!;
+    if (key.length > dirKey.length && key.startsWith(dirKey) && key[dirKey.length] === "\0") return dir;
+  }
+  return undefined;
 };
 
 // Counts gunzipped bytes against a budget that grows only with what the manifest and the tar
@@ -137,13 +152,17 @@ const readManifestEntry = async (entry: AsyncIterable<Buffer>, size: number): Pr
 const toExtractError = (e: unknown): ExtractError =>
   e instanceof ExtractFailure ? e.failure : { code: "INVALID_ARCHIVE", message: `Invalid archive: ${errorMessage(e)}` };
 
+type ReadManifest = { manifest: SnapshotManifest; manifestSha256: string };
+
 // Streams gunzip → tar and validates every entry against the manifest. With no visitor it stops
-// after the manifest. Returns the manifest and the sha256 of its bytes
+// after the manifest. Returns the manifest and the sha256 of its bytes. With `known` (an earlier
+// read of the same archive) the manifest bytes must hash to it and are not parsed again
 const readArchive = async (
   archiveFile: string,
   limits: Limits,
   visitor?: ArchiveVisitor,
-): Promise<{ manifest: SnapshotManifest; manifestSha256: string }> => {
+  known?: ReadManifest,
+): Promise<ReadManifest> => {
   const source = createReadStream(archiveFile);
   const budget = new ByteBudget();
   const extract = tarExtract();
@@ -183,8 +202,11 @@ const readArchive = async (
         if (size > MAX_MANIFEST_BYTES) fail("TOO_LARGE", "manifest.json is too large");
         budget.limit += size + ENTRY_SLACK_BYTES;
         const bytes = await readManifestEntry(entry as AsyncIterable<Buffer>, size);
-        manifest = parseManifest(bytes, limits);
         manifestSha256 = createHash("sha256").update(bytes).digest("hex");
+        if (known && known.manifestSha256 !== manifestSha256) {
+          fail("MANIFEST_MISMATCH", "Archive changed during extraction");
+        }
+        manifest = known?.manifest ?? (await parseManifest(bytes, limits));
         for (const f of manifest.files) if (f.storage === "archive") archived.set(f.path, f);
         if (!visitor) return { manifest, manifestSha256 };
         continue;
@@ -321,11 +343,14 @@ export const extractSnapshot = async (input: {
 
   try {
     // The archive is read again, so it is validated again: a file swapped between the passes
-    // fails its checksum instead of being written
-    const second = await readArchive(input.archiveFile, limits, {
-      onFile: (p, expected, entry) => writeVerified(partial, p, expected, entry),
-    });
-    if (second.manifestSha256 !== manifestSha256) fail("MANIFEST_MISMATCH", "Archive changed during extraction");
+    // fails its checksum instead of being written. The manifest must be byte-identical to the one
+    // pass 1 validated, so it is not parsed twice
+    await readArchive(
+      input.archiveFile,
+      limits,
+      { onFile: (p, expected, entry) => writeVerified(partial, p, expected, entry) },
+      { manifest, manifestSha256 },
+    );
     for (const entry of blobEntries(manifest)) {
       const file = resolveBlob(input.blobFile, entry);
       await writeVerified(partial, entry.path, entry, await openBlob(file, entry));

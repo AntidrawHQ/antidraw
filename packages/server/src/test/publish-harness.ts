@@ -25,6 +25,10 @@ export type Harness = {
   setKeep(siteId: string, version: number): Promise<void>;
   setProtected(siteId: string, value: string | null): Promise<void>;
   setLiveFiles(siteId: string, value: string | null): Promise<void>;
+  // Every publish_session row of the account, and their plans' total length.
+  sessionRows(userId: string): Promise<{ count: number; planBytes: number }>;
+  // Deletes one session object row, as nothing but GC's retire does.
+  dropSessionObject(sessionId: string, kind: "source" | "blob"): Promise<void>;
 };
 
 const memoryHarness = (): Harness => {
@@ -49,6 +53,16 @@ const memoryHarness = (): Harness => {
     async setLiveFiles(siteId, value) {
       const site = store.state.sites.get(siteId);
       if (site) site.liveFiles = value;
+    },
+    async sessionRows(userId) {
+      const rows = [...store.state.sessions.values()].filter((s) => s.userId === userId);
+      return { count: rows.length, planBytes: rows.reduce((sum, s) => sum + s.plan.length, 0) };
+    },
+    async dropSessionObject(sessionId, kind) {
+      const i = store.state.sessionObjects.findIndex(
+        (o) => o.sessionId === sessionId && o.kind === kind,
+      );
+      if (i >= 0) store.state.sessionObjects.splice(i, 1);
     },
   };
 };
@@ -76,6 +90,23 @@ const d1Harness = (): Harness => {
     },
     async setLiveFiles(siteId, value) {
       shim.sqlite.prepare("UPDATE site SET live_files = ? WHERE id = ?").run(value, siteId);
+    },
+    async sessionRows(userId) {
+      const row = shim.sqlite
+        .prepare(
+          `SELECT count(*) AS n, coalesce(sum(length(plan)), 0) AS bytes
+            FROM publish_session WHERE user_id = ?`,
+        )
+        .get(userId) as { n: number; bytes: number };
+      return { count: Number(row.n), planBytes: Number(row.bytes) };
+    },
+    async dropSessionObject(sessionId, kind) {
+      shim.sqlite
+        .prepare(
+          `DELETE FROM publish_session_object WHERE rowid = (SELECT rowid
+            FROM publish_session_object WHERE session_id = ? AND kind = ? LIMIT 1)`,
+        )
+        .run(sessionId, kind);
     },
   };
 };
