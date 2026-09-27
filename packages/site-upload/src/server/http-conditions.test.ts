@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { contentType } from "./content-type";
 import { ifNoneMatchHits, ifRangeAllows, parseRange } from "./http-conditions";
+import { contentType } from "./serve";
 
 const table = <T>(inputs: string[], fn: (input: string) => T) =>
   Object.fromEntries(inputs.map((input) => [input, fn(input)]));
@@ -133,7 +133,7 @@ describe("ifRangeAllows", () => {
 });
 
 describe("contentType", () => {
-  it("maps extensions case-insensitively, defaulting to octet-stream", () => {
+  it("uses the mime package with a UTF-8 charset on text types, defaulting to octet-stream", () => {
     expect(
       table(
         [
@@ -144,6 +144,9 @@ describe("contentType", () => {
           "font.woff2",
           "icon.svg",
           "data.json",
+          "clip.mov",
+          "favicon.ico",
+          "notes.md",
           "data.unknownext",
           "Makefile",
           ".htaccess",
@@ -157,13 +160,16 @@ describe("contentType", () => {
         "Makefile": "application/octet-stream",
         "a/b.css": "text/css; charset=utf-8",
         "assets/app-1a2b.JS": "text/javascript; charset=utf-8",
+        "clip.mov": "video/quicktime",
         "clip.mp4": "video/mp4",
-        "data.json": "application/json; charset=utf-8",
+        "data.json": "application/json",
         "data.unknownext": "application/octet-stream",
         "dir.v2/noext": "application/octet-stream",
+        "favicon.ico": "image/vnd.microsoft.icon",
         "font.woff2": "font/woff2",
         "icon.svg": "image/svg+xml",
         "index.html": "text/html; charset=utf-8",
+        "notes.md": "text/markdown; charset=utf-8",
       }
     `);
   });

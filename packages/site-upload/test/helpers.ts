@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { Miniflare } from "miniflare";
+import { join } from "node:path";
+import { createTestHarness } from "wrangler";
 import { SiteUploadError } from "../src/protocol/errors";
 import type { Files, Manifest } from "../src/protocol/manifest";
 import type { Bucket } from "../src/server/bucket";
@@ -97,17 +98,35 @@ export function manifestOf(contents: Record<string, string>, immutable: string[]
   return { v: 1, files };
 }
 
-export type TestBucket = { mf: Miniflare; bucket: Bucket };
+export type TestWorker = {
+  /** The test Worker's URL, served over real HTTP. */
+  url: URL;
+  /** The Worker's R2 binding, driven from Node. */
+  bucket: Bucket;
+  close(): Promise<void>;
+};
 
-/** A local R2 bucket (workerd via Miniflare), driven from Node. */
-export async function createTestBucket(): Promise<TestBucket> {
-  const mf = new Miniflare({
-    modules: true,
-    script: "export default { fetch() { return new Response('') } }",
-    r2Buckets: ["BUCKET"],
+/**
+ * Starts test/worker.ts in workerd with a local R2 bucket, using Wrangler's
+ * official integration-test harness.
+ */
+export async function startTestWorker(): Promise<TestWorker> {
+  const server = createTestHarness({
+    root: join(import.meta.dirname, ".."),
+    workers: [
+      {
+        config: {
+          name: "site-upload-test",
+          main: "test/worker.ts",
+          compatibility_date: "2025-09-01",
+          r2_buckets: [{ binding: "BUCKET", bucket_name: "site-upload-test" }],
+        },
+      },
+    ],
   });
-  const bucket = (await mf.getR2Bucket("BUCKET")) as unknown as Bucket;
-  return { mf, bucket };
+  const { url } = await server.listen();
+  const env = (await server.getWorker().getEnv()) as { BUCKET: Bucket };
+  return { url, bucket: env.BUCKET, close: () => server.close() };
 }
 
 let counter = 0;

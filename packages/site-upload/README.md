@@ -33,6 +33,16 @@ The package ships TypeScript source; consumers bundle it (wrangler, Vite).
 <prefix>/<site>/current.json        the live manifest; swapping it publishes
 ```
 
+## Serving and caching
+
+`SiteServer` reads a site's `current.json` (kept in memory for 5 s), maps the
+URL to a file, and answers ETag/304 and single-range requests itself. File
+bytes come from the Workers Cache API when it has them, keyed by hash so an
+entry never goes stale, and from R2 otherwise; a miss refills the cache after
+the response through `ctx.waitUntil`. The Cache API only works on a custom
+domain or route, not on workers.dev. Content types come from the `mime`
+package, as in Cloudflare's own static-asset serving.
+
 ## What the caller owns
 
 - **Auth and ownership.** `handleUpload` trusts `site` and `publishId`. Route to
@@ -47,12 +57,13 @@ The package ships TypeScript source; consumers bundle it (wrangler, Vite).
 
 ## Tests
 
-`npm test` runs everything against workerd through Miniflare, with no R2 mock:
+`npm test` runs everything against workerd with no R2 mock. The Worker in
+`test/worker.ts` runs under Wrangler's `createTestHarness()`:
 
-- the store and serving tests call a local R2 bucket from Node;
-- `test/e2e.test.ts` bundles the server half into a Worker (a neutral-platform
-  build, so a Node import fails it), then publishes a folder over real HTTP with
-  the client.
+- the store and serving tests drive its local R2 bucket from Node;
+- `test/e2e.test.ts` publishes a folder over real HTTP with the client, then
+  checks serving and the Cache API. The Worker runs without `nodejs_compat`,
+  so a Node import in `src/server` stops it from starting and fails the suite.
 
 Assertions are mostly inline snapshots, with hashes shown as `sha(<content>)`,
 so a reviewer can read what the code actually produced.

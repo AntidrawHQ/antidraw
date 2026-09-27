@@ -1,25 +1,25 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   bytes,
-  createTestBucket,
+  startTestWorker,
   manifestOf,
   sha256,
   summarize,
   uniqueSite,
-  type TestBucket,
+  type TestWorker,
 } from "../../test/helpers";
 import { SiteServer, type SiteServerOptions } from "./serve";
 import { SiteStore } from "./store";
 
-let env: TestBucket;
+let env: TestWorker;
 let clock: number;
 let store: SiteStore;
 let site: string;
 
 beforeAll(async () => {
-  env = await createTestBucket();
+  env = await startTestWorker();
 });
-afterAll(() => env.mf.dispose());
+afterAll(() => env.close());
 
 beforeEach(() => {
   clock = Date.now();

@@ -4,11 +4,13 @@
 import { handleUpload, SiteServer, SiteStore, type Bucket } from "../src/server";
 
 type Env = { BUCKET: Bucket };
+type ExecutionContext = { waitUntil(promise: Promise<unknown>): void };
+type CacheStorage = { default: { match(request: Request): Promise<Response | undefined> } };
 
 let server: SiteServer | undefined;
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const store = new SiteStore({ bucket: env.BUCKET });
     const url = new URL(request.url);
 
@@ -27,11 +29,19 @@ export default {
       return Response.json(await later.cleanup(cleanup[1]!));
     }
 
+    // /_cached/<sha256>: whether the file cache holds this file yet.
+    const cached = /^\/_cached\/([0-9a-f]{64})$/.exec(url.pathname);
+    if (cached) {
+      const { caches } = globalThis as unknown as { caches: CacheStorage };
+      const hit = await caches.default.match(new Request(`https://site-upload.cache/${cached[1]}`));
+      return Response.json({ cached: hit !== undefined });
+    }
+
     // Anything else is a site page; the test names the site in a header
     // because Node's fetch can't set Host.
     const site = request.headers.get("x-site");
     if (!site) return new Response("x-site header required", { status: 400 });
     server ??= new SiteServer({ store, pointerTtlMs: 0 });
-    return server.fetch(request, site);
+    return server.fetch(request, site, ctx);
   },
 };

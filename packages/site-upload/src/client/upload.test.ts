@@ -2,22 +2,22 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { createTestBucket, readable, sha256, thrown, uniqueSite, type TestBucket } from "../../test/helpers";
+import { startTestWorker, readable, sha256, thrown, uniqueSite, type TestWorker } from "../../test/helpers";
 import { SiteUploadError, type ErrorCode } from "../protocol/errors";
 import { SiteStore } from "../server/store";
 import type { UploadTransport } from "./http";
 import { uploadSite, withRetry, type UploadProgress, type UploadSiteResult } from "./upload";
 
-let env: TestBucket;
+let env: TestWorker;
 let dir: string;
 let site: string;
 let store: SiteStore;
 let publishCount: number;
 
 beforeAll(async () => {
-  env = await createTestBucket();
+  env = await startTestWorker();
 });
-afterAll(() => env.mf.dispose());
+afterAll(() => env.close());
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "site-upload-"));

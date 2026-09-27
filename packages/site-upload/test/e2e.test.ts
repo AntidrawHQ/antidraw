@@ -3,39 +3,25 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { build } from "esbuild";
-import { Miniflare } from "miniflare";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createHttpTransport, uploadSite } from "../src/client";
-import { readable, sha256, summarize, uniqueSite } from "./helpers";
+import { readable, sha256, startTestWorker, summarize, uniqueSite, type TestWorker } from "./helpers";
 
-// The server half runs in workerd behind real HTTP; the client runs in Node
-// and streams files from disk. Nothing here is mocked.
+// The server half runs in workerd behind real HTTP (without nodejs_compat, so
+// a Node import in src/server stops the Worker from starting); the client runs
+// in Node and streams files from disk. Nothing here is mocked.
 
-let mf: Miniflare;
+let worker: TestWorker;
 let origin: string;
 let dir: string;
 let site: string;
 let publishCount: number;
 
 beforeAll(async () => {
-  const bundle = await build({
-    entryPoints: [join(import.meta.dirname, "worker.ts")],
-    bundle: true,
-    format: "esm",
-    platform: "neutral",
-    target: "es2022",
-    write: false,
-  });
-  mf = new Miniflare({
-    modules: true,
-    script: bundle.outputFiles[0]!.text,
-    r2Buckets: ["BUCKET"],
-    compatibilityDate: "2025-09-01",
-  });
-  origin = (await mf.ready).origin;
+  worker = await startTestWorker();
+  origin = worker.url.origin;
 });
-afterAll(() => mf?.dispose());
+afterAll(() => worker?.close());
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "site-upload-e2e-"));
@@ -295,6 +281,61 @@ describe("end to end", () => {
         "missing": [
           "sha(<262144 bytes>)",
         ],
+      }
+    `);
+  });
+
+  it("caches files by hash, then serves them and their ranges without R2", async () => {
+    const video = randomBytes(2 * 1024 * 1024);
+    await write({ "index.html": "<video>", "clip.mp4": video });
+    await publish();
+    const hash = sha256(video);
+    const isCached = async () =>
+      ((await (await fetch(`${origin}/_cached/${hash}`)).json()) as { cached: boolean }).cached;
+
+    const before = await isCached();
+    const firstRange = await page("/clip.mp4", { range: "bytes=0-1" });
+    await firstRange.arrayBuffer();
+    // The miss fills the cache after responding; wait for it.
+    let after = false;
+    for (let i = 0; i < 50 && !after; i++) {
+      after = await isCached();
+      if (!after) await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+
+    // With the R2 copy gone, only the cache can answer.
+    await worker.bucket.delete(`sites/${site}/f/${hash}`);
+    const full = await page("/clip.mp4");
+    const fullBytes = Buffer.from(await full.arrayBuffer());
+    const ranged = await page("/clip.mp4", { range: "bytes=1000-1999" });
+    const rangedBytes = Buffer.from(await ranged.arrayBuffer());
+
+    expect({
+      cachedBeforeFirstRequest: before,
+      cachedAfterFirstRequest: after,
+      withoutR2: {
+        full: { status: full.status, sameBytes: fullBytes.equals(video) },
+        range: {
+          status: ranged.status,
+          contentRange: ranged.headers.get("content-range"),
+          sameBytes: rangedBytes.equals(video.subarray(1000, 2000)),
+        },
+      },
+    }).toMatchInlineSnapshot(`
+      {
+        "cachedAfterFirstRequest": true,
+        "cachedBeforeFirstRequest": false,
+        "withoutR2": {
+          "full": {
+            "sameBytes": true,
+            "status": 200,
+          },
+          "range": {
+            "contentRange": "bytes 1000-1999/2097152",
+            "sameBytes": true,
+            "status": 206,
+          },
+        },
       }
     `);
   });

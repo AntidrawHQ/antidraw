@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { createTestBucket, manifestOf, sha256, summarize, uniqueSite, type TestBucket } from "../../test/helpers";
+import { startTestWorker, manifestOf, sha256, summarize, uniqueSite, type TestWorker } from "../../test/helpers";
 import { SiteUploadError } from "../protocol/errors";
 import { MAX_PLAN_BODY_BYTES } from "../protocol/limits";
 import { errorResponse, handleUpload } from "./http";
@@ -8,14 +8,14 @@ import { SiteStore } from "./store";
 // PUTs stream the request body into R2, which only works inside workerd;
 // successful uploads are covered by the end-to-end tests.
 
-let env: TestBucket;
+let env: TestWorker;
 let store: SiteStore;
 let site: string;
 
 beforeAll(async () => {
-  env = await createTestBucket();
+  env = await startTestWorker();
 });
-afterAll(() => env.mf.dispose());
+afterAll(() => env.close());
 
 beforeEach(() => {
   store = new SiteStore({ bucket: env.bucket });
