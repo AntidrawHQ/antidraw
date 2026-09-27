@@ -91,6 +91,40 @@ describe("listFiles", () => {
   });
 });
 
+describe("listFiles limits", () => {
+  it("stops walking as soon as the folder passes the file limit", async () => {
+    await write(Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`d${i % 4}/f${i}.txt`, "x"])));
+    let hashed = 0;
+    const err = await thrown(buildManifest(dir, { limits: { maxFiles: 5 }, onHashed: () => hashed++ }));
+    expect({ err, hashed }).toMatchInlineSnapshot(`
+      {
+        "err": {
+          "code": "TOO_LARGE",
+          "details": {
+            "limit": 5,
+            "reason": "files",
+          },
+          "error": "SiteUploadError",
+          "message": "The folder has more than 5 files",
+        },
+        "hashed": 0,
+      }
+    `);
+  });
+
+  it("stops walking when aborted", async () => {
+    await write({ "a/b.txt": "x" });
+    const controller = new AbortController();
+    controller.abort(new Error("stop"));
+    expect(await thrown(listFiles(dir, { signal: controller.signal }))).toMatchInlineSnapshot(`
+      {
+        "error": "Error",
+        "message": "stop",
+      }
+    `);
+  });
+});
+
 describe("checkLocalFiles", () => {
   const file = (path: string, size = 1): LocalFile => ({ path, absPath: `/x/${path}`, size });
 

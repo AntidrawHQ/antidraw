@@ -1,17 +1,19 @@
 // A Worker wiring the server half the way a real deployment would, for the
 // end-to-end tests. Bundled with esbuild for a neutral platform, so any Node
 // import in src/server fails the bundle.
-import { handleUpload, SiteServer, SiteStore, type Bucket } from "../src/server";
+import { handleUpload, SiteServer, SiteStore, type Bucket, type FileCache } from "../src/server";
 
 type Env = { BUCKET: Bucket };
 type ExecutionContext = { waitUntil(promise: Promise<unknown>): void };
 type CacheStorage = { default: { match(request: Request): Promise<Response | undefined> } };
 
+let store: SiteStore | undefined;
 let server: SiteServer | undefined;
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const store = new SiteStore({ bucket: env.BUCKET });
+    // One store and server per isolate, as in production, so their caches last.
+    store ??= new SiteStore({ bucket: env.BUCKET });
     const url = new URL(request.url);
 
     // /_upload/<site>/<publishId>/<plan | commit | files/<sha256>>
@@ -41,7 +43,8 @@ export default {
     // because Node's fetch can't set Host.
     const site = request.headers.get("x-site");
     if (!site) return new Response("x-site header required", { status: 400 });
-    server ??= new SiteServer({ store, pointerTtlMs: 0 });
+    const { caches } = globalThis as unknown as { caches: { default: FileCache } };
+    server ??= new SiteServer({ store, pointerTtlMs: 0, cache: caches.default });
     return server.fetch(request, site, ctx);
   },
 };

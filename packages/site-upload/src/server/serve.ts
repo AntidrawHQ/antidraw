@@ -1,5 +1,5 @@
 import mime from "mime";
-import type { FileEntry } from "../protocol/manifest";
+import { isId, type FileEntry } from "../protocol/manifest";
 import { ifNoneMatchHits, ifRangeAllows, parseRange, type ByteRange } from "./http-conditions";
 import type { Pointer, SiteStore } from "./store";
 
@@ -21,20 +21,22 @@ export type WaitUntil = { waitUntil(promise: Promise<unknown>): void };
 export type SiteServerOptions = {
   store: SiteStore;
   /**
-   * Where file bytes are cached, keyed by hash. Defaults to `caches.default`
-   * in Workers and to no cache elsewhere; null turns caching off. The Cache
-   * API only works on a custom domain or route, not on workers.dev.
+   * Where file bytes are cached, keyed by hash; usually `caches.default`.
+   * Off unless given: the Cache API only works on a custom domain or route,
+   * and elsewhere (workers.dev) each miss would cost an extra full R2 read.
    */
   cache?: FileCache | null;
   /** How long an isolate reuses a site's pointer before reading it again. Default 5 s. */
   pointerTtlMs?: number;
   /** Pointers kept in memory, least recently used dropped first. Default 500. */
   maxCachedSites?: number;
+  /** Total stored size of the pointers kept in memory. Default 32 MiB. */
+  maxCachedPointerBytes?: number;
   notFound?: NotFoundMode;
   now?: () => number;
 };
 
-type CachedPointer = { pointer: Pointer | null; fetchedAt: number };
+type CachedPointer = { pointer: Pointer | null; fetchedAt: number; bytes: number };
 
 type Resolved =
   | { kind: "file"; path: string; entry: FileEntry }
@@ -44,6 +46,9 @@ type Resolved =
 // A miss re-reads a pointer older than this: a page from a just-published
 // version asks for files an isolate holding the old pointer doesn't know yet.
 const MISS_REFRESH_MS = 1000;
+
+// Hashes filled into the cache by this isolate, so each is filled once.
+const FILLED_MAX = 10_000;
 
 const IMMUTABLE = "public, max-age=31536000, immutable";
 // Cache keys name file content, not a site or path, so any site serving the
@@ -57,18 +62,20 @@ export class SiteServer {
   private readonly maxCachedSites: number;
   private readonly notFound: NotFoundMode;
   private readonly now: () => number;
+  private readonly maxCachedPointerBytes: number;
   private readonly pointers = new Map<string, CachedPointer>();
+  private readonly loading = new Map<string, Promise<CachedPointer>>();
+  private cachedPointerBytes = 0;
   private readonly cache: FileCache | null;
   private readonly filling = new Map<string, Promise<void>>();
+  private readonly filled = new Set<string>();
 
   constructor(options: SiteServerOptions) {
     this.store = options.store;
-    this.cache =
-      options.cache === undefined
-        ? ((globalThis as { caches?: { default?: FileCache } }).caches?.default ?? null)
-        : options.cache;
+    this.cache = options.cache ?? null;
     this.pointerTtlMs = options.pointerTtlMs ?? 5000;
     this.maxCachedSites = options.maxCachedSites ?? 500;
+    this.maxCachedPointerBytes = options.maxCachedPointerBytes ?? 32 * 1024 * 1024;
     this.notFound = options.notFound ?? "404-page";
     this.now = options.now ?? Date.now;
   }
@@ -76,23 +83,57 @@ export class SiteServer {
   /**
    * Answers a GET or HEAD for `site`, taking the file path from the request
    * URL. Pass the Worker's ExecutionContext so cache misses fill the cache.
+   * Never throws: storage failures become a 503.
    */
   async fetch(request: Request, site: string, ctx?: WaitUntil): Promise<Response> {
     if (request.method !== "GET" && request.method !== "HEAD") {
       return text(405, "Method not allowed", { allow: "GET, HEAD" });
     }
+    if (!isId(site)) return text(404, "Not found");
     const url = new URL(request.url);
     const path = decodePath(url.pathname);
     if (path === null) return text(400, "Bad request");
 
-    let cached = await this.pointer(site, false);
-    let resolved = resolve(cached.pointer, path);
-    if (resolved.kind === "miss" && this.now() - cached.fetchedAt >= MISS_REFRESH_MS) {
+    try {
+      let cached = await this.pointer(site, false);
+      let resolved = resolve(cached.pointer, path);
+      if (resolved.kind === "miss" && this.now() - cached.fetchedAt >= MISS_REFRESH_MS) {
+        cached = await this.pointer(site, true);
+        resolved = resolve(cached.pointer, path);
+      }
+      const response = await this.respond(request, site, url, path, cached.pointer, resolved, ctx);
+      if (response) return response;
+
+      // The file is gone from storage: cleanup ran after a newer version went
+      // live, so this pointer is out of date. Read it again and retry once.
       cached = await this.pointer(site, true);
       resolved = resolve(cached.pointer, path);
+      return (
+        (await this.respond(request, site, url, path, cached.pointer, resolved, ctx)) ?? unavailable()
+      );
+    } catch {
+      return unavailable();
     }
+  }
 
-    const pointer = cached.pointer;
+  /** Drops a cached pointer, e.g. right after committing from the same isolate. */
+  forget(site: string) {
+    const cached = this.pointers.get(site);
+    if (!cached) return;
+    this.pointers.delete(site);
+    this.cachedPointerBytes -= cached.bytes;
+  }
+
+  /** The response for a resolved path, or null if its file is missing from storage. */
+  private async respond(
+    request: Request,
+    site: string,
+    url: URL,
+    path: string,
+    pointer: Pointer | null,
+    resolved: Resolved,
+    ctx: WaitUntil | undefined,
+  ): Promise<Response | null> {
     if (!pointer) return text(404, "Not found");
     if (resolved.kind === "file") return this.serve(request, site, resolved.path, resolved.entry, 200, ctx);
     if (resolved.kind === "redirect") {
@@ -111,11 +152,6 @@ export class SiteServer {
     return text(404, "Not found");
   }
 
-  /** Drops a cached pointer, e.g. right after committing from the same isolate. */
-  forget(site: string) {
-    this.pointers.delete(site);
-  }
-
   private async serve(
     request: Request,
     site: string,
@@ -123,7 +159,7 @@ export class SiteServer {
     entry: FileEntry,
     status: 200 | 404,
     ctx: WaitUntil | undefined,
-  ): Promise<Response> {
+  ): Promise<Response | null> {
     const etag = `"${entry.h}"`;
     const headers = new Headers({
       "content-type": contentType(path),
@@ -160,7 +196,7 @@ export class SiteServer {
     if (request.method === "HEAD") return new Response(null, { status: finalStatus, headers });
 
     const body = await this.fileBody(site, entry, range, ctx);
-    if (!body) return text(503, "This file is temporarily unavailable");
+    if (!body) return null;
     return new Response(body, { status: finalStatus, headers });
   }
 
@@ -187,7 +223,7 @@ export class SiteServer {
     if (!object) return null;
     // The cache is filled with a second, full read after responding, rather
     // than by teeing this stream: a slow viewer would make tee buffer the file.
-    if (this.cache && ctx) ctx.waitUntil(this.fill(site, entry, key));
+    if (this.cache && ctx && !this.filled.has(entry.h)) ctx.waitUntil(this.fill(site, entry, key));
     return object.body;
   }
 
@@ -207,6 +243,8 @@ export class SiteServer {
         },
       });
       await cache.put(new Request(key), response);
+      if (this.filled.size >= FILLED_MAX) this.filled.clear();
+      this.filled.add(entry.h);
     })()
       .catch(() => {})
       .finally(() => this.filling.delete(entry.h));
@@ -214,21 +252,39 @@ export class SiteServer {
     return filling;
   }
 
+  /** The site's pointer from memory, or read once however many requests ask at the same time. */
   private async pointer(site: string, force: boolean): Promise<CachedPointer> {
     const hit = this.pointers.get(site);
-    const now = this.now();
-    if (hit && !force && now - hit.fetchedAt < this.pointerTtlMs) {
+    if (hit && !force && this.now() - hit.fetchedAt < this.pointerTtlMs) {
       this.pointers.delete(site);
       this.pointers.set(site, hit);
       return hit;
     }
-    const fresh = { pointer: await this.store.readPointer(site), fetchedAt: now };
-    this.pointers.delete(site);
-    this.pointers.set(site, fresh);
-    if (this.pointers.size > this.maxCachedSites) {
-      this.pointers.delete(this.pointers.keys().next().value!);
+    let loading = this.loading.get(site);
+    if (!loading) {
+      loading = this.store
+        .readPointerSized(site)
+        .then(({ pointer, bytes }) => {
+          const fresh = { pointer, fetchedAt: this.now(), bytes };
+          this.remember(site, fresh);
+          return fresh;
+        })
+        .finally(() => this.loading.delete(site));
+      this.loading.set(site, loading);
     }
-    return fresh;
+    return loading;
+  }
+
+  private remember(site: string, fresh: CachedPointer) {
+    this.forget(site);
+    this.pointers.set(site, fresh);
+    this.cachedPointerBytes += fresh.bytes;
+    while (
+      this.pointers.size > 1 &&
+      (this.pointers.size > this.maxCachedSites || this.cachedPointerBytes > this.maxCachedPointerBytes)
+    ) {
+      this.forget(this.pointers.keys().next().value!);
+    }
   }
 }
 
@@ -240,7 +296,9 @@ function resolve(pointer: Pointer | null, path: string): Resolved {
     const entry = files[index];
     return entry ? { kind: "file", path: index, entry } : { kind: "miss" };
   }
-  const entry = files[path];
+  // Retained entries are the previous version's hashed chunks, still asked
+  // for by pages opened before this version went live.
+  const entry = files[path] ?? pointer.retained[path];
   if (entry) return { kind: "file", path, entry };
   if (files[`${path}/index.html`]) return { kind: "redirect" };
   return { kind: "miss" };
@@ -266,6 +324,8 @@ export function contentType(path: string): string {
   if (!type) return "application/octet-stream";
   return type.startsWith("text/") && !type.includes("charset") ? `${type}; charset=utf-8` : type;
 }
+
+const unavailable = () => text(503, "Temporarily unavailable", { "retry-after": "1" });
 
 const lastSegment = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 

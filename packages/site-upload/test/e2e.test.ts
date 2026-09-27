@@ -128,15 +128,19 @@ describe("end to end", () => {
     `);
   });
 
-  it("uploads only what changed, then cleanup keeps the live and previous versions", async () => {
-    await write({ "index.html": "v1", "video.mp4": randomBytes(1024 * 1024) });
-    await publish();
-    await write({ "index.html": "v2" });
-    const second = await publish();
-    await write({ "index.html": "v3" });
-    const third = await publish();
+  it("uploads only what changed; after cleanup, old tabs still load the previous version's chunks", async () => {
+    const immutable = (path: string) => path.startsWith("assets/");
+    await write({ "index.html": "v1", "assets/app-1.js": "js1", "video.mp4": randomBytes(1024 * 1024) });
+    await publish({ immutable });
+    await rm(join(dir, "assets/app-1.js"));
+    await write({ "index.html": "v2", "assets/app-2.js": "js2" });
+    const second = await publish({ immutable });
+    await rm(join(dir, "assets/app-2.js"));
+    await write({ "index.html": "v3", "assets/app-3.js": "js3" });
+    const third = await publish({ immutable });
 
     const cleanup = async (advanceMs: number) => (await fetch(`${origin}/_cleanup/${site}?advanceMs=${advanceMs}`)).json();
+    const status = async (path: string) => (await page(path)).status;
     const summary = {
       second: { uploaded: second.uploadedFiles, commit: second.commit },
       third: { uploaded: third.uploadedFiles, commit: third.commit },
@@ -144,12 +148,15 @@ describe("end to end", () => {
       cleanupInTwoHours: await cleanup(2 * 60 * 60 * 1000),
       live: await (await page("/")).text(),
       liveVideoBytes: (await (await page("/video.mp4")).arrayBuffer()).byteLength,
+      "previous version's chunk, app-2.js": await status("/assets/app-2.js"),
+      "chunk from two versions back, app-1.js": await status("/assets/app-1.js"),
     };
     expect(readable(summary)).toMatchInlineSnapshot(`
       {
+        "chunk from two versions back, app-1.js": 404,
         "cleanupInTwoHours": {
-          "deletedFiles": 1,
-          "deletedPlans": 1,
+          "deletedFiles": 3,
+          "deletedPlans": 2,
         },
         "cleanupNow": {
           "deletedFiles": 0,
@@ -157,13 +164,14 @@ describe("end to end", () => {
         },
         "live": "v3",
         "liveVideoBytes": 1048576,
+        "previous version's chunk, app-2.js": 200,
         "second": {
           "commit": {
             "alreadyCommitted": false,
             "previous": "p1",
             "publishId": "p2",
           },
-          "uploaded": 1,
+          "uploaded": 2,
         },
         "third": {
           "commit": {
@@ -171,7 +179,7 @@ describe("end to end", () => {
             "previous": "p2",
             "publishId": "p3",
           },
-          "uploaded": 1,
+          "uploaded": 2,
         },
       }
     `);

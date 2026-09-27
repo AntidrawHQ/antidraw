@@ -8,7 +8,7 @@ import {
   uniqueSite,
   type TestWorker,
 } from "../../test/helpers";
-import { SiteServer, type SiteServerOptions } from "./serve";
+import { SiteServer, type FileCache, type SiteServerOptions } from "./serve";
 import { SiteStore } from "./store";
 
 let env: TestWorker;
@@ -505,8 +505,8 @@ describe("pointer cache", () => {
     await publish("p1", { "index.html": "v1" });
     let reads = 0;
     const counting = new SiteStore({ bucket: env.bucket, now: () => clock });
-    const read = counting.readPointer.bind(counting);
-    counting.readPointer = (s) => {
+    const read = counting.readPointerSized.bind(counting);
+    counting.readPointerSized = (s) => {
       reads++;
       return read(s);
     };
@@ -544,6 +544,211 @@ describe("pointer cache", () => {
         "second site",
         "first site v2",
       ]
+    `);
+  });
+});
+
+describe("retained files", () => {
+  it("serves the previous version's hashed chunks, but nothing else from it", async () => {
+    await publish("p1", { "index.html": "v1", "assets/app-1.js": "js1", "about.txt": "old page" }, ["assets/app-1.js"]);
+    await publish("p2", { "index.html": "v2", "assets/app-2.js": "js2" }, ["assets/app-2.js"]);
+    const afterOne = await fetchAll(server(), {
+      "old chunk": ["/assets/app-1.js"],
+      "old non-hashed file": ["/about.txt"],
+    });
+    await publish("p3", { "index.html": "v3", "assets/app-3.js": "js3" }, ["assets/app-3.js"]);
+    const afterTwo = await summarize(await get(server(), "/assets/app-1.js"));
+    expect({ afterOne, afterTwo: afterTwo.status }).toMatchInlineSnapshot(`
+      {
+        "afterOne": {
+          "old chunk": {
+            "body": "js1",
+            "headers": {
+              "accept-ranges": "bytes",
+              "cache-control": "public, max-age=31536000, immutable",
+              "content-length": "3",
+              "content-type": "text/javascript; charset=utf-8",
+              "etag": ""sha(js1)"",
+              "x-content-type-options": "nosniff",
+            },
+            "status": 200,
+          },
+          "old non-hashed file": {
+            "body": "Not found",
+            "headers": {
+              "cache-control": "no-store",
+              "content-type": "text/plain; charset=utf-8",
+            },
+            "status": 404,
+          },
+        },
+        "afterTwo": 404,
+      }
+    `);
+  });
+});
+
+describe("failures", () => {
+  it("answers 404 for an invalid site key and 503 when the pointer can't be read", async () => {
+    const failing = new SiteStore({ bucket: env.bucket, now: () => clock });
+    failing.readPointerSized = async () => {
+      throw new Error("R2 is down");
+    };
+    expect({
+      invalidSite: await summarize(await server().fetch(new Request("https://x.test/"), "../etc")),
+      readFails: await summarize(await new SiteServer({ store: failing }).fetch(new Request("https://x.test/"), site)),
+    }).toMatchInlineSnapshot(`
+      {
+        "invalidSite": {
+          "body": "Not found",
+          "headers": {
+            "cache-control": "no-store",
+            "content-type": "text/plain; charset=utf-8",
+          },
+          "status": 404,
+        },
+        "readFails": {
+          "body": "Temporarily unavailable",
+          "headers": {
+            "cache-control": "no-store",
+            "content-type": "text/plain; charset=utf-8",
+            "retry-after": "1",
+          },
+          "status": 503,
+        },
+      }
+    `);
+  });
+
+  it("re-reads a stale pointer when its file is gone from storage", async () => {
+    await publish("p1", { "index.html": "v1" });
+    const s = server({ pointerTtlMs: 60 * 60 * 1000 });
+    await (await get(s, "/")).text();
+    await publish("p2", { "index.html": "v2" });
+    // v1 is deleted once it's past the grace period and no version uses it.
+    const later = new SiteStore({ bucket: env.bucket, now: () => clock + 2 * 60 * 60 * 1000 });
+    const cleaned = await later.cleanup(site);
+    expect({ cleaned, response: await summarize(await get(s, "/")) }).toMatchInlineSnapshot(`
+      {
+        "cleaned": {
+          "deletedFiles": 1,
+          "deletedPlans": 1,
+        },
+        "response": {
+          "body": "v2",
+          "headers": {
+            "accept-ranges": "bytes",
+            "cache-control": "public, max-age=0, must-revalidate",
+            "content-length": "2",
+            "content-type": "text/html; charset=utf-8",
+            "etag": ""sha(v2)"",
+            "x-content-type-options": "nosniff",
+          },
+          "status": 200,
+        },
+      }
+    `);
+  });
+});
+
+describe("pointer reads", () => {
+  it("shares one read between requests that arrive together", async () => {
+    await publish("p1", { "index.html": "v1" });
+    let reads = 0;
+    const counting = new SiteStore({ bucket: env.bucket, now: () => clock });
+    const read = counting.readPointerSized.bind(counting);
+    counting.readPointerSized = (s) => {
+      reads++;
+      return read(s);
+    };
+    const s = new SiteServer({ store: counting, now: () => clock });
+    const bodies = await Promise.all(Array.from({ length: 10 }, async () => (await get(s, "/")).text()));
+    expect({ reads, bodies: [...new Set(bodies)] }).toMatchInlineSnapshot(`
+      {
+        "bodies": [
+          "v1",
+        ],
+        "reads": 1,
+      }
+    `);
+  });
+
+  it("evicts pointers past the byte budget", async () => {
+    await publish("p1", { "index.html": "first" });
+    const first = site;
+    site = uniqueSite();
+    await publish("p1", { "index.html": "second" });
+    const second = site;
+
+    let reads = 0;
+    const counting = new SiteStore({ bucket: env.bucket, now: () => clock });
+    const read = counting.readPointerSized.bind(counting);
+    counting.readPointerSized = (s) => {
+      reads++;
+      return read(s);
+    };
+    // Room for one small pointer, not two.
+    const s = new SiteServer({ store: counting, now: () => clock, pointerTtlMs: 60_000, maxCachedPointerBytes: 200 });
+    const visit = async (key: string) => (await s.fetch(new Request("https://x.test/"), key)).text();
+    const seen = [await visit(first), await visit(first), await visit(second), await visit(first)];
+    expect({ seen, reads }).toMatchInlineSnapshot(`
+      {
+        "reads": 3,
+        "seen": [
+          "first",
+          "first",
+          "second",
+          "first",
+        ],
+      }
+    `);
+  });
+});
+
+describe("file cache", () => {
+  /** A cache that never keeps anything, like the Cache API on workers.dev. */
+  function forgetfulCache() {
+    const log = { matches: 0, puts: 0 };
+    const cache: FileCache = {
+      async match() {
+        log.matches++;
+        return undefined;
+      },
+      async put(_request, response) {
+        log.puts++;
+        await response.arrayBuffer();
+      },
+    };
+    return { cache, log };
+  }
+
+  it("is off unless given one", async () => {
+    await publish("p1", { "index.html": "v1" });
+    const pending: Promise<unknown>[] = [];
+    const body = await (await server().fetch(new Request("https://x.test/"), site, { waitUntil: (p) => pending.push(p) })).text();
+    expect({ body, cacheFills: pending.length }).toMatchInlineSnapshot(`
+      {
+        "body": "v1",
+        "cacheFills": 0,
+      }
+    `);
+  });
+
+  it("fills each file at most once per isolate, even if the cache keeps nothing", async () => {
+    await publish("p1", { "index.html": "v1" });
+    const { cache, log } = forgetfulCache();
+    const s = server({ cache });
+    const pending: Promise<unknown>[] = [];
+    const ctx = { waitUntil: (p: Promise<unknown>) => void pending.push(p) };
+    for (let i = 0; i < 3; i++) {
+      await (await s.fetch(new Request("https://x.test/"), site, ctx)).text();
+      await Promise.all(pending);
+    }
+    expect(log).toMatchInlineSnapshot(`
+      {
+        "matches": 3,
+        "puts": 1,
+      }
     `);
   });
 });

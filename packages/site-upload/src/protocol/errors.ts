@@ -16,6 +16,7 @@ export type ErrorCode =
   | "PLAN_EXPIRED"
   | "MISSING_FILES"
   | "CONFLICT"
+  | "SUPERSEDED"
   // Client side only
   | "UNSUPPORTED_FILE"
   | "FILE_CHANGED"
@@ -40,6 +41,7 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   PLAN_EXPIRED: 410,
   MISSING_FILES: 409,
   CONFLICT: 409,
+  SUPERSEDED: 409,
   UNSUPPORTED_FILE: 400,
   FILE_CHANGED: 400,
   NETWORK: 502,

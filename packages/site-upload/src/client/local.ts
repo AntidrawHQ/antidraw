@@ -31,13 +31,18 @@ export type BuildManifestOptions = {
  * special files are refused rather than skipped, so the site never silently
  * differs from the folder.
  */
-export async function listFiles(dir: string): Promise<LocalFile[]> {
+export async function listFiles(
+  dir: string,
+  options: { maxFiles?: number; signal?: AbortSignal } = {},
+): Promise<LocalFile[]> {
+  const { maxFiles = Number.MAX_SAFE_INTEGER, signal } = options;
   const root = await stat(dir);
   if (!root.isDirectory()) {
     throw new SiteUploadError("UNSUPPORTED_FILE", `${dir} is not a folder`);
   }
   const files: LocalFile[] = [];
   const walk = async (absDir: string, segments: string[]) => {
+    signal?.throwIfAborted();
     for (const entry of await readdir(absDir, { withFileTypes: true })) {
       const absPath = join(absDir, entry.name);
       const parts = [...segments, entry.name.normalize("NFC")];
@@ -49,6 +54,13 @@ export async function listFiles(dir: string): Promise<LocalFile[]> {
         await walk(absPath, parts);
       } else if (entry.isFile()) {
         files.push({ path, absPath, size: (await lstat(absPath)).size });
+        // Stop walking now: a folder with node_modules in it could hold millions.
+        if (files.length > maxFiles) {
+          throw new SiteUploadError("TOO_LARGE", `The folder has more than ${maxFiles} files`, {
+            reason: "files",
+            limit: maxFiles,
+          });
+        }
       } else {
         throw new SiteUploadError("UNSUPPORTED_FILE", `${path} is not a regular file`, { path });
       }
@@ -129,7 +141,7 @@ export async function hashFile(absPath: string, expectedSize: number, signal?: A
 /** Lists, checks and hashes `dir` into a manifest ready to plan. */
 export async function buildManifest(dir: string, options: BuildManifestOptions = {}): Promise<LocalSite> {
   const limits = resolveLimits(options.limits);
-  const files = await listFiles(dir);
+  const files = await listFiles(dir, { maxFiles: limits.maxFiles, signal: options.signal });
   checkLocalFiles(files, limits);
 
   const hashed = await mapLimit(files, options.hashConcurrency ?? 4, async (file) => {

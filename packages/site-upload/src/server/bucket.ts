@@ -1,7 +1,13 @@
 // The slice of R2Bucket the store uses. An R2 binding satisfies it as is; it's
 // declared here so the library doesn't pull Workers types into its consumers.
 
-export type BucketObject = { key: string; size: number; etag: string; uploaded: Date };
+export type BucketObject = {
+  key: string;
+  size: number;
+  etag: string;
+  uploaded: Date;
+  customMetadata?: Record<string, string>;
+};
 
 export type BucketObjectBody = BucketObject & {
   body: ReadableStream;
@@ -16,6 +22,7 @@ export type BucketPutOptions = {
   sha256?: string;
   onlyIf?: { etagMatches?: string };
   httpMetadata?: { contentType?: string };
+  customMetadata?: Record<string, string>;
 };
 
 export interface Bucket {
@@ -32,6 +39,7 @@ export interface Bucket {
     prefix: string;
     cursor?: string;
     limit?: number;
+    include?: ("customMetadata" | "httpMetadata")[];
   }): Promise<{ objects: BucketObject[]; truncated: boolean; cursor?: string }>;
   delete(keys: string | string[]): Promise<void>;
 }
@@ -41,10 +49,15 @@ export interface Bucket {
 export const hasBody = (object: BucketObject | BucketObjectBody | null): object is BucketObjectBody =>
   object !== null && typeof (object as Partial<BucketObjectBody>).text === "function";
 
-export async function* listAll(bucket: Bucket, prefix: string): AsyncGenerator<BucketObject> {
+export async function* listAll(
+  bucket: Bucket,
+  prefix: string,
+  include?: ("customMetadata" | "httpMetadata")[],
+): AsyncGenerator<BucketObject> {
   let cursor: string | undefined;
   do {
-    const page = await bucket.list({ prefix, cursor, limit: 1000 });
+    // With `include`, a page can hold fewer than `limit` objects; `truncated` still says if more follow.
+    const page = await bucket.list({ prefix, cursor, limit: 1000, ...(include ? { include } : {}) });
     yield* page.objects;
     cursor = page.truncated ? page.cursor : undefined;
   } while (cursor);

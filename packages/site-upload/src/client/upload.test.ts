@@ -355,13 +355,14 @@ describe("uploadSite", () => {
       `);
     });
 
-    it("drops to one upload at a time when the server is overloaded, then recovers", async () => {
+    it("drops to one upload at a time when the server is overloaded, retry included, then recovers", async () => {
       await write(manyFiles(30));
       let throttledHash: string | null = null;
-      const startsAfterThrottle: number[] = [];
+      // Each upload started after the 503: whether it's the retry, and how many were in flight.
+      const startsAfter: string[] = [];
       const { transport, log } = storeTransport({
         beforePut: async (hash, attempt) => {
-          if (throttledHash && hash !== throttledHash) startsAfterThrottle.push(log.inFlight);
+          if (throttledHash) startsAfter.push(`${hash === throttledHash ? "retry" : "new"} with ${log.inFlight} in flight`);
           await tick();
           if (!throttledHash && attempt === 1) {
             throttledHash = hash;
@@ -371,16 +372,16 @@ describe("uploadSite", () => {
       });
       await run(transport, { concurrency: 4 });
       expect({
-        peakBefore: Math.max(...log.starts),
-        firstThreeStartsAfter: startsAfterThrottle.slice(0, 3),
-        peakAfter: Math.max(...startsAfterThrottle),
+        peakBefore: Math.max(...log.starts.slice(0, 4)),
+        firstStartsAfter: startsAfter.slice(0, 3),
+        peakAfter: Math.max(...startsAfter.map((start) => Number(start.split(" ")[2]))),
         stored: log.puts.length,
       }).toMatchInlineSnapshot(`
         {
-          "firstThreeStartsAfter": [
-            1,
-            1,
-            2,
+          "firstStartsAfter": [
+            "retry with 1 in flight",
+            "new with 1 in flight",
+            "new with 2 in flight",
           ],
           "peakAfter": 4,
           "peakBefore": 4,
@@ -488,6 +489,50 @@ describe("uploadSite", () => {
       });
       const started = performance.now();
       const error = await thrown(run(transport, { signal: controller.signal, retryDelayMs: 10_000 }));
+      expect(performance.now() - started).toBeLessThan(1000);
+      expect(error).toMatchInlineSnapshot(`
+        {
+          "error": "Error",
+          "message": "cancelled",
+        }
+      `);
+    });
+
+    it("rejects, instead of hanging, when onProgress throws mid-upload", async () => {
+      await write(manyFiles(6));
+      const { transport, log } = storeTransport();
+      const outcome = await Promise.race([
+        thrown(
+          run(transport, {
+            onProgress: (p) => {
+              if (p.phase === "uploading" && p.uploadedFiles === 2) throw new Error("progress UI crashed");
+            },
+          }),
+        ),
+        tick(5000).then(() => "hung"),
+      ]);
+      expect({ outcome, commits: log.commits }).toMatchInlineSnapshot(`
+        {
+          "commits": 0,
+          "outcome": {
+            "error": "Error",
+            "message": "progress UI crashed",
+          },
+        }
+      `);
+    });
+
+    it("stops when cancelled while every upload is waiting out an overload", async () => {
+      await write({ "index.html": "x" });
+      const controller = new AbortController();
+      const { transport } = storeTransport({
+        beforePut: () => {
+          setTimeout(() => controller.abort(new Error("cancelled")), 20);
+          throw new SiteUploadError("HTTP_ERROR", "busy", undefined, { retryable: true, throttle: true, retryAfterMs: 10_000 });
+        },
+      });
+      const started = performance.now();
+      const error = await thrown(run(transport, { signal: controller.signal }));
       expect(performance.now() - started).toBeLessThan(1000);
       expect(error).toMatchInlineSnapshot(`
         {

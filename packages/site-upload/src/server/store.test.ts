@@ -41,18 +41,22 @@ async function pointer() {
   return readable({ ...value, committedAt: `start+${(value.committedAt - startClock) / HOUR}h` });
 }
 
-async function upload(publishId: string, contents: Record<string, string>) {
-  const { missing } = await store.plan(site, publishId, manifestOf(contents));
-  for (const content of new Set(Object.values(contents))) {
-    const hash = sha256(content);
-    if (!missing.includes(hash)) continue;
-    const body = bytes(content);
-    await store.putFile(site, publishId, hash, body, body.length);
+async function upload(publishId: string, contents: Record<string, string>, immutable: string[] = []) {
+  const { missing } = await store.plan(site, publishId, manifestOf(contents, immutable));
+  const pending = [...new Set(Object.values(contents))].filter((content) => missing.includes(sha256(content)));
+  // In batches, so the 1,100-file test stays well inside its timeout.
+  for (let i = 0; i < pending.length; i += 50) {
+    await Promise.all(
+      pending.slice(i, i + 50).map((content) => {
+        const body = bytes(content);
+        return store.putFile(site, publishId, sha256(content), body, body.length);
+      }),
+    );
   }
 }
 
-async function publish(publishId: string, contents: Record<string, string>) {
-  await upload(publishId, contents);
+async function publish(publishId: string, contents: Record<string, string>, immutable: string[] = []) {
+  await upload(publishId, contents, immutable);
   return store.commit(site, publishId);
 }
 
@@ -303,6 +307,7 @@ describe("commit", () => {
         },
         "previous": null,
         "publishId": "p1",
+        "retained": {},
         "v": 1,
       }
     `);
@@ -334,6 +339,7 @@ describe("commit", () => {
           },
           "previous": "p1",
           "publishId": "p2",
+          "retained": {},
           "v": 1,
         },
         "repeated": {
@@ -431,6 +437,100 @@ describe("commit", () => {
   });
 });
 
+describe("commit retries", () => {
+  it("refuses a replayed commit once a newer publish went live", async () => {
+    await upload("a", { "index.html": "a" });
+    clock += 1000;
+    await store.commit(site, "a");
+    clock += 1000;
+    await upload("b", { "index.html": "b" });
+    clock += 1000;
+    await store.commit(site, "b");
+    // a's first commit went through but its reply was lost; the client retries now.
+    expect({ replay: await thrown(store.commit(site, "a")), live: (await pointer())?.publishId }).toMatchInlineSnapshot(`
+      {
+        "live": "b",
+        "replay": {
+          "code": "SUPERSEDED",
+          "details": {
+            "live": "b",
+          },
+          "error": "SiteUploadError",
+          "message": "Publish b went live after a was planned",
+        },
+      }
+    `);
+  });
+
+  it("reports a commit that lost the race to its own retry as committed", async () => {
+    await publish("p1", { "index.html": "v1" });
+    await upload("p2", { "index.html": "v2" });
+    const bucket = env.bucket;
+    const racing = new SiteStore({
+      now: () => clock,
+      bucket: {
+        get: bucket.get.bind(bucket),
+        list: bucket.list.bind(bucket),
+        delete: bucket.delete.bind(bucket),
+        put: async (key, value, options) => {
+          // The same publish's other attempt lands between this one's read and write.
+          if (key.endsWith("current.json")) await store.commit(site, "p2");
+          return bucket.put(key, value, options);
+        },
+      },
+    });
+    expect({ result: await racing.commit(site, "p2"), live: (await pointer())?.publishId }).toMatchInlineSnapshot(`
+      {
+        "live": "p2",
+        "result": {
+          "alreadyCommitted": true,
+          "previous": "p1",
+          "publishId": "p2",
+        },
+      }
+    `);
+  });
+});
+
+describe("retained files", () => {
+  it("keeps the previous version's hashed chunks that the new version dropped", async () => {
+    await publish("p1", { "index.html": "v1", "assets/app-1.js": "js1", "assets/shared.js": "shared", "about.txt": "a" }, [
+      "assets/app-1.js",
+      "assets/shared.js",
+    ]);
+    await publish("p2", { "index.html": "v2", "assets/app-2.js": "js2", "assets/shared.js": "shared" }, [
+      "assets/app-2.js",
+      "assets/shared.js",
+    ]);
+    const second = (await pointer())?.retained;
+    await publish("p3", { "index.html": "v3", "assets/app-3.js": "js3" }, ["assets/app-3.js"]);
+    // Only one version back: app-1.js is no longer retained.
+    expect({ afterSecond: second, afterThird: (await pointer())?.retained }).toMatchInlineSnapshot(`
+      {
+        "afterSecond": {
+          "assets/app-1.js": {
+            "h": "sha(js1)",
+            "i": true,
+            "s": 3,
+          },
+        },
+        "afterThird": {
+          "assets/app-2.js": {
+            "h": "sha(js2)",
+            "i": true,
+            "s": 3,
+          },
+          "assets/shared.js": {
+            "h": "sha(shared)",
+            "i": true,
+            "s": 6,
+          },
+        },
+      }
+    `);
+  });
+});
+
 describe("readPointer", () => {
   it("returns null for a site that was never published", async () => {
     expect(await store.readPointer(site)).toBeNull();
@@ -475,24 +575,24 @@ describe("readPointer", () => {
 });
 
 describe("cleanup", () => {
-  it("keeps the live and the previous version, deletes older ones", async () => {
-    await publish("p1", { "index.html": "v1", "logo.png": "logo" });
-    await publish("p2", { "index.html": "v2", "logo.png": "logo" });
-    await publish("p3", { "index.html": "v3", "logo.png": "logo" });
+  it("keeps the live version and its retained chunks, deletes the rest", async () => {
+    await publish("p1", { "index.html": "v1", "assets/app-1.js": "js1", "logo.png": "logo" }, ["assets/app-1.js"]);
+    await publish("p2", { "index.html": "v2", "assets/app-2.js": "js2", "logo.png": "logo" }, ["assets/app-2.js"]);
+    await publish("p3", { "index.html": "v3", "assets/app-3.js": "js3", "logo.png": "logo" }, ["assets/app-3.js"]);
     clock += 2 * HOUR;
     expect(await store.cleanup(site)).toMatchInlineSnapshot(`
       {
-        "deletedFiles": 1,
-        "deletedPlans": 1,
+        "deletedFiles": 3,
+        "deletedPlans": 2,
       }
     `);
     expect(await stored()).toMatchInlineSnapshot(`
       [
         "current.json",
         "f/sha(logo)",
+        "f/sha(js3)",
+        "f/sha(js2)",
         "f/sha(v3)",
-        "f/sha(v2)",
-        "m/p2.json",
         "m/p3.json",
       ]
     `);
@@ -531,8 +631,8 @@ describe("cleanup", () => {
     clock += HOUR / 2;
     expect(await store.cleanup(site)).toMatchInlineSnapshot(`
       {
-        "deletedFiles": 0,
-        "deletedPlans": 1,
+        "deletedFiles": 1,
+        "deletedPlans": 2,
       }
     `);
     expect(await stored()).toMatchInlineSnapshot(`
@@ -540,8 +640,6 @@ describe("cleanup", () => {
         "current.json",
         "f/sha(v1)",
         "f/sha(v3)",
-        "f/sha(v2)",
-        "m/p2.json",
         "m/p3.json",
         "m/p4.json",
       ]
@@ -600,21 +698,90 @@ describe("cleanup", () => {
     `);
   });
 
-  it("treats a corrupt plan as expired", async () => {
+  it("stops rather than guess when a fresh plan can't be read, and deletes it once expired", async () => {
     await publish("p1", { "index.html": "v1" });
     await env.bucket.put(`sites/${site}/m/broken.json`, "{");
-    expect(await store.cleanup(site)).toMatchInlineSnapshot(`
+    const fresh = await thrown(store.cleanup(site));
+    const unchanged = await stored();
+    clock += 2 * HOUR;
+    expect({ fresh, unchanged, expired: await store.cleanup(site) }).toMatchInlineSnapshot(`
       {
-        "deletedFiles": 0,
-        "deletedPlans": 1,
+        "expired": {
+          "deletedFiles": 0,
+          "deletedPlans": 1,
+        },
+        "fresh": {
+          "code": "INTERNAL",
+          "error": "SiteUploadError",
+          "message": "The stored plan is not valid JSON",
+        },
+        "unchanged": [
+          "current.json",
+          "f/sha(v1)",
+          "m/broken.json",
+          "m/p1.json",
+        ],
       }
     `);
-    expect(await stored()).toMatchInlineSnapshot(`
-      [
-        "current.json",
-        "f/sha(v1)",
-        "m/p1.json",
-      ]
+  });
+
+  it("aborts, deleting nothing, when reading a plan in progress fails", async () => {
+    await publish("p1", { "index.html": "v1" });
+    await publish("p2", { "index.html": "v2" });
+    clock += 2 * HOUR;
+    await upload("p3", { "index.html": "v1" });
+    const before = await stored();
+    const bucket = env.bucket;
+    const flaky = new SiteStore({
+      now: () => clock,
+      bucket: {
+        list: bucket.list.bind(bucket),
+        put: bucket.put.bind(bucket),
+        delete: bucket.delete.bind(bucket),
+        get: async (key, options) => {
+          if (key.endsWith("/m/p3.json")) throw new Error("R2 hiccup");
+          return bucket.get(key, options);
+        },
+      },
+    });
+    const error = await thrown(flaky.cleanup(site));
+    expect({ error, deletedNothing: JSON.stringify(await stored()) === JSON.stringify(before) }).toMatchInlineSnapshot(`
+      {
+        "deletedNothing": true,
+        "error": {
+          "error": "Error",
+          "message": "R2 hiccup",
+        },
+      }
+    `);
+  });
+
+  it("deletes expired plans without reading them", async () => {
+    await publish("p1", { "index.html": "v1" });
+    await Promise.all(Array.from({ length: 200 }, (_, i) => env.bucket.put(`sites/${site}/m/old-${i}.json`, "{")));
+    clock += 2 * HOUR;
+    let planReads = 0;
+    const bucket = env.bucket;
+    const counting = new SiteStore({
+      now: () => clock,
+      bucket: {
+        list: bucket.list.bind(bucket),
+        put: bucket.put.bind(bucket),
+        delete: bucket.delete.bind(bucket),
+        get: (key, options) => {
+          if (key.includes("/m/")) planReads++;
+          return bucket.get(key, options);
+        },
+      },
+    });
+    expect({ result: await counting.cleanup(site), planReads }).toMatchInlineSnapshot(`
+      {
+        "planReads": 0,
+        "result": {
+          "deletedFiles": 0,
+          "deletedPlans": 200,
+        },
+      }
     `);
   });
 
@@ -637,7 +804,7 @@ describe("cleanup", () => {
     expect(await stored()).toMatchInlineSnapshot(`[]`);
   });
 
-  it("pages through more than 1000 files", async () => {
+  it("pages through more than 1000 files", { timeout: 120_000 }, async () => {
     const contents: Record<string, string> = {};
     for (let i = 0; i < 1100; i++) contents[`f/${i}.txt`] = `file ${i}`;
     await publish("p1", contents);
@@ -646,16 +813,14 @@ describe("cleanup", () => {
     clock += 2 * HOUR;
     expect(await store.cleanup(site)).toMatchInlineSnapshot(`
       {
-        "deletedFiles": 1100,
-        "deletedPlans": 1,
+        "deletedFiles": 1101,
+        "deletedPlans": 2,
       }
     `);
     expect(await stored()).toMatchInlineSnapshot(`
       [
         "current.json",
         "f/sha(v3)",
-        "f/sha(v2)",
-        "m/p2.json",
         "m/p3.json",
       ]
     `);

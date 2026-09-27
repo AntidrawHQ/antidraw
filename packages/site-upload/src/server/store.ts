@@ -10,7 +10,15 @@ import {
   type Files,
   type PlanResult,
 } from "../protocol/manifest";
-import { deleteAll, hasBody, listAll, type Bucket, type BucketObjectBody, type BucketRange } from "./bucket";
+import {
+  deleteAll,
+  hasBody,
+  listAll,
+  type Bucket,
+  type BucketObject,
+  type BucketObjectBody,
+  type BucketRange,
+} from "./bucket";
 
 /** What a site serves: the committed files plus where it came from. */
 export type Pointer = {
@@ -19,6 +27,11 @@ export type Pointer = {
   previous: string | null;
   committedAt: number;
   files: Files;
+  /**
+   * Immutable files of the version before this one that this one dropped.
+   * Pages opened on that version keep loading their hashed chunks.
+   */
+  retained: Files;
 };
 
 type StoredPlan = { v: 1; publishId: string; createdAt: number; files: Files };
@@ -38,9 +51,11 @@ export type SiteStoreOptions = {
 };
 
 const HOUR = 60 * 60 * 1000;
-const PLAN_CACHE_SIZE = 32;
+// The upload plan cache holds hash → size maps, capped by their total size so
+// a few very large plans can't exhaust the isolate's memory.
+const PLAN_CACHE_MAX_HASHES = 50_000;
 
-type CachedPlan = { plan: StoredPlan; sizes: Map<string, number> };
+type CachedPlan = { createdAt: number; sizes: Map<string, number> };
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -57,6 +72,9 @@ const internal = (message: string) => new SiteUploadError("INTERNAL", message);
  * Contract: calls for one site must not overlap with its cleanup(). The caller
  * serializes them (a per-site lock). Plan expiry and the orphan grace period
  * keep a crashed lock holder from causing damage, but they don't replace it.
+ *
+ * Create one SiteStore per isolate (at module scope), not per request, so its
+ * plan cache is reused across a publish's uploads.
  */
 export class SiteStore {
   readonly bucket: Bucket;
@@ -66,6 +84,7 @@ export class SiteStore {
   private readonly orphanGraceMs: number;
   private readonly now: () => number;
   private readonly planCache = new Map<string, CachedPlan>();
+  private cachedHashes = 0;
 
   constructor(options: SiteStoreOptions) {
     const prefix = options.prefix ?? "sites";
@@ -102,6 +121,8 @@ export class SiteStore {
       const plan: StoredPlan = { v: 1, publishId, createdAt: this.now(), files };
       await this.bucket.put(this.planKey(site, publishId), JSON.stringify(plan), {
         httpMetadata: { contentType: "application/json" },
+        // Lets cleanup see a plan's age from a listing, without reading it.
+        customMetadata: { createdAt: String(plan.createdAt) },
       });
     }
 
@@ -176,7 +197,10 @@ export class SiteStore {
   /**
    * Makes `publishId` the live version once every file is stored. The pointer
    * is one object, so viewers see the old version or the new one, never a mix.
-   * Repeating a commit that already went through returns the same result.
+   *
+   * Repeating a commit is safe while it is still the latest: it returns
+   * `alreadyCommitted: true`. Once a newer publish has gone live, a replayed
+   * commit gets SUPERSEDED instead of rolling the site back.
    */
   async commit(site: string, publishId: string): Promise<CommitResult> {
     this.assertIds(site, publishId);
@@ -189,6 +213,16 @@ export class SiteStore {
     const plan = await this.readPlan(site, publishId);
     if (!plan) throw noPlan(publishId);
     if (this.isExpired(plan)) throw planExpired(publishId);
+    // The per-site lock means each publish plans after the previous one
+    // committed, so a plan older than the live commit is a stale retry, e.g.
+    // one whose first commit went through but whose reply was lost.
+    if (current && plan.createdAt < current.committedAt) {
+      throw new SiteUploadError(
+        "SUPERSEDED",
+        `Publish ${current.publishId} went live after ${publishId} was planned`,
+        { live: current.publishId },
+      );
+    }
 
     const stored = await this.storedSizes(site);
     const missing: string[] = [];
@@ -204,50 +238,68 @@ export class SiteStore {
     }
 
     const previous = current?.publishId ?? null;
-    const pointer: Pointer = { v: 1, publishId, previous, committedAt: this.now(), files: plan.files };
+    const retained: Files = Object.create(null);
+    if (current) {
+      for (const path in current.files) {
+        const entry = current.files[path]!;
+        if (entry.i && !(path in plan.files)) retained[path] = entry;
+      }
+    }
+    const pointer: Pointer = {
+      v: 1,
+      publishId,
+      previous,
+      committedAt: this.now(),
+      files: plan.files,
+      retained,
+    };
     const written = await this.bucket.put(this.pointerKey(site), JSON.stringify(pointer), {
       httpMetadata: { contentType: "application/json" },
       ...(currentObject ? { onlyIf: { etagMatches: currentObject.etag } } : {}),
     });
     if (written === null) {
+      // Lost the race; if the winner was this same publish (a retry racing
+      // its own first attempt), the commit did happen.
+      const winner = await this.readPointer(site);
+      if (winner?.publishId === publishId) {
+        return { publishId, previous: winner.previous, alreadyCommitted: true };
+      }
       throw new SiteUploadError("CONFLICT", "Another publish of this site committed first");
     }
-    this.planCache.delete(this.planKey(site, publishId));
+    this.forgetPlan(this.planKey(site, publishId));
     return { publishId, previous, alreadyCommitted: false };
   }
 
   /**
-   * Deletes files no version needs: anything outside the live version, the
-   * one before it (pages still open in browsers load its files), and plans
-   * still inside their upload window. Expired plans are deleted too.
+   * Deletes files nothing can serve or commit any more: everything outside
+   * the live version, its retained files, and plans still inside their upload
+   * window. Expired plans are deleted too. Any failed read aborts the cleanup
+   * rather than risk deleting a needed file; the next run tries again.
    */
   async cleanup(site: string): Promise<CleanupResult> {
     if (!isId(site)) throw invalidId("site");
     const now = this.now();
     const current = await this.readPointer(site);
-    const keepPlans = new Set<string>();
     const keep = new Set<string>();
     if (current) {
-      keepPlans.add(current.publishId);
       for (const hash of hashSizes(current.files).keys()) keep.add(hash);
-      if (current.previous) {
-        keepPlans.add(current.previous);
-        const previous = await this.readPlan(site, current.previous).catch(() => null);
-        if (previous) for (const hash of hashSizes(previous.files).keys()) keep.add(hash);
-      }
+      for (const hash of hashSizes(current.retained).keys()) keep.add(hash);
     }
 
+    // Expired plans are deleted without being read: a plan's age comes from
+    // the createdAt it was written with, returned by the listing itself, on
+    // the same clock plan() and commit() use.
     const planPrefix = `${this.siteRoot(site)}m/`;
     const stalePlans: string[] = [];
-    for await (const object of listAll(this.bucket, planPrefix)) {
+    for await (const object of listAll(this.bucket, planPrefix, ["customMetadata"])) {
       const id = object.key.slice(planPrefix.length).replace(/\.json$/, "");
-      if (keepPlans.has(id)) continue;
-      const plan = await this.readPlan(site, id).catch(() => null);
-      if (plan && !this.isExpired(plan, now)) {
-        for (const hash of hashSizes(plan.files).keys()) keep.add(hash);
-      } else {
+      if (id === current?.publishId) continue;
+      if (planCreatedAt(object) + this.planTtlMs <= now) {
         stalePlans.push(object.key);
+        continue;
       }
+      const plan = await this.readPlan(site, id);
+      if (plan) for (const hash of hashSizes(plan.files).keys()) keep.add(hash);
     }
 
     const filePrefix = `${this.siteRoot(site)}f/`;
@@ -258,7 +310,7 @@ export class SiteStore {
     }
 
     await deleteAll(this.bucket, [...staleFiles, ...stalePlans]);
-    for (const key of stalePlans) this.planCache.delete(key);
+    for (const key of stalePlans) this.forgetPlan(key);
     return { deletedFiles: staleFiles.length, deletedPlans: stalePlans.length };
   }
 
@@ -269,13 +321,20 @@ export class SiteStore {
     for await (const object of listAll(this.bucket, this.siteRoot(site))) keys.push(object.key);
     await deleteAll(this.bucket, keys);
     this.planCache.clear();
+    this.cachedHashes = 0;
     return keys.length;
   }
 
   async readPointer(site: string): Promise<Pointer | null> {
+    return (await this.readPointerSized(site)).pointer;
+  }
+
+  /** The pointer and its stored size, which SiteServer uses to bound its cache. */
+  async readPointerSized(site: string): Promise<{ pointer: Pointer | null; bytes: number }> {
     if (!isId(site)) throw invalidId("site");
     const object = await this.bucket.get(this.pointerKey(site));
-    return object && hasBody(object) ? parsePointer(await object.text()) : null;
+    if (!object || !hasBody(object)) return { pointer: null, bytes: 0 };
+    return { pointer: parsePointer(await object.text()), bytes: object.size };
   }
 
   async getFile(site: string, hash: string, range?: BucketRange): Promise<BucketObjectBody | null> {
@@ -289,14 +348,22 @@ export class SiteStore {
     if (!cached) {
       const plan = await this.readPlan(site, publishId);
       if (!plan) throw noPlan(publishId);
-      cached = { plan, sizes: hashSizes(plan.files) };
+      cached = { createdAt: plan.createdAt, sizes: hashSizes(plan.files) };
       this.planCache.set(key, cached);
-      if (this.planCache.size > PLAN_CACHE_SIZE) {
-        this.planCache.delete(this.planCache.keys().next().value!);
+      this.cachedHashes += cached.sizes.size;
+      while (this.cachedHashes > PLAN_CACHE_MAX_HASHES && this.planCache.size > 1) {
+        this.forgetPlan(this.planCache.keys().next().value!);
       }
     }
-    if (this.isExpired(cached.plan)) throw planExpired(publishId);
+    if (cached.createdAt + this.planTtlMs <= this.now()) throw planExpired(publishId);
     return cached;
+  }
+
+  private forgetPlan(key: string) {
+    const cached = this.planCache.get(key);
+    if (!cached) return;
+    this.planCache.delete(key);
+    this.cachedHashes -= cached.sizes.size;
   }
 
   private async readPlan(site: string, publishId: string): Promise<StoredPlan | null> {
@@ -329,6 +396,13 @@ export class SiteStore {
   private fileKey = (site: string, hash: string) => `${this.siteRoot(site)}f/${hash}`;
 }
 
+// A plan listed without its createdAt (not written by this store) falls back
+// to R2's upload time, which is when it was written.
+function planCreatedAt(object: BucketObject): number {
+  const createdAt = Number(object.customMetadata?.createdAt);
+  return Number.isSafeInteger(createdAt) ? createdAt : object.uploaded.getTime();
+}
+
 function parsePointer(text: string): Pointer {
   const value = parseJson(text, "pointer");
   if (
@@ -345,6 +419,10 @@ function parsePointer(text: string): Pointer {
     previous: value.previous,
     committedAt: value.committedAt,
     files: parseStoredFiles(value.files, "pointer"),
+    retained:
+      isObject(value.retained) && Object.keys(value.retained).length > 0
+        ? parseStoredFiles(value.retained, "pointer")
+        : Object.create(null),
   };
 }
 

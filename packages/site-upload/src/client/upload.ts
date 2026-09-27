@@ -113,7 +113,8 @@ type RetryOptions = {
   maxAttempts: number;
   delayMs: number;
   signal: AbortSignal;
-  onThrottle?: () => void;
+  /** Throw overload errors at once instead of retrying them in place. */
+  rethrowThrottle?: boolean;
 };
 
 export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions): Promise<T> {
@@ -124,12 +125,18 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions):
     } catch (err) {
       if (options.signal.aborted) throw options.signal.reason;
       if (!(err instanceof SiteUploadError) || !err.retryable || attempt >= options.maxAttempts) throw err;
-      if (err.throttle) options.onThrottle?.();
-      const backoff = Math.min(options.delayMs * 2 ** (attempt - 1), MAX_RETRY_DELAY_MS);
-      await sleep(err.retryAfterMs ?? backoff * (0.75 + Math.random() * 0.5), options.signal);
+      if (err.throttle && options.rethrowThrottle) throw err;
+      await sleep(retryDelay(err, attempt, options.delayMs), options.signal);
     }
   }
 }
+
+function retryDelay(err: SiteUploadError, attempt: number, delayMs: number): number {
+  const backoff = Math.min(delayMs * 2 ** (attempt - 1), MAX_RETRY_DELAY_MS);
+  return err.retryAfterMs ?? backoff * (0.75 + Math.random() * 0.5);
+}
+
+type Job = { file: HashedFile; throttled: number; notBefore: number };
 
 async function uploadAll(
   files: HashedFile[],
@@ -147,41 +154,69 @@ async function uploadAll(
   // On overload, drop to one upload at a time, then add one slot per success.
   // Only uploads started after the latest overload count toward recovering:
   // ones already in flight say nothing about whether the server has recovered.
+  // An upload that hits the overload gives up its slot and goes back to the
+  // front of the queue, so the reduced limit governs its retry too.
   let limit = concurrency;
   let generation = 0;
-  const fileRetry: RetryOptions = {
-    ...retry,
-    signal: inner.signal,
-    onThrottle: () => {
-      generation++;
-      limit = 1;
-    },
-  };
+  const queue: Job[] = files.map((file) => ({ file, throttled: 0, notBefore: 0 }));
+  const fileRetry: RetryOptions = { ...retry, signal: inner.signal, rethrowThrottle: true };
 
   try {
     await new Promise<void>((resolve, reject) => {
-      let next = 0;
       let active = 0;
-      let failed = false;
+      let done = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (err?: unknown) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        inner.signal.removeEventListener("abort", onAbort);
+        if (err === undefined) return resolve();
+        inner.abort(err);
+        reject(retry.signal.aborted ? retry.signal.reason : err);
+      };
+      // Settles even while every remaining upload is waiting out a back-off.
+      const onAbort = () => finish(inner.signal.reason);
+      inner.signal.addEventListener("abort", onAbort, { once: true });
+
       const pump = () => {
-        if (failed) return;
-        if (next === files.length && active === 0) return resolve();
-        while (active < limit && next < files.length) {
-          const file = files[next++]!;
+        if (done) return;
+        if (queue.length === 0 && active === 0) return finish();
+        while (active < limit && queue.length > 0) {
+          const wait = queue[0]!.notBefore - Date.now();
+          if (wait > 0) {
+            clearTimeout(timer);
+            timer = setTimeout(pump, wait);
+            return;
+          }
+          const job = queue.shift()!;
           const startedIn = generation;
           active++;
-          uploadOne(file, transport, fileRetry).then(
+          uploadOne(job.file, transport, fileRetry).then(
             () => {
               active--;
+              if (done) return;
               if (startedIn === generation && limit < concurrency) limit++;
-              onUploaded(file);
+              try {
+                onUploaded(job.file);
+              } catch (err) {
+                return finish(err);
+              }
               pump();
             },
             (err) => {
-              if (failed) return;
-              failed = true;
-              inner.abort(err);
-              reject(retry.signal.aborted ? retry.signal.reason : err);
+              active--;
+              if (done) return;
+              const overloaded = err instanceof SiteUploadError && err.throttle && err.retryable;
+              if (overloaded && job.throttled + 1 < retry.maxAttempts) {
+                generation++;
+                limit = 1;
+                job.throttled++;
+                job.notBefore = Date.now() + retryDelay(err, job.throttled, retry.delayMs);
+                queue.unshift(job);
+                return pump();
+              }
+              finish(err);
             },
           );
         }

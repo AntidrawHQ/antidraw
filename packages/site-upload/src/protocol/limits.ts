@@ -29,7 +29,19 @@ export const STORED_LIMITS: Limits = {
 // well under this.
 export const MAX_PLAN_BODY_BYTES = 16 * MiB;
 
-export const resolveLimits = (partial?: Partial<Limits>): Limits => ({
-  ...DEFAULT_LIMITS,
-  ...partial,
-});
+/**
+ * Fills in defaults. An explicit `undefined` keeps the default instead of
+ * switching the limit off; anything but a positive safe integer is refused.
+ */
+export function resolveLimits(partial?: Partial<Limits>): Limits {
+  const limits = { ...DEFAULT_LIMITS };
+  for (const key of Object.keys(DEFAULT_LIMITS) as (keyof Limits)[]) {
+    const value = partial?.[key];
+    if (value === undefined) continue;
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new TypeError(`Limit ${key} must be a positive integer, got ${typeof value === "string" ? JSON.stringify(value) : String(value)}`);
+    }
+    limits[key] = value;
+  }
+  return limits;
+}
