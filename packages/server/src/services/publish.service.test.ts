@@ -6,11 +6,13 @@ import {
   MAX_PENDING_SITE_BYTES,
   MAX_PLAN_JSON_BYTES,
   MAX_PROTECTED_JSON_BYTES,
+  GC_HURRY_INTERVAL_MS,
   MAX_SITE_STORED_BYTES,
   MAX_SITE_STORED_FILES,
   MAX_SITES_PER_ACCOUNT,
   QUOTA_BYTES,
   SESSION_TTL_MS,
+  SITE_CLEANUP_DELAY_MS,
 } from "../lib/publish-limits";
 import { beginPublishRequest } from "../lib/publish.schemas";
 import { blobKey, sourceKey } from "../lib/storage";
@@ -557,7 +559,7 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       });
     });
 
-    it("keeps a released session's plan while its site is * or it holds the lock", async () => {
+    it("keeps a released session's plan while it may be live on a * site, or holds the lock", async () => {
       const deps = setup();
       const { begun: first } = await publish(deps);
       const siteId = first.publish.siteId;
@@ -567,10 +569,26 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
         return begun.publish.id;
       };
 
-      await deps.harness.setProtected(siteId, "*");
+      // Its complete wrote preview.html, then failed: the live entries may be its.
       const starred = await noUrls("v2");
+      deps.sitesBucket.failPut = (key) => key.endsWith("/canvas.json");
+      const failed = await completePublish(
+        deps,
+        USER,
+        starred,
+        completeRequest(defaultEntries("v2")),
+      );
+      expect(failed._unsafeUnwrapErr().code).toBe("STORAGE_FAILED");
+      deps.sitesBucket.failPut = () => false;
+      await deps.harness.setProtected(siteId, "*");
       (await abortPublish(deps, USER, starred))._unsafeUnwrap();
       expect((await deps.store.getSession(starred))?.plan).not.toBe(PLAN_STUB);
+
+      // One that never wrote entries goes, "*" or not: kept, such plans (any
+      // number of begins, each aborted at once) would pile up in D1.
+      const unwritten = await noUrls("v2");
+      (await abortPublish(deps, USER, unwritten))._unsafeUnwrap();
+      expect((await deps.store.getSession(unwritten))?.plan).toBe(PLAN_STUB);
       await deps.harness.setProtected(siteId, null);
 
       // A complete of it is in flight: it may still write entries from this plan.
@@ -1350,23 +1368,115 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
     it("refuses a begin that would leave more than the site may hold under its prefix", async () => {
       const deps = setup();
       await publish(deps, { files: [big("assets/a.js")] });
-      const second = (await begin(deps, { files: [big("assets/b.js")] }))._unsafeUnwrap();
-      performUploads(deps, second.uploads);
-      const refused = await begin(deps, { files: [big("assets/c.js")] });
+      await publish(deps, { files: [big("assets/b.js")] });
+      // a.js is stale; b.js, live, is released by this commit (not counted).
+      const { begun: third } = await publish(deps, { files: [big("assets/c.js")] });
+      const refused = await begin(deps, { files: [big("assets/d.js")] });
       expect(refused._unsafeUnwrapErr()).toMatchObject({
         status: 413,
         code: "SITE_TOO_LARGE",
+        message: "This site's earlier files have not been cleaned up yet. Try again in an hour.",
         details: {
           reason: "stored",
           limitBytes: MAX_SITE_STORED_BYTES,
-          siteFileCount: 6,
+          siteFileCount: 6, // d.js, the entries, a.js and b.js
+          cleanupDueAt: new Date(deps.clock.now + SITE_CLEANUP_DELAY_MS).toISOString(),
         },
       });
       expect(
         (refused._unsafeUnwrapErr().details as { siteBytes: number }).siteBytes,
       ).toBeGreaterThan(MAX_SITE_STORED_BYTES);
+      expect((await deps.store.findSiteById(third.publish.siteId))?.hurriedAt).toBe(deps.clock.now);
       // Replacing a stored file does not count it twice.
       expect((await begin(deps, { files: [big("assets/b.js", 400 * MiB)] })).isOk()).toBe(true);
+    });
+
+    it("does not count, up to a site's worth, what its commit releases: the live and a failed complete's files", async () => {
+      const deps = setup();
+      const files = (tag: string) =>
+        [0, 1, 2, 3].map((i) => big(`assets/${tag}${i}.bin`, 100 * MiB));
+      const { begun: v1 } = await publish(deps, {
+        files: files("a"),
+        entries: defaultEntries("1"),
+      });
+      // v2's complete wrote preview.html, then failed: its paths stay protected.
+      const v2 = (
+        await begin(deps, { files: files("b"), entries: defaultEntries("2") })
+      )._unsafeUnwrap();
+      performUploads(deps, v2.uploads);
+      deps.sitesBucket.failPut = (key) => key.endsWith("/canvas.json");
+      const failed = await completePublish(
+        deps,
+        USER,
+        v2.publish.id,
+        completeRequest(defaultEntries("2")),
+      );
+      expect(failed._unsafeUnwrapErr().code).toBe("STORAGE_FAILED");
+      deps.sitesBucket.failPut = () => false;
+      expect(
+        JSON.parse((await deps.store.findSiteById(v1.publish.siteId))!.protectedFiles!),
+      ).toContain("assets/b0.bin");
+
+      // 1 200 MiB under the prefix once v3 lands, but its commit releases 800 of it.
+      const { completed } = await publish(deps, {
+        files: files("c"),
+        entries: defaultEntries("3"),
+      });
+      expect(completed.version).toBe(2);
+      expect((await deps.store.findSiteById(v1.publish.siteId))?.protectedFiles).toBeNull();
+    });
+
+    it("says so, and hurries nothing, when what is in the way is kept", async () => {
+      const deps = setup();
+      const { begun: v1 } = await publish(deps, { files: [big("assets/a.js")] });
+      const siteId = v1.publish.siteId;
+      // Two unfinished publishes hold 600 MiB of new paths.
+      for (const path of ["assets/b.js", "assets/c.js"]) {
+        const held = (await begin(deps, { files: [big(path, 300 * MiB)] }))._unsafeUnwrap();
+        performUploads(deps, held.uploads);
+      }
+      const before = await deps.store.findSiteById(siteId);
+      const refused = await begin(deps, { files: [big("assets/d.js")] });
+      expect(refused._unsafeUnwrapErr()).toMatchObject({
+        status: 413,
+        code: "SITE_TOO_LARGE",
+        details: { reason: "in-use", limitBytes: MAX_SITE_STORED_BYTES },
+      });
+      expect(refused._unsafeUnwrapErr().message).not.toMatch(/hour/);
+      expect(await deps.store.findSiteById(siteId)).toMatchObject({
+        cleanupAfter: before!.cleanupAfter,
+        cleanupSince: before!.cleanupSince,
+        hurriedAt: null,
+      });
+    });
+
+    it("hurries one site per account per hour, and only schedules the others", async () => {
+      const deps = setup();
+      const fill = async (n: number) => {
+        let siteId = "";
+        for (const tag of ["a", "b", "c"]) {
+          const { begun } = await publish(deps, {
+            workspace: workspaceId(n),
+            files: [big(`assets/${tag}.js`)],
+            entries: defaultEntries(`${n}${tag}`),
+          });
+          siteId = begun.publish.siteId;
+        }
+        return siteId;
+      };
+      const first = await fill(1);
+      const second = await fill(2);
+      const tooMuch = (n: number) =>
+        begin(deps, { workspace: workspaceId(n), files: [big("assets/d.js")] });
+      expect((await tooMuch(1))._unsafeUnwrapErr().message).toMatch(/Try again in an hour/);
+      const later = (await tooMuch(2))._unsafeUnwrapErr();
+      expect(later).toMatchObject({ details: { reason: "stored" } });
+      expect(later.message).toMatch(/Try again later/);
+      expect((await deps.store.findSiteById(first))?.hurriedAt).toBe(deps.clock.now);
+      expect((await deps.store.findSiteById(second))?.hurriedAt).toBeNull();
+
+      deps.clock.now += GC_HURRY_INTERVAL_MS + 1;
+      expect((await tooMuch(2))._unsafeUnwrapErr().message).toMatch(/Try again in an hour/);
     });
 
     it("refuses once the prefix would hold too many keys", async () => {

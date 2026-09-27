@@ -53,7 +53,7 @@ type Limits = { maxBytes: number; maxFiles: number };
 
 // Files checked between yields to the event loop. A path has up to 512 segments and each is
 // folded and matched, so a manifest at its cap takes seconds: extract runs in the main process
-const FILES_PER_YIELD = 1000;
+export const FILES_PER_YIELD = 1000;
 const yieldToEventLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 // Checks the manifest as a whole, before any other entry or blob is read

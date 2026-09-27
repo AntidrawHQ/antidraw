@@ -133,6 +133,19 @@ export const buildArchive = async (file: string, entries: RawEntry[], trailing?:
   writeGzip(file, await packTar(entries), ...(trailing ? [trailing] : []));
 };
 
+// An archive holding only a manifest of `count` empty files, each `depth` one-character
+// directories deep. The files themselves are left out: paths this deep cannot be written on macOS
+export const buildDeepManifestArchive = async (file: string, depth: number, count: number): Promise<void> => {
+  const files = Array.from({ length: count }, (_, k) => ({
+    path: `${"a/".repeat(depth)}${String(k).padStart(4, "0")}`,
+    size: 0,
+    sha256: sha256(""),
+    mode: 0o644,
+    storage: "archive",
+  }));
+  await buildArchive(file, [manifestJsonEntry({ version: 1, files })]);
+};
+
 // One raw tar record: a hand-encoded header plus its body padded to 512 bytes
 export const rawTarRecord = (name: string, body: Buffer, typeflag = "0"): Buffer =>
   Buffer.concat([rawTarHeader(name, body.length, typeflag), body, Buffer.alloc((512 - (body.length % 512)) % 512)]);

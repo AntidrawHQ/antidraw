@@ -18,6 +18,7 @@ import {
   GC_SITE_KEYS_PER_VISIT,
   GC_SITE_RUN_BUDGET_MS,
   GC_SITES_PER_RUN,
+  GC_STAR_PLANS_PER_ENTRY,
   GC_UNCOMMITTED_SESSION_RETENTION_MS,
   GC_UNRESOLVED_ENTRY_MAX_AGE_MS,
   KEEP_VERSIONS,
@@ -25,7 +26,7 @@ import {
   SITE_CLEANUP_DELAY_MS,
 } from "../lib/publish-limits";
 import { blobKey, r2ObjectStore, siteKey, sourceKey, type ObjectStore } from "../lib/storage";
-import { parsePlan, planSitePaths, randomId, unionProtected } from "./publish.service";
+import { parsePaths, parsePlan, planSitePaths, randomId, unionProtected } from "./publish.service";
 import {
   d1PublishStore,
   PLAN_STUB,
@@ -192,16 +193,6 @@ const collectObjects = async (run: Run) => {
   }
 };
 
-const parsePaths = (json: string | null): string[] => {
-  if (!json || json === "*") return [];
-  try {
-    const parsed = JSON.parse(json) as unknown;
-    return Array.isArray(parsed) ? parsed.map(String) : [];
-  } catch {
-    return [];
-  }
-};
-
 const parseEntries = (json: string | null): { path: string; sha256: string }[] => {
   if (!json) return [];
   try {
@@ -255,27 +246,41 @@ const deleteSiteKeys = async (run: Run, site: SiteRef, keep: Set<string> | null)
 // The paths a protected "*" stands for, worked out from the entry files that
 // are actually live: one that is the head's refers only to live_files; any
 // other was written by a complete that did not commit, whose session plan
-// names what it refers to. Null when an entry matches neither and is recent:
-// then its references are unknowable, and nothing may be deleted yet.
-const resolveStar = async (run: Run, site: SiteRow): Promise<string[] | null> => {
+// names what it refers to. What an entry refers to is a function of its
+// bytes, so the newest GC_STAR_PLANS_PER_ENTRY plans whose entry has the
+// live one's sha256 account for it. Null when an entry matches neither and
+// is recent: then its references are unknowable, and nothing may be deleted
+// yet. `plans`: the sessions whose plans it used.
+const resolveStar = async (
+  run: Run,
+  site: SiteRow,
+): Promise<{ paths: string[]; plans: string[] } | null> => {
   const { deps, now } = run;
   const head = parseEntries(site.liveEntries);
   const paths = new Set<string>();
+  const used = new Set<string>();
   for (const path of ENTRY_PATHS) {
     const live = await deps.sites.head(siteKey(site.slug, path));
     if (!live?.sha256) continue;
     const sha256 = live.sha256;
     if (head.some((e) => e.path === path && e.sha256 === sha256)) continue;
-    const plans = (await deps.store.uncommittedPlansMentioning(site.id, sha256))
-      .map(parsePlan)
-      .filter((p) => p?.site.entries.some((e) => e.path === path && e.sha256 === sha256));
-    if (plans.length > 0) {
-      for (const plan of plans) for (const p of planSitePaths(plan!)) paths.add(p);
-    } else if (live.uploaded.getTime() >= now - GC_UNRESOLVED_ENTRY_MAX_AGE_MS) {
-      return null;
+    const found = await deps.store.uncommittedPlansMentioning({
+      siteId: site.id,
+      path,
+      sha256,
+      limit: GC_STAR_PLANS_PER_ENTRY,
+    });
+    let matched = false;
+    for (const { id, plan: raw } of found) {
+      const plan = parsePlan(raw);
+      if (!plan?.site.entries.some((e) => e.path === path && e.sha256 === sha256)) continue;
+      matched = true;
+      used.add(id);
+      for (const p of planSitePaths(plan)) paths.add(p);
     }
+    if (!matched && live.uploaded.getTime() >= now - GC_UNRESOLVED_ENTRY_MAX_AGE_MS) return null;
   }
-  return [...paths];
+  return { paths: [...paths], plans: [...used] };
 };
 
 // Every path the site may still serve: the head's files, what an
@@ -317,18 +322,22 @@ const cleanSite = async (run: Run, due: SiteRef) => {
 
     let protectedPaths: string[] | null = parsePaths(site.protectedFiles);
     if (site.protectedFiles === "*") {
-      protectedPaths = await resolveStar(run, site);
-      if (protectedPaths) {
+      const resolved = await resolveStar(run, site);
+      protectedPaths = resolved?.paths ?? null;
+      if (resolved) {
+        // Every other plan kept for the "*" goes: while the site stays "*"
+        // (its paths do not fit the row), nothing else would ever stub them.
+        await deps.store.releaseStarPlans(site.id, resolved.plans, holdCutoff(now));
         // Store what "*" stood for, so later visits (and session retirement)
         // no longer need the plans. Still "*" when it does not fit the row;
         // this visit uses the paths either way.
-        const resolved =
-          protectedPaths.length === 0 ? null : unionProtected(null, protectedPaths, site.liveFiles);
-        if (resolved !== "*") {
+        const stored =
+          resolved.paths.length === 0 ? null : unionProtected(null, resolved.paths, site.liveFiles);
+        if (stored !== "*") {
           await deps.store.setProtectedFiles({
             siteId: site.id,
             lock,
-            protectedFiles: resolved,
+            protectedFiles: stored,
             seenProtected: "*",
           });
         }

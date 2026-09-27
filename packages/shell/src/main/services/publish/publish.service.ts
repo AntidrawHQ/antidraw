@@ -63,6 +63,10 @@ const ENTRY_FILES = ["preview.html", "canvas.json", "index.html"] as const;
 
 const COMPLETE_ATTEMPTS = 5;
 
+// A "stored" refusal whose cleanup is due within this long says "in an hour"
+// (the server's cleanup delay, plus a few minutes for its GC schedule).
+const CLEANUP_SOON_MS = 65 * 60 * 1000;
+
 // Complete's retry backoff is base·2^(n-1) (2, 4, 8, 16 s). Tests shorten it.
 export const publishTiming = { completeRetryBaseMs: 2_000 };
 
@@ -147,12 +151,36 @@ export const mapCloudError = (
     case "SITE_TOO_LARGE":
       // "stored": this publish is within the site limits, but the site's
       // storage still holds earlier versions' files that GC has not removed.
+      // The server hurries that cleanup only so often, so "in an hour" is
+      // promised only when the cleanup it reports is due within one.
       if (details.reason === "stored") {
+        const dueAt =
+          typeof details.cleanupDueAt === "string" ? Date.parse(details.cleanupDueAt) : NaN;
+        const withinHour = Number.isFinite(dueAt) && dueAt - Date.now() <= CLEANUP_SOON_MS;
         return publishError(
           "SITE_TOO_LARGE",
-          "This canvas's earlier published files are still being cleaned up. Try again in an hour.",
+          withinHour
+            ? "This canvas's earlier published files are still being cleaned up. Try again in an hour."
+            : "This canvas's earlier published files are still being cleaned up. Try again later.",
           {
             reason: "stored",
+            ...pickNumbers(details, ["limitBytes", "siteBytes", "limitFiles", "siteFileCount"]),
+            ...(Number.isFinite(dueAt)
+              ? { cleanupDueAt: new Date(dueAt).toISOString() }
+              : {}),
+          },
+        );
+      }
+      // "in-use": the site's storage is full of files its live pages and
+      // unfinished publishes keep. Cleanup would not free them, and this
+      // canvas's own size is not what is over, so no largest-files list.
+      if (details.reason === "in-use") {
+        return publishError(
+          "SITE_TOO_LARGE",
+          "This canvas's published site and unfinished publishes already keep too many files. " +
+            "Publish fewer changed files, or try again once unfinished publishes expire.",
+          {
+            reason: "in-use",
             ...pickNumbers(details, ["limitBytes", "siteBytes", "limitFiles", "siteFileCount"]),
           },
         );

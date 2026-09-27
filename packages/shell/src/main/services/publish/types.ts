@@ -50,7 +50,7 @@ export type PublishErrorCode =
   | "CANCELLED"
   | "INTERNAL_ERROR";
 
-export type PublishRefusalReason = "pending-site" | "stored" | "open-sessions";
+export type PublishRefusalReason = "pending-site" | "stored" | "in-use" | "open-sessions";
 
 export type PublishErrorDetails = {
   largestFiles?: { path: string; size: number }[]; // PUBLISH_TOO_LARGE, QUOTA_EXCEEDED
@@ -64,11 +64,16 @@ export type PublishErrorDetails = {
   largeFileCount?: number; // PUBLISH_TOO_LARGE (too many blob paths)
   siteFileCount?: number; // SITE_TOO_LARGE
   siteBytes?: number;
-  limitFiles?: number; // SITE_TOO_LARGE with reason "stored"
+  limitFiles?: number; // SITE_TOO_LARGE with reason "stored" or "in-use"
+  // SITE_TOO_LARGE with reason "stored": when the server's cleanup of this
+  // site is due (ISO 8601), if it has one scheduled.
+  cleanupDueAt?: string;
   // Which server limit refused a begin, when the code alone is ambiguous:
   // "pending-site" (QUOTA_EXCEEDED: site files waiting on unfinished
   // publishes), "stored" (SITE_TOO_LARGE: the site's storage still holds
-  // earlier files GC has not removed), "open-sessions" (RATE_LIMITED: too many
+  // earlier files GC has not removed), "in-use" (SITE_TOO_LARGE: the site's
+  // storage is full of files its live pages and unfinished publishes keep, so
+  // cleanup would not help), "open-sessions" (RATE_LIMITED: too many
   // unfinished publishes).
   reason?: PublishRefusalReason;
   collisions?: string[][]; // CASE_COLLISION

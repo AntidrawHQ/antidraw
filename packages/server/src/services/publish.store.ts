@@ -37,6 +37,7 @@ export type SiteRow = {
   completeLockExpiresAt: number | null;
   cleanupAfter: number | null;
   cleanupSince: number | null;
+  hurriedAt: number | null;
   createdAt: number;
   updatedAt: number;
 };
@@ -66,6 +67,9 @@ export type SessionRow = {
   expiresAt: number;
   holdUntil: number;
   siteUploadBytes: number;
+  // Its complete got past setProtectedFiles (writesEntries): the site's live
+  // entries may be this plan's.
+  entriesWritten: boolean;
   createdAt: number;
 };
 
@@ -128,6 +132,11 @@ export type NewVersion = {
   liveEntries: string; // JSON [{ path, sha256 }]
   keepVersions: number;
   cleanupAfter: number;
+  // GC's GC_MAX_CLEANUP_DEFER_MS: cleanup_since moves up to cleanupAfter
+  // less this, so the forced visit (sitesDueForCleanup's `deferredBefore`,
+  // or one hurrySiteCleanup scheduled before this commit) cannot come before
+  // the switch-over delay has passed either.
+  maxDeferMs: number;
   now: number;
   // How many session objects the session was created with (its plan's
   // source and distinct blobs). The guard requires them all still there, so
@@ -174,10 +183,11 @@ export type PublishStore = {
   discardSession(sessionId: string): Promise<void>;
   getSession(sessionId: string): Promise<SessionRow | null>;
   // `stubPlan` also replaces the plan with PLAN_STUB, for a session whose
-  // hold ends here: kept only while its site's protected_files is "*" (GC
-  // may need it to resolve that) or the session holds the site's lock (a
-  // complete of it is in flight). Otherwise the plan would stay in D1 until
-  // GC retires the session, outside the open-session cap.
+  // hold ends here: kept only while its site's protected_files is "*" and
+  // the session may have written the live entries (GC may need it to resolve
+  // that), or the session holds the site's lock (a complete of it is in
+  // flight). Otherwise the plan would stay in D1 until GC retires the
+  // session, outside the open-session cap.
   setSessionStatus(
     sessionId: string,
     status: SessionStatus,
@@ -200,13 +210,16 @@ export type PublishStore = {
   }): Promise<SiteRow | null>;
   // Sets protected_files while `lock` holds the site's lock (with at least
   // `fence.minRemainingMs` left, when given) and protected_files is still
-  // `seenProtected`. False, changing nothing, otherwise.
+  // `seenProtected`. False, changing nothing, otherwise. `writesEntries`: the
+  // lock is a session's, about to write the entries; in the same
+  // transaction, the session is marked entries_written.
   setProtectedFiles(p: {
     siteId: string;
     lock: string;
     protectedFiles: string | null;
     seenProtected: string | null;
     fence?: { now: number; minRemainingMs: number };
+    writesEntries?: boolean;
   }): Promise<boolean>;
   // True when `lock` holds the site's lock with at least `minRemainingMs` left.
   checkCompleteLock(
@@ -239,13 +252,21 @@ export type PublishStore = {
   // Sites whose cleanup_after has passed, or whose cleanup has been
   // outstanding since before `deferredBefore`; longest outstanding first.
   sitesDueForCleanup(now: number, deferredBefore: number, limit: number): Promise<SiteRef[]>;
-  // For a begin refused because the site's prefix holds too much: the site's
-  // outstanding cleanup becomes due by min(cleanup_after, dueBy), and queues
-  // ahead of every site whose cleanup was wanted since later than `dueBy`
-  // less `maxDeferMs` (GC's GC_MAX_CLEANUP_DEFER_MS: it backdates
-  // cleanup_since, which sitesDueForCleanup orders by). Nothing when no
-  // cleanup is outstanding.
-  hurrySiteCleanup(siteId: string, dueBy: number, maxDeferMs: number): Promise<void>;
+  // For a begin refused because the site's prefix holds too much, when GC's
+  // visit would free enough: the site's cleanup becomes due by
+  // min(cleanup_after, dueBy) (scheduled at dueBy when none is outstanding),
+  // and queues ahead of every site whose cleanup was wanted since later than
+  // `dueBy` less `maxDeferMs` (GC's GC_MAX_CLEANUP_DEFER_MS: it backdates
+  // cleanup_since, which sitesDueForCleanup orders by). At most one site of
+  // an account per `intervalMs`: otherwise the cleanup is only scheduled,
+  // keeping its place in the queue, and this answers false.
+  hurrySiteCleanup(h: {
+    siteId: string;
+    dueBy: number;
+    maxDeferMs: number;
+    now: number;
+    intervalMs: number;
+  }): Promise<boolean>;
   claimSiteLockForGc(
     siteId: string,
     lock: string,
@@ -259,9 +280,20 @@ export type PublishStore = {
     siteId: string,
     now: number,
   ): Promise<{ plan: string | null; holdUntil: number }[]>;
-  // The plans of the site's uncommitted sessions that mention `sha256` (an
-  // entry file's), for resolving a protected "*".
-  uncommittedPlansMentioning(siteId: string, sha256: string): Promise<string[]>;
+  // For resolving a protected "*": the plans of the site's uncommitted
+  // sessions that may have written the live entries (entries_written) and
+  // whose entry at `path` has `sha256`, newest first, at most `limit`.
+  uncommittedPlansMentioning(q: {
+    siteId: string;
+    path: string;
+    sha256: string;
+    limit: number;
+  }): Promise<{ id: string; plan: string }[]>;
+  // Stubs the plan of every uncommitted session of the site whose hold ended
+  // before `now` and that is not in `keep`: once GC has resolved the site's
+  // "*" from the live entries, no other plan can account for them, and none
+  // of those sessions can write entries again. Returns the number stubbed.
+  releaseStarPlans(siteId: string, keep: string[], now: number): Promise<number>;
   finishSiteCleanup(
     siteId: string,
     lock: string,
@@ -270,11 +302,13 @@ export type PublishStore = {
     now: number,
   ): Promise<void>;
   // Sessions whose hold has ended: their held objects are dropped, their plan
-  // stubbed (kept only on a site whose protected_files is "*", which GC may
-  // need them to resolve) and hold_until set to 0. At most `limit`.
+  // stubbed (kept only for one that wrote entries, on a site whose
+  // protected_files is "*": GC may need it to resolve that) and hold_until
+  // set to 0. At most `limit`.
   retireSessions(now: number, limit: number): Promise<number>;
   // Completed sessions created before `completedBefore`, and uncommitted ones
-  // that expired before `uncommittedBefore` (not on a "*" site). At most `limit`.
+  // that expired before `uncommittedBefore` (but not one whose plan is kept
+  // on a "*" site). At most `limit`.
   deleteOldSessions(opts: {
     now: number;
     completedBefore: number;
@@ -316,6 +350,7 @@ const toSite = (r: Raw): SiteRow => ({
   completeLockExpiresAt: numOrNull(r.complete_lock_expires_at),
   cleanupAfter: numOrNull(r.cleanup_after),
   cleanupSince: numOrNull(r.cleanup_since),
+  hurriedAt: numOrNull(r.hurried_at),
   createdAt: num(r.created_at),
   updatedAt: num(r.updated_at),
 });
@@ -341,6 +376,7 @@ const toSession = (r: Raw): SessionRow => ({
   expiresAt: num(r.expires_at),
   holdUntil: num(r.hold_until),
   siteUploadBytes: num(r.site_upload_bytes ?? 0),
+  entriesWritten: bool(r.entries_written),
   createdAt: num(r.created_at),
 });
 
@@ -407,13 +443,14 @@ export const d1PublishStore = (db: Db): PublishStore => {
   const all = async (query: SQL) => (await prepare(query).all<Raw>()).results;
   const first = async (query: SQL) => (await all(query))[0] ?? null;
   const changes = async (query: SQL) => (await prepare(query).run()).meta.changes ?? 0;
-  // One D1 batch: a single transaction, rolled back whole if any statement fails.
-  // Returns the rows each statement changed, summed.
-  const batch = async (queries: SQL[]) => {
-    if (queries.length === 0) return 0;
+  // One D1 batch: a single transaction, rolled back whole if any statement
+  // fails. `batchEach` returns the rows each statement changed; `batch`, their sum.
+  const batchEach = async (queries: SQL[]) => {
+    if (queries.length === 0) return [];
     const results = await d1.batch(queries.map(prepare));
-    return results.reduce((sum, r) => sum + (r.meta?.changes ?? 0), 0);
+    return results.map((r) => r.meta?.changes ?? 0);
   };
+  const batch = async (queries: SQL[]) => (await batchEach(queries)).reduce((sum, n) => sum + n, 0);
 
   const findSiteById = async (siteId: string) => {
     const row = await first(sql`SELECT * FROM site WHERE id = ${siteId}`);
@@ -552,7 +589,8 @@ export const d1PublishStore = (db: Db): PublishStore => {
       if (opts.stubPlan) {
         sets.push(sql`plan = CASE WHEN EXISTS (SELECT 1 FROM site
             WHERE site.id = publish_session.site_id
-              AND (site.protected_files = '*' OR site.complete_lock = publish_session.id))
+              AND ((site.protected_files = '*' AND publish_session.entries_written = 1)
+                OR site.complete_lock = publish_session.id))
           THEN plan ELSE ${PLAN_STUB} END`);
       }
       const onlyPending = opts.onlyIfPending ? sql` AND status = 'pending'` : sql``;
@@ -593,11 +631,18 @@ export const d1PublishStore = (db: Db): PublishStore => {
       const fence = p.fence
         ? sql` AND complete_lock_expires_at >= ${p.fence.now + p.fence.minRemainingMs}`
         : sql``;
-      return (
-        (await changes(sql`UPDATE site SET protected_files = ${p.protectedFiles}
-          WHERE id = ${p.siteId} AND complete_lock = ${p.lock}
-            AND protected_files IS ${p.seenProtected}${fence}`)) > 0
-      );
+      const held = sql`id = ${p.siteId} AND complete_lock = ${p.lock}
+            AND protected_files IS ${p.seenProtected}${fence}`;
+      const set = sql`UPDATE site SET protected_files = ${p.protectedFiles} WHERE ${held}`;
+      if (!p.writesEntries) return (await changes(set)) > 0;
+      // The mark first, against the same condition, so it is set exactly
+      // when protected_files is.
+      const [, updated] = await batchEach([
+        sql`UPDATE publish_session SET entries_written = 1 WHERE id = ${p.lock}
+          AND EXISTS (SELECT 1 FROM site WHERE ${held})`,
+        set,
+      ]);
+      return updated > 0;
     },
 
     async checkCompleteLock(siteId, lock, now, minRemainingMs) {
@@ -658,7 +703,9 @@ export const d1PublishStore = (db: Db): PublishStore => {
             live_entries = ${v.liveEntries}, protected_files = NULL,
             complete_lock = NULL, complete_lock_expires_at = NULL,
             cleanup_after = max(coalesce(cleanup_after, 0), ${v.cleanupAfter}),
-            cleanup_since = coalesce(cleanup_since, ${v.now}), updated_at = ${v.now}
+            cleanup_since = max(coalesce(cleanup_since, ${v.now}),
+              ${v.cleanupAfter - v.maxDeferMs}),
+            updated_at = ${v.now}
           WHERE id = ${v.siteId} AND head_version = ${v.baseVersion}
             AND complete_lock = ${v.sessionId}`,
         // Its paths are live_files now; nothing reads the plan again.
@@ -774,11 +821,22 @@ export const d1PublishStore = (db: Db): PublishStore => {
       ).map(toSiteRef);
     },
 
-    async hurrySiteCleanup(siteId, dueBy, maxDeferMs) {
-      await changes(sql`UPDATE site
-        SET cleanup_since = min(coalesce(cleanup_since, cleanup_after),
-          min(cleanup_after, ${dueBy}) - ${maxDeferMs})
-        WHERE id = ${siteId} AND cleanup_after IS NOT NULL`);
+    async hurrySiteCleanup(h) {
+      // SET reads the row as it was, so `after` is the schedule being set.
+      const after = sql`min(coalesce(cleanup_after, ${h.dueBy}), ${h.dueBy})`;
+      const row = await first(sql`UPDATE site
+        SET cleanup_after = coalesce(cleanup_after, ${h.dueBy}),
+          cleanup_since = CASE WHEN EXISTS (SELECT 1 FROM site s2
+              WHERE s2.user_id = site.user_id AND s2.hurried_at > ${h.now - h.intervalMs})
+            THEN coalesce(cleanup_since, ${h.now})
+            ELSE min(coalesce(cleanup_since, cleanup_after, ${h.dueBy}), ${after} - ${h.maxDeferMs})
+            END,
+          hurried_at = CASE WHEN EXISTS (SELECT 1 FROM site s2
+              WHERE s2.user_id = site.user_id AND s2.hurried_at > ${h.now - h.intervalMs})
+            THEN hurried_at ELSE ${h.now} END
+        WHERE id = ${h.siteId}
+        RETURNING hurried_at`);
+      return row !== null && numOrNull(row.hurried_at) === h.now;
     },
 
     async claimSiteLockForGc(siteId, lock, now, expiresAt) {
@@ -798,11 +856,24 @@ export const d1PublishStore = (db: Db): PublishStore => {
       ).map((r) => ({ plan: strOrNull(r.plan), holdUntil: num(r.hold_until) }));
     },
 
-    async uncommittedPlansMentioning(siteId, sha256) {
+    // instr first: it rules most plans out without parsing them.
+    async uncommittedPlansMentioning({ siteId, path, sha256, limit }) {
       return (
-        await all(sql`SELECT plan FROM publish_session WHERE site_id = ${siteId}
-          AND status != 'completed' AND instr(plan, ${sha256}) > 0`)
-      ).map((r) => String(r.plan));
+        await all(sql`SELECT id, plan FROM publish_session WHERE site_id = ${siteId}
+          AND status != 'completed' AND entries_written = 1 AND instr(plan, ${sha256}) > 0
+          AND EXISTS (SELECT 1 FROM json_each(plan, '$.site.entries') e
+            WHERE json_extract(e.value, '$.path') = ${path}
+              AND json_extract(e.value, '$.sha256') = ${sha256})
+          ORDER BY created_at DESC, id DESC LIMIT ${limit}`)
+      ).map((r) => ({ id: String(r.id), plan: String(r.plan) }));
+    },
+
+    async releaseStarPlans(siteId, keep, now) {
+      const kept =
+        keep.length > 0 ? sql`AND id NOT IN (${join(keep.map((id) => sql`${id}`))})` : sql``;
+      return changes(sql`UPDATE publish_session SET plan = ${PLAN_STUB}
+        WHERE site_id = ${siteId} AND status != 'completed' AND hold_until < ${now}
+          AND plan != ${PLAN_STUB} ${kept}`);
     },
 
     async finishSiteCleanup(siteId, lock, seen, next, now) {
@@ -830,8 +901,9 @@ export const d1PublishStore = (db: Db): PublishStore => {
       await batch([
         sql`DELETE FROM publish_session_object WHERE session_id IN (${idList})`,
         sql`UPDATE publish_session SET hold_until = 0,
-            plan = CASE WHEN status != 'completed' AND EXISTS (SELECT 1 FROM site
-              WHERE site.id = publish_session.site_id AND site.protected_files = '*')
+            plan = CASE WHEN status != 'completed' AND entries_written = 1
+              AND EXISTS (SELECT 1 FROM site
+                WHERE site.id = publish_session.site_id AND site.protected_files = '*')
               THEN plan ELSE ${PLAN_STUB} END
           WHERE id IN (${idList}) AND hold_until > 0 AND hold_until < ${now}`,
       ]);
@@ -844,8 +916,9 @@ export const d1PublishStore = (db: Db): PublishStore => {
           SELECT ps.id FROM publish_session ps WHERE ps.hold_until < ${now} AND (
             (ps.status = 'completed' AND ps.created_at < ${completedBefore})
             OR (ps.status != 'completed' AND ps.expires_at < ${uncommittedBefore}
-              AND NOT EXISTS (SELECT 1 FROM site WHERE site.id = ps.site_id
-                AND site.protected_files = '*')))
+              AND NOT (ps.entries_written = 1 AND ps.plan != ${PLAN_STUB}
+                AND EXISTS (SELECT 1 FROM site WHERE site.id = ps.site_id
+                  AND site.protected_files = '*'))))
           LIMIT ${limit})
         RETURNING id`)
       ).length;

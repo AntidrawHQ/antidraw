@@ -30,11 +30,21 @@ export const MAX_SITE_BYTES = 500 * MiB;
 // Not counting the three entries.
 export const MAX_SITE_FILES = 5_000;
 export const MAX_SITES_PER_ACCOUNT = 50;
-// What one site may keep under <slug>/ once a begin's uploads land: the live
-// version, one full replacement, and room for stale files GC has not reached.
+// What one site may keep under <slug>/ once a begin's uploads land, not
+// counting what its commit would release (below): the new version, and room
+// for stale files GC has not reached and the paths of unfinished publishes.
 // MAX_SITE_BYTES and MAX_SITE_FILES bound one plan; this bounds the prefix.
 export const MAX_SITE_STORED_BYTES = 2 * MAX_SITE_BYTES;
 export const MAX_SITE_STORED_FILES = 2 * (MAX_SITE_FILES + 3);
+// Keys a commit of the begin's plan would release: the live version's paths
+// and a failed complete's protected paths, where the plan does not reuse
+// them. GC keeps them until that commit, so counting them in full could
+// refuse every begin, and with it the commit that frees them. Up to one
+// site's worth is not counted; past that they count. The prefix then holds at
+// most MAX_SITE_STORED_* plus this, which one GC visit
+// (GC_SITE_KEYS_PER_VISIT) lists in full.
+export const MAX_SITE_RELEASED_BYTES = MAX_SITE_BYTES;
+export const MAX_SITE_RELEASED_FILES = MAX_SITE_FILES + 3;
 export const MAX_ENTRY_BYTES = 2 * MiB;
 export const MAX_LARGE_FILES = 1_000;
 // D1 stores at most 2 MB per value.
@@ -92,8 +102,17 @@ export const GC_ABANDONED_SITES_PER_RUN = 20;
 export const GC_SITE_KEYS_PER_VISIT = 20_000;
 export const GC_SITE_KEYS_PER_RUN = 100_000;
 // A site whose cleanup has been wanted this long is visited even when begins
-// and commits keep pushing cleanup_after out.
+// and commits keep pushing cleanup_after out (a commit also moves the forced
+// visit past its switch-over delay).
 export const GC_MAX_CLEANUP_DEFER_MS = 24 * 60 * 60 * 1000;
+// A begin refused for a site's stored size moves that site's cleanup to the
+// front of the queue (hurrySiteCleanup) only when the visit would free enough,
+// and for at most one site per account this often: the queue is shared, and
+// the refusal costs the account nothing.
+export const GC_HURRY_INTERVAL_MS = 60 * 60 * 1000;
+// Plans GC reads for each live entry when resolving a protected "*" (at most
+// 3 × this × MAX_PLAN_JSON_BYTES in memory).
+export const GC_STAR_PLANS_PER_ENTRY = 4;
 // Sessions retired (hold ended: plan stubbed, held objects dropped) or
 // deleted per statement, and statements per run for each (about 1 900 an
 // hour). With the other steps' limits a run stays under ~900 D1 statements,

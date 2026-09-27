@@ -568,24 +568,55 @@ describe.each(harnesses)("gc (%s)", (_name, makeHarness) => {
     deps.clock.now = T + 4 * HOUR;
     const v1 = await publish(deps, { files: [big("assets/a.js")], entries: defaultEntries("1") });
     await publish(deps, { files: [big("assets/b.js")], entries: defaultEntries("2") });
+    await publish(deps, { files: [big("assets/c.js")], entries: defaultEntries("3") });
     const slug = v1.publish.slug;
     const refusedAt = deps.clock.now;
-    const v3 = { files: [big("assets/c.js")], entries: defaultEntries("3") };
-    const refused = await beginPublish(deps, USER, await beginRequest(v3));
+    const v4 = { files: [big("assets/d.js")], entries: defaultEntries("4") };
+    const refused = await beginPublish(deps, USER, await beginRequest(v4));
     expect(refused._unsafeUnwrapErr()).toMatchObject({
       code: "SITE_TOO_LARGE",
       details: { reason: "stored", limitBytes: MAX_SITE_STORED_BYTES },
     });
 
     // An hour on, the one visit a run allows goes to the blocked site, ahead
-    // of the older one and before its own cleanup_after (v2's begin, 3 h).
+    // of the older one and before its own cleanup_after (v3's begin, 3 h).
     deps.gc.limits = { sitesPerRun: 1 };
     const at = refusedAt + SITE_CLEANUP_DELAY_MS + 1;
     deps.clock.now = at;
     const report = await runGc(deps.gc, new Date(at), "sites");
-    expect(report).toMatchObject({ cleanedSites: 1, deletedSiteKeys: 1 });
+    expect(report).toMatchObject({ cleanedSites: 1, deletedSiteKeys: 2 });
     expect(deps.sitesBucket.keys(`${slug}/`)).not.toContain(`${slug}/assets/a.js`);
-    expect((await beginPublish(deps, USER, await beginRequest(v3))).isOk()).toBe(true);
+    expect((await beginPublish(deps, USER, await beginRequest(v4))).isOk()).toBe(true);
+  });
+
+  it("keeps a switch-over's replaced files an hour, though the site was hurried before the commit", async () => {
+    const deps = setup();
+    const big = (path: string, size = 450 * MiB) => ({ path, size, immutable: true });
+    const v1 = await publish(deps, { files: [big("assets/a.js")], entries: defaultEntries("1") });
+    await publish(deps, { files: [big("assets/b.js")], entries: defaultEntries("2") });
+    await publish(deps, { files: [big("assets/c.js")], entries: defaultEntries("3") });
+    const slug = v1.publish.slug;
+    const refusedAt = deps.clock.now;
+    const refused = await beginPublish(
+      deps,
+      USER,
+      await beginRequest({ files: [big("assets/d.js")], entries: defaultEntries("4") }),
+    );
+    expect(refused._unsafeUnwrapErr().message).toMatch(/Try again in an hour/);
+
+    // A smaller v4 fits, and replaces c.js 5 minutes before the hurried visit.
+    deps.clock.now = refusedAt + 55 * 60_000;
+    const committedAt = deps.clock.now;
+    await publish(deps, { files: [big("assets/d.js", 90 * MiB)], entries: defaultEntries("4") });
+
+    const hurried = await gcAt(deps, refusedAt + SITE_CLEANUP_DELAY_MS + 1);
+    expect(hurried.deletedSiteKeys).toBe(0);
+    expect(deps.sitesBucket.keys(`${slug}/`)).toContain(`${slug}/assets/c.js`);
+
+    await gcAt(deps, committedAt + SITE_CLEANUP_DELAY_MS + 1);
+    const keys = deps.sitesBucket.keys(`${slug}/`);
+    for (const gone of ["a", "b", "c"]) expect(keys).not.toContain(`${slug}/assets/${gone}.js`);
+    expect(keys).toContain(`${slug}/assets/d.js`);
   });
 
   describe('a protected "*"', () => {
@@ -634,6 +665,75 @@ describe.each(harnesses)("gc (%s)", (_name, makeHarness) => {
       ]);
       await gcAt(deps, T + SESSION_TTL_MS + DAY + 2);
       expect(await deps.store.getSession(v2.publish.id)).toBeNull();
+    });
+
+    it("keeps only the plans that account for the live entries, while the site stays *", async () => {
+      const deps = setup();
+      const T = deps.clock.now;
+      const { siteId, slug, v2 } = await halfPublished(deps);
+      // live_files leaves no room in the row for a protected list: "*" stays.
+      await deps.harness.setLiveFiles(
+        siteId,
+        JSON.stringify([
+          "a.js",
+          "canvas.json",
+          "index.html",
+          "preview.html",
+          "x".repeat(1_899_950),
+        ]),
+      );
+      const plans = async () => (await deps.harness.sessionRows(USER)).planBytes;
+
+      // v2 begun again and aborted at once, over and over: nothing to upload,
+      // never wrote entries, so its plan is not kept.
+      const before = await plans();
+      for (let i = 0; i < 5; i++) {
+        const again = await begin(deps, {
+          files: [{ path: "b.js" }],
+          entries: defaultEntries("2"),
+        });
+        expect(again.uploads).toEqual([]);
+        (await abortPublish(deps, USER, again.publish.id))._unsafeUnwrap();
+      }
+      expect(await plans()).toBe(before + 5 * PLAN_STUB.length);
+
+      // v3's complete got as far as writing entries, but its first write failed.
+      const v3 = await begin(deps, { files: [{ path: "c.js" }], entries: defaultEntries("3") });
+      performUploads(deps, v3.uploads);
+      deps.sitesBucket.failPut = (key) => key.endsWith("/preview.html");
+      const failed = await completePublish(
+        deps,
+        USER,
+        v3.publish.id,
+        completeRequest(defaultEntries("3")),
+      );
+      expect(failed._unsafeUnwrapErr().code).toBe("STORAGE_FAILED");
+      deps.sitesBucket.failPut = () => false;
+
+      // Retired, both kept: either might account for a live entry.
+      await gcAt(deps, T + SESSION_TTL_MS + GC_CLOCK_SKEW_MARGIN_MS + 1);
+      expect((await deps.store.getSession(v2.publish.id))?.plan).not.toBe(PLAN_STUB);
+      expect((await deps.store.getSession(v3.publish.id))?.plan).not.toBe(PLAN_STUB);
+
+      // The visit resolves "*" from v2's plan (its preview.html is live), and
+      // v3's goes, though the site stays "*".
+      const report = await gcAt(
+        deps,
+        T + SESSION_TTL_MS + SITE_CLEANUP_DELAY_MS + GC_CLOCK_SKEW_MARGIN_MS + 1,
+      );
+      expect((await deps.store.findSiteById(siteId))?.protectedFiles).toBe("*");
+      expect((await deps.store.getSession(v2.publish.id))?.plan).not.toBe(PLAN_STUB);
+      expect((await deps.store.getSession(v3.publish.id))?.plan).toBe(PLAN_STUB);
+      const keys = deps.sitesBucket.keys(`${slug}/`);
+      expect(keys).toEqual(expect.arrayContaining([`${slug}/a.js`, `${slug}/b.js`]));
+      expect(keys).not.toContain(`${slug}/c.js`);
+      expect(keys).not.toContain(`${slug}/junk.js`);
+      expect(report.deletedSiteKeys).toBe(2);
+
+      // Now forgotten like any other uncommitted session.
+      await gcAt(deps, T + SESSION_TTL_MS + DAY + 2 * HOUR);
+      expect(await deps.store.getSession(v3.publish.id)).toBeNull();
+      expect(await deps.store.getSession(v2.publish.id)).not.toBeNull();
     });
 
     it("stops protecting an entry nothing accounts for once it is old enough", async () => {

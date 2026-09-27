@@ -101,6 +101,66 @@ const progressLabel = ({ step, percent }: PublishProgress) => {
   }
 };
 
+// What a click on the titlebar button does (exported for tests). While a run
+// is publishing it can only cancel. Otherwise it starts one, except for the
+// later clicks of a multi-click (detail > 1; the keyboard's detail is 0): their
+// first click already acted, and when that click was Cancel, main reports the
+// cancel well inside a double-click, so the second click would find "Publish"
+// under the pointer and start the very publish the user just stopped.
+export const publishClickAction = (
+  publishing: boolean,
+  canCancel: boolean,
+  detail: number,
+): "cancel" | "start" | "none" =>
+  publishing ? (canCancel ? "cancel" : "none") : detail > 1 ? "none" : "start";
+
+// The button's accessible name while publishing (exported for tests): the
+// progress, and that activating it cancels when it would.
+export const publishingName = (label: string, canCancel: boolean) =>
+  canCancel ? `${label}. Activate to cancel` : label;
+
+// What the live region says while publishing: the step, not every percent.
+export const publishingAnnouncement = (progress: PublishProgress, cancelling: boolean) =>
+  cancelling ? "Cancelling publish" : progressLabel({ step: progress.step, percent: null });
+
+// The publishing label inside the titlebar button (exported for tests). Hover
+// swaps the progress for "Cancel" in the same cell, so the width holds. Focus
+// does not: a keyboard user keeps seeing the progress, and the spinner turns
+// into an X to say the button now cancels.
+export function PublishingLabel({
+  label,
+  canCancel,
+}: {
+  label: string;
+  canCancel: boolean;
+}) {
+  return (
+    <span className="grid">
+      <span
+        className={cn(
+          "flex items-center justify-center gap-1.5 [grid-area:1/1]",
+          canCancel && "group-hover:invisible",
+        )}
+      >
+        <LoaderCircle
+          size={13}
+          className={cn("animate-spin", canCancel && "group-focus-visible:hidden")}
+        />
+        {canCancel && (
+          <X size={13} strokeWidth={2.5} className="hidden group-focus-visible:block" />
+        )}
+        {label}
+      </span>
+      {canCancel && (
+        <span className="invisible flex items-center justify-center gap-1.5 [grid-area:1/1] group-hover:visible">
+          <X size={13} strokeWidth={2.5} />
+          Cancel
+        </span>
+      )}
+    </span>
+  );
+}
+
 const PUBLIC_FILES_NOTE =
   "Some public files on your live site may already be updated. Publish again to bring the site back in step.";
 
@@ -390,11 +450,16 @@ export const PublishButton = ({
   const publishing = run?.phase === "publishing" ? run : null;
   const canCancel = canCancelPublish(publishing) && !pointerHeld;
 
+  const publishingLabel = publishing
+    ? publishing.cancelling
+      ? "Cancelling"
+      : progressLabel(publishing.progress)
+    : null;
+
   const onPublishClick = (e: React.MouseEvent) => {
-    if (publishing) {
-      if (canCancel) void cancelPublishRun(workspaceId);
-      return;
-    }
+    const action = publishClickAction(!!publishing, canCancel, e.detail);
+    if (action === "cancel") void cancelPublishRun(workspaceId);
+    if (action !== "start") return;
     clear();
     abandonSignIn();
     dismissPublishRun(workspaceId);
@@ -492,6 +557,9 @@ export const PublishButton = ({
           if (e.repeat) e.preventDefault();
         }}
         disabled={agentBusy && !publishing}
+        aria-label={
+          publishingLabel !== null ? publishingName(publishingLabel, canCancel) : undefined
+        }
         title={
           publishing
             ? canCancel
@@ -504,22 +572,8 @@ export const PublishButton = ({
         className="group flex h-[26px] min-w-[84px] items-center justify-center gap-1.5 rounded-lg bg-[#e0e0e0] px-2.5 text-[13px] font-medium text-neutral-900 tabular-nums transition-colors hover:bg-white disabled:opacity-50 disabled:hover:bg-[#e0e0e0]"
         style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
       >
-        {publishing ? (
-          // Both labels share one cell, so hovering to "Cancel" keeps the width.
-          <span className="grid">
-            <span
-              className={`flex items-center justify-center gap-1.5 [grid-area:1/1] ${canCancel ? "group-hover:invisible group-focus-visible:invisible" : ""}`}
-            >
-              <LoaderCircle size={13} className="animate-spin" />
-              {publishing.cancelling ? "Cancelling" : progressLabel(publishing.progress)}
-            </span>
-            {canCancel && (
-              <span className="invisible flex items-center justify-center gap-1.5 [grid-area:1/1] group-hover:visible group-focus-visible:visible">
-                <X size={13} strokeWidth={2.5} />
-                Cancel
-              </span>
-            )}
-          </span>
+        {publishingLabel !== null ? (
+          <PublishingLabel label={publishingLabel} canCancel={canCancel} />
         ) : step === "published" ? (
           <>
             <Check size={13} strokeWidth={2.5} />
@@ -532,6 +586,10 @@ export const PublishButton = ({
           </>
         )}
       </button>
+      {/* The progress for screen readers: the button's name changes silently. */}
+      <span role="status" aria-live="polite" className="sr-only">
+        {publishing ? publishingAnnouncement(publishing.progress, publishing.cancelling) : ""}
+      </span>
 
       {createPortal(
         <>

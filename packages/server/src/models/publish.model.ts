@@ -48,6 +48,10 @@ export const site = sqliteTable(
     // is old enough even if cleanup_after keeps moving out. NULL with
     // cleanup_after.
     cleanupSince: integer("cleanup_since", { mode: "timestamp_ms" }),
+    // When a begin refused for the site's stored size last moved its cleanup
+    // to the front of GC's queue; an account hurries at most one site per
+    // GC_HURRY_INTERVAL_MS.
+    hurriedAt: integer("hurried_at", { mode: "timestamp_ms" }),
     createdAt: createdAt(),
     updatedAt: integer("updated_at", { mode: "timestamp_ms" })
       .default(nowMs)
@@ -155,6 +159,11 @@ export const publishSession = sqliteTable(
     // Σ size of the site files begin signed upload URLs for; counts toward
     // MAX_PENDING_SITE_BYTES while the session holds and has not committed.
     siteUploadBytes: integer("site_upload_bytes").notNull().default(0),
+    // Set with protected_files by the complete that is about to write the
+    // entries: the live entries may be this plan's. Only such a session's
+    // plan is kept (unstubbed) past its hold on a "*" site, for GC to resolve
+    // the "*" from.
+    entriesWritten: integer("entries_written", { mode: "boolean" }).notNull().default(false),
     createdAt: createdAt(),
   },
   (t) => [

@@ -12,6 +12,7 @@ import {
 import {
   COMPLETE_FENCE_MS,
   COMPLETE_LOCK_TTL_MS,
+  GC_HURRY_INTERVAL_MS,
   GC_MAX_CLEANUP_DEFER_MS,
   IMMUTABLE_CACHE_CONTROL,
   KEEP_VERSIONS,
@@ -20,6 +21,8 @@ import {
   MAX_PLAN_JSON_BYTES,
   MAX_PROTECTED_JSON_BYTES,
   MAX_SITE_BYTES,
+  MAX_SITE_RELEASED_BYTES,
+  MAX_SITE_RELEASED_FILES,
   MAX_SITE_ROW_PATHS_BYTES,
   MAX_SITE_STORED_BYTES,
   MAX_SITE_STORED_FILES,
@@ -53,6 +56,7 @@ import {
 } from "../lib/storage";
 import {
   d1PublishStore,
+  PLAN_STUB,
   type ObjectKind,
   type ObjectRef,
   type PublishStore,
@@ -418,22 +422,84 @@ const pendingSiteExceeded = (usedBytes: number, publishBytes: number) =>
     { reason: "pending-site", quotaBytes: MAX_PENDING_SITE_BYTES, usedBytes, publishBytes },
   );
 
+type Stored = { bytes: number; files: number };
+
+// A live_files or protected_files column's paths ("*" and NULL: none).
+export const parsePaths = (json: string | null): string[] => {
+  if (!json || json === "*") return [];
+  try {
+    const parsed = JSON.parse(json) as unknown;
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
+};
+
 // What <slug>/ would hold once this begin's uploads and entries land: every
-// key already there that they do not replace, plus them.
+// key already there that they do not replace, plus them. Keys its commit
+// would release (the live version's, and what a failed complete protected,
+// where the plan does not reuse them) count only past
+// MAX_SITE_RELEASED_BYTES / _FILES. Each existing key it counts, other than
+// the plan's own, is passed to `counted`.
 const storedAfter = (
   existing: Map<string, ObjectInfo>,
-  slug: string,
+  site: SiteRow,
+  planPaths: Set<string>,
   writes: { path: string; size: number }[],
-) => {
-  const replaced = new Set(writes.map((w) => siteKey(slug, w.path)));
-  let bytes = writes.reduce((a, w) => a + w.size, 0);
-  let files = writes.length;
+  counted: (path: string, info: ObjectInfo) => void = () => {},
+): Stored => {
+  const prefix = `${site.slug}/`;
+  const replaced = new Set(writes.map((w) => siteKey(site.slug, w.path)));
+  const released = new Set([...parsePaths(site.liveFiles), ...parsePaths(site.protectedFiles)]);
+  const stored = { bytes: writes.reduce((a, w) => a + w.size, 0), files: writes.length };
+  const freed = { bytes: 0, files: 0 };
   for (const [key, info] of existing) {
     if (replaced.has(key)) continue;
-    bytes += info.size;
-    files++;
+    const path = key.slice(prefix.length);
+    if (!planPaths.has(path) && released.has(path)) {
+      freed.bytes += info.size;
+      freed.files++;
+      continue;
+    }
+    stored.bytes += info.size;
+    stored.files++;
+    if (!planPaths.has(path)) counted(path, info);
   }
-  return { bytes, files };
+  return {
+    bytes: stored.bytes + Math.max(0, freed.bytes - MAX_SITE_RELEASED_BYTES),
+    files: stored.files + Math.max(0, freed.files - MAX_SITE_RELEASED_FILES),
+  };
+};
+
+const overStored = (s: Stored) =>
+  s.bytes > MAX_SITE_STORED_BYTES || s.files > MAX_SITE_STORED_FILES;
+
+// What GC's next visit would delete of the keys storedAfter counts: those no
+// session that still holds may upload to or complete with. Null when a held
+// plan cannot be read (GC then deletes nothing). Under a protected "*", what
+// it stands for is unknown until GC resolves it on the visit: its keys are
+// taken as cleanable (hurrySiteCleanup's per-account limit bounds the cost).
+const cleanableStored = async (
+  deps: PublishDeps,
+  existing: Map<string, ObjectInfo>,
+  site: SiteRow,
+  planPaths: Set<string>,
+  writes: { path: string; size: number }[],
+): Promise<Stored | null> => {
+  const held = new Set<string>();
+  for (const { plan: raw } of await deps.store.heldSessionPlans(site.id, deps.now().getTime())) {
+    if (raw === null || raw === PLAN_STUB) continue;
+    const plan = parsePlan(raw);
+    if (!plan) return null;
+    for (const p of planSitePaths(plan)) held.add(p);
+  }
+  const cleanable = { bytes: 0, files: 0 };
+  storedAfter(existing, site, planPaths, writes, (path, info) => {
+    if (held.has(path)) return;
+    cleanable.bytes += info.size;
+    cleanable.files++;
+  });
+  return cleanable;
 };
 
 export const beginPublish = (
@@ -499,27 +565,65 @@ export const beginPublish = (
 
     // MAX_SITE_BYTES bounds one plan; this bounds what the prefix holds, so
     // new paths cannot pile up faster than GC removes the stale ones.
-    const stored = storedAfter(existing, site.slug, [...siteUploads, ...req.site.entries]);
-    if (stored.bytes > MAX_SITE_STORED_BYTES || stored.files > MAX_SITE_STORED_FILES) {
+    const planPaths = new Set(planSitePaths(req));
+    const writes = [...siteUploads, ...req.site.entries];
+    const stored = storedAfter(existing, site, planPaths, writes);
+    if (overStored(stored)) {
+      const storedDetails = {
+        limitBytes: MAX_SITE_STORED_BYTES,
+        siteBytes: stored.bytes,
+        limitFiles: MAX_SITE_STORED_FILES,
+        siteFileCount: stored.files,
+      };
+      const cleanable = await cleanableStored(deps, existing, site, planPaths, writes);
+      const afterCleanup = cleanable && {
+        bytes: stored.bytes - cleanable.bytes,
+        files: stored.files - cleanable.files,
+      };
+      if (!afterCleanup || overStored(afterCleanup)) {
+        // What is in the way is kept: GC's visit would not help, so it is not
+        // hurried, and waiting for it is not what to do.
+        return err(
+          apiError(
+            413,
+            "SITE_TOO_LARGE",
+            "This site still keeps too many files for its published pages and unfinished publishes. " +
+              "Publish fewer changed files, or try again once unfinished publishes expire.",
+            { reason: "in-use", ...storedDetails },
+          ),
+        );
+      }
       // Stale keys wait for GC's visit, oldest site first. One blocked on
       // them goes to the front, due once the switch-over delay has passed, so
-      // "an hour" does not wait on GC's backlog of other sites.
-      await deps.store.hurrySiteCleanup(
-        site.id,
-        deps.now().getTime() + SITE_CLEANUP_DELAY_MS,
-        GC_MAX_CLEANUP_DEFER_MS,
-      );
+      // "an hour" does not wait on GC's backlog of other sites: one site per
+      // account per GC_HURRY_INTERVAL_MS, since the queue is shared.
+      const now = deps.now().getTime();
+      const hurried = await deps.store.hurrySiteCleanup({
+        siteId: site.id,
+        dueBy: now + SITE_CLEANUP_DELAY_MS,
+        maxDeferMs: GC_MAX_CLEANUP_DEFER_MS,
+        now,
+        intervalMs: GC_HURRY_INTERVAL_MS,
+      });
+      const scheduled = await deps.store.findSiteById(site.id);
+      const dueAt =
+        scheduled && scheduled.cleanupAfter !== null
+          ? Math.min(
+              scheduled.cleanupAfter,
+              (scheduled.cleanupSince ?? scheduled.cleanupAfter) + GC_MAX_CLEANUP_DEFER_MS,
+            )
+          : null;
       return err(
         apiError(
           413,
           "SITE_TOO_LARGE",
-          "This site's earlier files have not been cleaned up yet. Try again in an hour.",
+          hurried
+            ? "This site's earlier files have not been cleaned up yet. Try again in an hour."
+            : "This site's earlier files have not been cleaned up yet. Try again later.",
           {
             reason: "stored",
-            limitBytes: MAX_SITE_STORED_BYTES,
-            siteBytes: stored.bytes,
-            limitFiles: MAX_SITE_STORED_FILES,
-            siteFileCount: stored.files,
+            ...storedDetails,
+            ...(dueAt !== null ? { cleanupDueAt: new Date(dueAt).toISOString() } : {}),
           },
         ),
       );
@@ -802,6 +906,7 @@ const verifyAndCommit = async (
       protectedFiles,
       seenProtected: site.protectedFiles,
       fence: { now: deps.now().getTime(), minRemainingMs: COMPLETE_FENCE_MS },
+      writesEntries: true,
     });
     if (!fenced) {
       await release();
@@ -847,6 +952,7 @@ const verifyAndCommit = async (
       liveEntries: JSON.stringify(plan.site.entries.map(({ path, sha256 }) => ({ path, sha256 }))),
       keepVersions: KEEP_VERSIONS,
       cleanupAfter: now + SITE_CLEANUP_DELAY_MS,
+      maxDeferMs: GC_MAX_CLEANUP_DEFER_MS,
       now,
       // begin created one session object per plan object.
       sessionObjects: planObjects(plan).length,

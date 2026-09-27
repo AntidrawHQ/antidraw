@@ -9,6 +9,7 @@ import { stageSnapshot } from "../stage";
 import { LARGE_FILE_BYTES, MAX_MANIFEST_BYTES, type ExtractError } from "../types";
 import {
   buildArchive,
+  buildDeepManifestArchive,
   buildSnapshotArchive,
   cleanupTmp,
   fileEntry,
@@ -225,36 +226,36 @@ describe("extractSnapshot rejects hostile archives and leaves nothing behind", (
     expect(Object.keys(readTree(destDir)).sort()).toEqual(files.map((f) => f.path).sort());
   });
 
-  test("a manifest of many deep paths never blocks the event loop for long", async () => {
-    // 511 one-character segments per path, 1024 bytes each: checking every prefix of every path
-    // is quadratic in depth, and extract runs in the main process. This took over 4 s in one block
-    const files = Array.from({ length: 4000 }, (_, k) => ({
-      path: `${"a/".repeat(510)}${String(k).padStart(4, "0")}`,
-      size: 0,
-      sha256: sha256(""),
-      mode: 0o644,
-      storage: "archive",
-    }));
-    // The files themselves are left out: paths this deep cannot be written on macOS
-    const file = archivePath();
-    await buildArchive(file, [manifestJsonEntry({ version: 1, files })]);
-
-    let longestGap = 0;
-    let last = performance.now();
-    const ticker = setInterval(() => {
-      const now = performance.now();
-      longestGap = Math.max(longestGap, now - last);
-      last = now;
-    }, 5);
-    try {
-      expect((await readSnapshotManifest(file))._unsafeUnwrap().files).toHaveLength(files.length);
-      const { error } = await expectRejected(file, "MANIFEST_MISMATCH");
-      expect(error.message).toMatch(/missing from the archive/);
-    } finally {
-      clearInterval(ticker);
+  test("validating a manifest takes time linear in the depth of its paths", async () => {
+    // Checking every prefix of every path is quadratic in depth, and extract runs in the main
+    // process: a manifest of 4000 paths 510 deep took over 4 s in one block. Two depths are
+    // compared rather than one bounded: 8× the depth costs under 8× when linear (about 35× when
+    // quadratic). Each side is the least CPU time of several interleaved runs, which other
+    // processes on a busy machine do not stretch. That validation yields between files is
+    // asserted in extract-yield.test.ts
+    const count = 500;
+    const shallow = archivePath();
+    const deep = archivePath();
+    await buildDeepManifestArchive(shallow, 63, count);
+    await buildDeepManifestArchive(deep, 508, count);
+    const cpuTimeToRead = async (file: string) => {
+      const start = process.cpuUsage();
+      expect((await readSnapshotManifest(file))._unsafeUnwrap().files).toHaveLength(count);
+      const { user, system } = process.cpuUsage(start);
+      return user + system;
+    };
+    await cpuTimeToRead(deep); // warm-up
+    let fastestShallow = Infinity;
+    let fastestDeep = Infinity;
+    for (let run = 0; run < 5; run++) {
+      fastestShallow = Math.min(fastestShallow, await cpuTimeToRead(shallow));
+      fastestDeep = Math.min(fastestDeep, await cpuTimeToRead(deep));
     }
-    expect(longestGap).toBeLessThan(400);
-  });
+    expect(fastestDeep / fastestShallow).toBeLessThan(16);
+
+    const { error } = await expectRejected(deep, "MANIFEST_MISMATCH");
+    expect(error.message).toMatch(/missing from the archive/);
+  }, 30_000);
 
   test("a manifest swapped between the passes → MANIFEST_MISMATCH, even one pass 1 would refuse", async () => {
     const { file, blobs } = await snapshotArchive([

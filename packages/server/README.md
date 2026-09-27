@@ -203,8 +203,12 @@ Begin also bounds what a signed-in client can park before it commits: at most
 10 uncommitted sessions whose upload URLs still work (429 `RATE_LIMITED`,
 `details.reason: "open-sessions"`), at most 1 GiB of new site files across
 them (413 `QUOTA_EXCEEDED`, `details.reason: "pending-site"`), and at most
-2 × 500 MiB (or 2 × 5 003 keys) under a site's prefix once its uploads land
-(413 `SITE_TOO_LARGE`, `details.reason: "stored"`).
+2 × 500 MiB (or 2 × 5 003 keys) under a site's prefix once its uploads land,
+not counting up to one site's worth of files its commit would release (the
+live version's, and a failed complete's protected ones, that it does not
+reuse). Past that it answers 413 `SITE_TOO_LARGE` with `details.reason:
+"stored"` when GC's next visit would free enough (`details.cleanupDueAt` says
+when it is due), or `"in-use"` when the files in the way are ones GC keeps.
 
 Clients PUT bytes straight to R2 with presigned S3 URLs (aws4fetch), signed
 over `content-length`, the sha256 checksum and the metadata; complete then
@@ -223,7 +227,12 @@ run that stops with work left says so in `report.backlog` and logs a warning,
 and the next run continues. Stale-site cleanup also runs alone every five
 minutes (a second cron, its own D1 budget: about 650 site visits an hour),
 oldest outstanding site first, except that a site whose begin was refused
-with `SITE_TOO_LARGE` goes to the front, due an hour after the refusal. GC
+with `SITE_TOO_LARGE` (`"stored"`) goes to the front, due an hour after the
+refusal (one site per account per hour). A commit never makes a site due
+sooner than an hour after it, so the replaced version's files outlive the
+switch-over by at least that. On a site whose protected files are `"*"`, GC
+keeps only the plans of sessions whose complete wrote entries, and of those
+only the ones that account for the live entries. GC
 treats a session as expired, or its hold as ended, only 5 minutes after the
 fact by its own clock (`GC_CLOCK_SKEW_MARGIN_MS`), so a complete whose
 Worker's clock lags GC's still finds what its commit checks.

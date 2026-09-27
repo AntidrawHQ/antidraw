@@ -1375,6 +1375,48 @@ describe("error mapping", () => {
       limitFiles: 5,
       siteFileCount: 6,
     });
+    // No cleanup due within the hour: no promise of one.
+    expect(stored.message).toContain("Try again later");
+
+    const soon = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    const hurried = mapCloudError(
+      cloud(413, "SITE_TOO_LARGE", { reason: "stored", cleanupDueAt: soon }),
+      manifest,
+    );
+    expect(hurried.message).toContain("Try again in an hour");
+    expect(hurried.details).toEqual({ reason: "stored", cleanupDueAt: soon });
+
+    const later = mapCloudError(
+      cloud(413, "SITE_TOO_LARGE", {
+        reason: "stored",
+        cleanupDueAt: new Date(Date.now() + 20 * 60 * 60 * 1000).toISOString(),
+      }),
+    );
+    expect(later.message).toContain("Try again later");
+    expect(
+      mapCloudError(cloud(413, "SITE_TOO_LARGE", { reason: "stored", cleanupDueAt: "junk" })).details,
+    ).toEqual({ reason: "stored" });
+
+    const inUse = mapCloudError(
+      cloud(413, "SITE_TOO_LARGE", {
+        reason: "in-use",
+        limitBytes: 10,
+        siteBytes: 11,
+        limitFiles: 5,
+        siteFileCount: 6,
+      }),
+      manifest,
+    );
+    expect(inUse.code).toBe("SITE_TOO_LARGE");
+    expect(inUse.message).toContain("unfinished publishes");
+    expect(inUse.message).not.toContain("hour");
+    expect(inUse.details).toEqual({
+      reason: "in-use",
+      limitBytes: 10,
+      siteBytes: 11,
+      limitFiles: 5,
+      siteFileCount: 6,
+    });
 
     const open = mapCloudError(cloud(429, "RATE_LIMITED", { reason: "open-sessions", limit: 10, open: 10 }));
     expect(open.code).toBe("RATE_LIMITED");
