@@ -57,6 +57,14 @@ after the response, through `ctx.waitUntil`. Leave it off on workers.dev,
 where the Cache API keeps nothing. Content types come from the `mime` package,
 as in Cloudflare's own static-asset serving.
 
+`i` is only the uploader's claim, so the server decides: HTML (including
+directory indexes and the single-page-application fallback) always revalidates,
+since those URLs are reused by every publish and a page pinned in browsers
+would outlive later publishes with no way to purge it. Other flagged files get
+a year, `immutable`. To change that, pass `cacheControl({ site, path,
+immutable })`, e.g. to require hashed-looking names, or to answer
+`private, no-cache` for a site only some viewers may see.
+
 Create one `SiteStore` and one `SiteServer` per isolate (at module scope), not
 per request, so their caches last.
 
@@ -80,6 +88,12 @@ per request, so their caches last.
   are cleared by the site's next plan. A site that stops publishing keeps its
   last abandoned upload until then; a scheduled cleanup (under the lock) clears
   those too.
+- **Site keys that aren't reused.** A site's R2 data (files, plans, pointer)
+  is keyed by `site`. Use a permanent internal id as the key and map public
+  slugs to it, so a slug that is freed and claimed by someone else never
+  reaches the old owner's data. Browsers still keep the old owner's flagged
+  (non-HTML) files for up to a year under the slug's URLs; pages always
+  revalidate, so the new owner's pages are what visitors get.
 - **Rate limits and quotas.** Built-in limits are per publish: 10,000 files,
   95 MiB per file (under the Workers 100 MB request-body limit), 500 MiB total,
   2 MiB of file-list JSON. A site holds its live version, retained chunks and

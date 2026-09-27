@@ -33,6 +33,14 @@ export type SiteServerOptions = {
   /** Total stored size of the pointers kept in memory. Default 32 MiB. */
   maxCachedPointerBytes?: number;
   notFound?: NotFoundMode;
+  /**
+   * The Cache-Control for a file served with 200 (or 304). `immutable` is
+   * this server's own choice: the upload's `i` flag, except on HTML, directory
+   * indexes and the single-page-application fallback. Return e.g.
+   * `"private, no-cache"` for a site only some viewers may see. Default:
+   * a year for immutable files, else revalidate on every use.
+   */
+  cacheControl?: (file: { site: string; path: string; immutable: boolean }) => string;
   now?: () => number;
 };
 
@@ -62,6 +70,7 @@ export class SiteServer {
   private readonly maxCachedSites: number;
   private readonly notFound: NotFoundMode;
   private readonly now: () => number;
+  private readonly cacheControl: NonNullable<SiteServerOptions["cacheControl"]>;
   private readonly maxCachedPointerBytes: number;
   private readonly pointers = new Map<string, CachedPointer>();
   private readonly loading = new Map<string, Promise<CachedPointer>>();
@@ -78,6 +87,7 @@ export class SiteServer {
     this.maxCachedPointerBytes = options.maxCachedPointerBytes ?? 32 * 1024 * 1024;
     this.notFound = options.notFound ?? "404-page";
     this.now = options.now ?? Date.now;
+    this.cacheControl = options.cacheControl ?? (({ immutable }) => (immutable ? IMMUTABLE : REVALIDATE));
   }
 
   /**
@@ -161,15 +171,18 @@ export class SiteServer {
     ctx: WaitUntil | undefined,
   ): Promise<Response | null> {
     const etag = `"${entry.h}"`;
-    const headers = new Headers({
-      "content-type": contentType(path),
-      "x-content-type-options": "nosniff",
-    });
+    const type = contentType(path);
+    const headers = new Headers({ "content-type": type, "x-content-type-options": "nosniff" });
 
     let range: ByteRange | null = null;
     if (status === 200) {
+      // `i` comes from the uploader. Pages (directory indexes and the
+      // single-page-application fallback included) sit at URLs every publish
+      // reuses, so pinning one in browsers for a year would outlive later
+      // publishes, by a teammate or a slug's next owner, with no way to purge it.
+      const immutable = entry.i === true && !isPage(type);
       headers.set("etag", etag);
-      headers.set("cache-control", entry.i ? IMMUTABLE : REVALIDATE);
+      headers.set("cache-control", this.cacheControl({ site, path, immutable }));
       headers.set("accept-ranges", "bytes");
       if (ifNoneMatchHits(request.headers.get("if-none-match"), etag)) {
         headers.delete("content-type");
@@ -324,6 +337,8 @@ export function contentType(path: string): string {
   if (!type) return "application/octet-stream";
   return type.startsWith("text/") && !type.includes("charset") ? `${type}; charset=utf-8` : type;
 }
+
+const isPage = (type: string) => /^(text\/html|application\/xhtml\+xml)\b/.test(type);
 
 const unavailable = () => text(503, "Temporarily unavailable", { "retry-after": "1" });
 

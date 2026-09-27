@@ -283,6 +283,73 @@ describe("not-found modes", () => {
   });
 });
 
+describe("cache-control", () => {
+  // `i` is the uploader's claim, so a publish can flag its pages too.
+  const flagged = { "index.html": "home", "about/index.html": "about", "page.html": "page", "app-1.js": "js" };
+  const cacheControl = async (s: SiteServer, paths: string[]) => {
+    const out: Record<string, string | null> = {};
+    for (const path of paths) out[path] = (await get(s, path)).headers.get("cache-control");
+    return out;
+  };
+
+  it("never lets an upload pin HTML: pages, directory indexes and the SPA fallback revalidate", async () => {
+    await publish("p1", flagged, Object.keys(flagged));
+    const spa = server({ notFound: "single-page-application" });
+    expect(await cacheControl(spa, ["/", "/about/", "/page.html", "/route", "/app-1.js"])).toMatchInlineSnapshot(`
+      {
+        "/": "public, max-age=0, must-revalidate",
+        "/about/": "public, max-age=0, must-revalidate",
+        "/app-1.js": "public, max-age=31536000, immutable",
+        "/page.html": "public, max-age=0, must-revalidate",
+        "/route": "public, max-age=0, must-revalidate",
+      }
+    `);
+  });
+
+  it("lets the caller decide, e.g. private for a members-only site", async () => {
+    await publish("p1", flagged, ["app-1.js"]);
+    const seen: unknown[] = [];
+    const s = server({
+      cacheControl: (file) => {
+        seen.push({ ...file, site: file.site === site ? "<site>" : file.site });
+        return file.immutable ? "private, max-age=31536000, immutable" : "private, no-cache";
+      },
+    });
+    expect({
+      served: await cacheControl(s, ["/", "/app-1.js"]),
+      notModified: (await get(s, "/", { headers: { "if-none-match": `"${sha256("home")}"` } })).headers.get(
+        "cache-control",
+      ),
+      seen,
+    }).toMatchInlineSnapshot(`
+      {
+        "notModified": "private, no-cache",
+        "seen": [
+          {
+            "immutable": false,
+            "path": "index.html",
+            "site": "<site>",
+          },
+          {
+            "immutable": true,
+            "path": "app-1.js",
+            "site": "<site>",
+          },
+          {
+            "immutable": false,
+            "path": "index.html",
+            "site": "<site>",
+          },
+        ],
+        "served": {
+          "/": "private, no-cache",
+          "/app-1.js": "private, max-age=31536000, immutable",
+        },
+      }
+    `);
+  });
+});
+
 describe("conditional requests and ranges", () => {
   beforeEach(() => publish("p1", SITE));
   const homeTag = `"${sha256("<h1>home</h1>")}"`;
