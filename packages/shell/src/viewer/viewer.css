@@ -1,0 +1,27 @@
+@font-face {
+  font-family: "Geist Sans";
+  src: url("../renderer/assets/Geist-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@import "tailwindcss" source(none);
+@source ".";
+@source "../renderer/canvas";
+@source "../renderer/components/ui/command.tsx";
+@source "../renderer/components/ui/resizable-panel.tsx";
+
+@theme inline {
+  --font-sans: "Geist Sans", "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, sans-serif;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-neutral-800 font-sans text-neutral-200;
+}
