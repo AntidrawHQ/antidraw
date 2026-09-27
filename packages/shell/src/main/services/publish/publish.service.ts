@@ -37,6 +37,7 @@ import {
   type CompletePublishRequest,
   type PublishSessionResponse,
 } from "./cloud-publish";
+import { ABORTED, cloudTiming, untilAborted } from "./deadline";
 import { uploadAll, type UploadError, type UploadTask } from "./uploader";
 import { watchWorkspaceActivity, type ActivityWatch } from "./workspace-busy";
 import { createStagingDir, sweepStaleStaging } from "./staging";
@@ -135,6 +136,8 @@ export const mapCloudError = (
     case "SIGNED_OUT":
     case "SERVER_UNREACHABLE":
       return publishError(e.code, e.message);
+    case "CANCELLED":
+      return CANCELLED;
     case "PUBLISH_TOO_LARGE":
       return publishError(
         "PUBLISH_TOO_LARGE",
@@ -142,6 +145,18 @@ export const mapCloudError = (
         { ...pickNumbers(details, ["limitBytes", "snapshotBytes"]), ...largest },
       );
     case "SITE_TOO_LARGE":
+      // "stored": this publish is within the site limits, but the site's
+      // storage still holds earlier versions' files that GC has not removed.
+      if (details.reason === "stored") {
+        return publishError(
+          "SITE_TOO_LARGE",
+          "This canvas's earlier published files are still being cleaned up. Try again in an hour.",
+          {
+            reason: "stored",
+            ...pickNumbers(details, ["limitBytes", "siteBytes", "limitFiles", "siteFileCount"]),
+          },
+        );
+      }
       return publishError(
         "SITE_TOO_LARGE",
         "The built site is too large to publish.",
@@ -151,6 +166,19 @@ export const mapCloudError = (
         },
       );
     case "QUOTA_EXCEEDED":
+      // "pending-site": not the storage quota, but the site files of this
+      // account's unfinished publishes, which stop counting when those
+      // sessions finish or expire (up to two hours).
+      if (details.reason === "pending-site") {
+        return publishError(
+          "QUOTA_EXCEEDED",
+          "Too many site files are waiting on unfinished publishes. Try again in an hour or two.",
+          {
+            reason: "pending-site",
+            ...pickNumbers(details, ["quotaBytes", "usedBytes", "publishBytes"]),
+          },
+        );
+      }
       return publishError(
         "QUOTA_EXCEEDED",
         "Publishing this would go over your storage quota.",
@@ -198,6 +226,16 @@ export const mapCloudError = (
         "The publish took too long and expired. Publish again.",
       );
     case "RATE_LIMITED":
+      // "open-sessions": too many unfinished publishes hold their sessions;
+      // they free up as they finish or expire (up to two hours), not within
+      // the minute the plain rate limit resets in.
+      if (details.reason === "open-sessions") {
+        return publishError(
+          "RATE_LIMITED",
+          "Too many unfinished publishes. Try again in an hour or two.",
+          { reason: "open-sessions" },
+        );
+      }
       return publishError(
         "RATE_LIMITED",
         "Too many publishes in a short time. Wait a minute and try again.",
@@ -311,6 +349,30 @@ type Run = {
 // One run per workspace; a second gets PUBLISH_IN_PROGRESS.
 const runs = new Map<string, Run>();
 
+// A run that ended PUBLISH_OUTCOME_UNKNOWN with its session still pending
+// (or unreadable), one per workspace: what getPublishOutcome needs to send
+// complete again. The run's staging is gone by then, but complete needs only
+// the entry pages; everything else was uploaded. Dropped once the server
+// reports the session done, when it is aborted, when the workspace publishes
+// again, or once it has expired.
+type Unfinished = {
+  publishId: string;
+  entries: CompletePublishRequest["entries"];
+  expiresAt: number;
+  // The server's definite refusal of complete; only the abort is left to do.
+  refused?: CloudError;
+  inFlight?: Promise<Result<PublishSessionResponse, PublishError>> | null;
+};
+const unfinished = new Map<string, Unfinished>();
+
+const keepUnfinished = (workspaceId: string, held: Unfinished) => {
+  const now = Date.now();
+  for (const [id, other] of unfinished) {
+    if (other.expiresAt < now) unfinished.delete(id);
+  }
+  unfinished.set(workspaceId, held);
+};
+
 export const cancelPublish = (workspaceId: string): boolean => {
   const run = runs.get(workspaceId);
   if (!run || run.finishing) return false;
@@ -375,6 +437,8 @@ export async function* publishWorkspace(
     staging: null,
   };
   runs.set(workspaceId, run);
+  // A new publish replaces whatever an earlier one left unfinished.
+  unfinished.delete(workspaceId);
 
   const onCallerAbort = () => {
     if (!run.finishing) run.controller.abort();
@@ -416,7 +480,23 @@ const execute = async (
 ): Promise<Result<PublishResult, PublishError>> => {
   emit({ type: "step", step: "checking" });
 
-  const account = await getAccount();
+  // getAccount takes no signal: stop waiting on a cancel or after the same
+  // bound the publish API's requests get.
+  const accountTimeout = AbortSignal.timeout(cloudTiming.requestTimeoutMs);
+  const account = await untilAborted(
+    getAccount(),
+    AbortSignal.any([run.controller.signal, accountTimeout]),
+  );
+  if (account === ABORTED) {
+    return err(
+      run.controller.signal.aborted
+        ? CANCELLED
+        : publishError(
+            "SERVER_UNREACHABLE",
+            "The AntiDraw server took too long to answer.",
+          ),
+    );
+  }
   if (account.isErr()) return err(fromAccountError(account.error));
   if (!account.value) return err(SIGNED_OUT);
 
@@ -731,7 +811,19 @@ const steps = async (ctx: {
     },
     { signal },
   );
-  if (packedResult.isErr()) return err(mapSnapshotError(packedResult.error));
+  if (packedResult.isErr()) {
+    // Pack's TOO_LARGE is manifest.json over its cap: too many files or too
+    // long paths, not too many bytes (stage's TOO_LARGE).
+    return err(
+      packedResult.error.code === "TOO_LARGE"
+        ? publishError(
+            "PUBLISH_TOO_LARGE",
+            "This canvas has too many files, or file paths too long, to publish.",
+            { fileCount: staged.manifest.files.length },
+          )
+        : mapSnapshotError(packedResult.error),
+    );
+  }
   const packed = packedResult.value;
 
   const snapshotLimits = checkSnapshotLimits(packed);
@@ -771,8 +863,10 @@ const steps = async (ctx: {
   });
   if (body.isErr()) return err(body.error);
 
-  const begun = await beginPublish(body.value);
-  if (begun.isErr()) return err(mapCloudError(begun.error, packed.manifest));
+  const begun = await beginPublish(body.value, { signal });
+  if (begun.isErr()) {
+    return err(signal.aborted ? CANCELLED : mapCloudError(begun.error, packed.manifest));
+  }
   const publishId = begun.value.publish.id;
   state.session = publishId;
   if (signal.aborted) return err(CANCELLED);
@@ -855,21 +949,32 @@ const steps = async (ctx: {
 
   // Still no definite answer: ask the server what became of the session.
   // publishId lets "Check status" ask about this session later
-  // (getPublishOutcome), rather than guess from the site's version.
-  const outcomeUnknown = publishError(
-    "PUBLISH_OUTCOME_UNKNOWN",
-    "The publish may still finish. Check again in a moment.",
-    { publishId },
-  );
+  // (getPublishOutcome), rather than guess from the site's version; the
+  // entries kept here let it send complete again, since nothing else moves a
+  // pending session on.
+  const outcomeUnknown = (): Result<PublishResult, PublishError> => {
+    keepUnfinished(workspaceId, {
+      publishId,
+      entries,
+      expiresAt: Date.parse(begun.value.publish.expiresAt),
+    });
+    return err(
+      publishError(
+        "PUBLISH_OUTCOME_UNKNOWN",
+        "The publish may still finish. Check again in a moment.",
+        { publishId },
+      ),
+    );
+  };
   const session = await getPublishSession(publishId);
   if (session.isErr()) {
-    return err(session.error.code === "SIGNED_OUT" ? SIGNED_OUT : outcomeUnknown);
+    return session.error.code === "SIGNED_OUT" ? err(SIGNED_OUT) : outcomeUnknown();
   }
   const { status, resultVersion, site } = session.value;
   if (status === "completed" && resultVersion !== null) {
     return ok(toResult(site, resultVersion));
   }
-  if (status === "pending") return err(outcomeUnknown);
+  if (status === "pending") return outcomeUnknown();
   // aborted or expired: it can no longer complete.
   return err(
     mapCloudError({ status: 410, code: "PUBLISH_EXPIRED", message: `Session ${status}` }),
@@ -881,13 +986,59 @@ const steps = async (ctx: {
 // ============================================================================
 
 // What became of a publish session that ended PUBLISH_OUTCOME_UNKNOWN (its
-// publishId is in that error's details).
+// publishId is in that error's details). While it is still pending and this
+// process kept its entries, it is also the retry: complete is sent once more
+// (it is idempotent), and a session the server now refuses for good is
+// aborted, so the answer is "it will not go live" rather than "pending"
+// until it expires.
 export const getPublishOutcome = async (
+  workspaceId: string,
   publishId: string,
 ): Promise<Result<PublishSessionResponse, PublishError>> => {
   const result = await getPublishSession(publishId);
   if (result.isErr()) return err(mapCloudError(result.error));
-  return ok(result.value);
+  const held = unfinished.get(workspaceId);
+  if (held?.publishId !== publishId) return ok(result.value);
+  if (result.value.status !== "pending") {
+    unfinished.delete(workspaceId);
+    return ok(result.value);
+  }
+  // One attempt at a time, however many checks arrive.
+  held.inFlight ??= finishUnfinished(workspaceId, held, result.value).finally(() => {
+    held.inFlight = null;
+  });
+  return held.inFlight;
+};
+
+const finishUnfinished = async (
+  workspaceId: string,
+  held: Unfinished,
+  pending: PublishSessionResponse,
+): Promise<Result<PublishSessionResponse, PublishError>> => {
+  if (!held.refused) {
+    const completed = await completePublish(held.publishId, { entries: held.entries });
+    if (completed.isOk()) {
+      unfinished.delete(workspaceId);
+      return ok({
+        status: "completed",
+        resultVersion: completed.value.version,
+        site: completed.value.site,
+      });
+    }
+    if (isRetryableComplete(completed.error)) return ok(pending);
+    if (completed.error.code === "SIGNED_OUT") return err(SIGNED_OUT);
+    held.refused = completed.error;
+  }
+
+  // Refused for good (uploads missing, published from elsewhere, expired…):
+  // this session can never commit. Kept until the abort lands, so the next
+  // check tries it again.
+  const aborted = await abortPublish(held.publishId);
+  if (aborted.isErr()) return err(mapCloudError(held.refused));
+  unfinished.delete(workspaceId);
+  const after = await getPublishSession(held.publishId);
+  if (after.isErr()) return err(mapCloudError(after.error));
+  return ok(after.value);
 };
 
 // null when the canvas was never published, or when signed out.

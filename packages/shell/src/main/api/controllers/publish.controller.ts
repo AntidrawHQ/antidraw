@@ -124,13 +124,15 @@ const sessionParamSchema = z.object({
 
 // What became of a publish that ended PUBLISH_OUTCOME_UNKNOWN: the session's
 // status ("pending", "completed", "aborted", "expired"), the version it
-// committed, and the site as it is now.
+// committed, and the site as it is now. A session still pending is also
+// nudged: main sends its (idempotent) complete again, so asking is what lets
+// it finish.
 publishController.get(
   "/:workspaceId/session/:publishId",
   zValidator("param", sessionParamSchema),
   async (ctx) => {
-    const { publishId } = ctx.req.valid("param");
-    const result = await getPublishOutcome(publishId);
+    const { workspaceId, publishId } = ctx.req.valid("param");
+    const result = await getPublishOutcome(workspaceId, publishId);
 
     if (result.isErr()) return respondError(ctx, result.error);
 
@@ -138,13 +140,14 @@ publishController.get(
   },
 );
 
-// Ends an in-flight publish, unless it has reached `finishing`.
+// Ends an in-flight publish, unless it has reached `finishing`. `cancelled`
+// says whether there was a run to cancel; the renderer uses it to drop its
+// "Cancelling" state when main had nothing to act on.
 publishController.post(
   "/:workspaceId/cancel",
   zValidator("param", workspaceIdParamSchema),
   (ctx) => {
     const { workspaceId } = ctx.req.valid("param");
-    cancelPublish(workspaceId);
-    return ctx.json({ ok: true });
+    return ctx.json({ cancelled: cancelPublish(workspaceId) });
   },
 );

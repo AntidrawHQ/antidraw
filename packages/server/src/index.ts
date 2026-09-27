@@ -48,6 +48,6 @@ export const createApp = (opts: PublishOptions = {}) => {
 };
 
 // Cloudflare Workers entrypoint: Hono's `fetch`, and the cron trigger's
-// `scheduled` (nightly publish GC).
+// `scheduled` (hourly publish GC).
 const app = createApp();
 export default { fetch: app.fetch, scheduled } satisfies ExportedHandler<Bindings>;

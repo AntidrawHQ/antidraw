@@ -5,7 +5,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { largestFiles, packSnapshot } from "../pack";
 import { scanWorkspace } from "../scan";
 import { stageSnapshot } from "../stage";
-import { LARGE_FILE_BYTES, type PackedSnapshot, type SnapshotPlan, type StagedSnapshot } from "../types";
+import { LARGE_FILE_BYTES, MAX_MANIFEST_BYTES, type PackedSnapshot, type SnapshotPlan, type StagedSnapshot } from "../types";
 import { cleanupTmp, listArchive, makeTmp, readTree, sha256, writeTree, type TreeNode } from "./helpers";
 
 afterEach(cleanupTmp);
@@ -344,6 +344,34 @@ describe("packSnapshot", () => {
     const blobDir = path.join(out, "blobs");
     const result = await packSnapshot(staged, { archiveFile, blobDir });
     expect(result._unsafeUnwrapErr().code).toBe("PACK_FAILED");
+    expect(fs.existsSync(archiveFile)).toBe(false);
+    expect(fs.existsSync(blobDir)).toBe(false);
+  });
+
+  test("a manifest.json over MAX_MANIFEST_BYTES → TOO_LARGE before anything is written", async () => {
+    // 100 000 files (the file cap) with ~250-byte paths: well under the byte caps, but a
+    // manifest extract would refuse. Refused on the manifest alone, so no staged files are needed
+    const dir = "d".repeat(240);
+    const files = Array.from({ length: 100_000 }, (_, i) => ({
+      path: `${dir}/${i}.txt`,
+      size: 1,
+      sha256: "0".repeat(64),
+      mode: 0o644 as const,
+      storage: "archive" as const,
+    }));
+    expect(Buffer.byteLength(JSON.stringify({ version: 1, files }))).toBeGreaterThan(MAX_MANIFEST_BYTES);
+    const staged: StagedSnapshot = {
+      dir: makeTmp(),
+      manifest: { version: 1, files },
+      excluded: { listed: [], grouped: [] },
+    };
+    const out = makeTmp();
+    const archiveFile = path.join(out, "snapshot.tar.gz");
+    const blobDir = path.join(out, "blobs");
+    const result = await packSnapshot(staged, { archiveFile, blobDir });
+    const error = result._unsafeUnwrapErr();
+    expect(error.code).toBe("TOO_LARGE");
+    expect(error.message).toMatch(/manifest\.json/);
     expect(fs.existsSync(archiveFile)).toBe(false);
     expect(fs.existsSync(blobDir)).toBe(false);
   });

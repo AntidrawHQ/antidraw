@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, vi } from "vitest";
+import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
 import { ok, err } from "neverthrow";
 import type { PublishEvent, PublishResult, SiteStatus } from "@/main/api";
@@ -22,6 +22,8 @@ const {
   usePublishRuns,
   startPublish,
   cancelPublishRun,
+  canCancelPublish,
+  CANCEL_ARM_MS,
   checkPublishStatus,
   dismissPublishRun,
   judgeOutcome,
@@ -297,10 +299,20 @@ describe("Check status asks about the session when main names it", () => {
 });
 
 describe("cancel", () => {
+  // Cancel is armed CANCEL_ARM_MS after the run starts.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+  const armCancel = () => vi.advanceTimersByTimeAsync(CANCEL_ARM_MS);
+
   test("cancelling asks main to cancel this workspace's run, which then ends", async () => {
     const a = startPublish(queryClient, "A");
     push("A", { type: "step", step: "building" });
     await vi.waitFor(() => expect(runOf("A")).toMatchObject({ progress: { step: "building" } }));
+    await armCancel();
 
     await cancelPublishRun("A");
     expect(mockCancel).toHaveBeenCalledWith("A");
@@ -313,6 +325,7 @@ describe("cancel", () => {
     const a = startPublish(queryClient, "A");
     push("A", { type: "step", step: "uploading" });
     await vi.waitFor(() => expect(runOf("A")).toMatchObject({ progress: { step: "uploading" } }));
+    await armCancel();
 
     await cancelPublishRun("A");
     expect(runOf("A")).toMatchObject({ phase: "publishing", cancelling: true });
@@ -327,7 +340,9 @@ describe("cancel", () => {
     const a = startPublish(queryClient, "A");
     push("A", { type: "step", step: "finishing" });
     await vi.waitFor(() => expect(runOf("A")).toMatchObject({ progress: { step: "finishing" } }));
+    await armCancel();
 
+    expect(canCancelPublish(runOf("A"))).toBe(false);
     await cancelPublishRun("A");
     expect(mockCancel).not.toHaveBeenCalled();
 
@@ -338,6 +353,7 @@ describe("cancel", () => {
   test("a cancel that loses the race with finishing clears 'cancelling'", async () => {
     mockCancel.mockResolvedValueOnce(ok(true));
     const a = startPublish(queryClient, "A");
+    await armCancel();
     await cancelPublishRun("A");
     expect(runOf("A")).toMatchObject({ cancelling: true });
 
@@ -345,6 +361,52 @@ describe("cancel", () => {
     await vi.waitFor(() =>
       expect(runOf("A")).toMatchObject({ progress: { step: "finishing" }, cancelling: false }),
     );
+    push("A", { type: "done", result: resultFor("A", 1) });
+    expect(await a).toBe("published");
+  });
+
+  test("a double-click on Publish does not cancel what its first click started", async () => {
+    const a = startPublish(queryClient, "A");
+    // The second click lands on the same button, now showing the run.
+    expect(canCancelPublish(runOf("A"))).toBe(false);
+    await cancelPublishRun("A");
+    await vi.advanceTimersByTimeAsync(CANCEL_ARM_MS - 1);
+    await cancelPublishRun("A");
+    expect(mockCancel).not.toHaveBeenCalled();
+    expect(runOf("A")).toMatchObject({ phase: "publishing", cancelling: false });
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(canCancelPublish(runOf("A"))).toBe(true);
+
+    push("A", { type: "done", result: resultFor("A", 1) });
+    expect(await a).toBe("published");
+  });
+
+  test("a cancel main had nothing to act on does not leave the run 'cancelling'", async () => {
+    // Main answers false: its run was not registered yet, or already finishing.
+    mockCancel.mockResolvedValueOnce(ok(false));
+    const a = startPublish(queryClient, "A");
+    await armCancel();
+
+    await cancelPublishRun("A");
+    expect(mockCancel).toHaveBeenCalledWith("A");
+    expect(runOf("A")).toMatchObject({ phase: "publishing", cancelling: false });
+    expect(canCancelPublish(runOf("A"))).toBe(true);
+
+    push("A", { type: "done", result: resultFor("A", 1) });
+    expect(await a).toBe("published");
+  });
+
+  test("a failed cancel request clears 'cancelling' too", async () => {
+    mockCancel.mockResolvedValueOnce(
+      err({ status: 500 as const, code: "NETWORK_ERROR", message: "down" }),
+    );
+    const a = startPublish(queryClient, "A");
+    await armCancel();
+
+    await cancelPublishRun("A");
+    expect(runOf("A")).toMatchObject({ phase: "publishing", cancelling: false });
+
     push("A", { type: "done", result: resultFor("A", 1) });
     expect(await a).toBe("published");
   });

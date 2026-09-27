@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { err, ok } from "neverthrow";
 import { cloudFetch } from "@/main/services/account.service";
 import {
@@ -10,6 +10,7 @@ import {
   patchSite,
   type BeginPublishRequest,
 } from "../cloud-publish";
+import { cloudTiming } from "../deadline";
 
 vi.mock("@/main/services/account.service", () => ({
   cloudFetch: vi.fn(),
@@ -203,6 +204,84 @@ describe("cloud-publish", () => {
     expect(JSON.parse(vi.mocked(cloudFetch).mock.calls[0]![1]!.body as string)).toEqual({ entries });
     expect(JSON.parse(vi.mocked(cloudFetch).mock.calls[4]![1]!.body as string)).toEqual({
       allowRemix: false,
+    });
+  });
+
+  describe("time limits and cancel", () => {
+    const timing = { ...cloudTiming };
+    afterEach(() => Object.assign(cloudTiming, timing));
+
+    // A connection that stalls after connecting: nothing ever answers, and
+    // the signal is ignored (as a stalled keychain read or a stuck socket
+    // might), so only the request's own bound can end it.
+    const stall = () =>
+      vi.mocked(cloudFetch).mockImplementationOnce(() => new Promise(() => {}));
+
+    test("a request with no answer ends as SERVER_UNREACHABLE after its time limit", async () => {
+      cloudTiming.requestTimeoutMs = 20;
+      stall();
+
+      const result = await getPublishSession("pub_1");
+
+      expect(result._unsafeUnwrapErr()).toEqual({
+        status: 502,
+        code: "SERVER_UNREACHABLE",
+        message: "The AntiDraw server took too long to answer",
+      });
+      const init = vi.mocked(cloudFetch).mock.calls[0]![1]!;
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+      expect(init.signal!.aborted).toBe(true);
+    });
+
+    test("a body that stops arriving ends as SERVER_UNREACHABLE too", async () => {
+      cloudTiming.requestTimeoutMs = 20;
+      const body = new ReadableStream({
+        start: (controller) => controller.enqueue(new TextEncoder().encode('{"status":')),
+      });
+      reply(new Response(body, { status: 200 }));
+
+      const result = await getPublishSession("pub_1");
+
+      expect(result._unsafeUnwrapErr().code).toBe("SERVER_UNREACHABLE");
+    });
+
+    test("an aborted fetch is reported as the time limit, not as unreachable", async () => {
+      cloudTiming.requestTimeoutMs = 20;
+      // What cloudFetch does when fetch throws, abort included.
+      vi.mocked(cloudFetch).mockImplementationOnce(
+        (_path, init) =>
+          new Promise((resolve) =>
+            init?.signal?.addEventListener("abort", () =>
+              resolve(err({ status: 502, code: "SERVER_UNREACHABLE", message: "Couldn't reach the AntiDraw server" })),
+            ),
+          ),
+      );
+
+      const result = await fetchSiteStatus("8b0b7b5e-3f4c-4d57-9a55-2c1f2b0e8c11");
+
+      expect(result._unsafeUnwrapErr().message).toBe("The AntiDraw server took too long to answer");
+    });
+
+    test("begin stops as soon as the caller cancels", async () => {
+      stall();
+      const caller = new AbortController();
+
+      const pending = beginPublish(beginBody, { signal: caller.signal });
+      caller.abort();
+
+      expect((await pending)._unsafeUnwrapErr()).toMatchObject({ code: "CANCELLED" });
+    });
+
+    test("complete gets its own, longer time limit", async () => {
+      cloudTiming.requestTimeoutMs = 20;
+      cloudTiming.completeTimeoutMs = 5_000;
+      vi.mocked(cloudFetch).mockImplementationOnce(
+        () => new Promise((resolve) => setTimeout(() => resolve(ok(json({ site, version: 4 }))), 60)),
+      );
+
+      const result = await completePublish("pub_1", { entries: [] });
+
+      expect(result._unsafeUnwrap().version).toBe(4);
     });
   });
 });

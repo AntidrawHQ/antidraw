@@ -14,6 +14,7 @@ import {
   useSignIn,
 } from "@/renderer/lib/account-ops";
 import {
+  canCancelPublish,
   cancelPublishRun,
   checkPublishStatus,
   dismissPublishRun,
@@ -40,7 +41,8 @@ import {
    title, a single "Sign in with Google" button that carries every
    state. On success the panel closes and publishing continues.
    While publishing, the label follows the steps and hovering it
-   offers Cancel (until "Finishing"); a failure opens
+   offers Cancel (until "Finishing"; not in the run's first moment, nor
+   to the pointer that started it until it leaves); a failure opens
    a panel in the same place with what went wrong and "Try again";
    success shows a toast with the link, the remix setting and what
    was left out.
@@ -127,8 +129,12 @@ function FailureContent({
       : error.code === "SITE_LIMIT" && details.siteLimit !== undefined
         ? `You have reached the limit of ${details.siteLimit} published canvases.`
         : error.message;
+  // A refusal with a `reason` is about what is waiting on the server (files of
+  // unfinished publishes, earlier files not yet cleaned up), not this canvas's
+  // size or the account's quota: its numbers and largest files would mislead.
+  const serverBacklog = details.reason !== undefined;
   const largest =
-    error.code === "PUBLISH_TOO_LARGE" || error.code === "QUOTA_EXCEEDED"
+    (error.code === "PUBLISH_TOO_LARGE" || error.code === "QUOTA_EXCEEDED") && !serverBacklog
       ? (details.largestFiles ?? []).slice(0, 5)
       : [];
   const paths =
@@ -152,6 +158,7 @@ function FailureContent({
       <p className="mt-1.5 text-[13px] leading-[1.6] text-[#9a9a9a]">{message}</p>
 
       {error.code === "QUOTA_EXCEEDED" &&
+        !serverBacklog &&
         details.usedBytes !== undefined &&
         details.quotaBytes !== undefined && (
           <p className="mt-1.5 text-[12px] leading-[1.6] text-[#9a9a9a]">
@@ -162,7 +169,7 @@ function FailureContent({
           </p>
         )}
 
-      {error.code === "SITE_TOO_LARGE" && details.siteBytes !== undefined && (
+      {error.code === "SITE_TOO_LARGE" && !serverBacklog && details.siteBytes !== undefined && (
         <p className="mt-1.5 text-[12px] leading-[1.6] text-[#9a9a9a]">
           The site is {formatBytes(details.siteBytes)}
           {details.siteFileCount !== undefined && ` in ${details.siteFileCount} files`}.
@@ -284,6 +291,10 @@ export const PublishButton = ({
   const [copied, setCopied] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [toastHeld, setToastHeld] = useState(false); // pointer on the toast
+  // The pointer that clicked Publish is still on the button. The button turns
+  // into Cancel under it, so until it leaves, a further click (a double-click,
+  // or clicking again to see progress) must not land on Cancel.
+  const [pointerHeld, setPointerHeld] = useState(false);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const step: Step = signInStep ?? run?.phase ?? "closed";
   // For callbacks, which outlive the render that started them.
@@ -337,16 +348,16 @@ export const PublishButton = ({
       setLinked(false);
       setDetailsOpen(false);
       setToastHeld(false);
+      setPointerHeld(false);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [workspaceId],
   );
 
   const publishing = run?.phase === "publishing" ? run : null;
-  const canCancel =
-    !!publishing && !publishing.cancelling && publishing.progress.step !== "finishing";
+  const canCancel = canCancelPublish(publishing) && !pointerHeld;
 
-  const onPublishClick = () => {
+  const onPublishClick = (e: React.MouseEvent) => {
     if (publishing) {
       if (canCancel) void cancelPublishRun(workspaceId);
       return;
@@ -354,8 +365,11 @@ export const PublishButton = ({
     clear();
     abandonSignIn();
     dismissPublishRun(workspaceId);
-    if (account) publish(workspaceId);
-    else {
+    if (account) {
+      // detail is 0 for a click from the keyboard: no pointer to hold.
+      setPointerHeld(e.detail > 0);
+      publish(workspaceId);
+    } else {
       setLinked(false);
       setSignInStep("signin");
     }
@@ -438,6 +452,11 @@ export const PublishButton = ({
       <button
         type="button"
         onClick={onPublishClick}
+        onPointerLeave={() => setPointerHeld(false)}
+        // A held Enter repeats the click; only its first press counts.
+        onKeyDown={(e) => {
+          if (e.repeat) e.preventDefault();
+        }}
         disabled={agentBusy && !publishing}
         title={
           publishing

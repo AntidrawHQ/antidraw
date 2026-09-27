@@ -14,10 +14,14 @@ import {
   COMPLETE_LOCK_TTL_MS,
   IMMUTABLE_CACHE_CONTROL,
   KEEP_VERSIONS,
+  MAX_OPEN_SESSIONS_PER_ACCOUNT,
+  MAX_PENDING_SITE_BYTES,
   MAX_PLAN_JSON_BYTES,
   MAX_PROTECTED_JSON_BYTES,
   MAX_SITE_BYTES,
   MAX_SITE_ROW_PATHS_BYTES,
+  MAX_SITE_STORED_BYTES,
+  MAX_SITE_STORED_FILES,
   MAX_SITES_PER_ACCOUNT,
   MAX_SNAPSHOT_BYTES,
   QUOTA_BYTES,
@@ -214,7 +218,7 @@ const planObjects = (plan: Pick<StoredPlan, "source" | "largeFiles">): SizedObje
   ];
 };
 
-const planSitePaths = (plan: Pick<StoredPlan, "site">) => [
+export const planSitePaths = (plan: Pick<StoredPlan, "site">) => [
   ...plan.site.files.map((f) => f.path),
   ...plan.site.entries.map((e) => e.path),
 ];
@@ -397,6 +401,40 @@ const resolveObjects = async (
 
 const siteCacheControl = (immutable: boolean) => (immutable ? IMMUTABLE_CACHE_CONTROL : undefined);
 
+const tooManyOpen = (count: number) =>
+  apiError(
+    429,
+    "RATE_LIMITED",
+    "Too many unfinished publishes. Finish or cancel one, or try again later.",
+    { reason: "open-sessions", limit: MAX_OPEN_SESSIONS_PER_ACCOUNT, open: count },
+  );
+
+const pendingSiteExceeded = (usedBytes: number, publishBytes: number) =>
+  apiError(
+    413,
+    "QUOTA_EXCEEDED",
+    "Too many site files are waiting on unfinished publishes. Try again later.",
+    { reason: "pending-site", quotaBytes: MAX_PENDING_SITE_BYTES, usedBytes, publishBytes },
+  );
+
+// What <slug>/ would hold once this begin's uploads and entries land: every
+// key already there that they do not replace, plus them.
+const storedAfter = (
+  existing: Map<string, ObjectInfo>,
+  slug: string,
+  writes: { path: string; size: number }[],
+) => {
+  const replaced = new Set(writes.map((w) => siteKey(slug, w.path)));
+  let bytes = writes.reduce((a, w) => a + w.size, 0);
+  let files = writes.length;
+  for (const [key, info] of existing) {
+    if (replaced.has(key)) continue;
+    bytes += info.size;
+    files++;
+  }
+  return { bytes, files };
+};
+
 export const beginPublish = (
   deps: PublishDeps,
   userId: string,
@@ -410,6 +448,14 @@ export const beginPublish = (
 
     const valid = validateBegin(req);
     if (valid.isErr()) return err(valid.error);
+
+    // Each open session keeps a plan of up to MAX_PLAN_JSON_BYTES in D1, and
+    // GC reads every held one of a site; checked again after the insert, which
+    // is what holds against concurrent begins.
+    const openBefore = await deps.store.openSessions(userId, deps.now().getTime());
+    if (openBefore.count >= MAX_OPEN_SESSIONS_PER_ACCOUNT) {
+      return err(tooManyOpen(openBefore.count));
+    }
 
     const plan: StoredPlan = {
       name: req.name,
@@ -450,6 +496,31 @@ export const beginPublish = (
       );
     });
 
+    // MAX_SITE_BYTES bounds one plan; this bounds what the prefix holds, so
+    // new paths cannot pile up faster than GC removes the stale ones.
+    const stored = storedAfter(existing, site.slug, [...siteUploads, ...req.site.entries]);
+    if (stored.bytes > MAX_SITE_STORED_BYTES || stored.files > MAX_SITE_STORED_FILES) {
+      return err(
+        apiError(
+          413,
+          "SITE_TOO_LARGE",
+          "This site's earlier files have not been cleaned up yet. Try again in an hour.",
+          {
+            reason: "stored",
+            limitBytes: MAX_SITE_STORED_BYTES,
+            siteBytes: stored.bytes,
+            limitFiles: MAX_SITE_STORED_FILES,
+            siteFileCount: stored.files,
+          },
+        ),
+      );
+    }
+
+    const siteUploadBytes = siteUploads.reduce((a, f) => a + f.size, 0);
+    if (openBefore.siteUploadBytes + siteUploadBytes > MAX_PENDING_SITE_BYTES) {
+      return err(pendingSiteExceeded(openBefore.siteUploadBytes, siteUploadBytes));
+    }
+
     const now = deps.now().getTime();
     const expiresAt = now + SESSION_TTL_MS;
     const sessionId = deps.newId("pub");
@@ -460,29 +531,44 @@ export const beginPublish = (
       userId,
       siteId: site.id,
       baseVersion: site.headVersion,
-      // objectUploads lets abort tell a session that was never given an
-      // account-object URL (spec §10, Q9).
-      plan: JSON.stringify({ ...plan, objectUploads: objectUploads.length }),
+      // The upload counts let abort tell a session that was never given any
+      // URL (spec §10, Q9).
+      plan: JSON.stringify({
+        ...plan,
+        objectUploads: objectUploads.length,
+        siteUploads: siteUploads.length,
+      }),
       expiresAt,
       holdUntil: expiresAt,
       now,
       objects: objects.map(({ kind, sha256, size }) => ({ kind, sha256, size })),
+      siteUploadBytes,
       cleanupAfter: expiresAt + SITE_CLEANUP_DELAY_MS,
     });
 
-    const used = await deps.store.usedBytes(userId);
-    if (used > QUOTA_BYTES) {
-      // No URL was issued, so the session holds nothing, and rows only this
-      // begin needed (for objects R2 does not have) are released again.
+    // No URL was issued, so a refused session holds nothing, and rows only
+    // this begin needed (for objects R2 does not have) are released again.
+    const refuse = async (error: ApiError) => {
       await deps.store.setSessionStatus(sessionId, "aborted", { holdUntil: 0 });
       await deps.store.releaseUnheldObjects(userId, objectUploads, now);
-      return err(
+      return err(error);
+    };
+    const used = await deps.store.usedBytes(userId);
+    if (used > QUOTA_BYTES) {
+      return refuse(
         apiError(413, "QUOTA_EXCEEDED", "This publish would exceed your storage quota", {
           quotaBytes: QUOTA_BYTES,
           usedBytes: usedBefore,
           publishBytes: used - usedBefore,
         }),
       );
+    }
+    const open = await deps.store.openSessions(userId, now);
+    if (open.siteUploadBytes > MAX_PENDING_SITE_BYTES) {
+      return refuse(pendingSiteExceeded(open.siteUploadBytes - siteUploadBytes, siteUploadBytes));
+    }
+    if (open.count > MAX_OPEN_SESSIONS_PER_ACCOUNT) {
+      return refuse(tooManyOpen(open.count - 1));
     }
 
     const uploads: UploadInstruction[] = [];
@@ -744,6 +830,7 @@ const verifyAndCommit = async (
         mode,
       })),
       liveFiles: JSON.stringify([...paths].sort()),
+      liveEntries: JSON.stringify(plan.site.entries.map(({ path, sha256 }) => ({ path, sha256 }))),
       keepVersions: KEEP_VERSIONS,
       cleanupAfter: now + SITE_CLEANUP_DELAY_MS,
       now,
@@ -853,7 +940,7 @@ export const getPublishSession = (
     const session = sessionResult.value;
     const site = await deps.store.findSiteById(session.siteId);
     if (!site) return err(notFound());
-    // GC marks lapsed sessions expired nightly; report it straight away.
+    // GC marks lapsed sessions expired hourly; report it straight away.
     const status =
       session.status === "pending" && session.expiresAt < deps.now().getTime()
         ? "expired"
@@ -867,9 +954,9 @@ export const getPublishSession = (
 
 // Upload URLs already handed out stay usable until they expire and cannot be
 // revoked, so an abort keeps the session's hold: its objects stay safe from
-// GC and its paths protected until then. A session that was never given an
-// account-object URL has nothing in flight, and its hold ends at once
-// (spec §10, Q9).
+// GC, its paths protected and its site bytes counted until then. A session
+// that was never given any URL has nothing in flight, and its hold ends at
+// once (spec §10, Q9). A site URL counts: its bytes land on live keys.
 export const abortPublish = (
   deps: PublishDeps,
   userId: string,
@@ -881,8 +968,13 @@ export const abortPublish = (
     const session = sessionResult.value;
     if (session.status !== "pending") return ok({ ok: true as const });
 
-    const plan = JSON.parse(session.plan) as { objectUploads?: unknown };
-    const releaseHold = plan.objectUploads === 0;
+    let plan: { objectUploads?: unknown; siteUploads?: unknown } = {};
+    try {
+      plan = JSON.parse(session.plan) as typeof plan;
+    } catch {
+      // Unreadable: keep the hold.
+    }
+    const releaseHold = plan.objectUploads === 0 && plan.siteUploads === 0;
     await deps.store.setSessionStatus(session.id, "aborted", {
       onlyIfPending: true,
       ...(releaseHold ? { holdUntil: Math.min(session.holdUntil, deps.now().getTime()) } : {}),

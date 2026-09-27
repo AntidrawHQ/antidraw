@@ -34,12 +34,20 @@ export const site = sqliteTable(
     allowRemix: integer("allow_remix", { mode: "boolean" }).notNull().default(true),
     // JSON string[]: the head version's site paths, entries included.
     liveFiles: text("live_files"),
+    // JSON [{ path, sha256 }]: the head version's three entry files. GC matches
+    // the entries actually live against these to resolve a protected "*".
+    liveEntries: text("live_entries"),
     // JSON string[] or "*": paths the live entries of an uncommitted complete
-    // may refer to. NULL after a commit.
+    // may refer to. NULL after a commit. GC works a "*" out again from the
+    // entries actually live (live_entries and the uncommitted plans).
     protectedFiles: text("protected_files"),
     completeLock: text("complete_lock"),
     completeLockExpiresAt: integer("complete_lock_expires_at", { mode: "timestamp_ms" }),
     cleanupAfter: integer("cleanup_after", { mode: "timestamp_ms" }),
+    // Since when a cleanup has been outstanding; GC visits the site once this
+    // is old enough even if cleanup_after keeps moving out. NULL with
+    // cleanup_after.
+    cleanupSince: integer("cleanup_since", { mode: "timestamp_ms" }),
     createdAt: createdAt(),
     updatedAt: integer("updated_at", { mode: "timestamp_ms" })
       .default(nowMs)
@@ -115,7 +123,12 @@ export const storedObject = sqliteTable(
   (t) => [
     primaryKey({ columns: [t.userId, t.kind, t.sha256] }),
     index("stored_object_createdAt_idx").on(t.createdAt),
-    index("stored_object_deleting_idx").on(t.deleting),
+    // Partial: only GC's leftover scan reads `deleting = 1`. A full index on
+    // the flag would win the planner's choice (D1 has no ANALYZE statistics)
+    // for every `deleting = 0` query and scan all accounts' rows.
+    index("stored_object_deleting_partial_idx")
+      .on(t.deleting)
+      .where(sql`${t.deleting} = 1`),
   ],
 );
 
@@ -136,8 +149,12 @@ export const publishSession = sqliteTable(
     plan: text("plan").notNull(), // JSON, zod-parsed on read
     resultVersion: integer("result_version"),
     expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
-    // Upload URLs stay valid until then; 0 = none were issued.
+    // Upload URLs stay valid until then; 0 = none were issued, or GC retired
+    // the session after its hold ended.
     holdUntil: integer("hold_until", { mode: "timestamp_ms" }).notNull(),
+    // Σ size of the site files begin signed upload URLs for; counts toward
+    // MAX_PENDING_SITE_BYTES while the session holds and has not committed.
+    siteUploadBytes: integer("site_upload_bytes").notNull().default(0),
     createdAt: createdAt(),
   },
   (t) => [

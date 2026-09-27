@@ -7,13 +7,14 @@ import zlib from "node:zlib";
 import { err, ok, type Result } from "neverthrow";
 import { pack as tarPack } from "tar-stream";
 import { isExcludedSnapshotPath, isSafeSnapshotPath } from "./paths";
-import type {
-  ManifestEntry,
-  PackedBlob,
-  PackedSnapshot,
-  SnapshotError,
-  SnapshotManifest,
-  StagedSnapshot,
+import {
+  MAX_MANIFEST_BYTES,
+  type ManifestEntry,
+  type PackedBlob,
+  type PackedSnapshot,
+  type SnapshotError,
+  type SnapshotManifest,
+  type StagedSnapshot,
 } from "./types";
 import { HAS_NOFOLLOW, READ_NOFOLLOW, byteCompare, errorMessage, nativePath } from "./util";
 
@@ -82,7 +83,7 @@ const readStaged = async (dir: string, entry: ManifestEntry): Promise<Buffer> =>
   }
 };
 
-const writeArchive = async (staged: StagedSnapshot, archiveFile: string, signal?: AbortSignal) => {
+const writeArchive = async (staged: StagedSnapshot, manifestJson: Buffer, archiveFile: string, signal?: AbortSignal) => {
   const hash = createHash("sha256");
   const counter = { bytes: 0 };
   const pack = tarPack();
@@ -114,7 +115,7 @@ const writeArchive = async (staged: StagedSnapshot, archiveFile: string, signal?
 
   try {
     // manifest.json first, for every file including blobs; then the archive files in manifest order
-    await addEntry(MANIFEST_ENTRY, Buffer.from(JSON.stringify(staged.manifest)), 0o644);
+    await addEntry(MANIFEST_ENTRY, manifestJson, 0o644);
     for (const entry of staged.manifest.files) {
       if (entry.storage !== "archive") continue;
       throwIfAborted(signal);
@@ -161,8 +162,9 @@ const copyBlobs = async (staged: StagedSnapshot, blobDir: string, signal?: Abort
 };
 
 // Deterministic .tar.gz of the staged snapshot plus private blob copies. `archiveFile` and
-// `blobDir` must not exist; blobDir is created 0700. Limits are the caller's to enforce. A
-// cancel is noticed between archive entries and between blob copies
+// `blobDir` must not exist; blobDir is created 0700. Byte and file limits are the caller's to
+// enforce; the manifest.json cap is enforced here (TOO_LARGE), since extract refuses any archive
+// over it. A cancel is noticed between archive entries and between blob copies
 export const packSnapshot = async (
   staged: StagedSnapshot,
   out: { archiveFile: string; blobDir: string },
@@ -175,6 +177,13 @@ export const packSnapshot = async (
   const sorted = [...staged.manifest.files].sort((a, b) => byteCompare(a.path, b.path));
   const manifest: SnapshotManifest = { version: 1, files: sorted };
   const input: StagedSnapshot = { ...staged, manifest };
+  const manifestJson = Buffer.from(JSON.stringify(manifest));
+  if (manifestJson.length > MAX_MANIFEST_BYTES) {
+    return err({
+      code: "TOO_LARGE",
+      message: `manifest.json would be ${manifestJson.length} bytes, more than ${MAX_MANIFEST_BYTES}`,
+    });
+  }
 
   if (await fs.lstat(out.archiveFile).then(() => true, () => false)) {
     return err({ code: "PACK_FAILED", message: `Archive file already exists: ${out.archiveFile}` });
@@ -187,7 +196,7 @@ export const packSnapshot = async (
 
   try {
     throwIfAborted(opts?.signal);
-    const { archiveSha256, archiveSize } = await writeArchive(input, out.archiveFile, opts?.signal);
+    const { archiveSha256, archiveSize } = await writeArchive(input, manifestJson, out.archiveFile, opts?.signal);
     const blobs = await copyBlobs(input, out.blobDir, opts?.signal);
     return ok({
       archiveFile: out.archiveFile,

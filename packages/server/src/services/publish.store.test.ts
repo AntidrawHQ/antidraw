@@ -6,6 +6,7 @@ import { hex } from "../test/publish-harness";
 import {
   chunk,
   d1PublishStore,
+  PLAN_STUB,
   type NewSession,
   type NewVersion,
   type PublishStore,
@@ -60,6 +61,7 @@ const session = (over: Partial<NewSession> = {}): NewSession => ({
     { kind: "source", sha256: hex("src"), size: 100 },
     { kind: "blob", sha256: hex("blob"), size: 2000 },
   ],
+  siteUploadBytes: 0,
   cleanupAfter: 5000,
   ...over,
 });
@@ -77,6 +79,7 @@ const version = (over: Partial<NewVersion> = {}): NewVersion => ({
   siteBytes: 10,
   largeFiles: [{ path: "a.bin", sha256: hex("blob"), size: 2000, mode: 420 }],
   liveFiles: '["index.html"]',
+  liveEntries: JSON.stringify([{ path: "index.html", sha256: hex("index") }]),
   keepVersions: 5,
   cleanupAfter: 9000,
   now: 20,
@@ -475,17 +478,152 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     const { store } = setup();
     await site(store);
     await store.createSession(session({ cleanupAfter: 50 }));
-    expect(await store.sitesDueForCleanup(60, 10)).toHaveLength(1);
+    expect(await store.sitesDueForCleanup(60, 0, 10)).toEqual([
+      { id: "site_1", slug: "acme-site_1" },
+    ]);
     expect(await store.claimSiteLockForGc("site_1", "gc:1", 60, 360)).toBe(true);
     expect(await store.claimSiteLockForGc("site_1", "gc:2", 60, 360)).toBe(false);
     expect(await store.heldSessionPlans("site_1", 60)).toEqual([{ plan: "{}", holdUntil: 1000 }]);
-    await store.finishSiteCleanup("site_1", "gc:1", 40, 777); // a begin moved it on: kept
+    await store.finishSiteCleanup("site_1", "gc:1", 40, 777, 60); // a begin moved it on: kept
     expect(await store.findSiteById("site_1")).toMatchObject({
       cleanupAfter: 50,
+      cleanupSince: 60,
       completeLock: null,
     });
-    await store.finishSiteCleanup("site_1", "gc:1", 50, null);
-    expect((await store.findSiteById("site_1"))?.cleanupAfter).toBeNull();
+    await store.finishSiteCleanup("site_1", "gc:1", 50, null, 70);
+    expect(await store.findSiteById("site_1")).toMatchObject({
+      cleanupAfter: null,
+      cleanupSince: null,
+    });
+  });
+
+  // D1 never runs ANALYZE, so the planner has no statistics to steer it off a
+  // low-cardinality index. Every per-account stored_object query must use the
+  // primary key, not walk all accounts' rows.
+  it("keeps per-account stored_object queries on the primary key", async () => {
+    const { shim, store } = setup();
+    await site(store);
+    await store.createSession(session({ holdUntil: 100 }));
+    await lock(store);
+    const from = shim.log.length;
+    await store.usedBytes(U);
+    await store.releaseUnheldObjects(U, [{ kind: "blob", sha256: hex("x") }], 50);
+    await store.commitVersion(version());
+    await store.deleteObjectRows([{ userId: U, kind: "blob", sha256: hex("x") }]);
+    const touching = shim.log
+      .slice(from)
+      .map((s) => s.sql)
+      .filter((sql) => /^\s*(select|update|delete)\b[^]*?\bstored_object\b/i.test(sql))
+      .filter((sql) => !/^\s*insert/i.test(sql));
+    expect(touching.length).toBeGreaterThanOrEqual(4);
+    for (const sql of touching) {
+      const plan = (
+        shim.sqlite.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as { detail: string }[]
+      ).map((r) => r.detail);
+      const onObjects = plan.filter(
+        (d) => /\bstored_object\b(?! AS)/.test(d) && !/SCAN CONSTANT/.test(d),
+      );
+      expect(onObjects.join("\n"), sql).toMatch(/sqlite_autoindex_stored_object_1/);
+      expect(plan.join("\n"), sql).not.toMatch(/stored_object_deleting/);
+    }
+  });
+
+  it("claims GC candidates in turns across accounts, oldest first", async () => {
+    const { store, q } = setup();
+    await site(store);
+    await site(store, "site_2", V, "w2");
+    const blobs = (n: number, tag: string) =>
+      Array.from({ length: n }, (_, i) => ({
+        kind: "blob" as const,
+        sha256: hex(`${tag}${i}`),
+        size: 1,
+      }));
+    await store.createSession(session({ holdUntil: 0, objects: blobs(5, "u"), now: 10 }));
+    await store.createSession(
+      session({
+        id: "pub_2",
+        userId: V,
+        siteId: "site_2",
+        holdUntil: 0,
+        objects: blobs(2, "v"),
+        now: 20,
+      }),
+    );
+    const claimed = await store.claimGcObjects({ now: 100, minCreatedAt: 0, limit: 3 });
+    expect(claimed.map((c) => c.userId).sort()).toEqual([U, U, V]);
+    expect(
+      q("SELECT count(*) AS n FROM stored_object WHERE deleting = 1 AND user_id = ?", V),
+    ).toEqual([{ n: 1 }]);
+  });
+
+  it("counts an account's open sessions and their pending site bytes", async () => {
+    const { store } = setup();
+    await site(store);
+    await store.createSession(session({ siteUploadBytes: 300 }));
+    await store.createSession(session({ id: "pub_2", siteUploadBytes: 50, objects: [] }));
+    await store.createSession(
+      session({ id: "pub_3", siteUploadBytes: 7, holdUntil: 10, objects: [] }),
+    );
+    expect(await store.openSessions(U, 500)).toEqual({ count: 2, siteUploadBytes: 350 });
+    await store.setSessionStatus("pub_2", "aborted");
+    expect(await store.openSessions(U, 500)).toEqual({ count: 2, siteUploadBytes: 350 });
+    await lock(store);
+    await store.commitVersion(version());
+    expect(await store.openSessions(U, 500)).toEqual({ count: 1, siteUploadBytes: 50 });
+    expect(await store.openSessions(V, 500)).toEqual({ count: 0, siteUploadBytes: 0 });
+  });
+
+  it("commits the head's entries, stubs the plan, and starts cleanup_since", async () => {
+    const { store } = setup();
+    await site(store);
+    await store.createSession(session({ plan: JSON.stringify({ big: "x".repeat(1000) }) }));
+    expect((await store.findSiteById("site_1"))?.cleanupSince).toBe(10);
+    await lock(store);
+    await store.commitVersion(version());
+    expect((await store.getSession("pub_1"))?.plan).toBe(PLAN_STUB);
+    expect(await store.findSiteById("site_1")).toMatchObject({
+      liveEntries: JSON.stringify([{ path: "index.html", sha256: hex("index") }]),
+      cleanupSince: 10,
+    });
+    // A committed session's plan is not one GC keeps paths for.
+    expect(await store.heldSessionPlans("site_1", 500)).toEqual([{ plan: null, holdUntil: 1000 }]);
+  });
+
+  it("lists a site as due once its cleanup has been put off long enough", async () => {
+    const { store } = setup();
+    await site(store);
+    await store.createSession(session({ now: 10, cleanupAfter: 5000 }));
+    expect(await store.sitesDueForCleanup(100, 5, 10)).toEqual([]);
+    expect(await store.sitesDueForCleanup(100, 11, 10)).toEqual([
+      { id: "site_1", slug: "acme-site_1" },
+    ]);
+  });
+
+  it("retires sessions whose hold ended, keeping plans only on a * site", async () => {
+    const { store, q } = setup();
+    await site(store);
+    await site(store, "site_2", U, "w2");
+    const plan = JSON.stringify({ paths: ["a.js"] });
+    await store.createSession(session({ plan, holdUntil: 100 }));
+    await store.createSession(session({ id: "pub_2", siteId: "site_2", plan, holdUntil: 100 }));
+    await store.createSession(session({ id: "pub_3", plan, holdUntil: 900 }));
+    q("UPDATE site SET protected_files = '*' WHERE id = 'site_2'");
+    expect(await store.retireSessions(200, 97)).toBe(2);
+    expect(await store.retireSessions(200, 97)).toBe(0);
+    expect(await store.getSession("pub_1")).toMatchObject({ holdUntil: 0, plan: PLAN_STUB });
+    expect(await store.getSession("pub_2")).toMatchObject({ holdUntil: 0, plan });
+    expect(await store.getSession("pub_3")).toMatchObject({ holdUntil: 900, plan });
+    expect(q("SELECT DISTINCT session_id FROM publish_session_object ORDER BY session_id")).toEqual(
+      [{ session_id: "pub_3" }],
+    );
+    expect(await store.uncommittedPlansMentioning("site_2", "a.js")).toEqual([plan]);
+
+    // Uncommitted ones on a * site are kept until "*" is resolved.
+    const old = { now: 5000, completedBefore: 0, uncommittedBefore: 4000, limit: 10 };
+    expect(await store.deleteOldSessions(old)).toBe(2);
+    expect(await store.getSession("pub_2")).not.toBeNull();
+    q("UPDATE site SET protected_files = NULL WHERE id = 'site_2'");
+    expect(await store.deleteOldSessions(old)).toBe(1);
   });
 
   it("prunes old versions, expires and forgets sessions, and deletes abandoned sites", async () => {
@@ -493,7 +631,9 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     await site(store);
     await store.createSession(session({ expiresAt: 100, holdUntil: 100 }));
     expect(await store.expireSessions(101)).toBe(1);
-    expect(await store.deleteOldSessions(101, 11)).toBe(1);
+    const old = { now: 101, completedBefore: 11, uncommittedBefore: 101, limit: 10 };
+    expect(await store.deleteOldSessions({ ...old, uncommittedBefore: 100 })).toBe(0);
+    expect(await store.deleteOldSessions(old)).toBe(1);
     expect(q("SELECT count(*) AS n FROM publish_session_object")).toEqual([{ n: 0 }]); // cascade
 
     q("UPDATE site SET head_version = 9");

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -42,8 +42,10 @@ import {
   type CloudError,
 } from "../cloud-publish";
 import { uploadAll, type UploadTask } from "../uploader";
+import { cloudTiming } from "../deadline";
 import {
   cancelPublish,
+  getPublishOutcome,
   getPublishStatus,
   mapCloudError,
   mapSiteBuildError,
@@ -868,6 +870,219 @@ describe("publishWorkspace: complete", () => {
   });
 });
 
+describe("publishWorkspace: cancel and time limits around server calls", () => {
+  const timing = { ...cloudTiming };
+  afterEach(() => Object.assign(cloudTiming, timing));
+
+  const cancelOn = async (step: string) => {
+    const events: PublishEvent[] = [];
+    for await (const event of publishWorkspace(WS, { signal: new AbortController().signal })) {
+      events.push(event);
+      if (event.type === "step" && event.step === step) expect(cancelPublish(WS)).toBe(true);
+    }
+    return events;
+  };
+
+  test("a cancel while the account is being checked ends the run at once", async () => {
+    vi.mocked(getAccount).mockImplementationOnce(() => new Promise(() => {}));
+
+    const error = lastError(await cancelOn("checking"));
+
+    expect(error.code).toBe("CANCELLED");
+    expect(scanWorkspace).not.toHaveBeenCalled();
+  });
+
+  test("an account check that never answers ends as SERVER_UNREACHABLE", async () => {
+    cloudTiming.requestTimeoutMs = 20;
+    vi.mocked(getAccount).mockImplementationOnce(() => new Promise(() => {}));
+
+    expect(lastError(await run()).code).toBe("SERVER_UNREACHABLE");
+    expect(scanWorkspace).not.toHaveBeenCalled();
+  });
+
+  test("begin gets the run's signal: a cancel while it is in flight ends the run at once", async () => {
+    vi.mocked(beginPublish).mockImplementationOnce(
+      (_body, opts) =>
+        new Promise((resolve) =>
+          opts?.signal?.addEventListener("abort", () =>
+            resolve(err({ status: 499, code: "CANCELLED", message: "The request was cancelled" })),
+          ),
+        ),
+    );
+
+    const events = await cancelOn("uploading");
+
+    expect(lastError(events)).toEqual({ code: "CANCELLED", message: "Publishing was cancelled." });
+    expect(uploadAll).not.toHaveBeenCalled();
+    // No session came back, so there is nothing to abort.
+    expect(abortPublish).not.toHaveBeenCalled();
+  });
+
+  test("a cancel that lands just as begin answers still aborts the new session", async () => {
+    vi.mocked(beginPublish).mockImplementationOnce(async () => {
+      cancelPublish(WS);
+      return ok(beginResponse());
+    });
+
+    expect(lastError(await run()).code).toBe("CANCELLED");
+    expect(abortPublish).toHaveBeenCalledWith("pub_1");
+  });
+});
+
+describe("getPublishOutcome: finishing a publish left pending", () => {
+  const pending = { status: "pending" as const, resultVersion: null, site };
+  const sentEntries = entries.map((e) => ({
+    path: e.path,
+    contentBase64: Buffer.from(`<${e.path}>`).toString("base64"),
+  }));
+
+  // A run whose every complete got no definite answer, and whose session was
+  // still pending afterwards.
+  const leavePending = async () => {
+    vi.mocked(completePublish).mockResolvedValue(
+      err({ status: 502, code: "SERVER_UNREACHABLE", message: "Offline" }),
+    );
+    vi.mocked(getPublishSession).mockResolvedValueOnce(ok(pending));
+    const error = lastError(await run());
+    expect(error.code).toBe("PUBLISH_OUTCOME_UNKNOWN");
+    vi.mocked(completePublish).mockReset();
+    vi.mocked(getPublishSession).mockReset();
+    return error.details!.publishId!;
+  };
+
+  test("sends complete again with the run's entries, and reports the publish live", async () => {
+    const publishId = await leavePending();
+    vi.mocked(getPublishSession).mockResolvedValue(ok(pending));
+    vi.mocked(completePublish).mockResolvedValue(ok({ site: { ...site, headVersion: 4 }, version: 4 }));
+
+    const outcome = await getPublishOutcome(WS, publishId);
+
+    expect(outcome._unsafeUnwrap()).toEqual({
+      status: "completed",
+      resultVersion: 4,
+      site: { ...site, headVersion: 4 },
+    });
+    expect(completePublish).toHaveBeenCalledWith("pub_1", { entries: sentEntries });
+
+    // Done: later checks only read.
+    vi.mocked(getPublishSession).mockResolvedValue(
+      ok({ status: "completed", resultVersion: 4, site }),
+    );
+    await getPublishOutcome(WS, publishId);
+    expect(completePublish).toHaveBeenCalledTimes(1);
+  });
+
+  test("still no answer → pending, and the next check tries again", async () => {
+    const publishId = await leavePending();
+    vi.mocked(getPublishSession).mockResolvedValue(ok(pending));
+    vi.mocked(completePublish)
+      .mockResolvedValueOnce(err({ status: 409, code: "PUBLISH_IN_PROGRESS", message: "Locked" }))
+      .mockResolvedValueOnce(ok({ site, version: 4 }));
+
+    expect((await getPublishOutcome(WS, publishId))._unsafeUnwrap().status).toBe("pending");
+    expect((await getPublishOutcome(WS, publishId))._unsafeUnwrap().status).toBe("completed");
+    expect(completePublish).toHaveBeenCalledTimes(2);
+  });
+
+  test("the run's own session read failing still leaves it resumable", async () => {
+    vi.mocked(completePublish).mockResolvedValue(
+      err({ status: 500, code: "PUBLISH_STORE_FAILED", message: "D1" }),
+    );
+    vi.mocked(getPublishSession).mockResolvedValueOnce(
+      err({ status: 502, code: "SERVER_UNREACHABLE", message: "Offline" }),
+    );
+    expect(lastError(await run()).code).toBe("PUBLISH_OUTCOME_UNKNOWN");
+    vi.mocked(completePublish).mockReset().mockResolvedValue(ok({ site, version: 4 }));
+    vi.mocked(getPublishSession).mockReset().mockResolvedValue(ok(pending));
+
+    expect((await getPublishOutcome(WS, "pub_1"))._unsafeUnwrap().status).toBe("completed");
+  });
+
+  test("a definite refusal aborts the session, so the answer is that it ended", async () => {
+    const publishId = await leavePending();
+    vi.mocked(getPublishSession)
+      .mockResolvedValueOnce(ok(pending))
+      .mockResolvedValueOnce(ok({ ...pending, status: "aborted" }));
+    vi.mocked(completePublish).mockResolvedValue(
+      err({ status: 409, code: "UPLOAD_INCOMPLETE", message: "Missing" }),
+    );
+
+    const outcome = await getPublishOutcome(WS, publishId);
+
+    expect(outcome._unsafeUnwrap().status).toBe("aborted");
+    expect(abortPublish).toHaveBeenCalledWith("pub_1");
+  });
+
+  test("an abort that fails is tried again on the next check, without another complete", async () => {
+    const publishId = await leavePending();
+    vi.mocked(getPublishSession).mockResolvedValue(ok(pending));
+    vi.mocked(completePublish).mockResolvedValue(
+      err({ status: 409, code: "UPLOAD_INCOMPLETE", message: "Missing" }),
+    );
+    vi.mocked(abortPublish).mockResolvedValueOnce(
+      err({ status: 502, code: "SERVER_UNREACHABLE", message: "Offline" }),
+    );
+
+    expect((await getPublishOutcome(WS, publishId))._unsafeUnwrapErr().code).toBe("UPLOAD_FAILED");
+
+    vi.mocked(getPublishSession)
+      .mockResolvedValueOnce(ok(pending))
+      .mockResolvedValueOnce(ok({ ...pending, status: "aborted" }));
+    expect((await getPublishOutcome(WS, publishId))._unsafeUnwrap().status).toBe("aborted");
+    expect(completePublish).toHaveBeenCalledTimes(1);
+    expect(abortPublish).toHaveBeenCalledTimes(2);
+  });
+
+  test("checks that overlap send one complete", async () => {
+    const publishId = await leavePending();
+    vi.mocked(getPublishSession).mockResolvedValue(ok(pending));
+    vi.mocked(completePublish).mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve(ok({ site, version: 4 })), 10)),
+    );
+
+    const [a, b] = await Promise.all([
+      getPublishOutcome(WS, publishId),
+      getPublishOutcome(WS, publishId),
+    ]);
+
+    expect(a._unsafeUnwrap().status).toBe("completed");
+    expect(b._unsafeUnwrap().status).toBe("completed");
+    expect(completePublish).toHaveBeenCalledTimes(1);
+  });
+
+  test("another session, or another workspace, is only read", async () => {
+    const publishId = await leavePending();
+    vi.mocked(getPublishSession).mockResolvedValue(ok(pending));
+
+    expect((await getPublishOutcome(WS, "pub_other"))._unsafeUnwrap().status).toBe("pending");
+    expect(
+      (await getPublishOutcome("0f6f1e44-9c1a-4d7e-8f43-7f6c0a3c9b11", publishId))._unsafeUnwrap().status,
+    ).toBe("pending");
+    expect(completePublish).not.toHaveBeenCalled();
+  });
+
+  test("a session the server reports ended is let go", async () => {
+    const publishId = await leavePending();
+    vi.mocked(getPublishSession).mockResolvedValueOnce(ok({ ...pending, status: "expired" }));
+    expect((await getPublishOutcome(WS, publishId))._unsafeUnwrap().status).toBe("expired");
+
+    vi.mocked(getPublishSession).mockResolvedValueOnce(ok(pending));
+    expect((await getPublishOutcome(WS, publishId))._unsafeUnwrap().status).toBe("pending");
+    expect(completePublish).not.toHaveBeenCalled();
+  });
+
+  test("publishing the workspace again lets the earlier session go", async () => {
+    const publishId = await leavePending();
+    vi.mocked(completePublish).mockResolvedValue(ok({ site, version: 5 }));
+    expect(lastResult(await run()).version).toBe(5);
+    vi.mocked(completePublish).mockClear();
+    vi.mocked(getPublishSession).mockResolvedValue(ok(pending));
+
+    expect((await getPublishOutcome(WS, publishId))._unsafeUnwrap().status).toBe("pending");
+    expect(completePublish).not.toHaveBeenCalled();
+  });
+});
+
 describe("publishWorkspace: staging", () => {
   test("is removed on success", async () => {
     let seen: string[] = [];
@@ -991,6 +1206,20 @@ describe("publishWorkspace: staging", () => {
     expect(error.message).toContain("disk full");
     expect(await stagingDirs()).toEqual([]);
   });
+
+  test("pack's TOO_LARGE (manifest.json over its cap) names file count and paths, not bytes", async () => {
+    vi.mocked(packSnapshot).mockResolvedValueOnce(
+      err({ code: "TOO_LARGE", message: "manifest.json would be 40000000 bytes" }),
+    );
+
+    const error = lastError(await run());
+
+    expect(error.code).toBe("PUBLISH_TOO_LARGE");
+    expect(error.message).toContain("too many files");
+    expect(error.details?.fileCount).toEqual(expect.any(Number));
+    expect(error.details?.limitBytes).toBeUndefined();
+    expect(await stagingDirs()).toEqual([]);
+  });
 });
 
 describe("error mapping", () => {
@@ -1054,6 +1283,56 @@ describe("error mapping", () => {
     expect(mapCloudError(cloud(409, "UPLOAD_INCOMPLETE")).message).toBe(
       "Some uploads did not arrive. Publish again.",
     );
+  });
+
+  test("begin refusals about what waits on the server carry their reason, not quota or size copy", () => {
+    const pending = mapCloudError(
+      cloud(413, "QUOTA_EXCEEDED", {
+        reason: "pending-site",
+        quotaBytes: 1024,
+        usedBytes: 1000,
+        publishBytes: 100,
+      }),
+      manifest,
+    );
+    expect(pending.code).toBe("QUOTA_EXCEEDED");
+    expect(pending.message).not.toContain("storage quota");
+    expect(pending.details).toEqual({
+      reason: "pending-site",
+      quotaBytes: 1024,
+      usedBytes: 1000,
+      publishBytes: 100,
+    });
+
+    const stored = mapCloudError(
+      cloud(413, "SITE_TOO_LARGE", {
+        reason: "stored",
+        limitBytes: 10,
+        siteBytes: 11,
+        limitFiles: 5,
+        siteFileCount: 6,
+      }),
+      manifest,
+    );
+    expect(stored.code).toBe("SITE_TOO_LARGE");
+    expect(stored.message).toContain("cleaned up");
+    expect(stored.details).toEqual({
+      reason: "stored",
+      limitBytes: 10,
+      siteBytes: 11,
+      limitFiles: 5,
+      siteFileCount: 6,
+    });
+
+    const open = mapCloudError(cloud(429, "RATE_LIMITED", { reason: "open-sessions", limit: 10, open: 10 }));
+    expect(open.code).toBe("RATE_LIMITED");
+    expect(open.message).toContain("unfinished publishes");
+    expect(open.message).not.toContain("minute");
+    expect(open.details).toEqual({ reason: "open-sessions" });
+
+    // Without a reason, the plain copy stays.
+    expect(mapCloudError(cloud(413, "QUOTA_EXCEEDED")).message).toContain("storage quota");
+    expect(mapCloudError(cloud(429, "RATE_LIMITED")).message).toContain("minute");
   });
 
   test.each<[SnapshotError["code"], PublishErrorCode]>([

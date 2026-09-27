@@ -5,7 +5,7 @@ export const LARGE_FILE_BYTES = 1024 * 1024; // a file >= this is uploaded as a 
 export const MAX_SNAPSHOT_BYTES = 500 * 1024 * 1024; // archive size + distinct blob sizes
 export const MAX_UNCOMPRESSED_BYTES = MAX_SNAPSHOT_BYTES * 2; // Σ manifest sizes; publish pre-check = extract guard
 export const MAX_SNAPSHOT_FILES = 100_000; // publish pre-check = extract guard
-export const MAX_MANIFEST_BYTES = 32 * 1024 * 1024; // manifest.json tar entry, checked before buffering
+export const MAX_MANIFEST_BYTES = 32 * 1024 * 1024; // manifest.json tar entry: pack refuses, extract checks before buffering; not part of MAX_UNCOMPRESSED_BYTES
 
 export type FileMode = 0o644 | 0o755;
 
@@ -80,7 +80,7 @@ export type SnapshotError = {
     | "CASE_COLLISION"
     | "STAGE_FAILED"
     | "PACK_FAILED"
-    | "TOO_LARGE" // stage: the copied files passed the byte budget
+    | "TOO_LARGE" // stage: the copied files passed the byte budget; pack: manifest.json over MAX_MANIFEST_BYTES
     | "CANCELLED";
   message: string;
   paths?: string[][] | string[]; // CASE_COLLISION: groups of colliding paths

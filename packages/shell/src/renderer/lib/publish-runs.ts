@@ -30,7 +30,15 @@ export type PublishProgress = { step: PublishStep; percent: number | null };
 export type StatusCheck = "pending" | "ended" | "unknown" | "failed";
 
 export type PublishRun = { id: number } & (
-  | { phase: "publishing"; progress: PublishProgress; cancelling: boolean }
+  | {
+      phase: "publishing";
+      progress: PublishProgress;
+      cancelling: boolean;
+      // False for the first CANCEL_ARM_MS: the button that started the
+      // publish turns into Cancel under the pointer, and the second click of
+      // a double-click (or a held Enter) must not cancel what the first began.
+      cancelArmed: boolean;
+    }
   | { phase: "published"; url: string; result: PublishResult | null } // null: found by "Check status"
   | {
       phase: "failed";
@@ -69,6 +77,18 @@ const patchRun = <P extends PublishRun["phase"]>(
 };
 
 let nextRunId = 1;
+
+export const CANCEL_ARM_MS = 600;
+
+// Whether Cancel is offered for this run: armed, not already cancelling, and
+// not finishing (main ignores a cancel from there on).
+export const canCancelPublish = (
+  run: PublishRun | undefined | null,
+): run is Extract<PublishRun, { phase: "publishing" }> =>
+  run?.phase === "publishing" &&
+  run.cancelArmed &&
+  !run.cancelling &&
+  run.progress.step !== "finishing";
 
 // The site's head version before each workspace's latest publish, read from
 // the server when it starts (never from a render's cached status, which may
@@ -111,7 +131,12 @@ export const startPublish = async (
     phase: "publishing",
     progress: { step: "checking", percent: null },
     cancelling: false,
+    cancelArmed: false,
   });
+  const arm = setTimeout(
+    () => patchRun(workspaceId, id, "publishing", { cancelArmed: true }),
+    CANCEL_ARM_MS,
+  );
   baselines.set(
     workspaceId,
     readStatus(queryClient, workspaceId).then(
@@ -168,6 +193,7 @@ export const startPublish = async (
     }
     return "failed";
   } finally {
+    clearTimeout(arm);
     // Detaches the observer so the settled mutation can be garbage collected.
     observer.reset();
   }
@@ -175,14 +201,18 @@ export const startPublish = async (
 
 // Stops a publish before it reaches `finishing`; after that main ignores it.
 // The run ends when the stream reports CANCELLED (or its real outcome, if
-// the cancel lost the race with `finishing`).
+// the cancel lost the race with `finishing`). Ignored until the run's Cancel
+// is armed. When main had nothing to cancel (its run not registered yet, or
+// already finishing) the run goes on, so it stops showing "Cancelling".
 export const cancelPublishRun = async (workspaceId: string) => {
   const run = getRun(workspaceId);
-  if (run?.phase !== "publishing" || run.cancelling) return;
-  if (run.progress.step === "finishing") return;
-  patchRun(workspaceId, run.id, "publishing", { cancelling: true });
+  if (!canCancelPublish(run)) return;
+  const { id } = run;
+  patchRun(workspaceId, id, "publishing", { cancelling: true });
   const result = await cancelPublish(workspaceId);
-  if (result.isErr()) patchRun(workspaceId, run.id, "publishing", { cancelling: false });
+  if (result.isErr() || !result.value) {
+    patchRun(workspaceId, id, "publishing", { cancelling: false });
+  }
 };
 
 const showPublished = (workspaceId: string, id: number, url: string) => {

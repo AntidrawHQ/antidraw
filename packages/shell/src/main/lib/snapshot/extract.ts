@@ -177,13 +177,14 @@ const readArchive = async (
         if (header.name !== MANIFEST_ENTRY || header.type !== "file") {
           fail("INVALID_ARCHIVE", "manifest.json must be the first entry of the archive", header.name);
         }
-        // Checked before any byte of it is buffered; it counts toward maxBytes
-        if (size > MAX_MANIFEST_BYTES || size > limits.maxBytes) fail("TOO_LARGE", "manifest.json is too large");
+        // Checked before any byte of it is buffered. It has its own cap and does not count toward
+        // maxBytes, which bounds only the files: publish checks Σ manifest sizes and the manifest
+        // size separately, and extract must accept whatever publish accepts
+        if (size > MAX_MANIFEST_BYTES) fail("TOO_LARGE", "manifest.json is too large");
         budget.limit += size + ENTRY_SLACK_BYTES;
         const bytes = await readManifestEntry(entry as AsyncIterable<Buffer>, size);
         manifest = parseManifest(bytes, limits);
         manifestSha256 = createHash("sha256").update(bytes).digest("hex");
-        total = size;
         for (const f of manifest.files) if (f.storage === "archive") archived.set(f.path, f);
         if (!visitor) return { manifest, manifestSha256 };
         continue;

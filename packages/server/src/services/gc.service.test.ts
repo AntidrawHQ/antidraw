@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { GC_SITES_PER_RUN, SESSION_TTL_MS, SITE_CLEANUP_DELAY_MS } from "../lib/publish-limits";
+import {
+  GC_MAX_CLEANUP_DEFER_MS,
+  GC_SITES_PER_RUN,
+  GC_UNRESOLVED_ENTRY_MAX_AGE_MS,
+  SESSION_TTL_MS,
+  SITE_CLEANUP_DELAY_MS,
+} from "../lib/publish-limits";
 import { blobKey, sourceKey } from "../lib/storage";
 import {
   beginRequest,
@@ -8,6 +14,7 @@ import {
   harnesses,
   hex,
   makeTestDeps,
+  MiB,
   performUploads,
   workspaceId,
   type PlanInput,
@@ -15,6 +22,7 @@ import {
 } from "../test/publish-harness";
 import { runGc } from "./gc.service";
 import { abortPublish, beginPublish, completePublish } from "./publish.service";
+import { PLAN_STUB } from "./publish.store";
 
 const USER = "user-1";
 const OTHER = "user-2";
@@ -55,15 +63,23 @@ describe.each(harnesses)("gc (%s)", (_name, makeHarness) => {
     return makeTestDeps(harness);
   };
 
-  it("expires lapsed pending sessions without ending their hold", async () => {
+  it("expires lapsed pending sessions, and retires them once their hold ended", async () => {
     const deps = setup();
+    const T = deps.clock.now;
     const begun = await begin(deps);
-    const report = await gcAt(deps, deps.clock.now + SESSION_TTL_MS + 1);
-    expect(report.expiredSessions).toBe(1);
+    const held = await gcAt(deps, T + SESSION_TTL_MS - 1);
+    expect(held).toMatchObject({ expiredSessions: 0, retiredSessions: 0 });
+    expect((await deps.store.getSession(begun.publish.id))?.plan).not.toBe(PLAN_STUB);
+
+    const report = await gcAt(deps, T + SESSION_TTL_MS + 1);
+    expect(report).toMatchObject({ expiredSessions: 1, retiredSessions: 1 });
+    // Retired: its plan stubbed, its held objects dropped, hold_until 0.
     expect(await deps.store.getSession(begun.publish.id)).toMatchObject({
       status: "expired",
-      holdUntil: begun.publish.expiresAt ? Date.parse(begun.publish.expiresAt) : 0,
+      holdUntil: 0,
+      plan: PLAN_STUB,
     });
+    expect(await deps.store.missingSessionObjects(begun.publish.id)).toEqual([]);
   });
 
   it("deletes objects no version references once they are a day old, sparing the rest", async () => {
@@ -208,6 +224,14 @@ describe.each(harnesses)("gc (%s)", (_name, makeHarness) => {
     expect(skipped).toMatchObject({ skippedSites: 1, deletedSiteKeys: 0 });
     await deps.store.releaseCompleteLock(siteId, "pub_other");
 
+    // "*" while a live entry matches neither the head nor any session's plan,
+    // and is recent: its references are unknowable, so nothing is deleted.
+    const slug = one.publish.slug;
+    deps.sitesBucket.upload(`${slug}/preview.html`, {
+      size: 5,
+      sha256: hex("unknown-entry"),
+      uploaded: new Date(at),
+    });
     await deps.harness.setProtected(siteId, "*");
     const starred = await gcAt(deps, at + 1);
     expect(starred.deletedSiteKeys).toBe(0);
@@ -227,8 +251,8 @@ describe.each(harnesses)("gc (%s)", (_name, makeHarness) => {
     const at = T + SESSION_TTL_MS + SITE_CLEANUP_DELAY_MS + 1;
     // A begin lands after GC picked the site: its plan's paths are kept.
     const due = deps.store.sitesDueForCleanup;
-    deps.store.sitesDueForCleanup = async (now, limit) => {
-      const sites = await due(now, limit);
+    deps.store.sitesDueForCleanup = async (now, deferredBefore, limit) => {
+      const sites = await due(now, deferredBefore, limit);
       await begin(deps, { files: [{ path: "held.js" }], entries: defaultEntries("2") });
       return sites;
     };
@@ -305,5 +329,233 @@ describe.each(harnesses)("gc (%s)", (_name, makeHarness) => {
     deps.store.expireSessions = expire;
     expect(report.errors).toEqual(["expire-sessions"]);
     expect(report.deletedObjects).toBe(2);
+  });
+  it("claims objects across accounts in turns, so one account cannot fill a run", async () => {
+    const deps = setup();
+    const T = deps.clock.now;
+    // USER's six never-uploaded objects are older than OTHER's two.
+    await begin(deps, {
+      largeFiles: [1, 2, 3, 4, 5].map((n) => ({
+        path: `f${n}.bin`,
+        sha256: hex(`flood-${n}`),
+        size: MiB,
+      })),
+    });
+    deps.clock.now = T + 60_000;
+    (
+      await beginPublish(deps, OTHER, await beginRequest({ source: { sha256: hex("o"), size: 5 } }))
+    )._unsafeUnwrap();
+    deps.gc.limits = { objectsPerRun: 2 };
+
+    const report = await gcAt(deps, T + SESSION_TTL_MS + HOUR);
+    expect(report.deletedObjects).toBe(2);
+    expect(report.backlog).toContain("objects");
+    // One of each account's: OTHER's oldest went in the first run.
+    expect(await deps.store.usedBytes(OTHER)).toBe(2 * MiB);
+    expect(await deps.store.usedBytes(USER)).toBe(5 * MiB);
+  });
+
+  it("deletes a run's objects in several R2 batches, and continues next run", async () => {
+    const deps = setup();
+    const T = deps.clock.now;
+    await begin(deps, {
+      largeFiles: [1, 2, 3, 4, 5].map((n) => ({
+        path: `f${n}.bin`,
+        sha256: hex(`b${n}`),
+        size: MiB,
+      })),
+    });
+    deps.gc.limits = { objectsPerRun: 4, deleteBatch: 3 };
+
+    const first = await gcAt(deps, T + SESSION_TTL_MS + HOUR);
+    expect(first).toMatchObject({ deletedObjects: 4, backlog: ["objects"] });
+    expect(deps.sourcesBucket.deletes.map((keys) => keys.length)).toEqual([3, 1]);
+    const second = await gcAt(deps, T + SESSION_TTL_MS + 2 * HOUR);
+    expect(second).toMatchObject({ deletedObjects: 2, backlog: [] });
+    expect(await deps.store.usedBytes(USER)).toBe(0);
+  });
+
+  it("leaves claimed objects for the next run when the run's time is up", async () => {
+    const deps = setup();
+    const T = deps.clock.now;
+    await begin(deps);
+    deps.gc.limits = { runBudgetMs: -1 };
+    const out = await gcAt(deps, T + SESSION_TTL_MS + HOUR);
+    expect(out).toMatchObject({ deletedObjects: 0 });
+    expect(out.backlog).toContain("objects");
+    expect(await deps.store.leftoverDeletingObjects(10)).toHaveLength(2);
+
+    deps.gc.limits = {};
+    expect((await gcAt(deps, T + SESSION_TTL_MS + 2 * HOUR)).deletedObjects).toBe(2);
+  });
+
+  it("gives abandoned sites their own budget, apart from site cleanup", async () => {
+    const deps = setup();
+    const T = deps.clock.now;
+    await publish(deps);
+    const never = await begin(deps, { workspace: workspaceId(7), name: "Never Done" });
+    deps.gc.limits = { sitesPerRun: 1 };
+    // Both sites are due for cleanup; the one visit goes to the older.
+    const report = await gcAt(deps, T + 8 * DAY);
+    expect(report.cleanedSites).toBe(1);
+    expect(report.deletedAbandonedSites).toBe(1);
+    expect(await deps.store.findSiteBySlug(never.publish.slug)).toBeNull();
+  });
+
+  it("visits a site whose cleanup begins keep pushing out, once it has waited a day", async () => {
+    const deps = setup();
+    const T = deps.clock.now;
+    const live = await publish(deps);
+    const slug = live.publish.slug;
+    deps.sitesBucket.upload(`${slug}/junk.js`, { size: 1, sha256: hex("junk") });
+    // A begin every hour (each aborted, holding nothing) keeps cleanup_after
+    // three hours ahead, so it never passes by itself.
+    for (let h = 1; h <= 26; h++) {
+      deps.clock.now = T + h * HOUR;
+      const again = await begin(deps);
+      (await abortPublish(deps, USER, again.publish.id))._unsafeUnwrap();
+      const site = await deps.store.findSiteById(live.publish.siteId);
+      expect(site!.cleanupAfter).toBeGreaterThan(T + h * HOUR + 1);
+      const report = await gcAt(deps, T + h * HOUR + 1);
+      const gone = !deps.sitesBucket.keys(`${slug}/`).includes(`${slug}/junk.js`);
+      expect(gone).toBe(h * HOUR + 1 > GC_MAX_CLEANUP_DEFER_MS);
+      if (gone) {
+        expect(report.cleanedSites).toBe(1);
+        break;
+      }
+    }
+    expect(deps.sitesBucket.keys(`${slug}/`)).not.toContain(`${slug}/junk.js`);
+  });
+
+  it("deletes stale keys as it lists, one batch at a time", async () => {
+    const deps = setup();
+    const T = deps.clock.now;
+    const live = await publish(deps);
+    const slug = live.publish.slug;
+    for (let i = 0; i < 7; i++) {
+      deps.sitesBucket.upload(`${slug}/junk-${i}.js`, { size: 1, sha256: hex(`junk-${i}`) });
+    }
+    deps.gc.limits = { deleteBatch: 2 };
+    const listsAtDelete: number[] = [];
+    const del = deps.sitesBucket.delete.bind(deps.sitesBucket);
+    deps.sitesBucket.delete = async (keys: string | string[]) => {
+      listsAtDelete.push(deps.sitesBucket.lists);
+      return del(keys);
+    };
+    deps.sitesBucket.lists = 0;
+    const report = await gcAt(deps, T + SESSION_TTL_MS + SITE_CLEANUP_DELAY_MS + 1);
+    expect(report.deletedSiteKeys).toBe(7);
+    expect(deps.sitesBucket.deletes.every((keys) => keys.length <= 2)).toBe(true);
+    // The first delete happened before the listing was done (13 keys, 3 a page).
+    expect(listsAtDelete[0]).toBeLessThan(deps.sitesBucket.lists);
+    expect(deps.sitesBucket.keys(`${slug}/`)).toHaveLength(6);
+  });
+
+  it("stops a visit at its key limit, leaves the site due, and finishes on later runs", async () => {
+    const deps = setup();
+    const T = deps.clock.now;
+    const live = await publish(deps);
+    const slug = live.publish.slug;
+    for (let i = 0; i < 9; i++) {
+      deps.sitesBucket.upload(`${slug}/junk-${i}.js`, { size: 1, sha256: hex(`junk-${i}`) });
+    }
+    deps.gc.limits = { siteKeysPerVisit: 8, deleteBatch: 2 };
+    const at = T + SESSION_TTL_MS + SITE_CLEANUP_DELAY_MS + 1;
+    const due = (await deps.store.findSiteById(live.publish.siteId))!.cleanupAfter;
+
+    const first = await gcAt(deps, at);
+    expect(first.backlog).toContain("site-cleanup");
+    expect(first.cleanedSites).toBe(0);
+    expect(first.deletedSiteKeys).toBeGreaterThan(0);
+    expect((await deps.store.findSiteById(live.publish.siteId))!.cleanupAfter).toBe(due);
+
+    // Each run gets further (the 6 kept keys are listed again every time).
+    let last = first;
+    for (let run = 1; run < 5 && last.cleanedSites === 0; run++) {
+      last = await gcAt(deps, at + run * HOUR);
+    }
+    expect(last).toMatchObject({ cleanedSites: 1, backlog: [] });
+    expect(deps.sitesBucket.keys(`${slug}/`)).toHaveLength(6); // the live files
+    expect((await deps.store.findSiteById(live.publish.siteId))!.cleanupAfter).toBeNull();
+  });
+
+  it("forgets uncommitted sessions a day after they expire, committed ones after 7 days", async () => {
+    const deps = setup();
+    const T = deps.clock.now;
+    const done = await publish(deps);
+    const dropped = await begin(deps, { entries: defaultEntries("v2") });
+    const report = await gcAt(deps, T + SESSION_TTL_MS + DAY + 1);
+    expect(report.deletedSessions).toBe(1);
+    expect(await deps.store.getSession(dropped.publish.id)).toBeNull();
+    expect(await deps.store.getSession(done.publish.id)).not.toBeNull();
+    expect((await gcAt(deps, T + 8 * DAY)).deletedSessions).toBe(1);
+    expect(await deps.store.getSession(done.publish.id)).toBeNull();
+  });
+
+  describe('a protected "*"', () => {
+    // v1 is live; v2's complete wrote preview.html, then failed on
+    // canvas.json, and its union of protected paths was too large ("*").
+    const halfPublished = async (deps: TestDeps) => {
+      const v1 = await publish(deps, { files: [{ path: "a.js" }], entries: defaultEntries("1") });
+      const v2 = await begin(deps, { files: [{ path: "b.js" }], entries: defaultEntries("2") });
+      performUploads(deps, v2.uploads);
+      deps.sitesBucket.failPut = (key) => key.endsWith("/canvas.json");
+      const failed = await completePublish(
+        deps,
+        USER,
+        v2.publish.id,
+        completeRequest(defaultEntries("2")),
+      );
+      expect(failed._unsafeUnwrapErr().code).toBe("STORAGE_FAILED");
+      deps.sitesBucket.failPut = () => false;
+      await deps.harness.setProtected(v1.publish.siteId, "*");
+      const slug = v1.publish.slug;
+      deps.sitesBucket.upload(`${slug}/junk.js`, { size: 1, sha256: hex("junk") });
+      return { siteId: v1.publish.siteId, slug, v2 };
+    };
+
+    it("is resolved from the live entries: the failed plan's paths stay, junk goes", async () => {
+      const deps = setup();
+      const T = deps.clock.now;
+      const { siteId, slug, v2 } = await halfPublished(deps);
+      // A run after v2's hold ended retires the session but keeps its plan:
+      // the site is "*".
+      await gcAt(deps, T + SESSION_TTL_MS + 1);
+      expect((await deps.store.getSession(v2.publish.id))?.plan).not.toBe(PLAN_STUB);
+
+      const report = await gcAt(deps, T + SESSION_TTL_MS + SITE_CLEANUP_DELAY_MS + 1);
+      expect(report.deletedSiteKeys).toBe(1);
+      const keys = deps.sitesBucket.keys(`${slug}/`);
+      expect(keys).not.toContain(`${slug}/junk.js`);
+      expect(keys).toEqual(expect.arrayContaining([`${slug}/a.js`, `${slug}/b.js`]));
+      // Stored: later visits, and session retirement, no longer need the plan.
+      const site = await deps.store.findSiteById(siteId);
+      expect(JSON.parse(site!.protectedFiles!)).toEqual([
+        "b.js",
+        "canvas.json",
+        "index.html",
+        "preview.html",
+      ]);
+      await gcAt(deps, T + SESSION_TTL_MS + DAY + 2);
+      expect(await deps.store.getSession(v2.publish.id)).toBeNull();
+    });
+
+    it("stops protecting an entry nothing accounts for once it is old enough", async () => {
+      const deps = setup();
+      const T = deps.clock.now;
+      const { siteId, slug } = await halfPublished(deps);
+      // The failed session is gone, so preview.html matches nothing.
+      const unknown = { size: 5, sha256: hex("unknown"), uploaded: new Date(T) };
+      deps.sitesBucket.upload(`${slug}/preview.html`, unknown);
+      const soon = await gcAt(deps, T + SESSION_TTL_MS + SITE_CLEANUP_DELAY_MS + 1);
+      expect(soon.deletedSiteKeys).toBe(0);
+      expect((await deps.store.findSiteById(siteId))?.protectedFiles).toBe("*");
+
+      const later = await gcAt(deps, T + GC_UNRESOLVED_ENTRY_MAX_AGE_MS + DAY);
+      expect(deps.sitesBucket.keys(`${slug}/`)).not.toContain(`${slug}/junk.js`);
+      expect(deps.sitesBucket.keys(`${slug}/`)).toContain(`${slug}/a.js`);
+      expect(later.deletedSiteKeys).toBeGreaterThan(0);
+      expect((await deps.store.findSiteById(siteId))?.protectedFiles).toBeNull();
+    });
   });
 });

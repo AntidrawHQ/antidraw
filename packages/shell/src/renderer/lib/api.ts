@@ -978,6 +978,14 @@ export const signOut = async () => {
 // Streams the publish's progress until a `done` or `error` event. Aborting
 // `signal` cancels the publish, except once it is finishing (main ignores it
 // then: the server may already have committed).
+//
+// There is no replay here, so the stream is only errored when the body ended
+// WITHOUT a terminal event: controller.error() resets the queue, and a chunk
+// that carries several frames (say `step` then `error`, which main yields back
+// to back) leaves the last of them queued when the body closes. After a
+// terminal frame, close() drains the queue instead. The same Error ends the
+// stream either way, so the consumer tells "the link died" from the publish
+// failing by whether it saw a terminal event.
 export async function* publishWorkspace(
   workspaceId: string,
   opts: { allowRemix?: boolean; signal?: AbortSignal } = {},
@@ -989,6 +997,25 @@ export async function* publishWorkspace(
 
   const stream = new ReadableStream<PublishEvent>({
     start(controller) {
+      // Ended once, by whichever ending gets there first.
+      let settled = false;
+      let receivedTerminal = false;
+
+      // Not aborted: main is past its run by now, and the body ends on its
+      // own right after.
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        controller.close();
+      };
+
+      const fail = (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        controller.error(error);
+        abort.abort();
+      };
+
       fetchEventSource(`antidraw://app/api/publish/${workspaceId}`, {
         method: "POST",
         headers: {
@@ -1002,17 +1029,26 @@ export async function* publishWorkspace(
         openWhenHidden: true,
 
         onmessage: (ev) => {
+          if (settled) return;
           const event = JSON.parse(ev.data) as PublishEvent;
           controller.enqueue(event);
+          if (event.type === "done" || event.type === "error") {
+            receivedTerminal = true;
+            finish();
+          }
         },
         onerror: (error) => {
-          controller.error(error);
+          fail(error);
+          // Rethrown so fetchEventSource does not retry: a second POST would
+          // start another publish.
           throw error;
         },
         onclose: () => {
-          controller.close();
-          throw new Error("Connection closed");
+          if (receivedTerminal) finish();
+          else fail(new Error("Connection closed"));
         },
+      }).catch(() => {
+        // The ending already reached the stream through onerror.
       });
     },
     cancel() {
@@ -1119,12 +1155,26 @@ export const setPublishAllowRemix = async (
   }
 };
 
+// Main's verdict: false when it had no run to cancel (not registered yet,
+// already ended) or the run is finishing and ignores it.
 export const cancelPublish = async (workspaceId: string) => {
   try {
-    await fetch(`antidraw://app/api/publish/${workspaceId}/cancel`, {
+    const response = await fetch(`antidraw://app/api/publish/${workspaceId}/cancel`, {
       method: "POST",
     });
-    return ok(true);
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      return err({
+        status: response.status as 500,
+        code: (errorBody?.error?.code as string) ?? "FETCH_ERROR",
+        message: (errorBody?.error?.message as string) ?? response.statusText,
+      });
+    }
+
+    const data: { cancelled?: boolean } = await response.json().catch(() => ({}));
+    // An answer without a verdict counts as sent; the stream still decides.
+    return ok(data.cancelled ?? true);
   } catch (_e) {
     return err({
       status: 500 as const,

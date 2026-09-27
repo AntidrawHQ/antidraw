@@ -29,10 +29,18 @@ export type MemoryBucket = R2Bucket & {
   failPut: (key: string) => boolean;
   // Number of delete calls that should still throw.
   failDeletes: number;
+  // Number of list calls (pages) so far.
+  lists: number;
   // What a successful presigned PUT leaves behind, without the bytes.
   upload(
     key: string,
-    o: { size: number; sha256: string; contentType?: string; cacheControl?: string },
+    o: {
+      size: number;
+      sha256: string;
+      contentType?: string;
+      cacheControl?: string;
+      uploaded?: Date;
+    },
   ): void;
   keys(prefix?: string): string[];
 };
@@ -97,10 +105,17 @@ export const memoryBucket = (opts: { pageSize?: number } = {}): MemoryBucket => 
     deletes,
     failPut: (_key: string) => false,
     failDeletes: 0,
+    lists: 0,
 
     upload(
       key: string,
-      o: { size: number; sha256: string; contentType?: string; cacheControl?: string },
+      o: {
+        size: number;
+        sha256: string;
+        contentType?: string;
+        cacheControl?: string;
+        uploaded?: Date;
+      },
     ) {
       objects.set(key, {
         size: o.size,
@@ -108,7 +123,7 @@ export const memoryBucket = (opts: { pageSize?: number } = {}): MemoryBucket => 
         contentType: o.contentType,
         cacheControl: o.cacheControl,
         customMetadata: { sha256: o.sha256 },
-        uploaded: new Date(),
+        uploaded: o.uploaded ?? new Date(),
       });
       writes.push(key);
     },
@@ -162,17 +177,21 @@ export const memoryBucket = (opts: { pageSize?: number } = {}): MemoryBucket => 
       for (const key of list) objects.delete(key);
     },
 
+    // The cursor is the last key returned, so a page after keys were deleted
+    // (GC deletes as it lists) neither skips nor repeats one, as with R2.
     async list(options: R2ListOptions & { include?: string[] } = {}) {
-      const all = bucket.keys(options.prefix ?? "");
-      const start = options.cursor ? Number(options.cursor) : 0;
+      bucket.lists++;
+      const cursor = options.cursor;
+      const all = bucket.keys(options.prefix ?? "").filter((k) => !cursor || k > cursor);
       const limit = Math.min(options.limit ?? 1000, opts.pageSize ?? 1000);
-      const page = all.slice(start, start + limit);
+      const page = all.slice(0, limit);
       const include = (options.include?.length ?? 0) > 0;
-      const next = start + page.length;
       return {
         objects: page.map((key) => asR2Object(key, objects.get(key)!, include)),
         delimitedPrefixes: [],
-        ...(next < all.length ? { truncated: true, cursor: String(next) } : { truncated: false }),
+        ...(page.length < all.length
+          ? { truncated: true, cursor: page[page.length - 1] }
+          : { truncated: false }),
       };
     },
   };

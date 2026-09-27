@@ -232,13 +232,19 @@ describe("publish controller", () => {
     expect((await res.json()).error.code).toBe("SIGNED_OUT");
   });
 
-  test("cancel answers ok and cancels the run", async () => {
+  test("cancel cancels the run and answers whether there was one", async () => {
     const cancel = vi.spyOn(publishService, "cancelPublish");
 
-    const res = await app.request(`/api/publish/${WS}/cancel`, { method: "POST" });
+    const idle = await app.request(`/api/publish/${WS}/cancel`, { method: "POST" });
 
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true });
+    expect(idle.status).toBe(200);
+    expect(await idle.json()).toEqual({ cancelled: false });
     expect(cancel).toHaveBeenCalledWith(WS);
+
+    cancel.mockReturnValueOnce(true);
+    const running = await app.request(`/api/publish/${WS}/cancel`, { method: "POST" });
+
+    expect(running.status).toBe(200);
+    expect(await running.json()).toEqual({ cancelled: true });
   });
 });

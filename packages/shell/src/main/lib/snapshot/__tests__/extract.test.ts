@@ -379,6 +379,35 @@ describe("extractSnapshot size guards", () => {
     expect(blobFile).not.toHaveBeenCalled();
   });
 
+  test("maxBytes bounds the files only: a packed snapshot extracts with maxBytes = its uncompressedBytes", async () => {
+    // publish checks Σ manifest sizes against MAX_UNCOMPRESSED_BYTES, so extract must accept that
+    // total even though manifest.json itself adds bytes to the archive
+    const tree: Record<string, string> = {};
+    for (let i = 0; i < 50; i++) tree[`f${String(i).padStart(2, "0")}.txt`] = String(i % 10).repeat(1000);
+    const source = makeTmp();
+    writeTree(source, tree);
+    const staging = makeTmp();
+    const plan = (await scanWorkspace(source))._unsafeUnwrap();
+    const staged = (await stageSnapshot(plan, path.join(staging, "source")))._unsafeUnwrap();
+    const packed = (
+      await packSnapshot(staged, { archiveFile: path.join(staging, "s.tar.gz"), blobDir: path.join(staging, "blobs") })
+    )._unsafeUnwrap();
+    expect(packed.uncompressedBytes).toBe(50_000);
+
+    const { result } = await extractFrom(packed.archiveFile, undefined, { maxBytes: packed.uncompressedBytes });
+    expect(result._unsafeUnwrap().bytes).toBe(50_000);
+    await expectRejected(packed.archiveFile, "TOO_LARGE", undefined, { maxBytes: packed.uncompressedBytes - 1 });
+  });
+
+  test("archive files adding up to exactly maxBytes extract; the manifest is not counted", async () => {
+    const { file } = await snapshotArchive([
+      { path: "a.txt", content: "a".repeat(600) },
+      { path: "b.txt", content: "b".repeat(400) },
+    ]);
+    const { result } = await extractFrom(file, undefined, { maxBytes: 1000 });
+    expect(result._unsafeUnwrap().bytes).toBe(1000);
+  });
+
   test("a manifest with more files than maxFiles → TOO_LARGE before blobFile is called", async () => {
     const { file, blobs } = await snapshotArchive([
       ...valid,

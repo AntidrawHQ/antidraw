@@ -1,6 +1,7 @@
 import { err, ok, type Result } from "neverthrow";
 import { z } from "zod";
 import { cloudFetch } from "@/main/services/account.service";
+import { ABORTED, cloudTiming, untilAborted } from "./deadline";
 
 // Typed client for the server's publish API (packages/server, spec §2). The
 // schemas mirror packages/server/src/lib/publish.schemas.ts by name; neither
@@ -97,7 +98,9 @@ const errorEnvelope = z.object({
 });
 
 // status is the HTTP status, or the AccountError status for SIGNED_OUT (401)
-// and SERVER_UNREACHABLE (502), which come from cloudFetch.
+// and SERVER_UNREACHABLE (502), which come from cloudFetch. A request that
+// ran out of time is SERVER_UNREACHABLE too; one the caller cancelled is
+// CANCELLED (499).
 export type CloudError = {
   status: number;
   code: string;
@@ -111,17 +114,54 @@ const malformed = (status: number): CloudError => ({
   message: "The server sent a response the app doesn't understand",
 });
 
+// A request stopped by the caller's signal is CANCELLED; one stopped by its
+// time limit is SERVER_UNREACHABLE, as good as no answer (complete retries it,
+// then asks what became of the session).
+const CANCELLED: CloudError = {
+  status: 499,
+  code: "CANCELLED",
+  message: "The request was cancelled",
+};
+const TIMED_OUT: CloudError = {
+  status: 502,
+  code: "SERVER_UNREACHABLE",
+  message: "The AntiDraw server took too long to answer",
+};
+
+type RequestOptions = {
+  method: string;
+  body?: unknown;
+  // The caller's cancel; every request is also bounded by `timeoutMs`.
+  signal?: AbortSignal;
+  timeoutMs?: number;
+};
+
 const request = async <T>(
   pathname: string,
   schema: z.ZodType<T>,
-  init: { method: string; body?: unknown },
+  init: RequestOptions,
 ): Promise<Result<T, CloudError>> => {
-  const response = await cloudFetch(pathname, {
-    method: init.method,
-    headers: { "content-type": "application/json" },
-    body: init.body === undefined ? undefined : JSON.stringify(init.body),
-  });
+  const timeout = AbortSignal.timeout(
+    init.timeoutMs ?? cloudTiming.requestTimeoutMs,
+  );
+  const signal = init.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
+  const stopped = (): CloudError | null =>
+    init.signal?.aborted ? CANCELLED : timeout.aborted ? TIMED_OUT : null;
+
+  const response = await untilAborted(
+    cloudFetch(pathname, {
+      method: init.method,
+      headers: { "content-type": "application/json" },
+      body: init.body === undefined ? undefined : JSON.stringify(init.body),
+      signal,
+    }),
+    signal,
+  );
+  if (response === ABORTED) return err(stopped() ?? TIMED_OUT);
   if (response.isErr()) {
+    // cloudFetch reports an aborted fetch as unreachable; say which it was.
+    const reason = stopped();
+    if (reason) return err(reason);
     const { status, code, message } = response.error;
     return err({ status, code, message });
   }
@@ -129,8 +169,12 @@ const request = async <T>(
   const res = response.value;
   let body: unknown;
   try {
-    body = await res.json();
+    const read = await untilAborted(res.json() as Promise<unknown>, signal);
+    if (read === ABORTED) return err(stopped() ?? TIMED_OUT);
+    body = read;
   } catch {
+    const reason = stopped();
+    if (reason) return err(reason);
     // A body that dies mid-read is as good as no answer; the status is all
     // there is to go on.
     if (!res.ok) {
@@ -169,12 +213,19 @@ const request = async <T>(
 const sessionPath = (publishId: string) =>
   `/api/publish/sessions/${encodeURIComponent(publishId)}`;
 
-export const beginPublish = (body: BeginPublishRequest) =>
+// Cancellable: nothing has been uploaded yet, so a cancel need not wait for
+// the answer (a session begun meanwhile just expires).
+export const beginPublish = (
+  body: BeginPublishRequest,
+  opts: { signal?: AbortSignal } = {},
+) =>
   request("/api/publish/sessions", beginPublishResponse, {
     method: "POST",
     body,
+    ...opts,
   });
 
+// Not cancellable (the server may be committing), only time-limited.
 export const completePublish = (
   publishId: string,
   body: CompletePublishRequest,
@@ -182,6 +233,7 @@ export const completePublish = (
   request(`${sessionPath(publishId)}/complete`, completePublishResponse, {
     method: "POST",
     body,
+    timeoutMs: cloudTiming.completeTimeoutMs,
   });
 
 export const getPublishSession = (publishId: string) =>

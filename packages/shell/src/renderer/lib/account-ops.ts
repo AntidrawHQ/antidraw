@@ -107,7 +107,7 @@ export const publishMutationOptions = (queryClient: QueryClient) => ({
       if (e instanceof AccountRequestError) throw e;
       throw new AccountRequestError(
         "INTERNAL_ERROR",
-        "Lost contact with the publish. Check its status in a moment.",
+        "The connection to the publish was lost. Publish again.",
       );
     }
     throw new AccountRequestError(

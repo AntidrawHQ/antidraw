@@ -50,6 +50,8 @@ export type PublishErrorCode =
   | "CANCELLED"
   | "INTERNAL_ERROR";
 
+export type PublishRefusalReason = "pending-site" | "stored" | "open-sessions";
+
 export type PublishErrorDetails = {
   largestFiles?: { path: string; size: number }[]; // PUBLISH_TOO_LARGE, QUOTA_EXCEEDED
   quotaBytes?: number;
@@ -62,6 +64,13 @@ export type PublishErrorDetails = {
   largeFileCount?: number; // PUBLISH_TOO_LARGE (too many blob paths)
   siteFileCount?: number; // SITE_TOO_LARGE
   siteBytes?: number;
+  limitFiles?: number; // SITE_TOO_LARGE with reason "stored"
+  // Which server limit refused a begin, when the code alone is ambiguous:
+  // "pending-site" (QUOTA_EXCEEDED: site files waiting on unfinished
+  // publishes), "stored" (SITE_TOO_LARGE: the site's storage still holds
+  // earlier files GC has not removed), "open-sessions" (RATE_LIMITED: too many
+  // unfinished publishes).
+  reason?: PublishRefusalReason;
   collisions?: string[][]; // CASE_COLLISION
   paths?: string[]; // SNAPSHOT_FAILED from server INVALID_PATH / STAGE_FAILED
   logTail?: string[]; // BUILD_FAILED

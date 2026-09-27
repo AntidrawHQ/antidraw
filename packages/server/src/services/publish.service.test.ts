@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { env as stubEnv } from "cloudflare:workers";
 import {
+  MAX_OPEN_SESSIONS_PER_ACCOUNT,
+  MAX_PENDING_SITE_BYTES,
   MAX_PLAN_JSON_BYTES,
   MAX_PROTECTED_JSON_BYTES,
+  MAX_SITE_STORED_BYTES,
+  MAX_SITE_STORED_FILES,
   MAX_SITES_PER_ACCOUNT,
   QUOTA_BYTES,
   SESSION_TTL_MS,
@@ -34,6 +38,7 @@ import {
   setAllowRemix,
   unionProtected,
 } from "./publish.service";
+import { PLAN_STUB } from "./publish.store";
 
 const USER = "user-1";
 const OTHER = "user-2";
@@ -298,7 +303,7 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
     it(`refuses a new site past ${MAX_SITES_PER_ACCOUNT} per account`, async () => {
       const deps = setup();
       for (let i = 0; i < MAX_SITES_PER_ACCOUNT; i++) {
-        (await begin(deps, { workspace: workspaceId(i) }))._unsafeUnwrap();
+        await publish(deps, { workspace: workspaceId(i) });
       }
       const result = await begin(deps, { workspace: workspaceId(999) });
       expect(result._unsafeUnwrapErr()).toMatchObject({
@@ -1114,6 +1119,199 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       deps.limits.complete = true;
       expect((await completePublish(deps, USER, begun.publish.id, completeRequest())).isOk()).toBe(
         true,
+      );
+    });
+  });
+
+  describe("open sessions", () => {
+    it(`refuses a begin past ${MAX_OPEN_SESSIONS_PER_ACCOUNT} uncommitted held sessions, before creating a site`, async () => {
+      const deps = setup();
+      const T = deps.clock.now;
+      for (let i = 0; i < MAX_OPEN_SESSIONS_PER_ACCOUNT; i++) {
+        (await begin(deps, { entries: defaultEntries(`try-${i}`) }))._unsafeUnwrap();
+      }
+      const refused = await begin(deps, { workspace: workspaceId(2) });
+      expect(refused._unsafeUnwrapErr()).toMatchObject({
+        status: 429,
+        code: "RATE_LIMITED",
+        details: {
+          reason: "open-sessions",
+          limit: MAX_OPEN_SESSIONS_PER_ACCOUNT,
+          open: MAX_OPEN_SESSIONS_PER_ACCOUNT,
+        },
+      });
+      expect(await deps.store.findSiteByWorkspace(USER, workspaceId(2))).toBeNull();
+      // Another account is unaffected; the holds end with the URLs.
+      expect((await begin(deps, {}, OTHER)).isOk()).toBe(true);
+      deps.clock.now = T + SESSION_TTL_MS + 1;
+      expect((await begin(deps, { workspace: workspaceId(2) })).isOk()).toBe(true);
+    });
+
+    it("does not count committed sessions", async () => {
+      const deps = setup();
+      for (let i = 0; i < MAX_OPEN_SESSIONS_PER_ACCOUNT + 2; i++) {
+        await publish(deps, { entries: defaultEntries(`v${i}`) });
+      }
+      expect(await deps.store.openSessions(USER, deps.clock.now)).toEqual({
+        count: 0,
+        siteUploadBytes: 0,
+      });
+    });
+
+    it("re-checks after the insert, so concurrent begins cannot pass the limit together", async () => {
+      const deps = setup();
+      for (let i = 0; i < MAX_OPEN_SESSIONS_PER_ACCOUNT; i++) {
+        (await begin(deps, { entries: defaultEntries(`try-${i}`) }))._unsafeUnwrap();
+      }
+      // This begin's first look raced ahead of the others' inserts.
+      const open = deps.store.openSessions;
+      let calls = 0;
+      deps.store.openSessions = async (userId, now) =>
+        ++calls === 1 ? { count: 0, siteUploadBytes: 0 } : open(userId, now);
+      const refused = await begin(deps, { entries: defaultEntries("racer") });
+      deps.store.openSessions = open;
+      expect(refused._unsafeUnwrapErr()).toMatchObject({ status: 429, code: "RATE_LIMITED" });
+      expect((await deps.store.openSessions(USER, deps.clock.now)).count).toBe(
+        MAX_OPEN_SESSIONS_PER_ACCOUNT,
+      );
+    });
+
+    it("stubs a session's plan when it commits", async () => {
+      const deps = setup();
+      const { begun } = await publish(deps);
+      expect((await deps.store.getSession(begun.publish.id))?.plan).toBe(PLAN_STUB);
+      // Complete stays idempotent without it.
+      expect(
+        (await completePublish(deps, USER, begun.publish.id, completeRequest()))._unsafeUnwrap(),
+      ).toMatchObject({ version: 1 });
+    });
+  });
+
+  describe("site storage", () => {
+    const big = (path: string, size = 450 * MiB) => ({ path, size, immutable: true });
+
+    it("refuses a begin that would leave more than the site may hold under its prefix", async () => {
+      const deps = setup();
+      await publish(deps, { files: [big("assets/a.js")] });
+      const second = (await begin(deps, { files: [big("assets/b.js")] }))._unsafeUnwrap();
+      performUploads(deps, second.uploads);
+      const refused = await begin(deps, { files: [big("assets/c.js")] });
+      expect(refused._unsafeUnwrapErr()).toMatchObject({
+        status: 413,
+        code: "SITE_TOO_LARGE",
+        details: {
+          reason: "stored",
+          limitBytes: MAX_SITE_STORED_BYTES,
+          siteFileCount: 6,
+        },
+      });
+      expect(
+        (refused._unsafeUnwrapErr().details as { siteBytes: number }).siteBytes,
+      ).toBeGreaterThan(MAX_SITE_STORED_BYTES);
+      // Replacing a stored file does not count it twice.
+      expect((await begin(deps, { files: [big("assets/b.js", 400 * MiB)] })).isOk()).toBe(true);
+    });
+
+    it("refuses once the prefix would hold too many keys", async () => {
+      const deps = setup();
+      const { begun } = await publish(deps);
+      const slug = begun.publish.slug;
+      for (let i = 0; i < MAX_SITE_STORED_FILES; i++) {
+        deps.sitesBucket.upload(`${slug}/junk/${i}.js`, { size: 1, sha256: hex(`j${i}`) });
+      }
+      const refused = await begin(deps, { files: [{ path: "new.js" }] });
+      expect(refused._unsafeUnwrapErr()).toMatchObject({
+        code: "SITE_TOO_LARGE",
+        details: { reason: "stored", limitFiles: MAX_SITE_STORED_FILES },
+      });
+    });
+  });
+
+  describe("pending site uploads", () => {
+    const siteOf = (n: number, size: number): PlanInput => ({
+      workspace: workspaceId(n),
+      files: [{ path: `assets/big-${n}.js`, size, immutable: true }],
+    });
+
+    it("refuses new site uploads past 1 GiB across the account's uncommitted sessions", async () => {
+      const deps = setup();
+      (await begin(deps, siteOf(1, 450 * MiB)))._unsafeUnwrap();
+      (await begin(deps, siteOf(2, 450 * MiB)))._unsafeUnwrap();
+      const refused = await begin(deps, siteOf(3, 200 * MiB));
+      expect(refused._unsafeUnwrapErr()).toMatchObject({
+        status: 413,
+        code: "QUOTA_EXCEEDED",
+        details: {
+          reason: "pending-site",
+          quotaBytes: MAX_PENDING_SITE_BYTES,
+          usedBytes: 900 * MiB,
+          publishBytes: 200 * MiB,
+        },
+      });
+      // Refused before a session was created.
+      expect((await deps.store.openSessions(USER, deps.clock.now)).count).toBe(2);
+    });
+
+    it("releases a session's pending bytes when it commits", async () => {
+      const deps = setup();
+      const first = (await begin(deps, siteOf(1, 450 * MiB)))._unsafeUnwrap();
+      (await begin(deps, siteOf(2, 450 * MiB)))._unsafeUnwrap();
+      performUploads(deps, first.uploads);
+      (
+        await completePublish(deps, USER, first.publish.id, completeRequest())
+      )._unsafeUnwrap();
+      expect((await begin(deps, siteOf(3, 200 * MiB))).isOk()).toBe(true);
+    });
+
+    it("keeps counting an aborted session's bytes until its hold ends", async () => {
+      const deps = setup();
+      const T = deps.clock.now;
+      const first = (await begin(deps, siteOf(1, 450 * MiB)))._unsafeUnwrap();
+      (await begin(deps, siteOf(2, 450 * MiB)))._unsafeUnwrap();
+      (await abortPublish(deps, USER, first.publish.id))._unsafeUnwrap();
+      expect((await begin(deps, siteOf(3, 200 * MiB)))._unsafeUnwrapErr().code).toBe(
+        "QUOTA_EXCEEDED",
+      );
+      // Expiry: the URLs stop working with the hold.
+      deps.clock.now = T + SESSION_TTL_MS + 1;
+      expect((await begin(deps, siteOf(3, 200 * MiB))).isOk()).toBe(true);
+    });
+
+    it("re-checks after the insert, releasing what the refused begin needed", async () => {
+      const deps = setup();
+      (await begin(deps, siteOf(1, 450 * MiB)))._unsafeUnwrap();
+      (await begin(deps, siteOf(2, 450 * MiB)))._unsafeUnwrap();
+      const open = deps.store.openSessions;
+      let calls = 0;
+      deps.store.openSessions = async (userId, now) =>
+        ++calls === 1 ? { count: 0, siteUploadBytes: 0 } : open(userId, now);
+      const refused = await begin(deps, {
+        ...siteOf(3, 200 * MiB),
+        source: { sha256: hex("s3"), size: 10 },
+      });
+      deps.store.openSessions = open;
+      expect(refused._unsafeUnwrapErr()).toMatchObject({
+        code: "QUOTA_EXCEEDED",
+        details: { reason: "pending-site", usedBytes: 900 * MiB, publishBytes: 200 * MiB },
+      });
+      expect((await deps.store.openSessions(USER, deps.clock.now)).siteUploadBytes).toBe(
+        900 * MiB,
+      );
+      expect(await deps.store.getStoredObjects(USER, [{ kind: "source", sha256: hex("s3") }])).toEqual(
+        [],
+      );
+    });
+
+    it("keeps an aborted session's hold when it was given only site URLs (Q9)", async () => {
+      const deps = setup();
+      await publish(deps);
+      const begun = (
+        await begin(deps, { files: [{ path: "new.js" }], entries: defaultEntries("v2") })
+      )._unsafeUnwrap();
+      expect(kinds(begun.uploads)).toEqual(["site"]);
+      (await abortPublish(deps, USER, begun.publish.id))._unsafeUnwrap();
+      expect((await deps.store.getSession(begun.publish.id))?.holdUntil).toBe(
+        deps.clock.now + SESSION_TTL_MS,
       );
     });
   });

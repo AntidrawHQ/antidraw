@@ -199,16 +199,28 @@ SQL) and `lib/storage.ts` (R2 and URL signing). Wire schemas are in
   deduplicated. Each account has a 1 GiB quota over every stored object GC has
   not removed, committed or not.
 
+Begin also bounds what a signed-in client can park before it commits: at most
+10 uncommitted sessions whose upload URLs still work (429 `RATE_LIMITED`,
+`details.reason: "open-sessions"`), at most 1 GiB of new site files across
+them (413 `QUOTA_EXCEEDED`, `details.reason: "pending-site"`), and at most
+2 × 500 MiB (or 2 × 5 003 keys) under a site's prefix once its uploads land
+(413 `SITE_TOO_LARGE`, `details.reason: "stored"`).
+
 Clients PUT bytes straight to R2 with presigned S3 URLs (aws4fetch), signed
 over `content-length`, the sha256 checksum and the metadata; complete then
 HEAD-checks size and sha256 of every object. Every upload carries its sha256.
 
-**GC** runs nightly from the cron trigger (`src/scheduled.ts`): expire lapsed
+**GC** runs hourly from the cron trigger (`src/scheduled.ts`): expire lapsed
 sessions, drop versions beyond the newest 5 (`keep` ones excepted), delete
 account objects nothing references or holds (never-committed ones as soon as
-no session's upload URLs can still reach them, committed ones after 24 h),
-delete stale site keys, forget old sessions, and free the slugs of sites that
-never completed. Each step is bounded and independent.
+no session's upload URLs can still reach them, committed ones after 24 h;
+claimed in turns across accounts), delete stale site keys (as it lists them;
+a site whose cleanup keeps being pushed out is visited after a day anyway),
+retire sessions whose hold ended (plan stubbed, held objects dropped) and
+forget old ones, and free the slugs of sites that never completed. Each step
+is bounded (`GcLimits` in `src/services/gc.service.ts`) and independent; a
+run that stops with work left says so in `report.backlog` and logs a warning,
+and the next run continues.
 
 ### Local end to end
 
