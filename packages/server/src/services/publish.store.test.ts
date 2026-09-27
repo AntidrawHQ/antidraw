@@ -6,6 +6,7 @@ import { hex } from "../test/publish-harness";
 import {
   chunk,
   d1PublishStore,
+  jsonChunks,
   PLAN_STUB,
   type NewSession,
   type NewVersion,
@@ -62,7 +63,6 @@ const session = (over: Partial<NewSession> = {}): NewSession => ({
     { kind: "blob", sha256: hex("blob"), size: 2000 },
   ],
   siteUploadBytes: 0,
-  cleanupAfter: 5000,
   ...over,
 });
 
@@ -78,11 +78,8 @@ const version = (over: Partial<NewVersion> = {}): NewVersion => ({
   siteFileCount: 1,
   siteBytes: 10,
   largeFiles: [{ path: "a.bin", sha256: hex("blob"), size: 2000, mode: 420 }],
-  liveFiles: '["index.html"]',
-  liveEntries: JSON.stringify([{ path: "index.html", sha256: hex("index") }]),
+  siteFiles: [{ path: "index.html", sha256: hex("index"), size: 10, contentType: "text/html" }],
   keepVersions: 5,
-  cleanupAfter: 9000,
-  maxDeferMs: 86_400_000,
   now: 20,
   sessionObjects: 2, // session()'s
   ...over,
@@ -105,6 +102,20 @@ describe("chunk", () => {
     expect(chunk(rows, 3)[0]).toHaveLength(33);
     expect(chunk(rows, 1, 3)[0]).toHaveLength(97);
     expect(chunk([], 5)).toEqual([]);
+  });
+
+  it("packs rows into JSON arrays of at most the byte limit", () => {
+    const rows = Array.from({ length: 5 }, (_, i) => [`p${i}`, i]);
+    expect(jsonChunks(rows)).toEqual([JSON.stringify(rows)]);
+    // Each row is 8 bytes plus a comma; 2 for the brackets.
+    expect(jsonChunks(rows, 20).map((c) => JSON.parse(c) as unknown[])).toEqual([
+      rows.slice(0, 2),
+      rows.slice(2, 4),
+      rows.slice(4),
+    ]);
+    // A row larger than the limit still goes, alone.
+    expect(jsonChunks([["x".repeat(50)]], 20)).toHaveLength(1);
+    expect(jsonChunks([])).toEqual([]);
   });
 });
 
@@ -142,20 +153,23 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     });
   });
 
-  it("the shim refuses a row over D1's 2 000 000 bytes, counting every column", async () => {
+  it("the shim refuses a row or a bound value over D1's 2 000 000 bytes", async () => {
     const { shim, store, q } = setup();
     await site(store);
     // Each value alone is fine; together they are not.
-    q("UPDATE site SET live_files = ? WHERE id = 'site_1'", "l".repeat(1_200_000));
+    q("UPDATE site SET name = ? WHERE id = 'site_1'", "l".repeat(1_200_000));
     expect(() =>
-      q("UPDATE site SET protected_files = ? WHERE id = 'site_1'", "p".repeat(1_000_000)),
+      q("UPDATE site SET client_workspace_id = ? WHERE id = 'site_1'", "p".repeat(1_000_000)),
     ).toThrow(/string or blob too big/);
     await expect(
       shim
-        .prepare("UPDATE site SET protected_files = ? WHERE id = 'site_1'")
+        .prepare("UPDATE site SET client_workspace_id = ? WHERE id = 'site_1'")
         .bind("p".repeat(700_000))
         .run(),
     ).resolves.toBeTruthy();
+    await expect(
+      shim.prepare("SELECT length(?) AS n").bind("x".repeat(2_000_001)).all(),
+    ).rejects.toThrow(/string or blob too big/);
   });
 
   it("inserts a site once per workspace, and reports a taken slug", async () => {
@@ -220,14 +234,17 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     expect(q("SELECT size, deleting FROM stored_object WHERE kind = 'blob'")).toEqual([
       { size: 5000, deleting: 1 },
     ]);
-    expect(q("SELECT cleanup_after FROM site")).toEqual([{ cleanup_after: 5000 }]);
   });
 
-  it("counts every non-deleting object of the account (usedBytes)", async () => {
+  it("counts every non-deleting source and blob of the account (usedBytes), no site content", async () => {
     const { store, q } = setup();
     await site(store);
     await site(store, "site_2", V, "w9");
-    await store.createSession(session());
+    await store.createSession(
+      session({
+        objects: [...session().objects, { kind: "site", sha256: hex("index"), size: 99_999 }],
+      }),
+    );
     await store.createSession(
       session({
         id: "pub_v",
@@ -252,13 +269,14 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
       { version: 1, source_sha256: hex("src"), allow_remix: 1 },
     ]);
     expect(q("SELECT path FROM version_large_file")).toEqual([{ path: "a.bin" }]);
+    expect(q("SELECT user_id, path, sha256, size, content_type FROM version_site_file")).toEqual([
+      { user_id: U, path: "index.html", sha256: hex("index"), size: 10, content_type: "text/html" },
+    ]);
     expect(q("SELECT verified FROM stored_object")).toEqual([{ verified: 1 }, { verified: 1 }]);
     expect(await store.findSiteById("site_1")).toMatchObject({
       headVersion: 1,
+      pointerVersion: 0,
       completeLock: null,
-      protectedFiles: null,
-      liveFiles: '["index.html"]',
-      cleanupAfter: 9000,
     });
     expect(await store.getSession("pub_1")).toMatchObject({
       status: "completed",
@@ -273,6 +291,7 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
   const expectRolledBack = (q: Setup["q"]) => {
     expect(q("SELECT * FROM site_version")).toEqual([]);
     expect(q("SELECT * FROM version_large_file")).toEqual([]);
+    expect(q("SELECT * FROM version_site_file")).toEqual([]);
     expect(q("SELECT verified FROM stored_object")).toEqual([{ verified: 0 }, { verified: 0 }]);
     expect(q("SELECT status FROM publish_session WHERE id = 'pub_1'")).toEqual([
       { status: "pending" },
@@ -423,11 +442,11 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     expect(await store.releaseUnheldObjects(U, session().objects, 20)).toBe(2);
   });
 
-  it("stubs the plan with the status, unless it may be live on a * site or holds the lock", async () => {
-    const { store, q } = setup();
+  it("stubs the plan with the status when asked, even while the session holds the lock", async () => {
+    const { store } = setup();
     await site(store);
     const plan = JSON.stringify({ big: "x".repeat(1000) });
-    for (const id of ["pub_1", "pub_2", "pub_3", "pub_4", "pub_5"]) {
+    for (const id of ["pub_1", "pub_2", "pub_3"]) {
       await store.createSession(session({ id, plan, objects: [] }));
     }
     const abort = (id: string) =>
@@ -438,19 +457,13 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
       holdUntil: 50,
       plan: PLAN_STUB,
     });
+    expect(await abort("pub_1")).toBe(false); // no longer pending
     expect(await store.setSessionStatus("pub_2", "aborted")).toBe(true);
     expect((await store.getSession("pub_2"))?.plan).toBe(plan);
+    // A complete in flight read the plan before it took the lock.
     await lock(store, "pub_3");
     await abort("pub_3");
-    expect((await store.getSession("pub_3"))?.plan).toBe(plan);
-    await store.releaseCompleteLock("site_1", "pub_3");
-    q("UPDATE site SET protected_files = '*' WHERE id = 'site_1'");
-    // On a * site: kept only for a session that may have written the entries.
-    q("UPDATE publish_session SET entries_written = 1 WHERE id = 'pub_4'");
-    await abort("pub_4");
-    expect((await store.getSession("pub_4"))?.plan).toBe(plan);
-    await abort("pub_5");
-    expect((await store.getSession("pub_5"))?.plan).toBe(PLAN_STUB);
+    expect((await store.getSession("pub_3"))?.plan).toBe(PLAN_STUB);
   });
 
   it("claims the lock only against the expected head and a free, lapsed or own lock", async () => {
@@ -472,8 +485,6 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     expect(await claim({ now: 200, expiresAt: 800 })).toMatchObject({
       completeLockExpiresAt: 800,
     });
-    expect(await store.checkCompleteLock("site_1", "pub_1", 200, 600)).toBe(true);
-    expect(await store.checkCompleteLock("site_1", "pub_1", 200, 601)).toBe(false);
     expect(await claim({ sessionId: "pub_2", now: 801, expiresAt: 1400 })).toMatchObject({
       completeLock: "pub_2",
     }); // lapsed
@@ -481,52 +492,6 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     expect((await store.findSiteById("site_1"))?.completeLock).toBe("pub_2");
     await store.releaseCompleteLock("site_1", "pub_2");
     expect((await store.findSiteById("site_1"))?.completeLock).toBeNull();
-  });
-
-  it("sets protected_files only under the lock, against the seen value and the fence", async () => {
-    const { store } = setup();
-    await site(store);
-    const set = (over: Partial<Parameters<PublishStore["setProtectedFiles"]>[0]> = {}) =>
-      store.setProtectedFiles({
-        siteId: "site_1",
-        lock: "pub_1",
-        protectedFiles: '["a"]',
-        seenProtected: null,
-        ...over,
-      });
-    expect(await set()).toBe(false); // not locked
-    await lock(store);
-    expect(await set({ lock: "pub_2" })).toBe(false);
-    expect(await set({ seenProtected: '["b"]' })).toBe(false);
-    expect(await set({ fence: { now: 15, minRemainingMs: 600_001 } })).toBe(false);
-    expect(await set({ fence: { now: 15, minRemainingMs: 600_000 } })).toBe(true);
-    expect((await store.findSiteById("site_1"))?.protectedFiles).toBe('["a"]');
-    expect(await set({ protectedFiles: "*", seenProtected: '["a"]' })).toBe(true);
-    expect((await store.findSiteById("site_1"))?.protectedFiles).toBe("*");
-  });
-
-  it("marks the session entries_written with protected_files, and only then", async () => {
-    const { store } = setup();
-    await site(store);
-    await store.createSession(session({ objects: [] }));
-    const set = (over: Partial<Parameters<PublishStore["setProtectedFiles"]>[0]> = {}) =>
-      store.setProtectedFiles({
-        siteId: "site_1",
-        lock: "pub_1",
-        protectedFiles: '["a"]',
-        seenProtected: null,
-        writesEntries: true,
-        ...over,
-      });
-    expect(await set()).toBe(false); // not locked
-    await lock(store);
-    expect(await set({ seenProtected: '["b"]' })).toBe(false);
-    expect(await set({ fence: { now: 15, minRemainingMs: 600_001 } })).toBe(false);
-    expect(await set({ writesEntries: false })).toBe(true);
-    expect((await store.getSession("pub_1"))?.entriesWritten).toBe(false);
-    expect(await set({ protectedFiles: "*", seenProtected: '["a"]' })).toBe(true);
-    expect(await store.getSession("pub_1")).toMatchObject({ entriesWritten: true });
-    expect((await store.findSiteById("site_1"))?.protectedFiles).toBe("*");
   });
 
   it("chunks a begin of 1 source + 499 blobs and a commit of 1 000 large files", async () => {
@@ -562,6 +527,45 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     expect((await store.getLargeFiles("ver_1")).length).toBe(1000);
   });
 
+  it("binds a site's worth of contents and files as JSON, in a few statements", async () => {
+    const { shim, store, q } = setup();
+    await site(store);
+    // Long paths: the site files take more than one JSON chunk.
+    const files = Array.from({ length: 5000 }, (_, i) => ({
+      path: `assets/${"d/".repeat(100)}${String(i).padStart(4, "0")}-AbC12345.js`,
+      sha256: hex(`c${i % 4000}`),
+      size: 1 + (i % 4000),
+      contentType: "text/javascript",
+    }));
+    const objects = [
+      { kind: "source" as const, sha256: hex("src"), size: 100 },
+      ...Array.from({ length: 4000 }, (_, i) => ({
+        kind: "site" as const,
+        sha256: hex(`c${i}`),
+        size: 1 + i,
+      })),
+    ];
+    const from = shim.log.length;
+    await store.createSession(session({ objects }));
+    expect(shim.log.length - from).toBeLessThanOrEqual(5);
+    expect(q("SELECT count(*) AS n FROM stored_object WHERE kind = 'site'")).toEqual([{ n: 4000 }]);
+    expect(q("SELECT count(*) AS n FROM publish_session_object")).toEqual([{ n: 4001 }]);
+    expect(q("SELECT size FROM stored_object WHERE sha256 = ?", hex("c9"))).toEqual([{ size: 10 }]);
+    expect((await store.getStoredObjects(U, objects)).length).toBe(4001);
+
+    await lock(store);
+    const before = shim.log.length;
+    const committed = await store.commitVersion(
+      version({ largeFiles: [], siteFiles: files, sessionObjects: 4001 }),
+    );
+    expect(committed).toEqual({ ok: true });
+    expect(shim.log.length - before).toBeLessThanOrEqual(10);
+    expect(q("SELECT count(*) AS n FROM version_site_file")).toEqual([{ n: 5000 }]);
+    expect(q("SELECT count(*) AS n FROM stored_object WHERE verified = 1")).toEqual([{ n: 4001 }]);
+    expect(Math.max(...shim.log.map((s) => s.params))).toBeLessThanOrEqual(100);
+    expect(await store.releaseUnheldObjects(U, objects, 0)).toBe(0); // verified
+  });
+
   it("claims GC candidates in one UPDATE ... RETURNING", async () => {
     const { store, q } = setup();
     await site(store);
@@ -583,6 +587,27 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
       1,
     );
     expect(q("SELECT kind FROM stored_object")).toEqual([{ kind: "blob" }]);
+  });
+
+  it("claims a site content once no retained version lists it", async () => {
+    const { store, q } = setup();
+    await site(store);
+    const content = { kind: "site" as const, sha256: hex("index"), size: 10 };
+    await store.createSession(
+      session({ holdUntil: 100, objects: [...session().objects, content] }),
+    );
+    await lock(store);
+    expect(await store.commitVersion(version({ sessionObjects: 3 }))).toEqual({ ok: true });
+    const opts = { now: 5000, minCreatedAt: 11, limit: 500 };
+    expect(await store.claimGcObjects(opts)).toEqual([]);
+    // Another version lists the same content: still referenced.
+    q("DELETE FROM version_large_file");
+    q("UPDATE site_version SET source_sha256 = 'gone'");
+    expect(await store.claimGcObjects(opts)).toHaveLength(2); // source and blob
+    q("DELETE FROM site_version");
+    expect(await store.claimGcObjects(opts)).toEqual([
+      { userId: U, kind: "site", sha256: hex("index") },
+    ]);
   });
 
   it("keeps the age floor for verified objects and skips version references", async () => {
@@ -620,81 +645,71 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     expect(q("SELECT kind FROM stored_object")).toEqual([{ kind: "source" }]);
   });
 
-  it("finishes a site cleanup only against the cleanup_after it saw", async () => {
-    const { store } = setup();
+  it("tracks the pointer's version, and lists the sites whose pointer is behind", async () => {
+    const { store, q } = setup();
     await site(store);
-    await store.createSession(session({ cleanupAfter: 50 }));
-    expect(await store.sitesDueForCleanup(60, 0, 10)).toEqual([
-      { id: "site_1", slug: "acme-site_1" },
+    await site(store, "site_2", U, "w2");
+    expect(await store.sitesBehindPointer(10)).toEqual([]);
+    q("UPDATE site SET head_version = 3, updated_at = 5 WHERE id = 'site_1'");
+    q("UPDATE site SET head_version = 1, updated_at = 2 WHERE id = 'site_2'");
+    expect((await store.sitesBehindPointer(10)).map((s) => s.id)).toEqual(["site_2", "site_1"]);
+    expect((await store.sitesBehindPointer(1)).map((s) => s.id)).toEqual(["site_2"]);
+    await store.setPointerVersion("site_1", 2);
+    expect((await store.findSiteById("site_1"))?.pointerVersion).toBe(2);
+    await store.setPointerVersion("site_1", 1); // never lowered
+    expect((await store.findSiteById("site_1"))?.pointerVersion).toBe(2);
+    await store.setPointerVersion("site_1", 9); // never past the head
+    expect((await store.findSiteById("site_1"))?.pointerVersion).toBe(3);
+    expect((await store.sitesBehindPointer(10)).map((s) => s.id)).toEqual(["site_2"]);
+  });
+
+  it("reads a pointer's files: the head's, and older versions' asset paths, newest first", async () => {
+    const { store, q } = setup();
+    await site(store);
+    for (let v = 1; v <= 3; v++) {
+      q(
+        `INSERT INTO site_version (id, site_id, user_id, version, source_sha256, source_size, snapshot_bytes,
+           file_count, site_file_count, site_bytes, publish_session_id, created_at)
+         VALUES (?, 'site_1', ?, ?, 'x', 1, 1, 1, 1, 1, 'p', 0)`,
+        `ver_${v}`,
+        U,
+        v,
+      );
+      for (const path of ["index.html", `assets/a${v}-AbC12345.js`, `_antidraw/v${v}.js`]) {
+        q(
+          `INSERT INTO version_site_file (version_id, user_id, path, sha256, size, content_type)
+           VALUES (?, ?, ?, ?, ?, 'text/plain')`,
+          `ver_${v}`,
+          U,
+          path,
+          hex(`${v}${path}`),
+          v,
+        );
+      }
+    }
+    const rows = await store.pointerFiles("site_1", 3, 2);
+    expect(rows.map((r) => `${r.version}:${r.path}`)).toEqual([
+      "3:_antidraw/v3.js",
+      "3:assets/a3-AbC12345.js",
+      "3:index.html",
+      "2:_antidraw/v2.js",
+      "2:assets/a2-AbC12345.js",
     ]);
-    expect(await store.claimSiteLockForGc("site_1", "gc:1", 60, 360)).toBe(true);
-    expect(await store.claimSiteLockForGc("site_1", "gc:2", 60, 360)).toBe(false);
-    expect(await store.heldSessionPlans("site_1", 60)).toEqual([{ plan: "{}", holdUntil: 1000 }]);
-    await store.finishSiteCleanup("site_1", "gc:1", 40, 777, 60); // a begin moved it on: kept
-    expect(await store.findSiteById("site_1")).toMatchObject({
-      cleanupAfter: 50,
-      cleanupSince: 60,
-      completeLock: null,
-    });
-    await store.finishSiteCleanup("site_1", "gc:1", 50, null, 70);
-    expect(await store.findSiteById("site_1")).toMatchObject({
-      cleanupAfter: null,
-      cleanupSince: null,
+    expect(rows[2]).toEqual({
+      version: 3,
+      path: "index.html",
+      sha256: hex("3index.html"),
+      size: 3,
+      contentType: "text/plain",
     });
   });
 
-  it("hurries a site's cleanup: due by the earlier of cleanup_after and dueBy, queued first", async () => {
+  it("claims a site's lock for GC only when it is free or lapsed", async () => {
     const { store } = setup();
-    const DEFER = 10_000;
-    const EVERY = 1000;
-    await site(store, "site_1");
-    await site(store, "site_2", V, "w2");
-    await site(store, "site_3", U, "w3");
-    await site(store, "site_4", V, "w4");
-    await store.createSession(
-      session({ id: "pub_2", userId: V, siteId: "site_2", objects: [], now: 10 }),
-    );
-    await store.createSession(
-      session({ siteId: "site_1", objects: [], now: 20, cleanupAfter: 9000 }),
-    );
-    const hurry = (siteId: string, dueBy: number, now = 0) =>
-      store.hurrySiteCleanup({ siteId, dueBy, maxDeferMs: DEFER, now, intervalMs: EVERY });
-
-    expect(await hurry("site_1", 3000)).toBe(true);
-    expect(await store.findSiteById("site_1")).toMatchObject({
-      cleanupSince: 3000 - DEFER,
-      hurriedAt: 0,
-    });
-    const due = (now: number) => store.sitesDueForCleanup(now, now - DEFER, 10);
-    expect(await due(2999)).toEqual([]);
-    expect(await due(3001)).toEqual([{ id: "site_1", slug: "acme-site_1" }]);
-    // Both due: the hurried site first, though site_2 was wanted earlier.
-    expect((await due(6000)).map((s) => s.id)).toEqual(["site_1", "site_2"]);
-
-    // Never later than cleanup_after, never later than it already was.
-    expect(await hurry("site_2", 99_999)).toBe(true);
-    expect((await store.findSiteById("site_2"))?.cleanupSince).toBe(5000 - DEFER);
-    expect(await hurry("site_1", 8000, EVERY + 1)).toBe(true);
-    expect((await store.findSiteById("site_1"))?.cleanupSince).toBe(3000 - DEFER);
-
-    // One site per account per interval: another of the account's sites is
-    // only scheduled (none was outstanding), keeping its place in the queue.
-    expect(await hurry("site_3", 4000, EVERY + 2)).toBe(false);
-    expect(await store.findSiteById("site_3")).toMatchObject({
-      cleanupAfter: 4000,
-      cleanupSince: EVERY + 2,
-      hurriedAt: null,
-    });
-    // So is the same site again within the interval.
-    expect(await hurry("site_1", 2000, EVERY + 3)).toBe(false);
-    expect((await store.findSiteById("site_1"))?.cleanupSince).toBe(3000 - DEFER);
-    // Another account's, its interval over: hurried, and scheduled, since
-    // nothing was outstanding.
-    expect(await hurry("site_4", 4000, EVERY + 1)).toBe(true);
-    expect(await store.findSiteById("site_4")).toMatchObject({
-      cleanupAfter: 4000,
-      cleanupSince: 4000 - DEFER,
-    });
+    await site(store);
+    expect(await store.claimSiteLockForGc("site_1", "gc:1", 60, 360)).toBe(true);
+    expect(await store.claimSiteLockForGc("site_1", "gc:2", 60, 360)).toBe(false);
+    expect(await store.claimSiteLockForGc("site_1", "gc:2", 361, 700)).toBe(true);
   });
 
   // D1 never runs ANALYZE, so the planner has no statistics to steer it off a
@@ -707,6 +722,7 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     await lock(store);
     const from = shim.log.length;
     await store.usedBytes(U);
+    await store.getStoredObjects(U, [{ kind: "blob", sha256: hex("x") }]);
     await store.releaseUnheldObjects(U, [{ kind: "blob", sha256: hex("x") }], 50);
     await store.commitVersion(version());
     await store.deleteObjectRows([{ userId: U, kind: "blob", sha256: hex("x") }]);
@@ -715,7 +731,7 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
       .map((s) => s.sql)
       .filter((sql) => /^\s*(select|update|delete)\b[^]*?\bstored_object\b/i.test(sql))
       .filter((sql) => !/^\s*insert/i.test(sql));
-    expect(touching.length).toBeGreaterThanOrEqual(4);
+    expect(touching.length).toBeGreaterThanOrEqual(5);
     for (const sql of touching) {
       const plan = (
         shim.sqlite.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as { detail: string }[]
@@ -773,139 +789,32 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     expect(await store.openSessions(V, 500)).toEqual({ count: 0, siteUploadBytes: 0 });
   });
 
-  it("commits the head's entries, stubs the plan, and starts cleanup_since", async () => {
+  it("stubs the plan at commit", async () => {
     const { store } = setup();
     await site(store);
     await store.createSession(session({ plan: JSON.stringify({ big: "x".repeat(1000) }) }));
-    expect((await store.findSiteById("site_1"))?.cleanupSince).toBe(10);
     await lock(store);
-    await store.commitVersion(version({ maxDeferMs: 8990 })); // not past the switch-over
+    expect(await store.commitVersion(version())).toEqual({ ok: true });
     expect((await store.getSession("pub_1"))?.plan).toBe(PLAN_STUB);
-    expect(await store.findSiteById("site_1")).toMatchObject({
-      liveEntries: JSON.stringify([{ path: "index.html", sha256: hex("index") }]),
-      cleanupSince: 10,
-    });
-    // A committed session's plan is not one GC keeps paths for.
-    expect(await store.heldSessionPlans("site_1", 500)).toEqual([{ plan: null, holdUntil: 1000 }]);
   });
 
-  it("moves the forced cleanup past a commit's switch-over delay", async () => {
-    const { store } = setup();
-    const DEFER = 5000;
-    await site(store);
-    await store.createSession(session({ objects: [], now: 10, cleanupAfter: 2000 }));
-    // Hurried before the commit: due by 3000 at the latest.
-    await store.hurrySiteCleanup({
-      siteId: "site_1",
-      dueBy: 3000,
-      maxDeferMs: DEFER,
-      now: 10,
-      intervalMs: 1,
-    });
-    expect((await store.findSiteById("site_1"))?.cleanupSince).toBe(2000 - DEFER);
-    await lock(store);
-    const committed = await store.commitVersion(
-      version({ sessionObjects: 0, largeFiles: [], cleanupAfter: 9000, maxDeferMs: DEFER }),
-    );
-    expect(committed).toEqual({ ok: true });
-    expect(await store.findSiteById("site_1")).toMatchObject({
-      cleanupAfter: 9000,
-      cleanupSince: 9000 - DEFER,
-    });
-    const due = (now: number) => store.sitesDueForCleanup(now, now - DEFER, 10);
-    expect(await due(8999)).toEqual([]);
-    expect(await due(9001)).toEqual([{ id: "site_1", slug: "acme-site_1" }]);
-  });
-
-  it("lists a site as due once its cleanup has been put off long enough", async () => {
-    const { store } = setup();
-    await site(store);
-    await store.createSession(session({ now: 10, cleanupAfter: 5000 }));
-    expect(await store.sitesDueForCleanup(100, 5, 10)).toEqual([]);
-    expect(await store.sitesDueForCleanup(100, 11, 10)).toEqual([
-      { id: "site_1", slug: "acme-site_1" },
-    ]);
-  });
-
-  it("retires sessions whose hold ended, keeping plans only on a * site", async () => {
+  it("retires sessions whose hold ended, stubbing their plans, and forgets old ones", async () => {
     const { store, q } = setup();
     await site(store);
-    await site(store, "site_2", U, "w2");
-    const sha = hex("entry");
-    const plan = JSON.stringify({ site: { entries: [{ path: "index.html", sha256: sha }] } });
+    const plan = JSON.stringify({ big: "x".repeat(100) });
     await store.createSession(session({ plan, holdUntil: 100 }));
-    await store.createSession(session({ id: "pub_2", siteId: "site_2", plan, holdUntil: 100 }));
+    await store.createSession(session({ id: "pub_2", plan, holdUntil: 100 }));
     await store.createSession(session({ id: "pub_3", plan, holdUntil: 900 }));
-    // On the * site, but never wrote entries (e.g. aborted with no URLs).
-    await store.createSession(session({ id: "pub_4", siteId: "site_2", plan, holdUntil: 100 }));
-    q("UPDATE site SET protected_files = '*' WHERE id = 'site_2'");
-    q("UPDATE publish_session SET entries_written = 1 WHERE id IN ('pub_1', 'pub_2')");
-    expect(await store.retireSessions(200, 97)).toBe(3);
+    expect(await store.retireSessions(200, 97)).toBe(2);
     expect(await store.retireSessions(200, 97)).toBe(0);
     expect(await store.getSession("pub_1")).toMatchObject({ holdUntil: 0, plan: PLAN_STUB });
-    expect(await store.getSession("pub_2")).toMatchObject({ holdUntil: 0, plan });
+    expect(await store.getSession("pub_2")).toMatchObject({ holdUntil: 0, plan: PLAN_STUB });
     expect(await store.getSession("pub_3")).toMatchObject({ holdUntil: 900, plan });
-    expect(await store.getSession("pub_4")).toMatchObject({ holdUntil: 0, plan: PLAN_STUB });
     expect(q("SELECT DISTINCT session_id FROM publish_session_object ORDER BY session_id")).toEqual(
       [{ session_id: "pub_3" }],
     );
-    const mentioning = (path: string, sha256: string) =>
-      store.uncommittedPlansMentioning({ siteId: "site_2", path, sha256, limit: 4 });
-    expect(await mentioning("index.html", sha)).toEqual([{ id: "pub_2", plan }]);
-    expect(await mentioning("preview.html", sha)).toEqual([]);
-
-    // Uncommitted ones kept on a * site stay until "*" is resolved.
     const old = { now: 5000, completedBefore: 0, uncommittedBefore: 4000, limit: 10 };
     expect(await store.deleteOldSessions(old)).toBe(3);
-    expect(await store.getSession("pub_2")).not.toBeNull();
-    q("UPDATE site SET protected_files = NULL WHERE id = 'site_2'");
-    expect(await store.deleteOldSessions(old)).toBe(1);
-  });
-
-  it("reads at most `limit` plans for a * entry, newest first, and stubs the rest once resolved", async () => {
-    const { store, q } = setup();
-    await site(store);
-    const sha = hex("entry");
-    const plan = (n: number) =>
-      JSON.stringify({ n, site: { entries: [{ path: "index.html", sha256: sha }] } });
-    for (let n = 1; n <= 6; n++) {
-      await store.createSession(
-        session({ id: `pub_${n}`, plan: plan(n), objects: [], now: 10 + n, holdUntil: 100 }),
-      );
-    }
-    // One that mentions the sha256 only as a site file's, one never marked.
-    await store.createSession(
-      session({
-        id: "pub_7",
-        objects: [],
-        now: 30,
-        holdUntil: 100,
-        plan: JSON.stringify({ site: { files: [{ path: "x.js", sha256: sha }], entries: [] } }),
-      }),
-    );
-    await store.createSession(
-      session({ id: "pub_8", plan: plan(8), objects: [], now: 31, holdUntil: 100 }),
-    );
-    q("UPDATE publish_session SET entries_written = 1 WHERE id != 'pub_8'");
-    q("UPDATE site SET protected_files = '*' WHERE id = 'site_1'");
-    const found = await store.uncommittedPlansMentioning({
-      siteId: "site_1",
-      path: "index.html",
-      sha256: sha,
-      limit: 4,
-    });
-    expect(found.map((f) => f.id)).toEqual(["pub_6", "pub_5", "pub_4", "pub_3"]);
-
-    // Still held: kept. Hold ended: all but the ones GC used are stubbed.
-    expect(await store.releaseStarPlans("site_1", ["pub_6", "pub_5"], 100)).toBe(0);
-    expect(await store.releaseStarPlans("site_1", ["pub_6", "pub_5"], 101)).toBe(6);
-    const plans = q<{ id: string; plan: string }>(
-      "SELECT id, plan FROM publish_session ORDER BY id",
-    );
-    expect(plans.filter((p) => p.plan !== PLAN_STUB).map((p) => p.id)).toEqual(["pub_5", "pub_6"]);
-    // Then deleted like any other once old.
-    const old = { now: 5000, completedBefore: 0, uncommittedBefore: 4000, limit: 10 };
-    expect(await store.deleteOldSessions(old)).toBe(6);
   });
 
   it("prunes old versions, expires and forgets sessions, and deletes abandoned sites", async () => {
@@ -936,6 +845,7 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
         (r) => (r as { version: number }).version,
       ),
     ).toEqual([2, 5, 6, 7, 8, 9]);
+    expect(q("SELECT count(*) AS n FROM version_site_file")).toEqual([{ n: 0 }]);
 
     await site(store, "site_2", U, "w2");
     expect((await store.abandonedSites(100, 2, 10)).map((s) => s.id)).toEqual(["site_2"]);
@@ -945,7 +855,7 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     expect(await store.findSiteById("site_2")).toBeNull();
   });
 
-  it("cascades a site delete to its sessions, versions and large files", async () => {
+  it("cascades a site delete to its sessions, versions, large files and site files", async () => {
     const { store, q } = setup();
     await site(store);
     await store.createSession(session());
@@ -955,6 +865,7 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     for (const table of [
       "site_version",
       "version_large_file",
+      "version_site_file",
       "publish_session",
       "publish_session_object",
     ]) {

@@ -1,7 +1,6 @@
 import { z } from "zod";
 import {
   LARGE_FILE_BYTES,
-  MAX_ENTRY_BYTES,
   MAX_LARGE_FILES,
   MAX_SITE_FILES,
   MAX_SNAPSHOT_BYTES,
@@ -16,7 +15,6 @@ import { ENTRY_PATHS, isSafeSnapshotPath } from "./paths";
 export { ENTRY_PATHS };
 export const sha256Hex = z.string().regex(/^[0-9a-f]{64}$/);
 export const fileMode = z.union([z.literal(0o644), z.literal(0o755)]); // JSON: 420 | 493
-export const entryPath = z.enum(ENTRY_PATHS);
 const contentType = z
   .string()
   .max(128)
@@ -30,18 +28,16 @@ export const largeFileSchema = z.object({
   mode: fileMode,
 });
 
+// Every file of the site, the entry pages (ENTRY_PATHS) included. Its
+// content is stored once per account, at c/<userId>/<sha256>.
 export const siteFileSchema = z.object({
   path: z.string().min(1).max(900), // isPublishableSitePath in the service
   sha256: sha256Hex,
   size: z.number().int().nonnegative(),
-  contentType,
-  immutable: z.boolean(), // true => immutable Cache-Control
-});
-
-export const siteEntrySchema = z.object({
-  path: entryPath,
-  sha256: sha256Hex,
-  size: z.number().int().nonnegative().max(MAX_ENTRY_BYTES),
+  contentType, // what the publish Worker serves it as
+  // The build hashed its name. Only the dotfile gate reads it; the publish
+  // Worker decides caching from the path (isImmutableSitePath).
+  immutable: z.boolean(),
 });
 
 export const beginPublishRequest = z.object({
@@ -61,7 +57,6 @@ export const beginPublishRequest = z.object({
   }),
   site: z.object({
     files: z.array(siteFileSchema).max(MAX_SITE_FILES),
-    entries: z.array(siteEntrySchema).length(3),
   }),
 });
 export type BeginPublishRequest = z.infer<typeof beginPublishRequest>;
@@ -70,7 +65,9 @@ export const uploadInstruction = z.object({
   kind: z.enum(["source", "blob", "site"]),
   sha256: sha256Hex,
   size: z.number().int().nonnegative(),
-  path: z.string().optional(), // site path, for kind "site" only
+  // Kind "site": one of the site paths with this content (a content is
+  // uploaded once, however many paths share it).
+  path: z.string().optional(),
   url: z.string().url(),
   method: z.literal("PUT"),
   headers: z.record(z.string(), z.string()), // send verbatim; lowercase names
@@ -100,11 +97,9 @@ export const beginPublishResponse = z.object({
 });
 export type BeginPublishResponse = z.infer<typeof beginPublishResponse>;
 
-export const completePublishRequest = z.object({
-  entries: z
-    .array(z.object({ path: entryPath, contentBase64: z.string().max(3_000_000) }))
-    .length(3),
-});
+// Nothing: every file, entry pages included, was uploaded. Complete switches
+// the site over by writing its pointer once the version is committed.
+export const completePublishRequest = z.object({});
 export type CompletePublishRequest = z.infer<typeof completePublishRequest>;
 
 export const completePublishResponse = z.object({
@@ -156,6 +151,6 @@ export const storedPlan = z.object({
   largeFiles: z.array(largeFileSchema),
   fileCount: z.number().int(),
   uncompressedBytes: z.number().int(),
-  site: z.object({ files: z.array(siteFileSchema), entries: z.array(siteEntrySchema) }),
+  site: z.object({ files: z.array(siteFileSchema) }),
 });
 export type StoredPlan = z.infer<typeof storedPlan>;

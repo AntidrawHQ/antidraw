@@ -10,7 +10,6 @@ import { ABORTED, cloudTiming, untilAborted } from "./deadline";
 // and anything that does not parse is a SERVER_ERROR.
 
 const sha256Hex = z.string().regex(/^[0-9a-f]{64}$/);
-const ENTRY_PATHS = ["preview.html", "canvas.json", "index.html"] as const;
 
 export type BeginPublishRequest = {
   clientWorkspaceId: string;
@@ -23,6 +22,9 @@ export type BeginPublishRequest = {
     fileCount: number;
     uncompressedBytes: number;
   };
+  // Every file of the site, the entry pages (index.html, preview.html,
+  // canvas.json) included: the server stores each distinct content once per
+  // account and asks only for the contents it does not have yet.
   site: {
     files: {
       path: string;
@@ -31,14 +33,12 @@ export type BeginPublishRequest = {
       contentType: string;
       immutable: boolean;
     }[];
-    entries: { path: (typeof ENTRY_PATHS)[number]; sha256: string; size: number }[];
   };
 };
 
-export type CompletePublishRequest = {
-  entries: { path: (typeof ENTRY_PATHS)[number]; contentBase64: string }[];
-};
-
+// One per object the server does not have. A "site" instruction is for a
+// site file's content (stored once per sha256, however many paths share it);
+// its `path`, when present, is one of those paths.
 export const uploadInstruction = z.object({
   kind: z.enum(["source", "blob", "site"]),
   sha256: sha256Hex,
@@ -225,14 +225,13 @@ export const beginPublish = (
     ...opts,
   });
 
-// Not cancellable (the server may be committing), only time-limited.
-export const completePublish = (
-  publishId: string,
-  body: CompletePublishRequest,
-) =>
+// Not cancellable (the server may be committing), only time-limited. It
+// carries nothing: every file, entry pages included, was uploaded, and the
+// server switches the site over by writing one pointer after the commit.
+export const completePublish = (publishId: string) =>
   request(`${sessionPath(publishId)}/complete`, completePublishResponse, {
     method: "POST",
-    body,
+    body: {},
     timeoutMs: cloudTiming.completeTimeoutMs,
   });
 

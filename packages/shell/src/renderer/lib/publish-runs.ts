@@ -183,17 +183,14 @@ export const startPublish = async (
         ? e
         : new AccountRequestError("INTERNAL_ERROR", "The publish stopped before it finished.");
     const current = getRun(workspaceId)?.id === id;
-    const failed: PublishRun = { id, phase: "failed", error, checking: false, check: null };
     if (error.code === "SIGNED_OUT" || error.code === "CANCELLED") {
-      // A quiet end, unless uploads had started: public files may already be
-      // live beside the old pages, and the user has to be told to publish
-      // again. The run stays failed so its panel (or the sign-in panel over
-      // it) can say so.
-      if (current) setRun(workspaceId, error.details?.publicFilesMayHaveChanged ? failed : null);
+      // A quiet end: nothing a visitor sees changed (the site switches over
+      // only when a publish commits).
+      if (current) setRun(workspaceId, null);
       return error.code === "SIGNED_OUT" ? "signed-out" : "cancelled";
     }
     console.error("Publish failed:", error);
-    if (current) setRun(workspaceId, failed);
+    if (current) setRun(workspaceId, { id, phase: "failed", error, checking: false, check: null });
     return "failed";
   } finally {
     clearTimeout(arm);

@@ -92,7 +92,7 @@ describe("listSiteFiles", () => {
     expect(byPath.get("index.html")!.contentType).toBe("text/html; charset=utf-8");
   });
 
-  test("splits out the entries in upload order, and leaves out the hashed list", async () => {
+  test("splits out the entry pages, in SITE_ENTRY_FILES order, and leaves out the hashed list", async () => {
     const { files, entries, skipped } = await listSiteFiles(site);
     expect(entries.map((f) => f.path)).toEqual(["preview.html", "canvas.json", "index.html"]);
     const all = [...files.map((f) => f.path), ...skipped];

@@ -34,7 +34,6 @@ import {
   patchSite,
   type BeginPublishRequest,
   type CloudError,
-  type CompletePublishRequest,
   type PublishSessionResponse,
 } from "./cloud-publish";
 import { ABORTED, cloudTiming, untilAborted } from "./deadline";
@@ -58,14 +57,10 @@ import {
 // the server. Progress goes out as PublishEvents; every failure, thrown or
 // not, ends the stream as one `error` event — the generator never throws.
 
-// The entry files, in the order the server writes them.
+// The entry pages every built site has. They are ordinary site files.
 const ENTRY_FILES = ["preview.html", "canvas.json", "index.html"] as const;
 
 const COMPLETE_ATTEMPTS = 5;
-
-// A "stored" refusal whose cleanup is due within this long says "in an hour"
-// (the server's cleanup delay, plus a few minutes for its GC schedule).
-const CLEANUP_SOON_MS = 65 * 60 * 1000;
 
 // Complete's retry backoff is base·2^(n-1) (2, 4, 8, 16 s). Tests shorten it.
 export const publishTiming = { completeRetryBaseMs: 2_000 };
@@ -120,7 +115,6 @@ const stringArray = (v: unknown): string[] | undefined =>
 // Nothing the user does fixes them, so they are INTERNAL_ERROR, naming the
 // server's code.
 const CONTRACT_CODES = new Set([
-  "ENTRY_MISMATCH",
   "INVALID_REQUEST",
   "REMIX_DISABLED",
   "PUBLISH_NOT_FOUND",
@@ -149,42 +143,6 @@ export const mapCloudError = (
         { ...pickNumbers(details, ["limitBytes", "snapshotBytes"]), ...largest },
       );
     case "SITE_TOO_LARGE":
-      // "stored": this publish is within the site limits, but the site's
-      // storage still holds earlier versions' files that GC has not removed.
-      // The server hurries that cleanup only so often, so "in an hour" is
-      // promised only when the cleanup it reports is due within one.
-      if (details.reason === "stored") {
-        const dueAt =
-          typeof details.cleanupDueAt === "string" ? Date.parse(details.cleanupDueAt) : NaN;
-        const withinHour = Number.isFinite(dueAt) && dueAt - Date.now() <= CLEANUP_SOON_MS;
-        return publishError(
-          "SITE_TOO_LARGE",
-          withinHour
-            ? "This canvas's earlier published files are still being cleaned up. Try again in an hour."
-            : "This canvas's earlier published files are still being cleaned up. Try again later.",
-          {
-            reason: "stored",
-            ...pickNumbers(details, ["limitBytes", "siteBytes", "limitFiles", "siteFileCount"]),
-            ...(Number.isFinite(dueAt)
-              ? { cleanupDueAt: new Date(dueAt).toISOString() }
-              : {}),
-          },
-        );
-      }
-      // "in-use": the site's storage is full of files its live pages and
-      // unfinished publishes keep. Cleanup would not free them, and this
-      // canvas's own size is not what is over, so no largest-files list.
-      if (details.reason === "in-use") {
-        return publishError(
-          "SITE_TOO_LARGE",
-          "This canvas's published site and unfinished publishes already keep too many files. " +
-            "Publish fewer changed files, or try again once unfinished publishes expire.",
-          {
-            reason: "in-use",
-            ...pickNumbers(details, ["limitBytes", "siteBytes", "limitFiles", "siteFileCount"]),
-          },
-        );
-      }
       return publishError(
         "SITE_TOO_LARGE",
         "The built site is too large to publish.",
@@ -380,7 +338,7 @@ const runs = new Map<string, Run>();
 // A run that ended PUBLISH_OUTCOME_UNKNOWN with its session still pending
 // (or unreadable), one per workspace: what getPublishOutcome needs to send
 // complete again. The run's staging is gone by then, but complete needs only
-// the entry pages; everything else was uploaded. Dropped once the server
+// the session: everything was uploaded. Dropped once the server
 // reports the session done, when it is aborted, when the workspace publishes
 // again, or once it has expired. Its retry and a run of the same workspace
 // never overlap: a run waits for a retry in flight before it begins (else the
@@ -388,7 +346,6 @@ const runs = new Map<string, Run>();
 // as a conflict), and no retry starts while a run holds the workspace.
 type Unfinished = {
   publishId: string;
-  entries: CompletePublishRequest["entries"];
   expiresAt: number;
   // The server's definite refusal of complete; only the abort is left to do.
   refused?: CloudError;
@@ -512,7 +469,6 @@ export async function* publishWorkspace(
 type RunState = {
   staging: string | null;
   session: string | null; // begun and not yet handed to complete
-  uploadsStarted: boolean;
 };
 
 const execute = async (
@@ -562,7 +518,7 @@ const execute = async (
     );
   }
 
-  const state: RunState = { staging: null, session: null, uploadsStarted: false };
+  const state: RunState = { staging: null, session: null };
   const watch = watchWorkspaceActivity(workspaceId);
 
   let outcome: Result<PublishResult, PublishError>;
@@ -589,20 +545,15 @@ const execute = async (
     }
   }
 
-  if (outcome.isErr()) {
-    if (state.session) {
-      // Best effort: the server expires the session anyway.
-      const session = state.session;
-      void abortPublish(session).then((r) => {
-        if (r.isErr()) console.error(`Couldn't abort publish ${session}:`, r.error);
-      });
-    }
-    if (state.uploadsStarted) {
-      outcome = err({
-        ...outcome.error,
-        details: { ...outcome.error.details, publicFilesMayHaveChanged: true },
-      });
-    }
+  // Nothing a visitor sees changes before complete commits (the site switches
+  // over in one pointer write after it), so a failed or cancelled run leaves
+  // the live site as it was; only the session is left to end.
+  if (outcome.isErr() && state.session) {
+    // Best effort: the server expires the session anyway.
+    const session = state.session;
+    void abortPublish(session).then((r) => {
+      if (r.isErr()) console.error(`Couldn't abort publish ${session}:`, r.error);
+    });
   }
   return outcome;
 };
@@ -699,14 +650,19 @@ const checkSnapshotLimits = (
   return error ? err(error) : ok(undefined);
 };
 
+// Every file the site serves: the entry pages are ordinary site files,
+// declared and uploaded like the rest.
+const siteFilesOf = (built: BuiltSite) => [...built.files, ...built.entries];
+
 const checkSiteLimits = (built: BuiltSite): Result<void, PublishError> => {
-  const siteBytes = sumSizes(built.files) + sumSizes(built.entries);
-  if (built.files.length <= MAX_SITE_FILES && siteBytes <= MAX_SITE_BYTES) {
+  const files = siteFilesOf(built);
+  const siteBytes = sumSizes(files);
+  if (files.length <= MAX_SITE_FILES && siteBytes <= MAX_SITE_BYTES) {
     return ok(undefined);
   }
   return err(
     publishError("SITE_TOO_LARGE", "The built site is too large to publish.", {
-      siteFileCount: built.files.length,
+      siteFileCount: files.length,
       siteBytes,
       limitBytes: MAX_SITE_BYTES,
     }),
@@ -721,8 +677,9 @@ const beginRequest = (opts: {
   built: BuiltSite;
 }): Result<BeginPublishRequest, PublishError> => {
   const { packed, built } = opts;
-  const entries = ENTRY_FILES.map((name) => built.entries.find((e) => e.path === name));
-  if (entries.some((e) => !e) || built.entries.length !== ENTRY_FILES.length) {
+  const files = siteFilesOf(built);
+  const paths = new Set(files.map((f) => f.path));
+  if (ENTRY_FILES.some((name) => !paths.has(name))) {
     return err(
       publishError("BUILD_FAILED", "The built site is missing its entry pages."),
     );
@@ -750,33 +707,38 @@ const beginRequest = (opts: {
       uncompressedBytes: packed.uncompressedBytes,
     },
     site: {
-      files: built.files.map(({ path, sha256, size, contentType, immutable }) => ({
+      files: files.map(({ path, sha256, size, contentType, immutable }) => ({
         path,
         sha256,
         size,
         contentType,
         immutable,
       })),
-      entries: ENTRY_FILES.map((name, i) => ({
-        path: name,
-        sha256: entries[i]!.sha256,
-        size: entries[i]!.size,
-      })),
     },
   });
 };
 
 // Upload instructions → local files. Only what this publish planned is
-// uploaded: an instruction for anything else is a contract bug.
+// uploaded: an instruction for anything else is a contract bug. Site files
+// are stored by content, so a site instruction names a sha256; any planned
+// file with that content will do (its `path`, when given, is preferred as the
+// label). Each object is uploaded once, even if the server lists it twice.
 const uploadTasks = (
   uploads: { kind: "source" | "blob" | "site"; sha256: string; path?: string; url: string; headers: Record<string, string> }[],
   packed: PackedSnapshot,
   built: BuiltSite,
 ): Result<UploadTask[], PublishError> => {
   const blobs = new Map(packed.blobs.map((b) => [b.sha256, b]));
-  const siteFiles = new Map(built.files.map((f) => [f.path, f]));
+  const siteFiles = siteFilesOf(built);
+  const byPath = new Map(siteFiles.map((f) => [f.path, f]));
+  // Reversed, so the first file with a given content wins.
+  const byContent = new Map([...siteFiles].reverse().map((f) => [f.sha256, f]));
+  const seen = new Set<string>();
   const tasks: UploadTask[] = [];
   for (const u of uploads) {
+    const key = `${u.kind}:${u.sha256}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     const base = { url: u.url, headers: u.headers };
     if (u.kind === "source" && u.sha256 === packed.archiveSha256) {
       tasks.push({ ...base, file: packed.archiveFile, size: packed.archiveSize, label: "the snapshot" });
@@ -787,8 +749,14 @@ const uploadTasks = (
       tasks.push({ ...base, file: blob.file, size: blob.size, label: blob.paths[0] ?? blob.sha256 });
       continue;
     }
-    const site = u.kind === "site" && u.path ? siteFiles.get(u.path) : undefined;
-    if (site && site.sha256 === u.sha256) {
+    const named = u.kind === "site" && u.path ? byPath.get(u.path) : undefined;
+    const site =
+      u.kind !== "site"
+        ? undefined
+        : named?.sha256 === u.sha256
+          ? named
+          : byContent.get(u.sha256);
+    if (site) {
       tasks.push({ ...base, file: path.join(built.dir, site.path), size: site.size, label: site.path });
       continue;
     }
@@ -935,18 +903,11 @@ const steps = async (ctx: {
     uploadedFiles: 0,
     totalFiles: tasks.value.length,
   });
-  state.uploadsStarted = tasks.value.length > 0;
   const uploaded = await uploadAll(tasks.value, {
     signal,
     onProgress: (p) => emit({ type: "upload-progress", ...p }),
   });
   if (uploaded.isErr()) return err(fromUploadError(uploaded.error));
-
-  const entries: CompletePublishRequest["entries"] = [];
-  for (const name of ENTRY_FILES) {
-    const bytes = await fs.readFile(path.join(built.dir, name));
-    entries.push({ path: name, contentBase64: bytes.toString("base64") });
-  }
   if (signal.aborted) return err(CANCELLED);
 
   // ── finish ──
@@ -956,7 +917,10 @@ const steps = async (ctx: {
   state.session = null;
   emit({ type: "step", step: "finishing" });
 
-  const siteUploads = begun.value.uploads.filter((u) => u.kind === "site").length;
+  // Distinct contents uploaded: files that share content are stored once.
+  const siteUploads = new Set(
+    begun.value.uploads.filter((u) => u.kind === "site").map((u) => u.sha256),
+  ).size;
   const toResult = (site: SiteStatus, version: number): PublishResult => ({
     url: site.url,
     slug: site.slug,
@@ -970,7 +934,7 @@ const steps = async (ctx: {
       snapshotBytes: packed.snapshotBytes,
     },
     site: {
-      fileCount: built.files.length + built.entries.length,
+      fileCount: siteFilesOf(built).length,
       uploadedFiles: siteUploads,
       skipped: built.skipped,
     },
@@ -984,7 +948,7 @@ const steps = async (ctx: {
   let onlyRateLimited = true;
   let lastError: CloudError | null = null;
   for (let attempt = 1; attempt <= COMPLETE_ATTEMPTS; attempt++) {
-    const completed = await completePublish(publishId, { entries });
+    const completed = await completePublish(publishId);
     if (completed.isOk()) {
       return ok(toResult(completed.value.site, completed.value.version));
     }
@@ -1003,12 +967,11 @@ const steps = async (ctx: {
   // Still no definite answer: ask the server what became of the session.
   // publishId lets "Check status" ask about this session later
   // (getPublishOutcome), rather than guess from the site's version; the
-  // entries kept here let it send complete again, since nothing else moves a
+  // session kept here lets it send complete again, since nothing else moves a
   // pending session on.
   const outcomeUnknown = (): Result<PublishResult, PublishError> => {
     keepUnfinished(workspaceId, {
       publishId,
-      entries,
       expiresAt: Date.parse(begun.value.publish.expiresAt),
     });
     return err(
@@ -1040,7 +1003,7 @@ const steps = async (ctx: {
 
 // What became of a publish session that ended PUBLISH_OUTCOME_UNKNOWN (its
 // publishId is in that error's details). While it is still pending and this
-// process kept its entries, it is also the retry: complete is sent once more
+// process kept its session, it is also the retry: complete is sent once more
 // (it is idempotent), and a session the server now refuses for good is
 // aborted, so the answer is "it will not go live" rather than "pending"
 // until it expires.
@@ -1077,7 +1040,7 @@ const finishUnfinished = async (
   pending: PublishSessionResponse,
 ): Promise<Result<PublishSessionResponse, PublishError>> => {
   if (!held.refused) {
-    const completed = await completePublish(held.publishId, { entries: held.entries });
+    const completed = await completePublish(held.publishId);
     if (completed.isOk()) {
       dropUnfinished(workspaceId, held);
       return ok({

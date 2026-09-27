@@ -27,7 +27,8 @@
   //   npx wrangler r2 bucket create antidraw-sites
   //   npx wrangler r2 bucket create antidraw-sources
   "r2_buckets": [
-    // Public, served by packages/publish-worker as <slug>.antidraw.app.
+    // Public, served by packages/publish-worker as <slug>.antidraw.app:
+    // c/<userId>/<sha256> site file contents, m/<slug>.json site pointers.
     { "binding": "SITES", "bucket_name": "antidraw-sites" },
     // Private snapshots; clients only ever get short-lived signed URLs.
     { "binding": "SOURCES", "bucket_name": "antidraw-sources" }
@@ -43,13 +44,12 @@
   "ratelimits": [
     { "name": "PUBLISH_RATE_LIMITER", "namespace_id": "1001", "simple": { "limit": 20, "period": 60 } },
     { "name": "REMIX_RATE_LIMITER", "namespace_id": "1002", "simple": { "limit": 10, "period": 60 } },
-    // Each complete HEADs every object of its session (up to 500) and lists
-    // the site; a publish needs one, plus the app's few retries.
+    // Each complete HEADs every object of its session (up to ~6 000: source,
+    // blobs and site contents); a publish needs one, plus the app's few
+    // retries.
     { "name": "COMPLETE_RATE_LIMITER", "namespace_id": "1003", "simple": { "limit": 30, "period": 60 } }
   ],
-  // Publish GC (src/scheduled.ts): every step hourly, and stale-site cleanup
-  // alone every five minutes, each run with its own D1 budget. Each run is
-  // bounded and leaves the rest for the next; the capacity this gives is in
-  // src/lib/publish-limits.ts (GC_CRON, GC_SITE_CLEANUP_CRON must match).
-  "triggers": { "crons": ["17 * * * *", "*/5 * * * *"] }
+  // Publish GC (src/scheduled.ts), hourly. Each run is bounded and leaves
+  // the rest for the next (src/lib/publish-limits.ts; GC_CRON must match).
+  "triggers": { "crons": ["17 * * * *"] }
 }

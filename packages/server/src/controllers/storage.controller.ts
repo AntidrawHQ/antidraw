@@ -34,7 +34,7 @@ storageController.put("/:token", async (ctx) => {
     new Date(),
   );
   if (token.isErr()) return respond(ctx, err(token.error));
-  const { op, b, k, n, h, ct, cc } = token.value;
+  const { op, b, k, n, h, ct } = token.value;
   if (op !== "put" || n === undefined || !h || !ct) {
     return respondError(ctx, 403, "STORAGE_TOKEN_INVALID", "Invalid storage token");
   }
@@ -47,7 +47,6 @@ storageController.put("/:token", async (ctx) => {
       size: n,
       sha256: h,
       contentType: ct,
-      ...(cc ? { cacheControl: cc } : {}),
     });
   } catch (error) {
     console.error(error);

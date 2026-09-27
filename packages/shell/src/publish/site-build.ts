@@ -22,24 +22,24 @@ import { err, ok, type Result } from "neverthrow";
 import type { CanvasFile } from "../viewer/canvas-file.ts";
 import { contentType } from "./content-types.ts";
 
-// The pages and the canvas refer to everything else, so they go up last: a
-// visitor never gets a page whose files are not there yet. They go one at a
-// time, in this order, so an upload that stops partway leaves the viewer
-// (index.html) on the previous canvas.json, and that on a preview.html that
-// has all its components.
+// The pages and the canvas: every built site has all three. They are
+// ordinary site files (stored by content like the rest; a site switches to a
+// new version in one pointer write), listed apart only so a publish can check
+// they are there.
 export const SITE_ENTRY_FILES = ["preview.html", "canvas.json", "index.html"] as const;
-// The workspace build's content-hashed files, which upload caches for a year.
-// Only upload reads it; it is not uploaded.
+// The workspace build's content-hashed files (see SiteFile.immutable). Only
+// listSiteFiles reads it; it is not a file of the site.
 export const HASHED_FILES = ".hashed-files.json";
 // Where the publish plugins list the files the build emitted (EMITTED_FILES
 // in vite-plugins.ts).
 export const BUILD_EMITTED = ".vite/antidraw-emitted.json";
 // What the publish plugins name emitted files: Rollup's [hash] is 8 characters.
-// (A manualChunks name can put a chunk in a folder under assets/.)
+// (A manualChunks name can put a chunk in a folder under assets/.) The publish
+// Worker caches the same names for a year (cacheControlFor in
+// packages/publish-worker/src/serve.ts).
 export const HASHED_NAME_RE = /^assets\/.+-[A-Za-z0-9_-]{8}\.[A-Za-z0-9]+$/;
 // The viewer's build output, all content-hashed (it has no public/ files).
 export const VIEWER_ASSETS_DIR = "_antidraw/";
-export const IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable";
 export const USER_COMPONENTS_DIR = "src/components/user-components";
 // Same rule as the runtime plugin: names Preview cannot load.
 export const UNUSABLE_NAME_RE = /[/\\?#\0]/;
@@ -165,8 +165,10 @@ export type SiteFile = {
   size: number;
   sha256: string;
   contentType: string;
-  // Served with IMMUTABLE_CACHE_CONTROL: the viewer's assets and the build's
-  // content-hashed files. Public files, which a republish may change, are not.
+  // Named by its content: the viewer's assets and the build's hashed files,
+  // which the Worker caches for a year and a republish keeps serving for tabs
+  // still open on an older version. Public files, which a republish may
+  // change, are not.
   immutable: boolean;
 };
 
@@ -186,9 +188,10 @@ const sha256File = (file: string) =>
       .on("end", () => resolve(hash.digest("hex")));
   });
 
-// A built site's files, as upload sends them: `entries` are SITE_ENTRY_FILES
-// (all three, in that order), `files` everything else, `skipped` the hidden
-// files left out. Sorted by path.
+// A built site's files, as a publish declares them: `entries` are
+// SITE_ENTRY_FILES (all three, in that order), `files` everything else,
+// `skipped` the hidden files left out. Sorted by path. Both lists are served
+// alike; together they are the site.
 //
 // Dotfiles are not the site's (a Finder .DS_Store, a stray .env in public/),
 // except .well-known/ itself, which is there to be served, and what the build

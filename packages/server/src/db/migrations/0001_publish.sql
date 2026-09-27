@@ -8,6 +8,7 @@ CREATE TABLE `publish_session` (
 	`result_version` integer,
 	`expires_at` integer NOT NULL,
 	`hold_until` integer NOT NULL,
+	`site_upload_bytes` integer DEFAULT 0 NOT NULL,
 	`created_at` integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL,
 	FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade,
 	FOREIGN KEY (`site_id`) REFERENCES `site`(`id`) ON UPDATE no action ON DELETE cascade
@@ -36,11 +37,9 @@ CREATE TABLE `site` (
 	`slug` text NOT NULL,
 	`head_version` integer DEFAULT 0 NOT NULL,
 	`allow_remix` integer DEFAULT true NOT NULL,
-	`live_files` text,
-	`protected_files` text,
+	`pointer_version` integer DEFAULT 0 NOT NULL,
 	`complete_lock` text,
 	`complete_lock_expires_at` integer,
-	`cleanup_after` integer,
 	`created_at` integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL,
 	`updated_at` integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL,
 	FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade
@@ -48,6 +47,7 @@ CREATE TABLE `site` (
 --> statement-breakpoint
 CREATE UNIQUE INDEX `site_slug_unique` ON `site` (`slug`);--> statement-breakpoint
 CREATE UNIQUE INDEX `site_userId_clientWorkspaceId_uidx` ON `site` (`user_id`,`client_workspace_id`);--> statement-breakpoint
+CREATE INDEX `site_pointer_behind_partial_idx` ON `site` (`head_version`) WHERE "site"."pointer_version" < "site"."head_version";--> statement-breakpoint
 CREATE TABLE `site_version` (
 	`id` text PRIMARY KEY NOT NULL,
 	`site_id` text NOT NULL,
@@ -82,7 +82,7 @@ CREATE TABLE `stored_object` (
 );
 --> statement-breakpoint
 CREATE INDEX `stored_object_createdAt_idx` ON `stored_object` (`created_at`);--> statement-breakpoint
-CREATE INDEX `stored_object_deleting_idx` ON `stored_object` (`deleting`);--> statement-breakpoint
+CREATE INDEX `stored_object_deleting_partial_idx` ON `stored_object` (`deleting`) WHERE "stored_object"."deleting" = 1;--> statement-breakpoint
 CREATE TABLE `version_large_file` (
 	`version_id` text NOT NULL,
 	`user_id` text NOT NULL,
@@ -95,4 +95,17 @@ CREATE TABLE `version_large_file` (
 	FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE INDEX `version_large_file_userId_sha256_idx` ON `version_large_file` (`user_id`,`sha256`);
+CREATE INDEX `version_large_file_userId_sha256_idx` ON `version_large_file` (`user_id`,`sha256`);--> statement-breakpoint
+CREATE TABLE `version_site_file` (
+	`version_id` text NOT NULL,
+	`user_id` text NOT NULL,
+	`path` text NOT NULL,
+	`sha256` text NOT NULL,
+	`size` integer NOT NULL,
+	`content_type` text NOT NULL,
+	PRIMARY KEY(`version_id`, `path`),
+	FOREIGN KEY (`version_id`) REFERENCES `site_version`(`id`) ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE INDEX `version_site_file_userId_sha256_idx` ON `version_site_file` (`user_id`,`sha256`);

@@ -4,13 +4,9 @@
 // an upload simulator standing in for the client's PUTs.
 import { getDb } from "../db";
 import type { Bindings } from "../lib/env";
-import { IMMUTABLE_CACHE_CONTROL, LARGE_FILE_BYTES } from "../lib/publish-limits";
-import type {
-  BeginPublishRequest,
-  CompletePublishRequest,
-  UploadInstruction,
-} from "../lib/publish.schemas";
-import type { UrlSigner } from "../lib/storage";
+import { LARGE_FILE_BYTES } from "../lib/publish-limits";
+import type { BeginPublishRequest, UploadInstruction } from "../lib/publish.schemas";
+import { pointerKey, type UrlSigner } from "../lib/storage";
 import type { GcDeps } from "../services/gc.service";
 import type { PublishDeps } from "../services/publish.service";
 import { d1PublishStore, type PublishStore } from "../services/publish.store";
@@ -23,8 +19,6 @@ export type Harness = {
   addUser(id: string): void;
   versionNumbers(siteId: string): Promise<number[]>;
   setKeep(siteId: string, version: number): Promise<void>;
-  setProtected(siteId: string, value: string | null): Promise<void>;
-  setLiveFiles(siteId: string, value: string | null): Promise<void>;
   // Every publish_session row of the account, and their plans' total length.
   sessionRows(userId: string): Promise<{ count: number; planBytes: number }>;
   // Deletes one session object row, as nothing but GC's retire does.
@@ -45,14 +39,6 @@ const memoryHarness = (): Harness => {
     async setKeep(siteId, version) {
       const v = store.state.versions.find((x) => x.siteId === siteId && x.version === version);
       if (v) v.keep = true;
-    },
-    async setProtected(siteId, value) {
-      const site = store.state.sites.get(siteId);
-      if (site) site.protectedFiles = value;
-    },
-    async setLiveFiles(siteId, value) {
-      const site = store.state.sites.get(siteId);
-      if (site) site.liveFiles = value;
     },
     async sessionRows(userId) {
       const rows = [...store.state.sessions.values()].filter((s) => s.userId === userId);
@@ -84,12 +70,6 @@ const d1Harness = (): Harness => {
       shim.sqlite
         .prepare("UPDATE site_version SET keep = 1 WHERE site_id = ? AND version = ?")
         .run(siteId, version);
-    },
-    async setProtected(siteId, value) {
-      shim.sqlite.prepare("UPDATE site SET protected_files = ? WHERE id = ?").run(value, siteId);
-    },
-    async setLiveFiles(siteId, value) {
-      shim.sqlite.prepare("UPDATE site SET live_files = ? WHERE id = ?").run(value, siteId);
     },
     async sessionRows(userId) {
       const row = shim.sqlite
@@ -128,7 +108,6 @@ const fakeSigner: UrlSigner = {
       headers: {
         "content-type": t.contentType,
         "content-length": String(t.size),
-        ...(t.cacheControl ? { "cache-control": t.cacheControl } : {}),
       },
     };
   },
@@ -210,7 +189,8 @@ export type PlanInput = {
     contentType?: string;
     immutable?: boolean;
   }[];
-  entries?: Entries;
+  // The entry pages' contents, added to `files`; null leaves them out.
+  entries?: Entries | null;
   fileCount?: number;
   uncompressedBytes?: number;
 };
@@ -218,8 +198,25 @@ export type PlanInput = {
 export const WORKSPACE = "11111111-1111-4111-8111-111111111111";
 export const workspaceId = (n: number) => `11111111-1111-4111-8111-${String(n).padStart(12, "0")}`;
 
+const ENTRY_TYPES: Record<keyof Entries, string> = {
+  "preview.html": "text/html; charset=utf-8",
+  "canvas.json": "application/json; charset=utf-8",
+  "index.html": "text/html; charset=utf-8",
+};
+
+export const entryFiles = async (entries: Entries = defaultEntries()) =>
+  Promise.all(
+    (Object.keys(entries) as (keyof Entries)[]).map(async (path) => ({
+      path,
+      sha256: await sha256Hex(entries[path]),
+      size: new TextEncoder().encode(entries[path]).length,
+      contentType: ENTRY_TYPES[path],
+      immutable: false,
+    })),
+  );
+
 export const beginRequest = async (input: PlanInput = {}): Promise<BeginPublishRequest> => {
-  const entries = input.entries ?? defaultEntries();
+  const entries = input.entries === null ? [] : await entryFiles(input.entries ?? defaultEntries());
   const largeFiles = (
     input.largeFiles ?? [{ path: "public/video.mp4", sha256: hex("blob-1"), size: 2 * MiB }]
   ).map((f) => ({ mode: 420 as const, ...f }));
@@ -235,36 +232,42 @@ export const beginRequest = async (input: PlanInput = {}): Promise<BeginPublishR
         input.uncompressedBytes ?? 5000 + largeFiles.reduce((a, f) => a + f.size, 0),
     },
     site: {
-      files: (
-        input.files ?? [
-          { path: "assets/index-AbC12345.js", immutable: true, contentType: "text/javascript" },
-          { path: "_antidraw/viewer.js", immutable: true, contentType: "text/javascript" },
-          { path: "logo.png", contentType: "image/png" },
-        ]
-      ).map((f, i) => ({
-        path: f.path,
-        sha256: f.sha256 ?? hex(`site-${f.path}`),
-        size: f.size ?? 100 + i,
-        contentType: f.contentType ?? "application/octet-stream",
-        immutable: f.immutable ?? false,
-      })),
-      entries: await Promise.all(
-        (Object.keys(entries) as (keyof Entries)[]).map(async (path) => ({
-          path,
-          sha256: await sha256Hex(entries[path]),
-          size: new TextEncoder().encode(entries[path]).length,
+      files: [
+        ...(
+          input.files ?? [
+            { path: "assets/index-AbC12345.js", immutable: true, contentType: "text/javascript" },
+            {
+              path: "_antidraw/viewer-AbC12345.js",
+              immutable: true,
+              contentType: "text/javascript",
+            },
+            { path: "logo.png", contentType: "image/png" },
+          ]
+        ).map((f, i) => ({
+          path: f.path,
+          sha256: f.sha256 ?? hex(`site-${f.path}`),
+          size: f.size ?? 100 + i,
+          contentType: f.contentType ?? "application/octet-stream",
+          immutable: f.immutable ?? false,
         })),
-      ),
+        ...entries,
+      ],
     },
   };
 };
 
-export const completeRequest = (entries: Entries = defaultEntries()): CompletePublishRequest => ({
-  entries: (Object.keys(entries) as (keyof Entries)[]).map((path) => ({
-    path,
-    contentBase64: btoa(String.fromCharCode(...new TextEncoder().encode(entries[path]))),
-  })),
-});
+type PointerJson = {
+  v: 1;
+  version: number;
+  u: string;
+  files: Record<string, { h: string; s: number; t: string }>;
+};
+
+// The site's pointer as the publish Worker would read it, or null.
+export const pointerOf = (deps: TestDeps, slug: string): PointerJson | null => {
+  const text = deps.sitesBucket.text(pointerKey(slug));
+  return text === null ? null : (JSON.parse(text) as PointerJson);
+};
 
 // What the client's PUTs leave in R2, for the given instructions.
 export const performUploads = (deps: TestDeps, uploads: UploadInstruction[]) => {
@@ -275,9 +278,8 @@ export const performUploads = (deps: TestDeps, uploads: UploadInstruction[]) => 
       size: u.size,
       sha256: u.sha256,
       contentType: u.headers["content-type"],
-      cacheControl: u.headers["cache-control"],
     });
   }
 };
 
-export { IMMUTABLE_CACHE_CONTROL, LARGE_FILE_BYTES };
+export { LARGE_FILE_BYTES };

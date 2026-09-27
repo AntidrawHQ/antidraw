@@ -12,22 +12,8 @@
     {
       "idx": 1,
       "version": "6",
-      "when": 1790471462461,
+      "when": 1790495304631,
       "tag": "0001_publish",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "6",
-      "when": 1790478494798,
-      "tag": "0002_publish_gc_bounds",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "6",
-      "when": 1790486750115,
-      "tag": "0003_publish_star_plans",
       "breakpoints": true
     }
   ]

@@ -1,5 +1,6 @@
-// The Content-Type a site file is served with, by extension: what upload
-// stores with each object, and what `site.ts serve` answers with. Node-only
+// The Content-Type a site file is served with, by extension: what a publish
+// lists for each file in the site's pointer (which the publish Worker serves
+// it with), and what `site.ts serve` answers with. Node-only
 // and type-strip-safe (see site-build.ts).
 
 import path from "node:path";

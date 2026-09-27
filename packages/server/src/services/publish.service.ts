@@ -10,33 +10,21 @@ import {
   utf8Bytes,
 } from "../lib/paths";
 import {
-  COMPLETE_FENCE_MS,
   COMPLETE_LOCK_TTL_MS,
-  GC_HURRY_INTERVAL_MS,
-  GC_MAX_CLEANUP_DEFER_MS,
-  IMMUTABLE_CACHE_CONTROL,
   KEEP_VERSIONS,
   MAX_OPEN_SESSIONS_PER_ACCOUNT,
   MAX_PENDING_SITE_BYTES,
   MAX_PLAN_JSON_BYTES,
-  MAX_PROTECTED_JSON_BYTES,
   MAX_SITE_BYTES,
-  MAX_SITE_RELEASED_BYTES,
-  MAX_SITE_RELEASED_FILES,
-  MAX_SITE_ROW_PATHS_BYTES,
-  MAX_SITE_STORED_BYTES,
-  MAX_SITE_STORED_FILES,
   MAX_SITES_PER_ACCOUNT,
   MAX_SNAPSHOT_BYTES,
   QUOTA_BYTES,
   SESSION_TTL_MS,
-  SITE_CLEANUP_DELAY_MS,
 } from "../lib/publish-limits";
 import {
   storedPlan,
   type BeginPublishRequest,
   type BeginPublishResponse,
-  type CompletePublishRequest,
   type CompletePublishResponse,
   type PublishSessionResponse,
   type SiteStatus,
@@ -48,15 +36,14 @@ import {
   blobKey,
   makeUrlSigner,
   r2ObjectStore,
-  siteKey,
+  siteContentKey,
   sourceKey,
-  type ObjectInfo,
+  type BucketName,
   type ObjectStore,
   type UrlSigner,
 } from "../lib/storage";
 import {
   d1PublishStore,
-  PLAN_STUB,
   type ObjectKind,
   type ObjectRef,
   type PublishStore,
@@ -65,16 +52,21 @@ import {
   type SizedObjectRef,
   type StoredObjectRow,
 } from "./publish.store";
+import { syncPointer } from "./site-pointer";
 
 // Publish: begin -> the client PUTs what begin asked for -> complete.
 //
 // Begin validates the plan, finds or creates the workspace's site, works out
-// which objects the server lacks, records a session that holds its objects
-// for as long as its upload URLs work, and signs those URLs. Complete
-// verifies every referenced object, writes the three entry files (the moment
-// the pages switch), then commits the version row under a guard that fails
-// the whole batch if the head moved, the lock was lost or an object vanished.
-// See the spec's §2 for the contract and §3 for the SQL (publish.store.ts).
+// which objects the server lacks (the snapshot's source and blobs, and the
+// site files' contents, each content-addressed per account), records a
+// session that holds its objects for as long as its upload URLs work, and
+// signs those URLs. Complete verifies every object of the session, commits
+// the version row and its site files under a guard that fails the whole batch
+// if the head moved, the lock was lost or an object vanished, and then writes
+// the site's pointer (site-pointer.ts): that one put is the moment visitors
+// switch over. Nothing a visitor sees changes before it, so a failed or
+// cancelled publish leaves the site as it was. See the spec's §2 and §11 for
+// the contract and §3 for the SQL (publish.store.ts).
 
 export type PublishDeps = {
   store: PublishStore;
@@ -173,21 +165,21 @@ const invalidPath = (paths: string[]) =>
 const invalidRequest = (message: string, details?: unknown) =>
   apiError(400, "INVALID_REQUEST", message, details);
 
-const objectKey = (userId: string, o: ObjectRef) =>
-  o.kind === "source" ? sourceKey(userId, o.sha256) : blobKey(userId, o.sha256);
+// Where an account object lives.
+export const objectLocation = (
+  userId: string,
+  o: ObjectRef,
+): { bucket: BucketName; key: string } =>
+  o.kind === "source"
+    ? { bucket: "sources", key: sourceKey(userId, o.sha256) }
+    : o.kind === "blob"
+      ? { bucket: "sources", key: blobKey(userId, o.sha256) }
+      : { bucket: "sites", key: siteContentKey(userId, o.sha256) };
 const refKey = (o: ObjectRef) => `${o.kind}:${o.sha256}`;
 
-const toHex = (buffer: ArrayBuffer) =>
-  [...new Uint8Array(buffer)].map((b) => b.toString(16).padStart(2, "0")).join("");
-const sha256Of = async (bytes: Uint8Array) =>
-  toHex(await crypto.subtle.digest("SHA-256", bytes as Uint8Array<ArrayBuffer>));
-
-const decodeBase64 = (text: string): Uint8Array | null => {
-  try {
-    return Uint8Array.from(atob(text), (ch) => ch.charCodeAt(0));
-  } catch {
-    return null;
-  }
+const headObject = (deps: PublishDeps, userId: string, o: ObjectRef) => {
+  const { bucket, key } = objectLocation(userId, o);
+  return (bucket === "sites" ? deps.sites : deps.sources).head(key);
 };
 
 // Runs `fn` over `items` with at most `limit` in flight (R2 HEADs).
@@ -205,28 +197,30 @@ const mapLimit = async <T, R>(items: T[], limit: number, fn: (item: T) => Promis
 };
 const HEAD_CONCURRENCY = 50;
 
-const listByKey = async (store: ObjectStore, prefix: string) => {
-  const byKey = new Map<string, ObjectInfo>();
-  for await (const info of store.list(prefix)) byKey.set(info.key, info);
-  return byKey;
-};
-
-// Every account object a plan needs: its source archive and each distinct blob.
-const planObjects = (plan: Pick<StoredPlan, "source" | "largeFiles">): SizedObjectRef[] => {
+// Every account object a plan needs: its source archive, each distinct blob
+// and each distinct site file content.
+const planObjects = (
+  plan: Pick<StoredPlan, "source" | "largeFiles" | "site">,
+): SizedObjectRef[] => {
   const blobs = new Map<string, SizedObjectRef>();
   for (const f of plan.largeFiles) {
     blobs.set(f.sha256, { kind: "blob", sha256: f.sha256, size: f.size });
   }
+  const contents = new Map<string, SizedObjectRef>();
+  for (const f of plan.site.files) {
+    if (!contents.has(f.sha256))
+      contents.set(f.sha256, { kind: "site", sha256: f.sha256, size: f.size });
+  }
   return [
     { kind: "source", sha256: plan.source.sha256, size: plan.source.size },
     ...blobs.values(),
+    ...contents.values(),
   ];
 };
 
-export const planSitePaths = (plan: Pick<StoredPlan, "site">) => [
-  ...plan.site.files.map((f) => f.path),
-  ...plan.site.entries.map((e) => e.path),
-];
+// A site path whose content is `sha256`, to name it in an upload or a miss.
+const sitePathOf = (plan: Pick<StoredPlan, "site">, sha256: string) =>
+  plan.site.files.find((f) => f.sha256 === sha256)?.path;
 
 export const parsePlan = (raw: string): StoredPlan | null => {
   try {
@@ -260,8 +254,14 @@ const validateBegin = (req: BeginPublishRequest): Result<void, ApiError> => {
     .map((f) => f.path);
   if (unpublishable.length > 0) return err(invalidPath(unpublishable));
 
-  if (new Set(site.entries.map((e) => e.path)).size !== ENTRY_PATHS.length) {
-    return err(invalidRequest("entries must be preview.html, canvas.json and index.html"));
+  const sitePaths = new Set(site.files.map((f) => f.path));
+  const missingEntries = ENTRY_PATHS.filter((p) => !sitePaths.has(p));
+  if (missingEntries.length > 0) {
+    return err(
+      invalidRequest("The site must include preview.html, canvas.json and index.html", {
+        paths: missingEntries,
+      }),
+    );
   }
 
   const duplicates = (paths: string[], key: (p: string) => string = (p) => p) => {
@@ -293,6 +293,14 @@ const validateBegin = (req: BeginPublishRequest): Result<void, ApiError> => {
     }
     blobSizes.set(f.sha256, f.size);
   }
+  const contentSizes = new Map<string, number>();
+  for (const f of site.files) {
+    const seen = contentSizes.get(f.sha256);
+    if (seen !== undefined && seen !== f.size) {
+      return err(invalidRequest("A site file sha256 appears with two sizes", { sha256: f.sha256 }));
+    }
+    contentSizes.set(f.sha256, f.size);
+  }
 
   const snapshotBytes = snapshot.source.size + [...blobSizes.values()].reduce((a, b) => a + b, 0);
   if (snapshotBytes > MAX_SNAPSHOT_BYTES) {
@@ -304,8 +312,7 @@ const validateBegin = (req: BeginPublishRequest): Result<void, ApiError> => {
     );
   }
 
-  const siteBytes =
-    site.files.reduce((a, f) => a + f.size, 0) + site.entries.reduce((a, e) => a + e.size, 0);
+  const siteBytes = site.files.reduce((a, f) => a + f.size, 0);
   if (siteBytes > MAX_SITE_BYTES) {
     return err(
       apiError(413, "SITE_TOO_LARGE", "The site is too large to publish", {
@@ -373,7 +380,8 @@ const findOrCreateSite = async (
   return updated ? ok(updated) : err(storeFailure(new Error("site vanished during update")));
 };
 
-type ObjectNeed = SizedObjectRef & { upload: boolean };
+// `committed`: a commit verified its row, so it is neither new nor pending.
+type ObjectNeed = SizedObjectRef & { upload: boolean; committed: boolean };
 
 // Which account objects need an upload. A verified row is trusted (complete
 // re-checks it anyway); a missing or unverified one is looked up in R2, so
@@ -395,16 +403,14 @@ const resolveObjects = async (
   return ok(
     await mapLimit(needed, HEAD_CONCURRENCY, async (o): Promise<ObjectNeed> => {
       const row = rows.get(refKey(o));
-      if (row?.deleting) return { ...o, upload: true }; // GC is removing it
-      if (row?.verified) return { ...o, upload: false };
-      const info = await deps.sources.head(objectKey(userId, o));
+      if (row?.deleting) return { ...o, upload: true, committed: false }; // GC is removing it
+      if (row?.verified) return { ...o, upload: false, committed: true };
+      const info = await headObject(deps, userId, o);
       const present = info !== null && info.size === o.size && info.sha256 === o.sha256;
-      return { ...o, upload: !present };
+      return { ...o, upload: !present, committed: false };
     }),
   );
 };
-
-const siteCacheControl = (immutable: boolean) => (immutable ? IMMUTABLE_CACHE_CONTROL : undefined);
 
 const tooManyOpen = (count: number) =>
   apiError(
@@ -422,86 +428,6 @@ const pendingSiteExceeded = (usedBytes: number, publishBytes: number) =>
     { reason: "pending-site", quotaBytes: MAX_PENDING_SITE_BYTES, usedBytes, publishBytes },
   );
 
-type Stored = { bytes: number; files: number };
-
-// A live_files or protected_files column's paths ("*" and NULL: none).
-export const parsePaths = (json: string | null): string[] => {
-  if (!json || json === "*") return [];
-  try {
-    const parsed = JSON.parse(json) as unknown;
-    return Array.isArray(parsed) ? parsed.map(String) : [];
-  } catch {
-    return [];
-  }
-};
-
-// What <slug>/ would hold once this begin's uploads and entries land: every
-// key already there that they do not replace, plus them. Keys its commit
-// would release (the live version's, and what a failed complete protected,
-// where the plan does not reuse them) count only past
-// MAX_SITE_RELEASED_BYTES / _FILES. Each existing key it counts, other than
-// the plan's own, is passed to `counted`.
-const storedAfter = (
-  existing: Map<string, ObjectInfo>,
-  site: SiteRow,
-  planPaths: Set<string>,
-  writes: { path: string; size: number }[],
-  counted: (path: string, info: ObjectInfo) => void = () => {},
-): Stored => {
-  const prefix = `${site.slug}/`;
-  const replaced = new Set(writes.map((w) => siteKey(site.slug, w.path)));
-  const released = new Set([...parsePaths(site.liveFiles), ...parsePaths(site.protectedFiles)]);
-  const stored = { bytes: writes.reduce((a, w) => a + w.size, 0), files: writes.length };
-  const freed = { bytes: 0, files: 0 };
-  for (const [key, info] of existing) {
-    if (replaced.has(key)) continue;
-    const path = key.slice(prefix.length);
-    if (!planPaths.has(path) && released.has(path)) {
-      freed.bytes += info.size;
-      freed.files++;
-      continue;
-    }
-    stored.bytes += info.size;
-    stored.files++;
-    if (!planPaths.has(path)) counted(path, info);
-  }
-  return {
-    bytes: stored.bytes + Math.max(0, freed.bytes - MAX_SITE_RELEASED_BYTES),
-    files: stored.files + Math.max(0, freed.files - MAX_SITE_RELEASED_FILES),
-  };
-};
-
-const overStored = (s: Stored) =>
-  s.bytes > MAX_SITE_STORED_BYTES || s.files > MAX_SITE_STORED_FILES;
-
-// What GC's next visit would delete of the keys storedAfter counts: those no
-// session that still holds may upload to or complete with. Null when a held
-// plan cannot be read (GC then deletes nothing). Under a protected "*", what
-// it stands for is unknown until GC resolves it on the visit: its keys are
-// taken as cleanable (hurrySiteCleanup's per-account limit bounds the cost).
-const cleanableStored = async (
-  deps: PublishDeps,
-  existing: Map<string, ObjectInfo>,
-  site: SiteRow,
-  planPaths: Set<string>,
-  writes: { path: string; size: number }[],
-): Promise<Stored | null> => {
-  const held = new Set<string>();
-  for (const { plan: raw } of await deps.store.heldSessionPlans(site.id, deps.now().getTime())) {
-    if (raw === null || raw === PLAN_STUB) continue;
-    const plan = parsePlan(raw);
-    if (!plan) return null;
-    for (const p of planSitePaths(plan)) held.add(p);
-  }
-  const cleanable = { bytes: 0, files: 0 };
-  storedAfter(existing, site, planPaths, writes, (path, info) => {
-    if (held.has(path)) return;
-    cleanable.bytes += info.size;
-    cleanable.files++;
-  });
-  return cleanable;
-};
-
 export const beginPublish = (
   deps: PublishDeps,
   userId: string,
@@ -516,9 +442,9 @@ export const beginPublish = (
     const valid = validateBegin(req);
     if (valid.isErr()) return err(valid.error);
 
-    // Each open session keeps a plan of up to MAX_PLAN_JSON_BYTES in D1, and
-    // GC reads every held one of a site; checked again after the insert, which
-    // is what holds against concurrent begins.
+    // Each open session keeps a plan of up to MAX_PLAN_JSON_BYTES in D1;
+    // checked again after the insert, which is what holds against concurrent
+    // begins.
     const openBefore = await deps.store.openSessions(userId, deps.now().getTime());
     if (openBefore.count >= MAX_OPEN_SESSIONS_PER_ACCOUNT) {
       return err(tooManyOpen(openBefore.count));
@@ -551,85 +477,12 @@ export const beginPublish = (
     if (objectsResult.isErr()) return err(objectsResult.error);
     const objects = objectsResult.value;
 
-    const existing = await listByKey(deps.sites, `${site.slug}/`);
-    const siteUploads = req.site.files.filter((f) => {
-      const info = existing.get(siteKey(site.slug, f.path));
-      return !(
-        info &&
-        info.sha256 === f.sha256 &&
-        info.size === f.size &&
-        info.contentType === f.contentType &&
-        info.cacheControl === siteCacheControl(f.immutable)
-      );
-    });
-
-    // MAX_SITE_BYTES bounds one plan; this bounds what the prefix holds, so
-    // new paths cannot pile up faster than GC removes the stale ones.
-    const planPaths = new Set(planSitePaths(req));
-    const writes = [...siteUploads, ...req.site.entries];
-    const stored = storedAfter(existing, site, planPaths, writes);
-    if (overStored(stored)) {
-      const storedDetails = {
-        limitBytes: MAX_SITE_STORED_BYTES,
-        siteBytes: stored.bytes,
-        limitFiles: MAX_SITE_STORED_FILES,
-        siteFileCount: stored.files,
-      };
-      const cleanable = await cleanableStored(deps, existing, site, planPaths, writes);
-      const afterCleanup = cleanable && {
-        bytes: stored.bytes - cleanable.bytes,
-        files: stored.files - cleanable.files,
-      };
-      if (!afterCleanup || overStored(afterCleanup)) {
-        // What is in the way is kept: GC's visit would not help, so it is not
-        // hurried, and waiting for it is not what to do.
-        return err(
-          apiError(
-            413,
-            "SITE_TOO_LARGE",
-            "This site still keeps too many files for its published pages and unfinished publishes. " +
-              "Publish fewer changed files, or try again once unfinished publishes expire.",
-            { reason: "in-use", ...storedDetails },
-          ),
-        );
-      }
-      // Stale keys wait for GC's visit, oldest site first. One blocked on
-      // them goes to the front, due once the switch-over delay has passed, so
-      // "an hour" does not wait on GC's backlog of other sites: one site per
-      // account per GC_HURRY_INTERVAL_MS, since the queue is shared.
-      const now = deps.now().getTime();
-      const hurried = await deps.store.hurrySiteCleanup({
-        siteId: site.id,
-        dueBy: now + SITE_CLEANUP_DELAY_MS,
-        maxDeferMs: GC_MAX_CLEANUP_DEFER_MS,
-        now,
-        intervalMs: GC_HURRY_INTERVAL_MS,
-      });
-      const scheduled = await deps.store.findSiteById(site.id);
-      const dueAt =
-        scheduled && scheduled.cleanupAfter !== null
-          ? Math.min(
-              scheduled.cleanupAfter,
-              (scheduled.cleanupSince ?? scheduled.cleanupAfter) + GC_MAX_CLEANUP_DEFER_MS,
-            )
-          : null;
-      return err(
-        apiError(
-          413,
-          "SITE_TOO_LARGE",
-          hurried
-            ? "This site's earlier files have not been cleaned up yet. Try again in an hour."
-            : "This site's earlier files have not been cleaned up yet. Try again later.",
-          {
-            reason: "stored",
-            ...storedDetails,
-            ...(dueAt !== null ? { cleanupDueAt: new Date(dueAt).toISOString() } : {}),
-          },
-        ),
-      );
-    }
-
-    const siteUploadBytes = siteUploads.reduce((a, f) => a + f.size, 0);
+    // Site contents are outside the quota, but what no commit has verified
+    // counts toward the pending-site cap while the session holds, uploaded
+    // by this session or by an earlier one that never committed.
+    const siteUploadBytes = objects
+      .filter((o) => o.kind === "site" && !o.committed)
+      .reduce((a, o) => a + o.size, 0);
     if (openBefore.siteUploadBytes + siteUploadBytes > MAX_PENDING_SITE_BYTES) {
       return err(pendingSiteExceeded(openBefore.siteUploadBytes, siteUploadBytes));
     }
@@ -637,7 +490,9 @@ export const beginPublish = (
     const now = deps.now().getTime();
     const expiresAt = now + SESSION_TTL_MS;
     const sessionId = deps.newId("pub");
-    const objectUploads = objects.filter((o) => o.upload);
+    const uploads = objects.filter((o) => o.upload);
+    const objectUploads = uploads.filter((o) => o.kind !== "site");
+    const siteUploads = uploads.filter((o) => o.kind === "site");
     const usedBefore = await deps.store.usedBytes(userId);
     await deps.store.createSession({
       id: sessionId,
@@ -656,7 +511,6 @@ export const beginPublish = (
       now,
       objects: objects.map(({ kind, sha256, size }) => ({ kind, sha256, size })),
       siteUploadBytes,
-      cleanupAfter: expiresAt + SITE_CLEANUP_DELAY_MS,
     });
 
     // No URL was issued and the client never learns the session's id, so a
@@ -666,7 +520,7 @@ export const beginPublish = (
     // released again.
     const refuse = async (error: ApiError) => {
       await deps.store.discardSession(sessionId);
-      await deps.store.releaseUnheldObjects(userId, objectUploads, now);
+      await deps.store.releaseUnheldObjects(userId, uploads, now);
       return err(error);
     };
     const used = await deps.store.usedBytes(userId);
@@ -687,32 +541,24 @@ export const beginPublish = (
       return refuse(tooManyOpen(open.count - 1));
     }
 
-    const uploads: UploadInstruction[] = [];
-    for (const o of objectUploads) {
+    const instructions: UploadInstruction[] = [];
+    for (const o of uploads) {
+      const { bucket, key } = objectLocation(userId, o);
       const signed = await deps.signer.uploadUrl({
-        bucket: "sources",
-        key: objectKey(userId, o),
+        bucket,
+        key,
         sha256: o.sha256,
         size: o.size,
+        // A site content is served with its path's type from the pointer, so
+        // the stored object's own type is never used.
         contentType: o.kind === "source" ? "application/gzip" : "application/octet-stream",
       });
-      uploads.push({ kind: o.kind, sha256: o.sha256, size: o.size, method: "PUT", ...signed });
-    }
-    for (const f of siteUploads) {
-      const cacheControl = siteCacheControl(f.immutable);
-      const signed = await deps.signer.uploadUrl({
-        bucket: "sites",
-        key: siteKey(site.slug, f.path),
-        sha256: f.sha256,
-        size: f.size,
-        contentType: f.contentType,
-        ...(cacheControl ? { cacheControl } : {}),
-      });
-      uploads.push({
-        kind: "site",
-        sha256: f.sha256,
-        size: f.size,
-        path: f.path,
+      const path = o.kind === "site" ? sitePathOf(plan, o.sha256) : undefined;
+      instructions.push({
+        kind: o.kind,
+        sha256: o.sha256,
+        size: o.size,
+        ...(path !== undefined ? { path } : {}),
         method: "PUT",
         ...signed,
       });
@@ -727,18 +573,12 @@ export const beginPublish = (
         baseVersion: site.headVersion,
         expiresAt: new Date(expiresAt).toISOString(),
       },
-      uploads,
+      uploads: instructions,
     });
   });
 
 // ---------------------------------------------------------------------------
 // Complete
-
-const ENTRY_CONTENT_TYPES: Record<string, string> = {
-  "preview.html": "text/html; charset=utf-8",
-  "canvas.json": "application/json; charset=utf-8",
-  "index.html": "text/html; charset=utf-8",
-};
 
 const conflict = () =>
   apiError(409, "PUBLISH_CONFLICT", "The site was published from somewhere else meanwhile");
@@ -758,32 +598,6 @@ const loadOwnSession = async (
 ): Promise<Result<SessionRow, ApiError>> => {
   const session = await deps.store.getSession(sessionId);
   return session && session.userId === userId ? ok(session) : err(notFound());
-};
-
-// The paths this plan's live entries may refer to, added to what the site
-// already protects. "*" once the union gets too big to store (GC then skips
-// the site until a complete replaces it): over MAX_PROTECTED_JSON_BYTES, or
-// too big to share the site row with `liveFiles` under D1's row limit.
-export const unionProtected = (
-  current: string | null,
-  paths: string[],
-  liveFiles: string | null = null,
-): string => {
-  if (current === "*") return "*";
-  let existing: string[] = [];
-  if (current) {
-    try {
-      existing = JSON.parse(current) as string[];
-    } catch {
-      return "*";
-    }
-  }
-  const json = JSON.stringify([...new Set([...existing, ...paths])].sort());
-  const budget = Math.min(
-    MAX_PROTECTED_JSON_BYTES,
-    MAX_SITE_ROW_PATHS_BYTES - utf8Bytes(liveFiles ?? ""),
-  );
-  return utf8Bytes(json) > budget ? "*" : json;
 };
 
 // The session's own live lock can be taken again: it is one a request of
@@ -817,38 +631,51 @@ const claimLock = async (
   return err(reread.headVersion !== session.baseVersion ? conflict() : inProgress());
 };
 
-// Every account object the session references, whatever its verified flag,
-// and every plan site file.
-const findMissing = async (
-  deps: PublishDeps,
-  session: SessionRow,
-  site: SiteRow,
-  plan: StoredPlan,
-) => {
+// Every account object the session references, whatever its verified flag:
+// its row is there, not being deleted and of the declared size, and R2 has
+// the bytes.
+const findMissing = async (deps: PublishDeps, session: SessionRow, plan: StoredPlan) => {
   const objects = planObjects(plan);
   const rows = new Map<string, StoredObjectRow>();
   for (const row of await deps.store.getStoredObjects(session.userId, objects)) {
     rows.set(refKey(row), row);
   }
-  const missing: { kind: ObjectKind | "site"; sha256: string; path?: string }[] = [];
-  const objectChecks = await mapLimit(objects, HEAD_CONCURRENCY, async (o) => {
+  const checks = await mapLimit(objects, HEAD_CONCURRENCY, async (o) => {
     const row = rows.get(refKey(o));
     if (!row || row.deleting || row.size !== o.size) return false;
-    const info = await deps.sources.head(objectKey(session.userId, o));
+    const info = await headObject(deps, session.userId, o);
     return info !== null && info.size === o.size && info.sha256 === o.sha256;
   });
+  const missing: { kind: ObjectKind; sha256: string; path?: string }[] = [];
   objects.forEach((o, i) => {
-    if (!objectChecks[i]) missing.push({ kind: o.kind, sha256: o.sha256 });
+    if (checks[i]) return;
+    const path = o.kind === "site" ? sitePathOf(plan, o.sha256) : undefined;
+    missing.push({ kind: o.kind, sha256: o.sha256, ...(path !== undefined ? { path } : {}) });
   });
-
-  const listed = await listByKey(deps.sites, `${site.slug}/`);
-  for (const f of plan.site.files) {
-    const info = listed.get(siteKey(site.slug, f.path));
-    if (!info || info.size !== f.size || info.sha256 !== f.sha256) {
-      missing.push({ kind: "site", sha256: f.sha256, path: f.path });
-    }
-  }
   return missing;
+};
+
+const switchFailed = () =>
+  apiError(
+    500,
+    "STORAGE_FAILED",
+    "The publish was saved, but the site could not be switched over to it yet. Try again.",
+  );
+
+// Brings the site's pointer up to its head version when it is behind (a
+// commit whose pointer write failed, or has not happened yet). Complete is
+// answered only once visitors see the version, so a retry of a committed
+// session re-syncs here.
+const ensurePointer = async (deps: PublishDeps, site: SiteRow): Promise<Result<void, ApiError>> => {
+  if (site.pointerVersion >= site.headVersion) return ok(undefined);
+  try {
+    const outcome = await syncPointer(deps, site);
+    if (outcome === "raced") return err(switchFailed());
+  } catch (error) {
+    console.error(error);
+    return err(switchFailed());
+  }
+  return ok(undefined);
 };
 
 // The answer for a session that has committed: complete is idempotent.
@@ -859,6 +686,8 @@ const completedResult = async (
   if (session.status !== "completed" || session.resultVersion === null) return null;
   const site = await deps.store.findSiteById(session.siteId);
   if (!site) return err(notFound());
+  const synced = await ensurePointer(deps, site);
+  if (synced.isErr()) return err(synced.error);
   return ok({ site: await siteStatusOf(deps, site), version: session.resultVersion });
 };
 
@@ -872,63 +701,26 @@ const conflictOrCompleted = async (
   return (session && (await completedResult(deps, session))) ?? err(conflict());
 };
 
-// Steps 4-7 of complete, under the lock `claimLock` took. Every way out that
-// does not commit releases the lock, a throw included (run() turns that into
-// a 500), so a failed complete never leaves the site locked.
+// Verification and the commit, under the lock `claimLock` took. Every way out
+// that does not commit releases the lock, a throw included (run() turns that
+// into a 500), so a failed complete never leaves the site locked. Nothing is
+// written to the sites bucket here: the pointer follows the commit.
 const verifyAndCommit = async (
   deps: PublishDeps,
   session: SessionRow,
   site: SiteRow,
   plan: StoredPlan,
-  entries: Map<string, Uint8Array>,
 ): Promise<Result<void, ApiError>> => {
   const release = () => deps.store.releaseCompleteLock(site.id, session.id);
   try {
-    const missing = await findMissing(deps, session, site, plan);
+    const missing = await findMissing(deps, session, plan);
     if (missing.length > 0) {
       await release();
       return err(uploadIncomplete(missing));
     }
 
-    // From here the live entries may refer to this plan's paths, so they are
-    // protected from GC until a commit replaces them. Only now, once every
-    // upload is verified: a complete that fails before this point wrote
-    // nothing, and must not grow what GC has to keep.
-    //
-    // Fence: in the same statement, a stale complete must not write entries
-    // after its lock lapsed, or it could interleave with GC or a newer
-    // complete.
-    const paths = planSitePaths(plan);
-    const protectedFiles = unionProtected(site.protectedFiles, paths, site.liveFiles);
-    const fenced = await deps.store.setProtectedFiles({
-      siteId: site.id,
-      lock: session.id,
-      protectedFiles,
-      seenProtected: site.protectedFiles,
-      fence: { now: deps.now().getTime(), minRemainingMs: COMPLETE_FENCE_MS },
-      writesEntries: true,
-    });
-    if (!fenced) {
-      await release();
-      return err(inProgress());
-    }
-    for (const path of ENTRY_PATHS) {
-      const bytes = entries.get(path)!;
-      try {
-        await deps.sites.put(siteKey(site.slug, path), bytes, {
-          size: bytes.length,
-          sha256: plan.site.entries.find((e) => e.path === path)!.sha256,
-          contentType: ENTRY_CONTENT_TYPES[path],
-        });
-      } catch (error) {
-        console.error(error);
-        await release();
-        return err(apiError(500, "STORAGE_FAILED", "Could not write the site's pages"));
-      }
-    }
-
-    const now = deps.now().getTime();
-    const blobs = planObjects(plan).filter((o) => o.kind === "blob");
+    const objects = planObjects(plan);
+    const blobs = objects.filter((o) => o.kind === "blob");
     const committed = await deps.store.commitVersion({
       id: deps.newId("ver"),
       siteId: site.id,
@@ -939,36 +731,26 @@ const verifyAndCommit = async (
       snapshotBytes: plan.source.size + blobs.reduce((a, b) => a + b.size, 0),
       fileCount: plan.fileCount,
       siteFileCount: plan.site.files.length,
-      siteBytes:
-        plan.site.files.reduce((a, f) => a + f.size, 0) +
-        plan.site.entries.reduce((a, e) => a + e.size, 0),
+      siteBytes: plan.site.files.reduce((a, f) => a + f.size, 0),
       largeFiles: plan.largeFiles.map(({ path, sha256, size, mode }) => ({
         path,
         sha256,
         size,
         mode,
       })),
-      liveFiles: JSON.stringify([...paths].sort()),
-      liveEntries: JSON.stringify(plan.site.entries.map(({ path, sha256 }) => ({ path, sha256 }))),
+      siteFiles: plan.site.files.map(({ path, sha256, size, contentType }) => ({
+        path,
+        sha256,
+        size,
+        contentType,
+      })),
       keepVersions: KEEP_VERSIONS,
-      cleanupAfter: now + SITE_CLEANUP_DELAY_MS,
-      maxDeferMs: GC_MAX_CLEANUP_DEFER_MS,
-      now,
+      now: deps.now().getTime(),
       // begin created one session object per plan object.
-      sessionObjects: planObjects(plan).length,
+      sessionObjects: objects.length,
     });
     if (committed.ok) return ok(undefined);
 
-    // Every entry is this plan's now, so the live pages refer to this plan's
-    // paths only: what earlier failed completes protected is no longer
-    // needed (this is also what clears a "*"). Only while the lock is still
-    // ours, i.e. nobody has written entries since.
-    await deps.store.setProtectedFiles({
-      siteId: site.id,
-      lock: session.id,
-      protectedFiles: unionProtected(null, paths, site.liveFiles),
-      seenProtected: protectedFiles,
-    });
     await release();
     switch (committed.reason) {
       case "conflict":
@@ -996,7 +778,6 @@ export const completePublish = (
   deps: PublishDeps,
   userId: string,
   sessionId: string,
-  req: CompletePublishRequest,
 ): ResultAsync<CompletePublishResponse, ApiError> =>
   run(async () => {
     const sessionResult = await loadOwnSession(deps, userId, sessionId);
@@ -1011,28 +792,12 @@ export const completePublish = (
     const plan = parsePlan(session.plan);
     if (!plan) return err(storeFailure(new Error(`unreadable plan for ${session.id}`)));
 
-    // Entries: exactly the three, each matching the plan byte for byte.
-    if (new Set(req.entries.map((e) => e.path)).size !== ENTRY_PATHS.length) {
-      return err(invalidRequest("entries must be preview.html, canvas.json and index.html"));
-    }
-    const entries = new Map<string, Uint8Array>();
-    for (const planned of plan.site.entries) {
-      const sent = req.entries.find((e) => e.path === planned.path);
-      const bytes = sent ? decodeBase64(sent.contentBase64) : null;
-      if (!bytes || bytes.length !== planned.size || (await sha256Of(bytes)) !== planned.sha256) {
-        return err(
-          apiError(422, "ENTRY_MISMATCH", `${planned.path} does not match the publish plan`, {
-            path: planned.path,
-          }),
-        );
-      }
-      entries.set(planned.path, bytes);
-    }
-
-    // Verification costs up to ~500 R2 HEADs and a listing of the site.
+    // Verification costs an R2 HEAD per object: up to ~6 000.
     const { success } = await deps.completeLimiter.limit({ key: userId });
     if (!success) {
-      return err(apiError(429, "RATE_LIMITED", "Too many publish attempts. Try again in a minute."));
+      return err(
+        apiError(429, "RATE_LIMITED", "Too many publish attempts. Try again in a minute."),
+      );
     }
 
     const locked = await claimLock(deps, session);
@@ -1042,11 +807,15 @@ export const completePublish = (
         : err(locked.error);
     }
     const site = locked.value;
-    const committed = await verifyAndCommit(deps, session, site, plan, entries);
+    const committed = await verifyAndCommit(deps, session, site, plan);
     if (committed.isErr()) return err(committed.error);
 
+    // The switch-over. Should it fail, the version is committed but not yet
+    // live: the app's retry of complete, or GC's hourly re-sync, writes it.
     const updated = await deps.store.findSiteById(site.id);
     if (!updated) return err(notFound());
+    const synced = await ensurePointer(deps, updated);
+    if (synced.isErr()) return err(synced.error);
     return ok({ site: await siteStatusOf(deps, updated), version: session.baseVersion + 1 });
   });
 
@@ -1078,9 +847,9 @@ export const getPublishSession = (
 
 // Upload URLs already handed out stay usable until they expire and cannot be
 // revoked, so an abort keeps the session's hold: its objects stay safe from
-// GC, its paths protected and its site bytes counted until then. A session
-// that was never given any URL has nothing in flight, and its hold ends at
-// once (spec §10, Q9). A site URL counts: its bytes land on live keys.
+// GC and its site bytes counted until then. A session that was never given
+// any URL has nothing in flight, and its hold ends at once (spec §10, Q9).
+// Nothing visitors see changed, whatever it uploaded.
 export const abortPublish = (
   deps: PublishDeps,
   userId: string,

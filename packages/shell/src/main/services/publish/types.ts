@@ -6,8 +6,8 @@ import type { ExclusionReport } from "@/main/lib/snapshot";
 // Site limits. They mirror packages/server/src/lib/publish-limits.ts, which is
 // the authority; checking them here only saves a begin that would be refused.
 // The snapshot limits live with the snapshot code (@/main/lib/snapshot).
-export const MAX_SITE_BYTES = 500 * 1024 * 1024; // Σ site files + entries
-export const MAX_SITE_FILES = 5_000; // not counting the 3 entries
+export const MAX_SITE_BYTES = 500 * 1024 * 1024; // Σ site files, entry pages included
+export const MAX_SITE_FILES = 5_000; // site files, entry pages included
 export const MAX_LARGE_FILES = 1_000; // snapshot paths stored as blobs
 
 // The server's view of a published canvas (GET /api/publish/sites).
@@ -50,7 +50,7 @@ export type PublishErrorCode =
   | "CANCELLED"
   | "INTERNAL_ERROR";
 
-export type PublishRefusalReason = "pending-site" | "stored" | "in-use" | "open-sessions";
+export type PublishRefusalReason = "pending-site" | "open-sessions";
 
 export type PublishErrorDetails = {
   largestFiles?: { path: string; size: number }[]; // PUBLISH_TOO_LARGE, QUOTA_EXCEEDED
@@ -64,17 +64,10 @@ export type PublishErrorDetails = {
   largeFileCount?: number; // PUBLISH_TOO_LARGE (too many blob paths)
   siteFileCount?: number; // SITE_TOO_LARGE
   siteBytes?: number;
-  limitFiles?: number; // SITE_TOO_LARGE with reason "stored" or "in-use"
-  // SITE_TOO_LARGE with reason "stored": when the server's cleanup of this
-  // site is due (ISO 8601), if it has one scheduled.
-  cleanupDueAt?: string;
   // Which server limit refused a begin, when the code alone is ambiguous:
   // "pending-site" (QUOTA_EXCEEDED: site files waiting on unfinished
-  // publishes), "stored" (SITE_TOO_LARGE: the site's storage still holds
-  // earlier files GC has not removed), "in-use" (SITE_TOO_LARGE: the site's
-  // storage is full of files its live pages and unfinished publishes keep, so
-  // cleanup would not help), "open-sessions" (RATE_LIMITED: too many
-  // unfinished publishes).
+  // publishes), "open-sessions" (RATE_LIMITED: too many unfinished
+  // publishes).
   reason?: PublishRefusalReason;
   collisions?: string[][]; // CASE_COLLISION
   paths?: string[]; // SNAPSHOT_FAILED from server INVALID_PATH / STAGE_FAILED
@@ -83,9 +76,6 @@ export type PublishErrorDetails = {
   siteLimit?: number; // SITE_LIMIT
   serverCode?: string; // INTERNAL_ERROR / SERVER_ERROR: the server's own code
   publishId?: string; // PUBLISH_OUTCOME_UNKNOWN: the session "Check status" asks about
-  // Any failure after uploads started: public files (fixed names such as
-  // /logo.png) go live as they upload, before the pages switch over.
-  publicFilesMayHaveChanged?: boolean;
 };
 
 export type PublishError = {

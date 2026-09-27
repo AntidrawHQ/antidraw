@@ -28,7 +28,7 @@ import {
 // main process calls these with its Bearer token; the renderer never does.
 //
 //   POST  /sessions               begin: plan in, upload instructions out
-//   POST  /sessions/:id/complete  verify uploads, switch the pages, commit
+//   POST  /sessions/:id/complete  verify uploads, commit, switch the site over
 //   POST  /sessions/:id/abort     best effort, idempotent
 //   GET   /sessions/:id           settle a complete whose outcome was lost
 //   GET   /sites?clientWorkspaceId=
@@ -54,8 +54,8 @@ export const withPublishDeps = (opts: PublishOptions) =>
 const sessionParam = param(z.object({ id: z.string().min(1).max(64) }));
 const siteParam = param(z.object({ siteId: z.string().min(1).max(64) }));
 
-// Three base64 entries of at most 2 MiB each, with room for the JSON around them.
-const COMPLETE_BODY_LIMIT = 12 * 1024 * 1024;
+// Complete takes no data (an empty object); anything larger is not a client.
+const COMPLETE_BODY_LIMIT = 16 * 1024;
 
 export const publishController = (opts: PublishOptions = {}) => {
   const controller = new Hono<PublishEnv>();
@@ -76,12 +76,7 @@ export const publishController = (opts: PublishOptions = {}) => {
     async (ctx) =>
       respond(
         ctx,
-        await completePublish(
-          ctx.get("deps"),
-          ctx.get("user").id,
-          ctx.req.valid("param").id,
-          ctx.req.valid("json"),
-        ),
+        await completePublish(ctx.get("deps"), ctx.get("user").id, ctx.req.valid("param").id),
       ),
   );
 

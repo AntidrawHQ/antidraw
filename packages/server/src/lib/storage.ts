@@ -12,8 +12,9 @@ export type { BucketName };
 // lets clients move bytes to and from R2 without passing them through the
 // Worker.
 //
-//   SITES    antidraw-sites    <slug>/<path>
-//            public, served by packages/publish-worker
+//   SITES    antidraw-sites    c/<userId>/<sha256>  a site file's content, per account
+//                              m/<slug>.json        a site's pointer (services/site-pointer.ts)
+//            public, served by packages/publish-worker through the pointers
 //   SOURCES  antidraw-sources  u/<userId>/source/<sha256>.tar.gz, u/<userId>/blob/<sha256>
 //            private; clients get 10-minute URLs from /api/remix
 
@@ -24,20 +25,27 @@ export type ObjectInfo = {
   // customMetadata.sha256 every writer sets.
   sha256: string | null;
   contentType?: string;
-  cacheControl?: string;
+  etag: string;
   uploaded: Date;
 };
+
+// A put that happens only if the object is still the one read (its etag), or
+// only if there is none yet.
+export type PutCondition = { etagMatches: string } | { absent: true };
 
 export type ObjectStore = {
   head(key: string): Promise<ObjectInfo | null>;
   list(prefix: string): AsyncIterable<ObjectInfo>;
-  // R2 rejects bytes whose sha256 differs.
+  // R2 rejects bytes whose sha256 differs. False when `onlyIf` failed, and
+  // nothing was written.
   put(
     key: string,
     body: ReadableStream | Uint8Array,
-    opts: { size: number; sha256: string; contentType: string; cacheControl?: string },
-  ): Promise<void>;
-  get(key: string): Promise<{ body: ReadableStream; size: number; contentType?: string } | null>;
+    opts: { size: number; sha256: string; contentType: string; onlyIf?: PutCondition },
+  ): Promise<boolean>;
+  get(
+    key: string,
+  ): Promise<{ body: ReadableStream; size: number; contentType?: string; etag: string } | null>;
   delete(keys: string[]): Promise<void>;
 };
 
@@ -51,7 +59,7 @@ const objectInfo = (object: R2Object): ObjectInfo => ({
     ? toHex(object.checksums.sha256)
     : (object.customMetadata?.sha256 ?? null),
   contentType: object.httpMetadata?.contentType,
-  cacheControl: object.httpMetadata?.cacheControl,
+  etag: object.etag,
   uploaded: object.uploaded,
 });
 
@@ -82,17 +90,31 @@ export const r2ObjectStore = (bucket: R2Bucket): ObjectStore => ({
       cursor = page.truncated ? page.cursor : undefined;
     } while (cursor);
   },
-  async put(key, body, { size, sha256, contentType, cacheControl }) {
-    await bucket.put(key, sizedBody(body, size), {
+  async put(key, body, { size, sha256, contentType, onlyIf }) {
+    const written = await bucket.put(key, sizedBody(body, size), {
       sha256,
-      httpMetadata: cacheControl ? { contentType, cacheControl } : { contentType },
+      httpMetadata: { contentType },
       customMetadata: { sha256 },
+      // "*" is If-None-Match: *, which R2 (and miniflare) accept: only when
+      // there is no object under the key.
+      ...(onlyIf
+        ? {
+            onlyIf:
+              "absent" in onlyIf ? { etagDoesNotMatch: "*" } : { etagMatches: onlyIf.etagMatches },
+          }
+        : {}),
     });
+    return written !== null;
   },
   async get(key) {
     const object = await bucket.get(key);
     if (!object) return null;
-    return { body: object.body, size: object.size, contentType: object.httpMetadata?.contentType };
+    return {
+      body: object.body,
+      size: object.size,
+      contentType: object.httpMetadata?.contentType,
+      etag: object.etag,
+    };
   },
   async delete(keys) {
     if (keys.length > 0) await bucket.delete(keys);
@@ -101,7 +123,11 @@ export const r2ObjectStore = (bucket: R2Bucket): ObjectStore => ({
 
 export const sourceKey = (userId: string, sha256: string) => `u/${userId}/source/${sha256}.tar.gz`;
 export const blobKey = (userId: string, sha256: string) => `u/${userId}/blob/${sha256}`;
-export const siteKey = (slug: string, path: string) => `${slug}/${path}`;
+// A site file's content, shared by every path, version and site of the
+// account that has it.
+export const siteContentKey = (userId: string, sha256: string) => `c/${userId}/${sha256}`;
+// The live pointer the publish Worker serves the site from.
+export const pointerKey = (slug: string) => `m/${slug}.json`;
 
 export const hexToBase64 = (hex: string): string => {
   let binary = "";
@@ -117,7 +143,6 @@ export type UploadTarget = {
   sha256: string;
   size: number;
   contentType: string;
-  cacheControl?: string;
 };
 
 // The client sends exactly `headers` with a PUT of the bytes to `url`
@@ -187,7 +212,6 @@ const s3Signer = (
         // size and checksums.sha256 with HEAD either way.
         "x-amz-checksum-sha256": hexToBase64(t.sha256),
         "x-amz-meta-sha256": t.sha256, // lands in customMetadata.sha256
-        ...(t.cacheControl ? { "cache-control": t.cacheControl } : {}),
       };
       const signed = await sign(objectUrl(t.bucket, t.key, UPLOAD_URL_TTL_S), "PUT", headers);
       return { url: signed.url.toString(), headers };
@@ -215,7 +239,6 @@ const workerSigner = (env: Bindings, now: () => Date): UrlSigner => {
         n: t.size,
         h: t.sha256,
         ct: t.contentType,
-        ...(t.cacheControl ? { cc: t.cacheControl } : {}),
         exp: now().getTime() + UPLOAD_URL_TTL_S * 1000,
       });
       return {
@@ -223,7 +246,6 @@ const workerSigner = (env: Bindings, now: () => Date): UrlSigner => {
         headers: {
           "content-type": t.contentType,
           "content-length": String(t.size),
-          ...(t.cacheControl ? { "cache-control": t.cacheControl } : {}),
         },
       };
     },

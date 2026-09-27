@@ -1,8 +1,11 @@
 // An in-memory R2 bucket for publish tests, with the behaviour the services
-// rely on: put checks the body against its sha256 (as R2 does) and records
-// checksums.sha256, list pages with a cursor and returns metadata only when
-// asked to (`include`), and delete takes a batch of keys. Hooks let a test
-// fail a put or a delete, or remove an object behind the server's back.
+// rely on: put checks the body against its sha256 (as R2 does), records
+// checksums.sha256 and honours `onlyIf` (etagMatches, and etagDoesNotMatch
+// with "*" for "only if absent"), list pages with a cursor and returns
+// metadata only when asked to (`include`), and delete takes a batch of keys.
+// An object's etag changes with every write. Hooks let a test fail a put or a
+// delete, act just before a put (a concurrent writer), or remove an object
+// behind the server's back.
 //
 // Services see it through r2ObjectStore() (src/lib/storage.ts), so the
 // adapter the Worker uses is the one under test.
@@ -12,9 +15,9 @@ import { r2ObjectStore } from "../lib/storage";
 type Stored = {
   size: number;
   sha256: string;
+  etag: string;
   bytes?: Uint8Array;
   contentType?: string;
-  cacheControl?: string;
   customMetadata: Record<string, string>;
   uploaded: Date;
 };
@@ -27,6 +30,8 @@ export type MemoryBucket = R2Bucket & {
   deletes: string[][];
   // Return true to make the put of `key` throw (after nothing is stored).
   failPut: (key: string) => boolean;
+  // Runs before a put's condition is checked: a writer that got in first.
+  beforePut: (key: string) => Promise<void> | void;
   // Number of delete calls that should still throw.
   failDeletes: number;
   // Number of list calls (pages) so far.
@@ -38,11 +43,12 @@ export type MemoryBucket = R2Bucket & {
       size: number;
       sha256: string;
       contentType?: string;
-      cacheControl?: string;
       uploaded?: Date;
     },
   ): void;
   keys(prefix?: string): string[];
+  // A stored object's bytes as text (objects written by put).
+  text(key: string): string | null;
 };
 
 const hexToBuffer = (hex: string) => {
@@ -72,22 +78,22 @@ const readAll = async (body: unknown): Promise<Uint8Array> => {
   return new Uint8Array(await new Response(body as ReadableStream).arrayBuffer());
 };
 
+let etags = 0;
+const nextEtag = () => `etag-${++etags}`;
+
 const asR2Object = (key: string, o: Stored, include: boolean) =>
   ({
     key,
     size: o.size,
-    etag: o.sha256.slice(0, 32),
-    httpEtag: `"${o.sha256.slice(0, 32)}"`,
+    etag: o.etag,
+    httpEtag: `"${o.etag}"`,
     version: "1",
     uploaded: o.uploaded,
     storageClass: "Standard",
     checksums: { sha256: hexToBuffer(o.sha256), toJSON: () => ({ sha256: o.sha256 }) },
     ...(include
       ? {
-          httpMetadata: {
-            ...(o.contentType ? { contentType: o.contentType } : {}),
-            ...(o.cacheControl ? { cacheControl: o.cacheControl } : {}),
-          },
+          httpMetadata: o.contentType ? { contentType: o.contentType } : {},
           customMetadata: o.customMetadata,
         }
       : {}),
@@ -104,6 +110,7 @@ export const memoryBucket = (opts: { pageSize?: number } = {}): MemoryBucket => 
     writes,
     deletes,
     failPut: (_key: string) => false,
+    beforePut: (_key: string) => {},
     failDeletes: 0,
     lists: 0,
 
@@ -113,15 +120,14 @@ export const memoryBucket = (opts: { pageSize?: number } = {}): MemoryBucket => 
         size: number;
         sha256: string;
         contentType?: string;
-        cacheControl?: string;
         uploaded?: Date;
       },
     ) {
       objects.set(key, {
         size: o.size,
         sha256: o.sha256,
+        etag: nextEtag(),
         contentType: o.contentType,
-        cacheControl: o.cacheControl,
         customMetadata: { sha256: o.sha256 },
         uploaded: o.uploaded ?? new Date(),
       });
@@ -130,6 +136,11 @@ export const memoryBucket = (opts: { pageSize?: number } = {}): MemoryBucket => 
 
     keys(prefix = "") {
       return [...objects.keys()].filter((k) => k.startsWith(prefix)).sort();
+    },
+
+    text(key: string) {
+      const bytes = objects.get(key)?.bytes;
+      return bytes ? new TextDecoder().decode(bytes) : null;
     },
 
     async head(key: string) {
@@ -149,6 +160,17 @@ export const memoryBucket = (opts: { pageSize?: number } = {}): MemoryBucket => 
     async put(key: string, value: unknown, options: R2PutOptions = {}) {
       if (bucket.failPut(key)) throw new Error(`put ${key} failed (test)`);
       const bytes = await readAll(value);
+      await bucket.beforePut(key);
+      const cond = (options.onlyIf ?? {}) as R2Conditional;
+      const existing = objects.get(key);
+      if (cond.etagMatches !== undefined && existing?.etag !== cond.etagMatches) return null;
+      if (
+        cond.etagDoesNotMatch !== undefined &&
+        existing &&
+        (cond.etagDoesNotMatch === "*" || existing.etag === cond.etagDoesNotMatch)
+      ) {
+        return null;
+      }
       const sha256 = await sha256Hex(bytes);
       if (typeof options.sha256 === "string" && options.sha256 !== sha256) {
         throw new Error(`put ${key}: the SHA-256 checksum you specified did not match`);
@@ -157,9 +179,9 @@ export const memoryBucket = (opts: { pageSize?: number } = {}): MemoryBucket => 
       objects.set(key, {
         size: bytes.length,
         sha256,
+        etag: nextEtag(),
         bytes,
         contentType: http.contentType,
-        cacheControl: http.cacheControl,
         customMetadata: options.customMetadata ?? {},
         uploaded: new Date(),
       });

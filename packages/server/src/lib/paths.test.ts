@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { caseKey, isExcludedSnapshotPath, isPublishableSitePath, isSafeSnapshotPath } from "./paths";
+import {
+  caseKey,
+  isExcludedSnapshotPath,
+  isImmutableSitePath,
+  isPublishableSitePath,
+  isSafeSnapshotPath,
+} from "./paths";
 
 describe("isSafeSnapshotPath", () => {
   it.each([
@@ -46,9 +52,10 @@ describe("isPublishableSitePath", () => {
     ["assets/.Dot-AbC12345.js", true, true],
     ["assets/.Dot-AbC12345.js", false, false],
     ["other/.Dot-AbC12345.js", true, false],
-    ["index.html", false, false],
-    ["preview.html", true, false],
-    ["canvas.json", false, false],
+    // Entry pages are ordinary site files.
+    ["index.html", false, true],
+    ["preview.html", true, true],
+    ["canvas.json", false, true],
     [".hashed-files.json", true, false],
     ["../x", false, false],
     ["/x", false, false],
@@ -57,6 +64,21 @@ describe("isPublishableSitePath", () => {
     ["sub/index.html", false, true],
   ])("%j (immutable %s) -> %s", (p, immutable, ok) => {
     expect(isPublishableSitePath(p, immutable)).toBe(ok);
+  });
+});
+
+describe("isImmutableSitePath", () => {
+  it.each([
+    ["_antidraw/viewer-AbC12345.js", true],
+    ["_antidraw/fonts/x.woff2", true],
+    ["assets/index-AbC12345.js", true],
+    ["assets/deep/chunk-a_b-C1234567.css", true],
+    ["assets/logo.png", false],
+    ["assets/index-AbC1234.js", false],
+    ["index.html", false],
+    ["logo-AbC12345.png", false],
+  ])("%j -> %s", (p, immutable) => {
+    expect(isImmutableSitePath(p)).toBe(immutable);
   });
 });
 

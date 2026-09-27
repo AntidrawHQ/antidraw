@@ -7,6 +7,7 @@ import {
   PLAN_STUB,
   type CommitFailure,
   type LargeFileRow,
+  type SiteFileRow,
   type ObjectRef,
   type PublishStore,
   type SessionRow,
@@ -24,11 +25,13 @@ type SessionObject = {
   size: number;
 };
 type LargeFile = LargeFileRow & { versionId: string; userId: string };
+type SiteFile = SiteFileRow & { versionId: string; userId: string };
 
 export type MemoryPublishState = {
   sites: Map<string, SiteRow>;
   versions: VersionRow[];
   largeFiles: LargeFile[];
+  siteFiles: SiteFile[];
   objects: Map<string, StoredObjectRow>;
   sessions: Map<string, SessionRow>;
   sessionObjects: SessionObject[];
@@ -42,6 +45,7 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
     sites: new Map(),
     versions: [],
     largeFiles: [],
+    siteFiles: [],
     objects: new Map(),
     sessions: new Map(),
     sessionObjects: [],
@@ -52,6 +56,7 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
     const gone = new Set(state.versions.filter((v) => !keep(v)).map((v) => v.id));
     state.versions = state.versions.filter((v) => !gone.has(v.id));
     state.largeFiles = state.largeFiles.filter((f) => !gone.has(f.versionId));
+    state.siteFiles = state.siteFiles.filter((f) => !gone.has(f.versionId));
     return gone.size;
   };
   const deleteSessions = (drop: (s: SessionRow) => boolean) => {
@@ -64,7 +69,9 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
   const referencedByVersion = (o: { userId: string; kind: string; sha256: string }) =>
     o.kind === "source"
       ? state.versions.some((v) => v.userId === o.userId && v.sourceSha256 === o.sha256)
-      : state.largeFiles.some((f) => f.userId === o.userId && f.sha256 === o.sha256);
+      : (o.kind === "blob" ? state.largeFiles : state.siteFiles).some(
+          (f) => f.userId === o.userId && f.sha256 === o.sha256,
+        );
   const heldBySession = (o: { userId: string; kind: string; sha256: string }, now: number) =>
     state.sessionObjects.some(
       (so) =>
@@ -86,7 +93,6 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
 
   const lockFree = (site: SiteRow, now: number) =>
     site.completeLock === null || (site.completeLockExpiresAt ?? 0) < now;
-  const starred = (siteId: string) => state.sites.get(siteId)?.protectedFiles === "*";
   const ref = (s: SiteRow) => ({ id: s.id, slug: s.slug });
 
   const store: PublishStore & { state: MemoryPublishState } = {
@@ -126,14 +132,9 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
         slug: site.slug,
         headVersion: 0,
         allowRemix: site.allowRemix,
-        liveFiles: null,
-        liveEntries: null,
-        protectedFiles: null,
+        pointerVersion: 0,
         completeLock: null,
         completeLockExpiresAt: null,
-        cleanupAfter: null,
-        cleanupSince: null,
-        hurriedAt: null,
         createdAt: site.now,
         updatedAt: site.now,
       });
@@ -181,7 +182,6 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
         expiresAt: s.expiresAt,
         holdUntil: s.holdUntil,
         siteUploadBytes: s.siteUploadBytes,
-        entriesWritten: false,
         createdAt: s.now,
       });
       for (const o of s.objects) {
@@ -200,11 +200,6 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
           row.size = Math.max(row.size, o.size);
         }
       }
-      const site = state.sites.get(s.siteId);
-      if (site) {
-        site.cleanupAfter = Math.max(site.cleanupAfter ?? 0, s.cleanupAfter);
-        site.cleanupSince ??= s.now;
-      }
     },
     async discardSession(sessionId) {
       deleteSessions((s) => s.id === sessionId);
@@ -217,16 +212,12 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
       if (!session || (opts.onlyIfPending && session.status !== "pending")) return false;
       session.status = status;
       if (opts.holdUntil !== undefined) session.holdUntil = opts.holdUntil;
-      const site = state.sites.get(session.siteId);
-      const planNeeded =
-        (site?.protectedFiles === "*" && session.entriesWritten) ||
-        site?.completeLock === session.id;
-      if (opts.stubPlan && !planNeeded) session.plan = PLAN_STUB;
+      if (opts.stubPlan) session.plan = PLAN_STUB;
       return true;
     },
     async usedBytes(userId) {
       return [...state.objects.values()]
-        .filter((o) => o.userId === userId && !o.deleting)
+        .filter((o) => o.userId === userId && o.kind !== "site" && !o.deleting)
         .reduce((sum, o) => sum + o.size, 0);
     },
     async openSessions(userId, now) {
@@ -252,30 +243,6 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
       site.completeLockExpiresAt = c.expiresAt;
       return copy(site);
     },
-    async setProtectedFiles(p) {
-      const site = state.sites.get(p.siteId);
-      if (
-        !site ||
-        site.completeLock !== p.lock ||
-        site.protectedFiles !== p.seenProtected ||
-        (p.fence &&
-          (site.completeLockExpiresAt ?? 0) < p.fence.now + p.fence.minRemainingMs)
-      ) {
-        return false;
-      }
-      site.protectedFiles = p.protectedFiles;
-      const session = p.writesEntries ? state.sessions.get(p.lock) : undefined;
-      if (session) session.entriesWritten = true;
-      return true;
-    },
-    async checkCompleteLock(siteId, lock, now, minRemainingMs) {
-      const site = state.sites.get(siteId);
-      return (
-        !!site &&
-        site.completeLock === lock &&
-        (site.completeLockExpiresAt ?? 0) >= now + minRemainingMs
-      );
-    },
     async releaseCompleteLock(siteId, lock) {
       const site = state.sites.get(siteId);
       if (site && site.completeLock === lock) {
@@ -291,8 +258,7 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
         !!current &&
         current.status === "pending" &&
         current.holdUntil > v.now &&
-        state.sessionObjects.filter((o) => o.sessionId === v.sessionId).length ===
-          v.sessionObjects;
+        state.sessionObjects.filter((o) => o.sessionId === v.sessionId).length === v.sessionObjects;
       const guard =
         !!site &&
         site.headVersion === v.baseVersion &&
@@ -326,18 +292,15 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
       });
       for (const f of v.largeFiles)
         state.largeFiles.push({ ...f, versionId: v.id, userId: v.userId });
+      for (const f of v.siteFiles)
+        state.siteFiles.push({ ...f, versionId: v.id, userId: v.userId });
       for (const so of state.sessionObjects.filter((o) => o.sessionId === v.sessionId)) {
         const row = state.objects.get(objectId(so));
         if (row && !row.deleting) row.verified = true;
       }
       site.headVersion = next;
-      site.liveFiles = v.liveFiles;
-      site.liveEntries = v.liveEntries;
-      site.protectedFiles = null;
       site.completeLock = null;
       site.completeLockExpiresAt = null;
-      site.cleanupAfter = Math.max(site.cleanupAfter ?? 0, v.cleanupAfter);
-      site.cleanupSince = Math.max(site.cleanupSince ?? v.now, v.cleanupAfter - v.maxDeferMs);
       site.updatedAt = v.now;
       const session = state.sessions.get(v.sessionId);
       if (session) {
@@ -363,6 +326,34 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
         .filter((f) => f.versionId === versionId)
         .map(({ path, sha256, size, mode }) => ({ path, sha256, size, mode }))
         .sort((a, b) => (a.path < b.path ? -1 : 1));
+    },
+
+    async pointerFiles(siteId, head, oldest) {
+      const versions = new Map(
+        state.versions
+          .filter((v) => v.siteId === siteId && v.version >= oldest && v.version <= head)
+          .map((v) => [v.id, v.version]),
+      );
+      return state.siteFiles
+        .filter((f) => versions.has(f.versionId))
+        .map(({ path, sha256, size, contentType, versionId }) => ({
+          version: versions.get(versionId)!,
+          path,
+          sha256,
+          size,
+          contentType,
+        }))
+        .filter(
+          (f) =>
+            f.version === head || f.path.startsWith("_antidraw/") || f.path.startsWith("assets/"),
+        )
+        .sort((a, b) => b.version - a.version || (a.path < b.path ? -1 : 1));
+    },
+    async setPointerVersion(siteId, version) {
+      const site = state.sites.get(siteId);
+      if (site) {
+        site.pointerVersion = Math.min(site.headVersion, Math.max(site.pointerVersion, version));
+      }
     },
 
     async expireSessions(now) {
@@ -425,31 +416,13 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
       }
       return n;
     },
-    async sitesDueForCleanup(now, deferredBefore, limit) {
-      const since = (s: SiteRow) => s.cleanupSince ?? s.cleanupAfter ?? 0;
+    async sitesBehindPointer(limit) {
+      if (limit <= 0) return [];
       return [...state.sites.values()]
-        .filter(
-          (s) =>
-            (s.cleanupAfter !== null && s.cleanupAfter < now) ||
-            (s.cleanupSince !== null && s.cleanupSince < deferredBefore),
-        )
-        .sort((a, b) => since(a) - since(b) || (a.id < b.id ? -1 : 1))
+        .filter((s) => s.pointerVersion < s.headVersion)
+        .sort((a, b) => a.updatedAt - b.updatedAt || (a.id < b.id ? -1 : 1))
         .slice(0, limit)
-        .map(ref);
-    },
-    async hurrySiteCleanup({ siteId, dueBy, maxDeferMs, now, intervalMs }) {
-      const site = state.sites.get(siteId);
-      if (!site) return false;
-      const throttled = [...state.sites.values()].some(
-        (s) => s.userId === site.userId && s.hurriedAt !== null && s.hurriedAt > now - intervalMs,
-      );
-      const after = Math.min(site.cleanupAfter ?? dueBy, dueBy);
-      site.cleanupSince = throttled
-        ? (site.cleanupSince ?? now)
-        : Math.min(site.cleanupSince ?? site.cleanupAfter ?? dueBy, after - maxDeferMs);
-      site.cleanupAfter ??= dueBy;
-      if (!throttled) site.hurriedAt = now;
-      return !throttled;
+        .map((s) => ({ ...s }));
     },
     async claimSiteLockForGc(siteId, lock, now, expiresAt) {
       const site = state.sites.get(siteId);
@@ -457,63 +430,6 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
       site.completeLock = lock;
       site.completeLockExpiresAt = expiresAt;
       return true;
-    },
-    async heldSessionPlans(siteId, now) {
-      return [...state.sessions.values()]
-        .filter((s) => s.siteId === siteId && s.holdUntil > now)
-        .map((s) => ({
-          plan: s.status === "completed" ? null : s.plan,
-          holdUntil: s.holdUntil,
-        }));
-    },
-    async uncommittedPlansMentioning({ siteId, path, sha256, limit }) {
-      const entryMatches = (plan: string) => {
-        const entries = (JSON.parse(plan) as { site?: { entries?: unknown } }).site?.entries;
-        return (
-          Array.isArray(entries) &&
-          entries.some(
-            (e: { path?: unknown; sha256?: unknown }) => e.path === path && e.sha256 === sha256,
-          )
-        );
-      };
-      return [...state.sessions.values()]
-        .filter(
-          (s) =>
-            s.siteId === siteId &&
-            s.status !== "completed" &&
-            s.entriesWritten &&
-            s.plan.includes(sha256) &&
-            entryMatches(s.plan),
-        )
-        .sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1))
-        .slice(0, limit)
-        .map((s) => ({ id: s.id, plan: s.plan }));
-    },
-    async releaseStarPlans(siteId, keep, now) {
-      let n = 0;
-      for (const s of state.sessions.values()) {
-        if (
-          s.siteId === siteId &&
-          s.status !== "completed" &&
-          s.holdUntil < now &&
-          s.plan !== PLAN_STUB &&
-          !keep.includes(s.id)
-        ) {
-          s.plan = PLAN_STUB;
-          n++;
-        }
-      }
-      return n;
-    },
-    async finishSiteCleanup(siteId, lock, seen, next, now) {
-      const site = state.sites.get(siteId);
-      if (!site) return;
-      if (site.completeLock === lock) {
-        site.completeLock = null;
-        site.completeLockExpiresAt = null;
-      }
-      if (site.cleanupAfter === seen) site.cleanupAfter = next;
-      site.cleanupSince = site.cleanupAfter === null ? null : now;
     },
     async retireSessions(now, limit) {
       const due = [...state.sessions.values()]
@@ -523,9 +439,7 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
       state.sessionObjects = state.sessionObjects.filter((o) => !ids.has(o.sessionId));
       for (const s of due) {
         s.holdUntil = 0;
-        if (s.status === "completed" || !s.entriesWritten || !starred(s.siteId)) {
-          s.plan = PLAN_STUB;
-        }
+        s.plan = PLAN_STUB;
       }
       return due.length;
     },
@@ -536,8 +450,7 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
             s.holdUntil < now &&
             (s.status === "completed"
               ? s.createdAt < completedBefore
-              : s.expiresAt < uncommittedBefore &&
-                !(s.entriesWritten && s.plan !== PLAN_STUB && starred(s.siteId))),
+              : s.expiresAt < uncommittedBefore),
         )
         .slice(0, limit);
       const ids = new Set(old.map((s) => s.id));

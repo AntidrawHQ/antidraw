@@ -48,16 +48,23 @@ describe("a failure panel that opens on its own does not take focus", () => {
   });
 });
 
-describe("a cancel after uploads started warns about public files", () => {
-  test("the panel says the publish was cancelled, and that public files may be live", () => {
+describe("a failure after uploads started", () => {
+  test("says only what failed: the live site is never touched before commit", () => {
+    const html = render(new AccountRequestError("UPLOAD_FAILED", "Upload of logo.png failed (403)"));
+    expect(html).toContain("Couldn&#x27;t publish");
+    expect(html).toContain("Upload of logo.png failed (403)");
+    expect(html).toContain("Try again");
+    expect(html).not.toMatch(/public files|live site/i);
+  });
+
+  test("a too-large site shows its size", () => {
     const html = render(
-      new AccountRequestError("CANCELLED", "Publishing was cancelled.", {
-        publicFilesMayHaveChanged: true,
+      new AccountRequestError("SITE_TOO_LARGE", "The built site is too large to publish.", {
+        siteBytes: 600 * 1024 * 1024,
+        siteFileCount: 12,
       }),
     );
-    expect(html).toContain("Publish cancelled");
-    expect(html).toContain("Some public files on your live site may already be updated");
-    expect(html).toContain("Publish again");
+    expect(html).toContain("in 12 files");
   });
 });
 

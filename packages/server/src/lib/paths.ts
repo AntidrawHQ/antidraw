@@ -74,23 +74,18 @@ export const isExcludedSnapshotPath = (p: string): boolean => {
   });
 };
 
+// Every site has these pages: the viewer (index.html), the workspace's
+// Preview page and the canvas it shows.
 export const ENTRY_PATHS = ["preview.html", "canvas.json", "index.html"] as const;
 export type EntryPath = (typeof ENTRY_PATHS)[number];
-const entrySet = new Set<string>(ENTRY_PATHS);
 export const HASHED_FILES = ".hashed-files.json";
-const MAX_SITE_KEY_BYTES = 1024;
-// A slug is one DNS label. Begin checks paths before it knows the site's slug,
-// so the key length is checked against the longest one.
-const MAX_SLUG_BYTES = 63;
 
-// A non-entry file a site may serve. The publish Worker serves any key under
-// <slug>/, so this is the only dotfile gate: a dot segment is allowed only as
-// a leading `.well-known`, or anywhere in hashed build output under assets/
-// (a component named `.Dot.tsx` builds to assets/.Dot-<hash>.js).
+// A file a site may serve. The publish Worker serves any path its pointer
+// lists, so this is the only dotfile gate: a dot segment is allowed only as a
+// leading `.well-known`, or anywhere in hashed build output under assets/ (a
+// component named `.Dot.tsx` builds to assets/.Dot-<hash>.js).
 export const isPublishableSitePath = (p: string, immutable: boolean): boolean => {
-  if (!isSafeSnapshotPath(p)) return false;
-  if (MAX_SLUG_BYTES + 1 + utf8Bytes(p) > MAX_SITE_KEY_BYTES) return false;
-  if (entrySet.has(p) || p === HASHED_FILES) return false;
+  if (!isSafeSnapshotPath(p) || p === HASHED_FILES) return false;
   const hashedAsset = immutable && p.startsWith("assets/");
   return p
     .split("/")
@@ -99,3 +94,13 @@ export const isPublishableSitePath = (p: string, immutable: boolean): boolean =>
         !segment.startsWith(".") || (i === 0 && segment === ".well-known") || hashedAsset,
     );
 };
+
+// A path whose name changes with its content: the viewer's build (_antidraw/)
+// and the workspace build's hashed output (assets/[name]-[hash], Rollup's
+// 8-character hash). The publish Worker caches these for a year (its
+// cacheControlFor, packages/publish-worker), and a pointer keeps those of
+// older versions a while (grace entries), so a tab still open on an older
+// version can lazy-load its chunks.
+const HASHED_NAME_RE = /^assets\/.+-[A-Za-z0-9_-]{8}\.[A-Za-z0-9]+$/;
+export const isImmutableSitePath = (p: string): boolean =>
+  p.startsWith("_antidraw/") || HASHED_NAME_RE.test(p);

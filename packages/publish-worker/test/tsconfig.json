@@ -1,0 +1,6 @@
+{
+  // The tests run in Node against the Worker's source; they type-check with
+  // the Worker's types (the fetch API and R2), as the source does.
+  "extends": "../tsconfig.json",
+  "include": [".", "../src"]
+}

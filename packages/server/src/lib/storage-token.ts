@@ -24,7 +24,6 @@ const payloadSchema = z.object({
     .regex(/^[0-9a-f]{64}$/)
     .optional(), // put: sha256 hex
   ct: z.string().optional(), // put: content type
-  cc: z.string().optional(), // put: cache control
   exp: z.number().int(), // unix ms
 });
 export type StorageTokenPayload = z.infer<typeof payloadSchema>;

@@ -161,9 +161,6 @@ export function PublishingLabel({
   );
 }
 
-const PUBLIC_FILES_NOTE =
-  "Some public files on your live site may already be updated. Publish again to bring the site back in step.";
-
 // Whether a panel that has just opened may move focus onto its button: only
 // while focus is still on the Publish button, where the user just clicked.
 // A panel that opens on its own later (a failure, a sign-in the publish
@@ -204,9 +201,6 @@ export function FailureContent({
 }) {
   const details = error.details ?? {};
   const outcomeUnknown = error.code === "PUBLISH_OUTCOME_UNKNOWN";
-  // Only kept as a run when uploads had started (publish-runs), so the panel
-  // is there for the public-files note.
-  const cancelled = error.code === "CANCELLED";
   // Checking again can't tell without the site's version from before the
   // publish, and a session that ended will never go live: either way the next
   // useful step is publishing again.
@@ -217,9 +211,9 @@ export function FailureContent({
       : error.code === "SITE_LIMIT" && details.siteLimit !== undefined
         ? `You have reached the limit of ${details.siteLimit} published canvases.`
         : error.message;
-  // A refusal with a `reason` is about what is waiting on the server (files of
-  // unfinished publishes, earlier files not yet cleaned up), not this canvas's
-  // size or the account's quota: its numbers and largest files would mislead.
+  // A refusal with a `reason` is about what is waiting on the server (files or
+  // sessions of unfinished publishes), not this canvas's size or the
+  // account's quota: its numbers and largest files would mislead.
   const serverBacklog = details.reason !== undefined;
   const largest =
     (error.code === "PUBLISH_TOO_LARGE" || error.code === "QUOTA_EXCEEDED") && !serverBacklog
@@ -241,7 +235,7 @@ export function FailureContent({
       </span>
 
       <h2 id="publish-failed-title" className="mt-4 text-base font-medium tracking-[-0.01em] text-[#e0e0e0]">
-        {outcomeUnknown ? "Still finishing" : cancelled ? "Publish cancelled" : "Couldn't publish"}
+        {outcomeUnknown ? "Still finishing" : "Couldn't publish"}
       </h2>
       <p className="mt-1.5 text-[13px] leading-[1.6] text-[#9a9a9a]">{message}</p>
 
@@ -257,7 +251,7 @@ export function FailureContent({
           </p>
         )}
 
-      {error.code === "SITE_TOO_LARGE" && !serverBacklog && details.siteBytes !== undefined && (
+      {error.code === "SITE_TOO_LARGE" && details.siteBytes !== undefined && (
         <p className="mt-1.5 text-[12px] leading-[1.6] text-[#9a9a9a]">
           The site is {formatBytes(details.siteBytes)}
           {details.siteFileCount !== undefined && ` in ${details.siteFileCount} files`}.
@@ -312,10 +306,6 @@ export function FailureContent({
         </Collapsible>
       )}
 
-      {details.publicFilesMayHaveChanged && (
-        <p className="mt-3 text-[12px] leading-[1.6] text-[#9a9a9a]">{PUBLIC_FILES_NOTE}</p>
-      )}
-
       {outcomeUnknown && check !== null && (
         <p className="mt-3 text-[12px] leading-[1.6] text-[#9a9a9a]">
           {check === "pending"
@@ -342,7 +332,7 @@ export function FailureContent({
           </>
         ) : canCheck ? (
           "Check status"
-        ) : outcomeUnknown || cancelled ? (
+        ) : outcomeUnknown ? (
           "Publish again"
         ) : (
           "Try again"
@@ -646,12 +636,6 @@ export const PublishButton = ({
                           ? "Finish signing in with Google in your browser. We'll publish right after."
                           : `Once you're signed in, ${workspaceName} goes live on a link you can share.`}
                       </p>
-                      {/* signed out after uploads had started (publish-runs) */}
-                      {run?.phase === "failed" && run.error.details?.publicFilesMayHaveChanged && (
-                        <p className="mt-1.5 text-[12px] leading-[1.6] text-[#9a9a9a]">
-                          {PUBLIC_FILES_NOTE}
-                        </p>
-                      )}
 
                       <button
                         type="button"

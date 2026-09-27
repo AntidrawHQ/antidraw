@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { blobKey, sourceKey } from "../lib/storage";
 import {
   beginRequest,
-  completeRequest,
   harnesses,
   hex,
   makeTestDeps,
@@ -20,7 +19,7 @@ const VISITOR = "visitor";
 const publish = async (deps: TestDeps, input: PlanInput = {}) => {
   const begun = (await beginPublish(deps, OWNER, await beginRequest(input)))._unsafeUnwrap();
   performUploads(deps, begun.uploads);
-  return (await completePublish(deps, OWNER, begun.publish.id, completeRequest()))._unsafeUnwrap();
+  return (await completePublish(deps, OWNER, begun.publish.id))._unsafeUnwrap();
 };
 
 describe.each(harnesses)("remix service (%s)", (_name, makeHarness) => {

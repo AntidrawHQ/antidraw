@@ -4,7 +4,7 @@
 // wrangler. It applies this package's migrations, enforces foreign keys as D1
 // does, and throws on the D1 limits the store must respect: more than 100
 // bound parameters in one statement (also inside a batch), more than
-// 100 000 bytes of SQL, and a row over 2 000 000 bytes. It covers SQL
+// 100 000 bytes of SQL, and a row or a bound value over 2 000 000 bytes. It covers SQL
 // semantics only; real D1 is covered by the local end-to-end recipe
 // (README → Publish).
 //
@@ -52,6 +52,11 @@ const checkLimits = (sql: string, params: unknown[]) => {
   }
   if (Buffer.byteLength(sql, "utf8") > D1_MAX_SQL_BYTES) {
     throw new Error(`D1 limit: statement longer than ${D1_MAX_SQL_BYTES} bytes`);
+  }
+  for (const param of params) {
+    if (typeof param === "string" && Buffer.byteLength(param, "utf8") > D1_MAX_ROW_BYTES) {
+      throw new Error("string or blob too big");
+    }
   }
 };
 

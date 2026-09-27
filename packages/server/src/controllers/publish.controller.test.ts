@@ -6,7 +6,6 @@ import { signStorageToken } from "../lib/storage-token";
 import { memoryBucket, sha256Hex } from "../test/memory-object-store";
 import {
   beginRequest,
-  completeRequest,
   harnesses,
   makeTestDeps,
   performUploads,
@@ -73,12 +72,12 @@ describe("publish routes", () => {
       uploads: never[];
     };
     expect(begun.publish).toMatchObject({ baseVersion: 0, slug: expect.any(String) });
-    expect(begun.uploads).toHaveLength(5);
+    expect(begun.uploads).toHaveLength(8);
 
     performUploads(deps, begun.uploads);
     const complete = await call(`/api/publish/sessions/${begun.publish.id}/complete`, {
       method: "POST",
-      json: completeRequest(),
+      json: {},
     });
     expect(complete.status).toBe(200);
     expect(await complete.json()).toMatchObject({ version: 1, site: { headVersion: 1 } });

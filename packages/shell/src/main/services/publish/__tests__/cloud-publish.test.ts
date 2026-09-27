@@ -46,11 +46,10 @@ const beginBody: BeginPublishRequest = {
     uncompressedBytes: 4567,
   },
   site: {
-    files: [],
-    entries: [
-      { path: "preview.html", sha256: sha("1"), size: 10 },
-      { path: "canvas.json", sha256: sha("2"), size: 20 },
-      { path: "index.html", sha256: sha("3"), size: 30 },
+    files: [
+      { path: "preview.html", sha256: sha("1"), size: 10, contentType: "text/html; charset=utf-8", immutable: false },
+      { path: "canvas.json", sha256: sha("2"), size: 20, contentType: "application/json; charset=utf-8", immutable: false },
+      { path: "index.html", sha256: sha("3"), size: 30, contentType: "text/html; charset=utf-8", immutable: false },
     ],
   },
 };
@@ -120,7 +119,7 @@ describe("cloud-publish", () => {
   test("an envelope without details has none", async () => {
     reply(json({ error: { code: "PUBLISH_CONFLICT", message: "Moved on" } }, 409));
 
-    const result = await completePublish("pub_1", { entries: [] });
+    const result = await completePublish("pub_1");
 
     expect(result._unsafeUnwrapErr()).toEqual({
       status: 409,
@@ -171,7 +170,7 @@ describe("cloud-publish", () => {
   test("an error status without an envelope keeps its status", async () => {
     reply(json({ something: "else" }, 500));
 
-    const result = await completePublish("pub_1", { entries: [] });
+    const result = await completePublish("pub_1");
 
     expect(result._unsafeUnwrapErr()).toMatchObject({ status: 500, code: "SERVER_ERROR" });
   });
@@ -183,8 +182,7 @@ describe("cloud-publish", () => {
     reply(json({ site: null }));
     reply(json({ site: { ...site, allowRemix: false } }));
 
-    const entries = [{ path: "index.html" as const, contentBase64: "PGgxPg==" }];
-    expect((await completePublish("pub/1", { entries }))._unsafeUnwrap()).toEqual({
+    expect((await completePublish("pub/1"))._unsafeUnwrap()).toEqual({
       site,
       version: 4,
     });
@@ -201,7 +199,8 @@ describe("cloud-publish", () => {
       ["GET", "/api/publish/sites?clientWorkspaceId=8b0b7b5e-3f4c-4d57-9a55-2c1f2b0e8c11"],
       ["PATCH", "/api/publish/sites/site_abc"],
     ]);
-    expect(JSON.parse(vi.mocked(cloudFetch).mock.calls[0]![1]!.body as string)).toEqual({ entries });
+    // Complete carries nothing: the entry pages were uploaded like any file.
+    expect(JSON.parse(vi.mocked(cloudFetch).mock.calls[0]![1]!.body as string)).toEqual({});
     expect(JSON.parse(vi.mocked(cloudFetch).mock.calls[4]![1]!.body as string)).toEqual({
       allowRemix: false,
     });
@@ -279,7 +278,7 @@ describe("cloud-publish", () => {
         () => new Promise((resolve) => setTimeout(() => resolve(ok(json({ site, version: 4 }))), 60)),
       );
 
-      const result = await completePublish("pub_1", { entries: [] });
+      const result = await completePublish("pub_1");
 
       expect(result._unsafeUnwrap().version).toBe(4);
     });

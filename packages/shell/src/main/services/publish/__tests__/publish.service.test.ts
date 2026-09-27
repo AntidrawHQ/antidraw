@@ -327,10 +327,8 @@ describe("publishWorkspace: happy path", () => {
         fileCount: 2,
         uncompressedBytes: 500 + 2 * MiB,
       },
-      site: {
-        files: siteFiles,
-        entries: entries.map(({ path, sha256, size }) => ({ path, sha256, size })),
-      },
+      // The entry pages are ordinary site files now.
+      site: { files: [...siteFiles, ...entries] },
     });
   });
 
@@ -373,16 +371,72 @@ describe("publishWorkspace: happy path", () => {
     ]);
   });
 
-  test("complete gets the three entries, base64, in write order", async () => {
+  test("entry pages are uploaded like any other site file", async () => {
+    vi.mocked(beginPublish).mockResolvedValue(
+      ok({
+        ...beginResponse(),
+        uploads: [
+          { kind: "site", sha256: sha("3"), size: 5, path: "index.html", url: "https://r2.test/index", method: "PUT", headers: { "content-type": "text/html; charset=utf-8" } },
+        ],
+      }),
+    );
+
+    const result = lastResult(await run());
+
+    const tasks = vi.mocked(uploadAll).mock.calls[0]![0] as UploadTask[];
+    expect(tasks.map((t) => [path.basename(t.file), t.url, t.size, t.label])).toEqual([
+      ["index.html", "https://r2.test/index", 5, "index.html"],
+    ]);
+    expect(result.site).toMatchObject({ fileCount: 5, uploadedFiles: 1 });
+  });
+
+  test("a site upload is matched by content: any path with that sha256 will do, once", async () => {
+    // Two paths share one content; the server stores it once per account.
+    builtOverrides = {
+      files: [...siteFiles, { ...siteFiles[1]!, path: "copy/logo.png" }],
+    };
+    buildHook = () => {};
+    vi.mocked(beginPublish).mockResolvedValue(
+      ok({
+        ...beginResponse(),
+        uploads: [
+          // No path at all, then the same content listed again under another.
+          { kind: "site", sha256: sha("e"), size: 4, url: "https://r2.test/c-e", method: "PUT", headers: {} },
+          { kind: "site", sha256: sha("e"), size: 4, path: "copy/logo.png", url: "https://r2.test/c-e2", method: "PUT", headers: {} },
+        ],
+      }),
+    );
+
+    const result = lastResult(await run());
+
+    const tasks = vi.mocked(uploadAll).mock.calls[0]![0] as UploadTask[];
+    expect(tasks.map((t) => [t.url, t.size, t.label])).toEqual([
+      ["https://r2.test/c-e", 4, "logo.png"],
+    ]);
+    expect(result.site.uploadedFiles).toBe(1);
+  });
+
+  test("a site upload whose path names other content is matched by its sha256", async () => {
+    vi.mocked(beginPublish).mockResolvedValue(
+      ok({
+        ...beginResponse(),
+        uploads: [
+          { kind: "site", sha256: sha("e"), size: 4, path: "index.html", url: "https://r2.test/c-e", method: "PUT", headers: {} },
+        ],
+      }),
+    );
+
     await run();
 
-    const [id, body] = vi.mocked(completePublish).mock.calls[0]!;
-    expect(id).toBe("pub_1");
-    expect(body.entries.map((e) => [e.path, Buffer.from(e.contentBase64, "base64").toString()])).toEqual([
-      ["preview.html", "<preview.html>"],
-      ["canvas.json", "<canvas.json>"],
-      ["index.html", "<index.html>"],
-    ]);
+    const tasks = vi.mocked(uploadAll).mock.calls[0]![0] as UploadTask[];
+    expect(tasks.map((t) => t.label)).toEqual(["logo.png"]);
+  });
+
+  test("complete carries nothing but the session", async () => {
+    await run();
+
+    expect(completePublish).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(completePublish).mock.calls[0]).toEqual(["pub_1"]);
   });
 
   test("an upload the plan does not contain is refused, and the session aborted", async () => {
@@ -650,20 +704,29 @@ describe("publishWorkspace: refusals before anything is uploaded", () => {
       });
     });
 
-    test("more than 5 000 site files → SITE_TOO_LARGE", async () => {
-      builtOverrides = {
-        files: Array.from({ length: 5001 }, (_, i) => ({
-          path: `assets/f${i}-AbC12345.js`,
-          size: 1,
-          sha256: sha("d"),
-          contentType: "text/javascript",
-          immutable: true,
-        })),
-      };
+    // The three entry pages are ordinary site files now, so they count.
+    const assets = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        path: `assets/f${i}-AbC12345.js`,
+        size: 1,
+        sha256: sha("d"),
+        contentType: "text/javascript",
+        immutable: true,
+      }));
+
+    test("more than 5 000 site files, entry pages included → SITE_TOO_LARGE", async () => {
+      builtOverrides = { files: assets(4998) };
       const error = lastError(await run());
       expect(error.code).toBe("SITE_TOO_LARGE");
       expect(error.details?.siteFileCount).toBe(5001);
       expect(beginPublish).not.toHaveBeenCalled();
+    });
+
+    test("exactly 5 000 site files, entry pages included, is allowed", async () => {
+      builtOverrides = { files: assets(4997) };
+      vi.mocked(beginPublish).mockResolvedValue(ok({ ...beginResponse(), uploads: [] }));
+      lastResult(await run());
+      expect(vi.mocked(beginPublish).mock.calls[0]![0].site.files).toHaveLength(5000);
     });
 
     test("site bytes over 500 MiB → SITE_TOO_LARGE", async () => {
@@ -704,10 +767,9 @@ describe("publishWorkspace: server and upload failures", () => {
     });
     // No session was created, so there is nothing to abort.
     expect(abortPublish).not.toHaveBeenCalled();
-    expect(error.details?.publicFilesMayHaveChanged).toBeUndefined();
   });
 
-  test("an upload failure aborts the session and flags public files", async () => {
+  test("an upload failure aborts the session, and says nothing about the live site", async () => {
     vi.mocked(uploadAll).mockResolvedValue(
       err({ code: "UPLOAD_FAILED", message: "Upload of logo.png failed (403)", label: "logo.png", status: 403 }),
     );
@@ -717,13 +779,12 @@ describe("publishWorkspace: server and upload failures", () => {
     expect(error).toEqual({
       code: "UPLOAD_FAILED",
       message: "Upload of logo.png failed (403)",
-      details: { publicFilesMayHaveChanged: true },
     });
     expect(abortPublish).toHaveBeenCalledWith("pub_1");
     expect(completePublish).not.toHaveBeenCalled();
   });
 
-  test("a conflict at complete keeps the public-files flag and never aborts", async () => {
+  test("a conflict at complete never aborts", async () => {
     vi.mocked(completePublish).mockResolvedValue(
       err({ status: 409, code: "PUBLISH_CONFLICT", message: "Head moved" }),
     );
@@ -731,12 +792,12 @@ describe("publishWorkspace: server and upload failures", () => {
     const error = lastError(await run());
 
     expect(error.code).toBe("PUBLISH_CONFLICT");
-    expect(error.details?.publicFilesMayHaveChanged).toBe(true);
+    expect(error.details).toBeUndefined();
     expect(completePublish).toHaveBeenCalledTimes(1);
     expect(abortPublish).not.toHaveBeenCalled();
   });
 
-  test("with nothing to upload, a failure does not flag public files", async () => {
+  test("with nothing to upload, a failure at complete is mapped as is", async () => {
     vi.mocked(beginPublish).mockResolvedValue(ok({ ...beginResponse(), uploads: [] }));
     vi.mocked(completePublish).mockResolvedValue(
       err({ status: 410, code: "PUBLISH_EXPIRED", message: "Expired" }),
@@ -931,10 +992,6 @@ describe("publishWorkspace: cancel and time limits around server calls", () => {
 
 describe("getPublishOutcome: finishing a publish left pending", () => {
   const pending = { status: "pending" as const, resultVersion: null, site };
-  const sentEntries = entries.map((e) => ({
-    path: e.path,
-    contentBase64: Buffer.from(`<${e.path}>`).toString("base64"),
-  }));
 
   // A run whose every complete got no definite answer, and whose session was
   // still pending afterwards.
@@ -950,7 +1007,7 @@ describe("getPublishOutcome: finishing a publish left pending", () => {
     return error.details!.publishId!;
   };
 
-  test("sends complete again with the run's entries, and reports the publish live", async () => {
+  test("sends complete again for the same session, and reports the publish live", async () => {
     const publishId = await leavePending();
     vi.mocked(getPublishSession).mockResolvedValue(ok(pending));
     vi.mocked(completePublish).mockResolvedValue(ok({ site: { ...site, headVersion: 4 }, version: 4 }));
@@ -962,7 +1019,7 @@ describe("getPublishOutcome: finishing a publish left pending", () => {
       resultVersion: 4,
       site: { ...site, headVersion: 4 },
     });
-    expect(completePublish).toHaveBeenCalledWith("pub_1", { entries: sentEntries });
+    expect(vi.mocked(completePublish).mock.calls).toEqual([["pub_1"]]);
 
     // Done: later checks only read.
     vi.mocked(getPublishSession).mockResolvedValue(
@@ -1183,7 +1240,6 @@ describe("publishWorkspace: staging", () => {
     expect(lastError(events)).toEqual({
       code: "CANCELLED",
       message: "Publishing was cancelled.",
-      details: { publicFilesMayHaveChanged: true },
     });
     expect(abortPublish).toHaveBeenCalledWith("pub_1");
     expect(completePublish).not.toHaveBeenCalled();
@@ -1288,7 +1344,6 @@ describe("error mapping", () => {
     [413, "QUOTA_EXCEEDED", "QUOTA_EXCEEDED"],
     [403, "SITE_LIMIT", "SITE_LIMIT"],
     [422, "INVALID_PATH", "SNAPSHOT_FAILED"],
-    [422, "ENTRY_MISMATCH", "INTERNAL_ERROR"],
     [400, "INVALID_REQUEST", "INTERNAL_ERROR"],
     [403, "REMIX_DISABLED", "INTERNAL_ERROR"],
     [404, "PUBLISH_NOT_FOUND", "INTERNAL_ERROR"],
@@ -1331,7 +1386,7 @@ describe("error mapping", () => {
         { path: "src/App.tsx", size: 500 },
       ],
     });
-    expect(mapCloudError(cloud(422, "ENTRY_MISMATCH")).message).toContain("ENTRY_MISMATCH");
+    expect(mapCloudError(cloud(400, "INVALID_REQUEST")).message).toContain("INVALID_REQUEST");
     expect(mapCloudError(cloud(409, "UPLOAD_INCOMPLETE")).message).toBe(
       "Some uploads did not arrive. Publish again.",
     );
@@ -1356,66 +1411,16 @@ describe("error mapping", () => {
       publishBytes: 100,
     });
 
-    const stored = mapCloudError(
-      cloud(413, "SITE_TOO_LARGE", {
-        reason: "stored",
-        limitBytes: 10,
-        siteBytes: 11,
-        limitFiles: 5,
-        siteFileCount: 6,
-      }),
-      manifest,
+    // A site size refusal is only ever about this canvas's own site: the
+    // site's files are stored by content, so nothing an earlier version left
+    // behind counts against it, and any reason is ignored.
+    const site = mapCloudError(
+      cloud(413, "SITE_TOO_LARGE", { reason: "stored", limitBytes: 10, siteBytes: 11, siteFileCount: 6 }),
     );
-    expect(stored.code).toBe("SITE_TOO_LARGE");
-    expect(stored.message).toContain("cleaned up");
-    expect(stored.details).toEqual({
-      reason: "stored",
-      limitBytes: 10,
-      siteBytes: 11,
-      limitFiles: 5,
-      siteFileCount: 6,
-    });
-    // No cleanup due within the hour: no promise of one.
-    expect(stored.message).toContain("Try again later");
-
-    const soon = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-    const hurried = mapCloudError(
-      cloud(413, "SITE_TOO_LARGE", { reason: "stored", cleanupDueAt: soon }),
-      manifest,
-    );
-    expect(hurried.message).toContain("Try again in an hour");
-    expect(hurried.details).toEqual({ reason: "stored", cleanupDueAt: soon });
-
-    const later = mapCloudError(
-      cloud(413, "SITE_TOO_LARGE", {
-        reason: "stored",
-        cleanupDueAt: new Date(Date.now() + 20 * 60 * 60 * 1000).toISOString(),
-      }),
-    );
-    expect(later.message).toContain("Try again later");
-    expect(
-      mapCloudError(cloud(413, "SITE_TOO_LARGE", { reason: "stored", cleanupDueAt: "junk" })).details,
-    ).toEqual({ reason: "stored" });
-
-    const inUse = mapCloudError(
-      cloud(413, "SITE_TOO_LARGE", {
-        reason: "in-use",
-        limitBytes: 10,
-        siteBytes: 11,
-        limitFiles: 5,
-        siteFileCount: 6,
-      }),
-      manifest,
-    );
-    expect(inUse.code).toBe("SITE_TOO_LARGE");
-    expect(inUse.message).toContain("unfinished publishes");
-    expect(inUse.message).not.toContain("hour");
-    expect(inUse.details).toEqual({
-      reason: "in-use",
-      limitBytes: 10,
-      siteBytes: 11,
-      limitFiles: 5,
-      siteFileCount: 6,
+    expect(site).toEqual({
+      code: "SITE_TOO_LARGE",
+      message: "The built site is too large to publish.",
+      details: { limitBytes: 10, siteBytes: 11, siteFileCount: 6 },
     });
 
     const open = mapCloudError(cloud(429, "RATE_LIMITED", { reason: "open-sessions", limit: 10, open: 10 }));

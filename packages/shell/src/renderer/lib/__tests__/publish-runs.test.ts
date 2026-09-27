@@ -411,16 +411,11 @@ describe("cancel", () => {
     expect(await a).toBe("published");
   });
 
-  test("a cancel after uploads started keeps the run, so the panel can warn about public files", async () => {
+  test("a cancel after uploads started ends the run quietly", async () => {
+    // A cancelled publish never changes what visitors see, so there is
+    // nothing to warn about.
     mockCancel.mockImplementationOnce(async (workspaceId) => {
-      push(workspaceId, {
-        type: "error",
-        error: {
-          code: "CANCELLED",
-          message: "Publishing was cancelled.",
-          details: { publicFilesMayHaveChanged: true },
-        },
-      } as PublishEvent);
+      push(workspaceId, fail("CANCELLED"));
       return ok(true);
     });
     const a = startPublish(queryClient, "A");
@@ -432,23 +427,15 @@ describe("cancel", () => {
 
     await cancelPublishRun("A");
     expect(await a).toBe("cancelled");
-    expect(runOf("A")).toMatchObject({
-      phase: "failed",
-      error: { code: "CANCELLED", details: { publicFilesMayHaveChanged: true } },
-    });
+    expect(runOf("A")).toBeUndefined();
   });
 
-  test("signed out after uploads started keeps the run too", async () => {
+  test("signed out after uploads started ends the run quietly too", async () => {
     const a = startPublish(queryClient, "A");
-    push("A", {
-      type: "error",
-      error: { code: "SIGNED_OUT", message: "m", details: { publicFilesMayHaveChanged: true } },
-    } as PublishEvent);
+    push("A", { type: "upload-progress", uploadedBytes: 60, totalBytes: 100 } as PublishEvent);
+    push("A", fail("SIGNED_OUT"));
     expect(await a).toBe("signed-out");
-    expect(runOf("A")).toMatchObject({
-      phase: "failed",
-      error: { code: "SIGNED_OUT", details: { publicFilesMayHaveChanged: true } },
-    });
+    expect(runOf("A")).toBeUndefined();
   });
 
   test("signed out before any upload ends the run quietly", async () => {

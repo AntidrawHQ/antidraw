@@ -174,7 +174,7 @@ stores a snapshot of its source that others can remix. All routes are behind
 | Route | What |
 |---|---|
 | `POST /api/publish/sessions` | begin: validate the plan, find or create the workspace's site, sign upload URLs for what the server lacks |
-| `POST /api/publish/sessions/:id/complete` | verify every upload, write the entry files (the switch-over), commit the version |
+| `POST /api/publish/sessions/:id/complete` | verify every upload, commit the version, write the site's pointer (the switch-over) |
 | `POST /api/publish/sessions/:id/abort` | best effort, idempotent |
 | `GET /api/publish/sessions/:id` | settle a complete whose outcome the app could not see |
 | `GET /api/publish/sites?clientWorkspaceId=` / `PATCH /api/publish/sites/:siteId` | site status; `{ allowRemix }` |
@@ -183,56 +183,58 @@ stores a snapshot of its source that others can remix. All routes are behind
 
 Code: `controllers/{publish,remix,storage}.controller.ts` → `services/publish.service.ts`,
 `remix.service.ts`, `gc.service.ts` → `services/publish.store.ts` (all the D1
-SQL) and `lib/storage.ts` (R2 and URL signing). Wire schemas are in
+SQL), `services/site-pointer.ts` (the pointer) and `lib/storage.ts` (R2 and
+URL signing). Wire schemas are in
 `lib/publish.schemas.ts`, limits in `lib/publish-limits.ts`.
 
 **Storage.** Two R2 buckets:
 
 - `antidraw-sites` (binding `SITES`, public through `packages/publish-worker`):
-  `<slug>/<path>`. Built assets go live at upload; the three entry files
-  (`preview.html`, `canvas.json`, `index.html`) only at complete, after every
-  object is verified. Public files (fixed names such as `/logo.png`) are
-  overwritten in place at upload, so a failed publish can leave new public
-  files beside old pages until the next successful publish repairs them.
+  `c/<userId>/<sha256>`, each distinct site file content once per account
+  (the entry pages `preview.html`, `canvas.json` and `index.html` included),
+  immutable; and `m/<slug>.json`, the site's pointer: the manifest of every
+  path the site serves (`{ "v": 1, "version", "u": <owner id>, "files": {
+  "<path>": { "h": <sha256>, "s": <size>, "t": <content type> } } }`). It
+  lists the head version's files plus "grace" entries, the hashed
+  `assets/*-<hash>.*` and `_antidraw/*` paths of the four previous versions
+  that the head does not define, so a tab open on an older version can still
+  lazy-load its chunks (capped at ~2 MB, oldest dropped first). Uploads never
+  change what visitors see: complete commits the version and then writes the
+  pointer in one conditional put (never replacing a newer version's), so a
+  site switches over atomically and a failed or cancelled publish leaves it
+  as it was. If that write fails the version is committed but not live yet;
+  complete answers 500 `STORAGE_FAILED`, and its retry (or GC's hourly
+  re-sync) writes it.
 - `antidraw-sources` (binding `SOURCES`, private): `u/<userId>/source/<sha256>.tar.gz`
   and `u/<userId>/blob/<sha256>`, content-addressed per account and
-  deduplicated. Each account has a 1 GiB quota over every stored object GC has
-  not removed, committed or not.
+  deduplicated. Each account has a 1 GiB quota over every source and blob GC
+  has not removed, committed or not. Site contents are outside it.
 
-Begin also bounds what a signed-in client can park before it commits: at most
-10 uncommitted sessions whose upload URLs still work (429 `RATE_LIMITED`,
-`details.reason: "open-sessions"`), at most 1 GiB of new site files across
-them (413 `QUOTA_EXCEEDED`, `details.reason: "pending-site"`), and at most
-2 × 500 MiB (or 2 × 5 003 keys) under a site's prefix once its uploads land,
-not counting up to one site's worth of files its commit would release (the
-live version's, and a failed complete's protected ones, that it does not
-reuse). Past that it answers 413 `SITE_TOO_LARGE` with `details.reason:
-"stored"` when GC's next visit would free enough (`details.cleanupDueAt` says
-when it is due), or `"in-use"` when the files in the way are ones GC keeps.
+Every object (`stored_object`, kinds `source`, `blob` and `site`) is kept
+while a retained version lists it (`site_version`, `version_large_file`,
+`version_site_file`) or a session that can still upload holds it. Begin also
+bounds what a signed-in client can park before it commits: at most 10
+uncommitted sessions whose upload URLs still work (429 `RATE_LIMITED`,
+`details.reason: "open-sessions"`), and at most 1 GiB of site contents no
+commit has verified across them (413 `QUOTA_EXCEEDED`, `details.reason:
+"pending-site"`).
 
 Clients PUT bytes straight to R2 with presigned S3 URLs (aws4fetch), signed
 over `content-length`, the sha256 checksum and the metadata; complete then
 HEAD-checks size and sha256 of every object. Every upload carries its sha256.
 
 **GC** runs hourly from the cron trigger (`src/scheduled.ts`): expire lapsed
-sessions, drop versions beyond the newest 5 (`keep` ones excepted), delete
-account objects nothing references or holds (never-committed ones as soon as
-no session's upload URLs can still reach them, committed ones after 24 h;
-claimed in turns across accounts), delete stale site keys (as it lists them;
-a site whose cleanup keeps being pushed out is visited after a day anyway),
+sessions, drop versions beyond the newest 5 (`keep` ones excepted), re-sync
+the pointers of sites whose pointer is behind their head version, delete
+account objects (sources, blobs and site contents) nothing references or
+holds (never-committed ones as soon as no session's upload URLs can still
+reach them, committed ones after 24 h; claimed in turns across accounts),
 retire sessions whose hold ended (plan stubbed, held objects dropped) and
-forget old ones, and free the slugs of sites that never completed. Each step
-is bounded (`GcLimits` in `src/services/gc.service.ts`) and independent; a
-run that stops with work left says so in `report.backlog` and logs a warning,
-and the next run continues. Stale-site cleanup also runs alone every five
-minutes (a second cron, its own D1 budget: about 650 site visits an hour),
-oldest outstanding site first, except that a site whose begin was refused
-with `SITE_TOO_LARGE` (`"stored"`) goes to the front, due an hour after the
-refusal (one site per account per hour). A commit never makes a site due
-sooner than an hour after it, so the replaced version's files outlive the
-switch-over by at least that. On a site whose protected files are `"*"`, GC
-keeps only the plans of sessions whose complete wrote entries, and of those
-only the ones that account for the live entries. GC
+forget old ones, and free the slugs of sites that never completed (their
+pointer first). Each step is bounded (`GcLimits` in
+`src/services/gc.service.ts`) and independent; a run that stops with work
+left says so in `report.backlog` and logs a warning, and the next run
+continues. GC
 treats a session as expired, or its hold as ended, only 5 minutes after the
 fact by its own clock (`GC_CLOCK_SKEW_MARGIN_MS`), so a complete whose
 Worker's clock lags GC's still finds what its commit checks.
@@ -253,8 +255,7 @@ npm run dev -w @antidraw/publish-worker -- --persist-to "$STATE"   # :8787, same
 ```
 
 Publish from the app, then open `http://<slug>.localhost:8787/`. Run GC with
-`curl "http://localhost:8799/cdn-cgi/handler/scheduled?cron=17+*+*+*+*"`, or
-site cleanup alone with `?cron=*/5+*+*+*+*`
+`curl "http://localhost:8799/cdn-cgi/handler/scheduled?cron=17+*+*+*+*"`
 (age rows first with `wrangler d1 execute antidraw --local --persist-to "$STATE"`
 to see it delete something).
 
@@ -267,7 +268,8 @@ presigned PUT, the rate limiters and cron dispatch are not unit-testable.
 
 - **Workers Paid is required.** Free allows 50 subrequests per request (R2 and
   D1 binding calls count) and 50 D1 queries per invocation; begin and complete
-  need up to ~510 R2 calls and ~100 D1 statements. Paid allows 10 000 and 1 000.
+  HEAD every object of a publish (up to ~6 000 R2 calls: source, blobs and
+  site contents) and run a few dozen D1 statements. Paid allows 10 000 and 1 000.
 - Create the buckets (`wrangler r2 bucket create antidraw-sites` and
   `antidraw-sources`), and set `R2_ACCOUNT_ID`, `R2_S3_ACCESS_KEY_ID` and
   `R2_S3_SECRET_ACCESS_KEY` (an R2 API token with Object Read & Write on both

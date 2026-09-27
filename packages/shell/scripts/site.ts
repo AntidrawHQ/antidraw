@@ -2,7 +2,7 @@
 //
 //   npm run site:build -- <workspace id | name | source dir> [--out <dir>]
 //   npm run site:serve -- <site dir> [--port 4400]
-//   npm run site:upload -- <site dir> [--id <publish id>] [--local | --wrangler]
+//   npm run site:upload -- <site dir> [--id <slug>] [--local [--persist-to <dir>] | --wrangler]
 //
 // A site is one self-contained static directory, served from the root of its
 // own origin:
@@ -22,15 +22,18 @@
 // upload reads R2 credentials from the environment, or from packages/shell/
 // .env.site: R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET,
 // and optionally R2_ENDPOINT (e.g. https://<account id>.eu.r2.cloudflarestorage.com
-// for an EU bucket). Each site goes under <publish id>/ in the bucket. With
-// --local it goes to the local R2 of `wrangler dev` in packages/publish-worker
-// instead, and with --wrangler to the real bucket through wrangler, signed in
-// with `wrangler login` — neither needs the R2 variables.
+// for an EU bucket). It writes the layout the publish Worker serves: each file
+// content at c/cli/<sha256>, then the site's pointer, m/<slug>.json, in one
+// write, so the site switches over all at once. A slug the app published is
+// refused. With --local it goes to the local R2 of `wrangler dev` in
+// packages/publish-worker instead (or the one in --persist-to), and with
+// --wrangler to the real bucket through wrangler, signed in with
+// `wrangler login` — neither needs the R2 variables.
 //
 // Needs Node 22.18 or later (type stripping, node:sqlite).
 
 import { execFile, spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import { createRequire } from "node:module";
@@ -46,13 +49,12 @@ import {
   assembleSite,
   checkOutDir,
   emptyOutDir,
-  IMMUTABLE_CACHE_CONTROL,
   isBuiltSite,
   listFiles,
   listSiteFiles,
   makeCanvasFile,
   readCanvasComponents,
-  SITE_ENTRY_FILES,
+  type SiteFile,
 } from "../src/publish/site-build.ts";
 
 const execFileAsync = promisify(execFile);
@@ -251,25 +253,44 @@ const serve = (dir: string, port: number) => {
 const formatBytes = (n: number) =>
   n < 1024 ** 2 ? `${(n / 1024).toFixed(0)} KB` : n < 1024 ** 3 ? `${(n / 1024 ** 2).toFixed(1)} MB` : `${(n / 1024 ** 3).toFixed(2)} GB`;
 
+// The layout the publish Worker serves (packages/publish-worker/src/pointer.ts),
+// which the app's Publish writes too: each distinct file content once, at
+// c/<owner>/<sha256>, and the site's pointer, m/<slug>.json, naming the
+// content of every path. Sites uploaded from here all have the owner "cli";
+// the app's have their account's id.
+const OWNER = "cli";
+const contentKey = (sha256: string) => `c/${OWNER}/${sha256}`;
+const pointerKey = (slug: string) => `m/${slug}.json`;
+
+type Pointer = {
+  v: 1;
+  version: number;
+  u: string;
+  files: Record<string, { h: string; s: number; t: string }>;
+};
+
 // A single PUT takes up to 5 GiB; larger files would need a multipart upload.
 // wrangler refuses files over 300 MiB.
 const MAX_PUT_BYTES = { s3: 5 * 1024 ** 3 - 5 * 1024 ** 2, wrangler: 300 * 1024 ** 2 };
-// wrangler takes the key as part of a "bucket/key" argument and mangles some
-// characters on the way (the local R2 stores them percent-encoded, "?" and
-// "#" end the key), so it is given only keys that need no encoding.
-const WRANGLER_SAFE_KEY_RE = /^[A-Za-z0-9._~\/-]+$/;
 
 const UPLOAD_CONCURRENCY = 8;
 const UPLOAD_ATTEMPTS = 4;
 
-type PutObject = (
-  key: string,
-  file: string,
-  meta: { contentType: string; cacheControl?: string; size: number },
-) => Promise<void>;
+type ObjectMeta = { contentType: string; size: number; sha256: string };
+
+type Store = {
+  bucket: string;
+  // The object's text, or null when there is none.
+  read(key: string): Promise<string | null>;
+  // Whether the object is there; false when the store cannot tell cheaply.
+  has(key: string): Promise<boolean>;
+  put(key: string, file: string, meta: ObjectMeta): Promise<void>;
+};
+
+const hexToBase64 = (hex: string) => Buffer.from(hex, "hex").toString("base64");
 
 // R2's S3 API, with the credentials from the environment.
-const r2Put = (): { bucket: string; put: PutObject } => {
+const s3Store = (): Store => {
   const env = (name: string) => process.env[name] || fail(`${name} is not set (see .env.site)`);
   const endpoint =
     process.env.R2_ENDPOINT || `https://${env("R2_ACCOUNT_ID")}.r2.cloudflarestorage.com`;
@@ -280,120 +301,207 @@ const r2Put = (): { bucket: string; put: PutObject } => {
     service: "s3",
     region: "auto",
   });
-
-  const put: PutObject = async (key, file, meta) => {
-    const url = `${endpoint}/${bucket}/${key.split("/").map(encodeURIComponent).join("/")}`;
-    const headers: Record<string, string> = {
-      "Content-Type": meta.contentType,
-      "Content-Length": String(meta.size),
-    };
-    if (meta.cacheControl) headers["Cache-Control"] = meta.cacheControl;
-    // R2 takes an unsigned payload, so only the headers are signed and the
+  const urlOf = (key: string) =>
+    `${endpoint}/${bucket}/${key.split("/").map(encodeURIComponent).join("/")}`;
+  const send = async (key: string, init: RequestInit & { headers?: Record<string, string> }) => {
+    const url = urlOf(key);
+    // R2 takes an unsigned payload, so only the headers are signed and a
     // body streams from disk.
-    const signed = await client.sign(url, { method: "PUT", headers });
-    const res = await fetch(url, {
-      method: "PUT",
-      headers: signed.headers,
-      body: Readable.toWeb(fs.createReadStream(file)) as ReadableStream,
-      duplex: "half",
-    } as RequestInit);
-    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const signed = await client.sign(url, { method: init.method, headers: init.headers ?? {} });
+    return fetch(url, { ...init, headers: signed.headers });
   };
-  return { bucket, put };
+
+  return {
+    bucket,
+    async read(key) {
+      const res = await send(key, { method: "GET" });
+      if (res.status === 404) return null;
+      if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+      return res.text();
+    },
+    async has(key) {
+      const res = await send(key, { method: "HEAD" });
+      if (res.status === 404) return false;
+      if (!res.ok) throw new Error(`HEAD ${res.status}`);
+      return true;
+    },
+    async put(key, file, meta) {
+      const res = await send(key, {
+        method: "PUT",
+        headers: {
+          "Content-Type": meta.contentType,
+          "Content-Length": String(meta.size),
+          // R2 refuses bytes whose sha256 is not this, so nothing lands under
+          // another content's key.
+          "x-amz-checksum-sha256": hexToBase64(meta.sha256),
+          "x-amz-meta-sha256": meta.sha256,
+        },
+        body: Readable.toWeb(fs.createReadStream(file)) as ReadableStream,
+        duplex: "half",
+      } as RequestInit & { headers: Record<string, string> });
+      if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    },
+  };
 };
 
 // Through wrangler, as whoever `wrangler login` signed in: the local R2 that
-// `wrangler dev` serves the publish Worker from, or the real bucket.
+// `wrangler dev` serves the publish Worker from (in persistTo, if given), or
+// the real bucket.
 const workerDir = path.resolve(shellDir, "../publish-worker");
 // Must match r2_buckets in packages/publish-worker/wrangler.jsonc.
 const LOCAL_BUCKET = "antidraw-sites";
 
-const wranglerPut = (where: "local" | "remote"): { bucket: string; put: PutObject } => {
+const wranglerStore = (where: "local" | "remote", persistTo: string | undefined): Store => {
   const wrangler = path.join(
     path.dirname(createRequire(path.join(workerDir, "package.json")).resolve("wrangler/package.json")),
     "bin/wrangler.js",
   );
-  const put: PutObject = async (key, file, meta) => {
-    const args = [wrangler, "r2", "object", "put", `${LOCAL_BUCKET}/${key}`, "--file", file,
-      "--content-type", meta.contentType, `--${where}`];
-    if (meta.cacheControl) args.push("--cache-control", meta.cacheControl);
-    await execFileAsync(process.execPath, args, { cwd: workerDir });
+  const target = [`--${where}`, ...(persistTo ? ["--persist-to", path.resolve(persistTo)] : [])];
+  // Every key is c/cli/<sha256> or m/<slug>.json, none of which wrangler's
+  // "bucket/key" argument mangles.
+  const object = (key: string) => `${LOCAL_BUCKET}/${key}`;
+  return {
+    bucket: `${LOCAL_BUCKET} (${where}${persistTo ? ` in ${persistTo}` : ""}, via wrangler)`,
+    async read(key) {
+      try {
+        const { stdout } = await execFileAsync(
+          process.execPath,
+          [wrangler, "r2", "object", "get", object(key), "--pipe", ...target],
+          { cwd: workerDir, maxBuffer: 64 * 1024 * 1024 },
+        );
+        return stdout;
+      } catch (e) {
+        if (/specified key does not exist/i.test(String((e as { stderr?: unknown }).stderr))) {
+          return null;
+        }
+        throw e;
+      }
+    },
+    // Asking would download the object; a content put again is the same bytes.
+    has: async () => false,
+    async put(key, file, meta) {
+      await execFileAsync(
+        process.execPath,
+        [wrangler, "r2", "object", "put", object(key), "--file", file, "--content-type", meta.contentType, ...target],
+        { cwd: workerDir },
+      );
+    },
   };
-  return { bucket: `${LOCAL_BUCKET} (${where}, via wrangler)`, put };
+};
+
+const withRetries = async <T>(what: string, attempt: () => Promise<T>): Promise<T> => {
+  for (let n = 1; ; n++) {
+    try {
+      return await attempt();
+    } catch (e) {
+      if (n === UPLOAD_ATTEMPTS) fail(`${what}: ${(e as Error).message}`);
+      // Throttling (429) and brief R2 or network errors pass; back off.
+      await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** (n - 1)));
+    }
+  }
+};
+
+// The pointer already at the slug, which this upload replaces, or null. One
+// the app published (another owner) is not the CLI's to replace.
+const previousPointer = async (store: Store, slug: string): Promise<Pointer | null> => {
+  const text = await withRetries(`reading ${pointerKey(slug)}`, () => store.read(pointerKey(slug)));
+  if (text === null) return null;
+  let pointer: Partial<Pointer> | null = null;
+  try {
+    pointer = JSON.parse(text) as Partial<Pointer>;
+  } catch {
+    // Reported below.
+  }
+  if (!pointer || pointer.v !== 1 || !Number.isSafeInteger(pointer.version)) {
+    fail(`${pointerKey(slug)} is not a site pointer; pick another --id`);
+  }
+  if (pointer!.u !== OWNER) fail(`"${slug}" is a site published from the app; pick another --id`);
+  return pointer as Pointer;
 };
 
 const upload = async (
   dir: string,
-  publishId: string | undefined,
+  slugArg: string | undefined,
   via: "s3" | "local" | "remote",
+  persistTo: string | undefined,
 ) => {
   const root = path.resolve(dir);
   if (!fs.existsSync(path.join(root, "canvas.json"))) fail(`${root} is not a built site`);
 
-  // The id will name the site's subdomain, so it keeps to what a DNS label allows.
-  const id = publishId ?? randomBytes(5).toString("hex");
-  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(id)) fail(`"${id}" cannot be a publish id`);
+  // The slug names the site's subdomain, so it keeps to what a DNS label allows.
+  const slug = slugArg ?? randomBytes(5).toString("hex");
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(slug)) fail(`"${slug}" cannot be a site id`);
 
-  const { bucket, put } = via === "s3" ? r2Put() : wranglerPut(via);
-  // The pages and the canvas go up last (see SITE_ENTRY_FILES); hidden files
-  // not at all (see listSiteFiles).
+  if (persistTo && via !== "local") fail("--persist-to goes with --local");
+  const store = via === "s3" ? s3Store() : wranglerStore(via, persistTo);
+  // Hidden files are not the site's (see listSiteFiles). The entry pages are
+  // files like any other: nothing is served until the pointer names it.
   const site = await listSiteFiles(root).catch((e: Error) => fail(e.message));
   if (site.skipped.length) console.log(`Skipping hidden files:\n  ${site.skipped.join("\n  ")}`);
-  const siteFiles = new Map([...site.files, ...site.entries].map((f) => [f.path, f]));
-  const files = [...siteFiles.keys()];
-  const sizes = new Map(files.map((f) => [f, siteFiles.get(f)!.size]));
+  const files = [...site.files, ...site.entries];
   const maxBytes = via === "s3" ? MAX_PUT_BYTES.s3 : MAX_PUT_BYTES.wrangler;
-  const tooBig = files.filter((f) => sizes.get(f)! > maxBytes);
+  const tooBig = files.filter((f) => f.size > maxBytes).map((f) => f.path);
   if (tooBig.length) {
     fail(`files over ${formatBytes(maxBytes)} cannot be uploaded ${via === "s3" ? "yet" : "through wrangler"}:\n  ${tooBig.join("\n  ")}`);
   }
-  if (via !== "s3") {
-    const unsafe = files.filter((f) => !WRANGLER_SAFE_KEY_RE.test(f));
-    if (unsafe.length) {
-      fail(`these file names cannot go through wrangler (upload without --local or --wrangler):\n  ${unsafe.join("\n  ")}`);
-    }
-  }
 
-  const total = [...sizes.values()].reduce((a, b) => a + b, 0);
-  console.log(`Uploading ${files.length} files (${formatBytes(total)}) to ${bucket}/${id}/`);
+  const previous = await previousPointer(store, slug);
+
+  // One object per distinct content, whichever of its paths is read.
+  const contents = new Map<string, SiteFile>();
+  for (const f of files) if (!contents.has(f.sha256)) contents.set(f.sha256, f);
+  const total = [...contents.values()].reduce((sum, f) => sum + f.size, 0);
+  console.log(
+    `Uploading ${files.length} files (${contents.size} contents, ${formatBytes(total)}) to ${store.bucket} as "${slug}"`,
+  );
 
   let done = 0;
-  let uploadedBytes = 0;
-  const queue: string[] = [];
+  let sent = 0;
+  const queue = [...contents.values()];
   const worker = async () => {
     for (let file = queue.shift(); file; file = queue.shift()) {
-      const siteFile = siteFiles.get(file)!;
-      const meta = {
-        contentType: siteFile.contentType,
-        cacheControl: siteFile.immutable ? IMMUTABLE_CACHE_CONTROL : undefined,
-        size: siteFile.size,
-      };
-      for (let attempt = 1; ; attempt++) {
-        try {
-          await put(`${id}/${file}`, path.join(root, file), meta);
-          break;
-        } catch (e) {
-          if (attempt === UPLOAD_ATTEMPTS) fail(`uploading ${file}: ${(e as Error).message}`);
-          // Throttling (429) and brief R2 or network errors pass; back off.
-          await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** (attempt - 1)));
+      const key = contentKey(file.sha256);
+      const meta = { contentType: file.contentType, size: file.size, sha256: file.sha256 };
+      await withRetries(`uploading ${file.path}`, async () => {
+        if (!(await store.has(key))) {
+          await store.put(key, path.join(root, file.path), meta);
+          sent++;
         }
-      }
+      });
       done++;
-      uploadedBytes += meta.size;
       if (process.stdout.isTTY) {
-        process.stdout.write(`\r  ${done}/${files.length} files, ${formatBytes(uploadedBytes)}`);
+        process.stdout.write(`\r  ${done}/${contents.size} contents, ${sent} sent`);
       }
     }
   };
-  const uploadAll = (batch: string[]) => {
-    queue.push(...batch);
-    return Promise.all(Array.from({ length: UPLOAD_CONCURRENCY }, worker));
+  await Promise.all(Array.from({ length: UPLOAD_CONCURRENCY }, worker));
+
+  // Last, and in one write: the site switches to this upload all at once.
+  const pointer: Pointer = {
+    v: 1,
+    version: (previous?.version ?? 0) + 1,
+    u: OWNER,
+    files: Object.fromEntries(
+      files.map((f) => [f.path, { h: f.sha256, s: f.size, t: f.contentType }]),
+    ),
   };
-  await uploadAll(site.files.map((f) => f.path));
-  for (const entry of SITE_ENTRY_FILES) await uploadAll([entry]);
-  console.log(`\nDone: ${bucket}/${id}/`);
+  const body = JSON.stringify(pointer);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "site-pointer-"));
+  try {
+    const file = path.join(tmp, "pointer.json");
+    fs.writeFileSync(file, body);
+    const meta = {
+      contentType: "application/json; charset=utf-8",
+      size: Buffer.byteLength(body),
+      sha256: createHash("sha256").update(body).digest("hex"),
+    };
+    await withRetries(`writing ${pointerKey(slug)}`, () => store.put(pointerKey(slug), file, meta));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+  console.log(`\nDone: ${store.bucket} ${pointerKey(slug)} (version ${pointer.version})`);
   if (via === "local") {
-    console.log(`  npm run dev -w @antidraw/publish-worker, then open http://${id}.localhost:8787/`);
+    console.log(`  npm run dev -w @antidraw/publish-worker, then open http://${slug}.localhost:8787/`);
   }
 };
 
@@ -407,6 +515,7 @@ const { positionals, values } = parseArgs({
     id: { type: "string" },
     local: { type: "boolean", default: false },
     wrangler: { type: "boolean", default: false },
+    "persist-to": { type: "string" },
   },
 });
 const [command, target] = positionals;
@@ -415,6 +524,11 @@ if (!target) fail("usage: site.ts build|serve|upload <target> (see the top of sc
 if (command === "build") build(target!, values.out);
 else if (command === "serve") serve(target!, Number(values.port));
 else if (command === "upload") {
-  await upload(target!, values.id, values.local ? "local" : values.wrangler ? "remote" : "s3");
+  await upload(
+    target!,
+    values.id,
+    values.local ? "local" : values.wrangler ? "remote" : "s3",
+    values["persist-to"],
+  );
 }
 else fail(`unknown command "${command}"`);

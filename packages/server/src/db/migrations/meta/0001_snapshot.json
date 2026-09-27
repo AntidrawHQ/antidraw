@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "702840f6-5924-498f-a1c5-8e98511f7d0d",
+  "id": "dd344380-9f64-4cf1-98c1-1a24e334cc8d",
   "prevId": "6201c7d1-f763-4f0d-b895-5e86c5e9ba6b",
   "tables": {
     "account": {
@@ -423,6 +423,14 @@
           "notNull": true,
           "autoincrement": false
         },
+        "site_upload_bytes": {
+          "name": "site_upload_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
         "created_at": {
           "name": "created_at",
           "type": "integer",
@@ -627,19 +635,13 @@
           "autoincrement": false,
           "default": true
         },
-        "live_files": {
-          "name": "live_files",
-          "type": "text",
+        "pointer_version": {
+          "name": "pointer_version",
+          "type": "integer",
           "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "protected_files": {
-          "name": "protected_files",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
         },
         "complete_lock": {
           "name": "complete_lock",
@@ -650,13 +652,6 @@
         },
         "complete_lock_expires_at": {
           "name": "complete_lock_expires_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "cleanup_after": {
-          "name": "cleanup_after",
           "type": "integer",
           "primaryKey": false,
           "notNull": false,
@@ -694,6 +689,14 @@
             "client_workspace_id"
           ],
           "isUnique": true
+        },
+        "site_pointer_behind_partial_idx": {
+          "name": "site_pointer_behind_partial_idx",
+          "columns": [
+            "head_version"
+          ],
+          "isUnique": false,
+          "where": "\"site\".\"pointer_version\" < \"site\".\"head_version\""
         }
       },
       "foreignKeys": {
@@ -934,12 +937,13 @@
           ],
           "isUnique": false
         },
-        "stored_object_deleting_idx": {
-          "name": "stored_object_deleting_idx",
+        "stored_object_deleting_partial_idx": {
+          "name": "stored_object_deleting_partial_idx",
           "columns": [
             "deleting"
           ],
-          "isUnique": false
+          "isUnique": false,
+          "where": "\"stored_object\".\"deleting\" = 1"
         }
       },
       "foreignKeys": {
@@ -1061,6 +1065,102 @@
             "path"
           ],
           "name": "version_large_file_version_id_path_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "version_site_file": {
+      "name": "version_site_file",
+      "columns": {
+        "version_id": {
+          "name": "version_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "path": {
+          "name": "path",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "sha256": {
+          "name": "sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "size": {
+          "name": "size",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "content_type": {
+          "name": "content_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "version_site_file_userId_sha256_idx": {
+          "name": "version_site_file_userId_sha256_idx",
+          "columns": [
+            "user_id",
+            "sha256"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "version_site_file_version_id_site_version_id_fk": {
+          "name": "version_site_file_version_id_site_version_id_fk",
+          "tableFrom": "version_site_file",
+          "tableTo": "site_version",
+          "columnsFrom": [
+            "version_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "version_site_file_user_id_user_id_fk": {
+          "name": "version_site_file_user_id_user_id_fk",
+          "tableFrom": "version_site_file",
+          "tableTo": "user",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "version_site_file_version_id_path_pk": {
+          "columns": [
+            "version_id",
+            "path"
+          ],
+          "name": "version_site_file_version_id_path_pk"
         }
       },
       "uniqueConstraints": {},

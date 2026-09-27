@@ -1,73 +1,61 @@
 import { getDb } from "../db";
 import type { Bindings } from "../lib/env";
-import { ENTRY_PATHS } from "../lib/paths";
 import {
   GC_ABANDONED_SITE_AGE_MS,
   GC_ABANDONED_SITES_PER_RUN,
   GC_CLOCK_SKEW_MARGIN_MS,
   GC_LOCK_TTL_MS,
-  GC_MAX_CLEANUP_DEFER_MS,
   GC_MIN_AGE_MS,
   GC_OBJECTS_PER_RUN,
+  GC_POINTER_SYNCS_PER_RUN,
   GC_RUN_BUDGET_MS,
   GC_SESSION_RETENTION_MS,
   GC_SESSION_STATEMENTS_PER_RUN,
   GC_SESSIONS_PER_STATEMENT,
-  GC_SITE_CLEANUP_CRON,
-  GC_SITE_KEYS_PER_RUN,
-  GC_SITE_KEYS_PER_VISIT,
-  GC_SITE_RUN_BUDGET_MS,
-  GC_SITES_PER_RUN,
-  GC_STAR_PLANS_PER_ENTRY,
   GC_UNCOMMITTED_SESSION_RETENTION_MS,
-  GC_UNRESOLVED_ENTRY_MAX_AGE_MS,
   KEEP_VERSIONS,
   R2_DELETE_BATCH,
-  SITE_CLEANUP_DELAY_MS,
 } from "../lib/publish-limits";
-import { blobKey, r2ObjectStore, siteKey, sourceKey, type ObjectStore } from "../lib/storage";
-import { parsePaths, parsePlan, planSitePaths, randomId, unionProtected } from "./publish.service";
+import { pointerKey, r2ObjectStore, type ObjectStore } from "../lib/storage";
+import { objectLocation, randomId } from "./publish.service";
 import {
   d1PublishStore,
-  PLAN_STUB,
   type PublishStore,
   type SiteRef,
-  type SiteRow,
   type UserObjectRef,
 } from "./publish.store";
+import { syncPointer } from "./site-pointer";
 
-// GC (src/scheduled.ts): a "full" run hourly (GC_CRON) takes six
-// independent steps; a "sites" run every five minutes (GC_SITE_CLEANUP_CRON)
-// takes step 4 alone, so site cleanup gets more than one run's budget an hour
-// (publish-limits.ts has the numbers). Each step is bounded (the GcLimits
-// below, and a wall-clock budget for the run) so one run fits the Workers
-// Paid limits, each logging its counts; a failing step does not stop the
-// next. A step that stops with work left names itself in `report.backlog`,
-// and the next run continues.
+// GC (src/scheduled.ts), hourly (GC_CRON). Six independent steps, each
+// bounded (the GcLimits below, and a wall-clock budget for the run) so one
+// run fits the Workers Paid limits, each logging its counts; a failing step
+// does not stop the next. A step that stops with work left names itself in
+// `report.backlog`, and the next run continues.
 //
 //   1. expire lapsed pending sessions
 //   2. drop versions beyond the newest KEEP_VERSIONS (keep=1 excepted)
-//   3. delete unreferenced, unheld account objects: claimed `deleting` in the
-//      same statement that checks they are unreferenced (taking turns across
-//      accounts), deleted from R2, and only then their rows
-//   4. delete stale site keys (not live, not protected, not in an
-//      uncommitted held session's plan) of sites whose cleanup_after has
-//      passed or whose cleanup has been put off for too long
+//   3. re-sync the pointers of sites whose pointer is behind their head
+//      version (a complete whose switch-over failed and was not retried)
+//   4. delete unreferenced, unheld account objects (sources, blobs and site
+//      contents): claimed `deleting` in the same statement that checks they
+//      are unreferenced (taking turns across accounts), deleted from R2, and
+//      only then their rows
 //   5. retire sessions whose hold ended, and forget old ones
-//   6. delete sites that never completed a publish, freeing their slugs
+//   6. delete sites that never completed a publish (their pointer, then the
+//      row), freeing their slugs
 //
-// Every step that asks whether a session has expired or still holds asks it
-// of `holdCutoff`, GC's clock less GC_CLOCK_SKEW_MARGIN_MS: a complete judges
-// the same session by its own Worker's clock, which may lag GC's.
+// A site's files are ordinary objects: what no retained version lists is
+// collected by step 4 like any other. Every step that asks whether a session
+// has expired or still holds asks it of `holdCutoff`, GC's clock less
+// GC_CLOCK_SKEW_MARGIN_MS: a complete judges the same session by its own
+// Worker's clock, which may lag GC's.
 
 export type GcLimits = {
   runBudgetMs: number;
   objectsPerRun: number;
   deleteBatch: number;
-  sitesPerRun: number;
+  pointerSyncsPerRun: number;
   abandonedSitesPerRun: number;
-  siteKeysPerVisit: number;
-  siteKeysPerRun: number;
   sessionsPerStatement: number;
   sessionStatementsPerRun: number;
 };
@@ -76,21 +64,11 @@ export const GC_LIMITS: GcLimits = {
   runBudgetMs: GC_RUN_BUDGET_MS,
   objectsPerRun: GC_OBJECTS_PER_RUN,
   deleteBatch: R2_DELETE_BATCH,
-  sitesPerRun: GC_SITES_PER_RUN,
+  pointerSyncsPerRun: GC_POINTER_SYNCS_PER_RUN,
   abandonedSitesPerRun: GC_ABANDONED_SITES_PER_RUN,
-  siteKeysPerVisit: GC_SITE_KEYS_PER_VISIT,
-  siteKeysPerRun: GC_SITE_KEYS_PER_RUN,
   sessionsPerStatement: GC_SESSIONS_PER_STATEMENT,
   sessionStatementsPerRun: GC_SESSION_STATEMENTS_PER_RUN,
 };
-
-// Which steps a run takes.
-export type GcMode = "full" | "sites";
-
-// Anything but the site-cleanup cron is the hourly run (GC_CRON), so a
-// changed or manually triggered cron still gets the full GC.
-export const gcModeFor = (cron: string): GcMode =>
-  cron === GC_SITE_CLEANUP_CRON ? "sites" : "full";
 
 export type GcDeps = {
   store: PublishStore;
@@ -104,14 +82,13 @@ export type GcDeps = {
 export type GcReport = {
   expiredSessions: number;
   prunedVersions: number;
+  syncedPointers: number;
   deletedObjects: number;
   failedObjectBatches: number;
-  cleanedSites: number;
-  skippedSites: number;
-  deletedSiteKeys: number;
   retiredSessions: number;
   deletedSessions: number;
   deletedAbandonedSites: number;
+  skippedSites: number;
   // Steps that stopped at a limit with work left.
   backlog: string[];
   errors: string[];
@@ -134,7 +111,6 @@ type Run = {
   outOfTime: () => boolean;
   lock: string;
   report: GcReport;
-  siteKeysLeft: number;
 };
 
 // A session holds while its hold_until is past this: GC acts on a hold only
@@ -145,16 +121,27 @@ const behind = (run: Run, step: string) => {
   if (!run.report.backlog.includes(step)) run.report.backlog.push(step);
 };
 
-const objectKey = (o: UserObjectRef) =>
-  o.kind === "source" ? sourceKey(o.userId, o.sha256) : blobKey(o.userId, o.sha256);
-
 const inBatches = <T>(items: T[], size: number) => {
   const out: T[][] = [];
   for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
   return out;
 };
 
-// Step 3. A row is deleted only after its own key is gone. A batch R2 refuses
+// Deletes `keys` from `store`, trying twice. False when R2 refused both times.
+const deleteKeys = async (store: ObjectStore, keys: string[]) => {
+  if (keys.length === 0) return true;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await store.delete(keys);
+      return true;
+    } catch (error) {
+      console.error("gc: R2 delete failed", error);
+    }
+  }
+  return false;
+};
+
+// Step 4. A row is deleted only after its own key is gone. A batch R2 refuses
 // twice keeps its rows `deleting` (never `verified`, so no commit can lean on
 // them meanwhile), and so does every batch the run did not reach: the next
 // run takes them first, as leftovers.
@@ -173,16 +160,13 @@ const collectObjects = async (run: Run) => {
       behind(run, "objects");
       return;
     }
-    const keys = batch.map(objectKey);
-    let deleted = false;
-    for (let attempt = 0; attempt < 2 && !deleted; attempt++) {
-      try {
-        await deps.sources.delete(keys);
-        deleted = true;
-      } catch (error) {
-        console.error("gc: R2 delete failed", error);
-      }
+    const keys = { sites: [] as string[], sources: [] as string[] };
+    for (const o of batch) {
+      const { bucket, key } = objectLocation(o.userId, o);
+      keys[bucket].push(key);
     }
+    const deleted =
+      (await deleteKeys(deps.sources, keys.sources)) && (await deleteKeys(deps.sites, keys.sites));
     if (!deleted) {
       // R2 is refusing; the rest waits for the next run.
       report.failedObjectBatches++;
@@ -193,180 +177,30 @@ const collectObjects = async (run: Run) => {
   }
 };
 
-const parseEntries = (json: string | null): { path: string; sha256: string }[] => {
-  if (!json) return [];
-  try {
-    const parsed = JSON.parse(json) as unknown;
-    return Array.isArray(parsed)
-      ? parsed.map((e: { path?: unknown; sha256?: unknown }) => ({
-          path: String(e.path),
-          sha256: String(e.sha256),
-        }))
-      : [];
-  } catch {
-    return [];
+// Step 3. Conditional pointer writes make this safe beside a complete that is
+// writing the same pointer: the older version never wins.
+const syncPointers = async (run: Run) => {
+  const { deps, limits, report } = run;
+  const sites = await deps.store.sitesBehindPointer(limits.pointerSyncsPerRun);
+  if (sites.length >= limits.pointerSyncsPerRun) behind(run, "pointers");
+  for (const site of sites) {
+    if (run.outOfTime()) {
+      behind(run, "pointers");
+      return;
+    }
+    try {
+      const outcome = await syncPointer(deps, site);
+      if (outcome === "written" || outcome === "current") report.syncedPointers++;
+      else behind(run, "pointers");
+    } catch (error) {
+      console.error(`gc: pointer sync of ${site.id} failed`, error);
+      report.errors.push(`pointers:${site.id}`);
+    }
   }
 };
 
-// Deletes every key under <slug>/ that `keep` lacks (all of them without a
-// keep set) as it lists, one R2 batch at a time, so memory stays one batch
-// whatever the prefix holds. Before each delete it re-checks that the GC lock
-// is still ours: once it lapses a complete may own the site. Stops early at
-// the per-visit or per-run key limit; `complete` says whether it saw every key.
-const deleteSiteKeys = async (run: Run, site: SiteRef, keep: Set<string> | null) => {
-  const { deps, limits, lock } = run;
-  const prefix = `${site.slug}/`;
-  let listed = 0;
-  let deleted = 0;
-  let stale: string[] = [];
-  const flush = async () => {
-    if (stale.length === 0) return true;
-    if (!(await deps.store.checkCompleteLock(site.id, lock, run.clock(), 0))) return false;
-    await deps.sites.delete(stale);
-    deleted += stale.length;
-    stale = [];
-    return true;
-  };
-  for await (const info of deps.sites.list(prefix)) {
-    if (listed >= limits.siteKeysPerVisit || run.siteKeysLeft <= 0) {
-      await flush();
-      return { deleted, complete: false };
-    }
-    listed++;
-    run.siteKeysLeft--;
-    if (!keep || !keep.has(info.key.slice(prefix.length))) stale.push(info.key);
-    if (stale.length >= limits.deleteBatch && !(await flush())) {
-      return { deleted, complete: false };
-    }
-  }
-  const complete = await flush();
-  return { deleted, complete };
-};
-
-// The paths a protected "*" stands for, worked out from the entry files that
-// are actually live: one that is the head's refers only to live_files; any
-// other was written by a complete that did not commit, whose session plan
-// names what it refers to. What an entry refers to is a function of its
-// bytes, so the newest GC_STAR_PLANS_PER_ENTRY plans whose entry has the
-// live one's sha256 account for it. Null when an entry matches neither and
-// is recent: then its references are unknowable, and nothing may be deleted
-// yet. `plans`: the sessions whose plans it used.
-const resolveStar = async (
-  run: Run,
-  site: SiteRow,
-): Promise<{ paths: string[]; plans: string[] } | null> => {
-  const { deps, now } = run;
-  const head = parseEntries(site.liveEntries);
-  const paths = new Set<string>();
-  const used = new Set<string>();
-  for (const path of ENTRY_PATHS) {
-    const live = await deps.sites.head(siteKey(site.slug, path));
-    if (!live?.sha256) continue;
-    const sha256 = live.sha256;
-    if (head.some((e) => e.path === path && e.sha256 === sha256)) continue;
-    const found = await deps.store.uncommittedPlansMentioning({
-      siteId: site.id,
-      path,
-      sha256,
-      limit: GC_STAR_PLANS_PER_ENTRY,
-    });
-    let matched = false;
-    for (const { id, plan: raw } of found) {
-      const plan = parsePlan(raw);
-      if (!plan?.site.entries.some((e) => e.path === path && e.sha256 === sha256)) continue;
-      matched = true;
-      used.add(id);
-      for (const p of planSitePaths(plan)) paths.add(p);
-    }
-    if (!matched && live.uploaded.getTime() >= now - GC_UNRESOLVED_ENTRY_MAX_AGE_MS) return null;
-  }
-  return { paths: [...paths], plans: [...used] };
-};
-
-// Every path the site may still serve: the head's files, what an
-// uncommitted complete protected, and the plan of every uncommitted session
-// still able to upload. Null when a plan cannot be read.
-const keepSet = (
-  liveFiles: string | null,
-  protectedPaths: string[],
-  held: { plan: string | null }[],
-): Set<string> | null => {
-  const keep = new Set([...parsePaths(liveFiles), ...protectedPaths]);
-  for (const { plan: raw } of held) {
-    if (raw === null) continue; // committed: its paths went live with it
-    // Stubbed while it still holds (within GC's margin): an abort that was
-    // never given a URL, so it has no paths to keep.
-    if (raw === PLAN_STUB) continue;
-    const plan = parsePlan(raw);
-    if (!plan) return null;
-    for (const p of planSitePaths(plan)) keep.add(p);
-  }
-  return keep;
-};
-
-// Step 4, one site.
-const cleanSite = async (run: Run, due: SiteRef) => {
-  const { deps, lock, report } = run;
-  const now = run.clock();
-  if (!(await deps.store.claimSiteLockForGc(due.id, lock, now, now + GC_LOCK_TTL_MS))) {
-    report.skippedSites++;
-    return;
-  }
-  try {
-    const site = await deps.store.findSiteById(due.id);
-    if (!site) return;
-    const seen = site.cleanupAfter;
-    const held = await deps.store.heldSessionPlans(site.id, holdCutoff(now));
-    const lastHold = held.reduce((max, s) => Math.max(max, s.holdUntil), 0);
-    let next: number | null = lastHold > 0 ? lastHold + SITE_CLEANUP_DELAY_MS : null;
-
-    let protectedPaths: string[] | null = parsePaths(site.protectedFiles);
-    if (site.protectedFiles === "*") {
-      const resolved = await resolveStar(run, site);
-      protectedPaths = resolved?.paths ?? null;
-      if (resolved) {
-        // Every other plan kept for the "*" goes: while the site stays "*"
-        // (its paths do not fit the row), nothing else would ever stub them.
-        await deps.store.releaseStarPlans(site.id, resolved.plans, holdCutoff(now));
-        // Store what "*" stood for, so later visits (and session retirement)
-        // no longer need the plans. Still "*" when it does not fit the row;
-        // this visit uses the paths either way.
-        const stored =
-          resolved.paths.length === 0 ? null : unionProtected(null, resolved.paths, site.liveFiles);
-        if (stored !== "*") {
-          await deps.store.setProtectedFiles({
-            siteId: site.id,
-            lock,
-            protectedFiles: stored,
-            seenProtected: "*",
-          });
-        }
-      }
-    }
-    const keep = protectedPaths ? keepSet(site.liveFiles, protectedPaths, held) : null;
-    if (keep) {
-      const { deleted, complete } = await deleteSiteKeys(run, site, keep);
-      report.deletedSiteKeys += deleted;
-      if (!complete) {
-        // Leave cleanup_after due: the next run lists the site again.
-        behind(run, "site-cleanup");
-        return;
-      }
-    } else {
-      // Nothing is deleted until a commit, or a complete whose entries all
-      // went live, makes the paths knowable again; come back tomorrow rather
-      // than head every run's batch.
-      next = Math.max(next ?? 0, now + GC_MIN_AGE_MS);
-    }
-    report.cleanedSites++;
-    await deps.store.finishSiteCleanup(site.id, lock, seen, next, now);
-  } finally {
-    // finishSiteCleanup releases too; this covers the early exits.
-    await deps.store.releaseCompleteLock(due.id, lock);
-  }
-};
-
-// Step 6, one site: its keys first, then the row (which frees the slug).
+// Step 6, one site: its pointer first (a site that never completed has none,
+// but nothing must serve a slug once it is free), then the row.
 const deleteAbandonedSite = async (run: Run, site: SiteRef) => {
   const { deps, lock, report } = run;
   const now = run.clock();
@@ -375,12 +209,7 @@ const deleteAbandonedSite = async (run: Run, site: SiteRef) => {
     return;
   }
   try {
-    const { deleted, complete } = await deleteSiteKeys(run, site, null);
-    report.deletedSiteKeys += deleted;
-    if (!complete) {
-      behind(run, "abandoned-sites");
-      return;
-    }
+    await deps.sites.delete([pointerKey(site.slug)]);
     if (await deps.store.deleteAbandonedSite(site.id, lock, holdCutoff(run.clock()))) {
       report.deletedAbandonedSites++;
     }
@@ -419,29 +248,20 @@ const sweepSessions = async (run: Run) => {
   );
 };
 
-export const runGc = async (
-  deps: GcDeps,
-  when: Date,
-  mode: GcMode = "full",
-): Promise<GcReport> => {
+export const runGc = async (deps: GcDeps, when: Date): Promise<GcReport> => {
   const now = when.getTime();
-  const limits = {
-    ...GC_LIMITS,
-    ...(mode === "sites" ? { runBudgetMs: GC_SITE_RUN_BUDGET_MS } : {}),
-    ...deps.limits,
-  };
+  const limits = { ...GC_LIMITS, ...deps.limits };
   const started = performance.now();
   const report: GcReport = {
     expiredSessions: 0,
     prunedVersions: 0,
+    syncedPointers: 0,
     deletedObjects: 0,
     failedObjectBatches: 0,
-    cleanedSites: 0,
-    skippedSites: 0,
-    deletedSiteKeys: 0,
     retiredSessions: 0,
     deletedSessions: 0,
     deletedAbandonedSites: 0,
+    skippedSites: 0,
     backlog: [],
     errors: [],
   };
@@ -453,7 +273,6 @@ export const runGc = async (
     outOfTime: () => performance.now() - started > limits.runBudgetMs,
     lock: `gc:${deps.runId()}`,
     report,
-    siteKeysLeft: limits.siteKeysPerRun,
   };
 
   const step = async (name: string, body: () => Promise<void>) => {
@@ -464,38 +283,6 @@ export const runGc = async (
       report.errors.push(name);
     }
   };
-  // One site at a time, until the run's time or site keys run out.
-  const eachSite = async (
-    name: string,
-    sites: SiteRef[],
-    visit: (site: SiteRef) => Promise<void>,
-  ) => {
-    for (const site of sites) {
-      if (run.outOfTime() || run.siteKeysLeft <= 0) {
-        behind(run, name);
-        return;
-      }
-      await step(`${name}:${site.id}`, () => visit(site));
-    }
-  };
-
-  const cleanSites = () =>
-    step("site-cleanup", async () => {
-      const due = await deps.store.sitesDueForCleanup(
-        now,
-        now - GC_MAX_CLEANUP_DEFER_MS,
-        limits.sitesPerRun,
-      );
-      if (due.length >= limits.sitesPerRun) behind(run, "site-cleanup");
-      await eachSite("site-cleanup", due, (site) => cleanSite(run, site));
-    });
-  if (mode === "sites") {
-    await cleanSites();
-    if (report.backlog.length > 0) {
-      console.warn("gc: sites left for the next run", report.backlog);
-    }
-    return report;
-  }
 
   await step("expire-sessions", async () => {
     // A session's expiry is its hold's end until something ends the hold
@@ -505,8 +292,10 @@ export const runGc = async (
   await step("prune-versions", async () => {
     report.prunedVersions = await deps.store.pruneVersions(KEEP_VERSIONS);
   });
+  // Before objects: a pointer that lags its head may still list contents of
+  // a version pruned since, and re-syncing it first narrows that window.
+  await step("pointers", () => syncPointers(run));
   await step("objects", () => collectObjects(run));
-  await cleanSites();
   await step("sessions", () => sweepSessions(run));
   await step("abandoned-sites", async () => {
     const abandoned = await deps.store.abandonedSites(
@@ -515,7 +304,13 @@ export const runGc = async (
       limits.abandonedSitesPerRun,
     );
     if (abandoned.length >= limits.abandonedSitesPerRun) behind(run, "abandoned-sites");
-    await eachSite("abandoned-sites", abandoned, (site) => deleteAbandonedSite(run, site));
+    for (const site of abandoned) {
+      if (run.outOfTime()) {
+        behind(run, "abandoned-sites");
+        return;
+      }
+      await step(`abandoned-sites:${site.id}`, () => deleteAbandonedSite(run, site));
+    }
   });
 
   if (report.backlog.length > 0) {

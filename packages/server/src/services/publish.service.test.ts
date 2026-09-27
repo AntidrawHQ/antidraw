@@ -5,26 +5,23 @@ import {
   MAX_OPEN_SESSIONS_PER_ACCOUNT,
   MAX_PENDING_SITE_BYTES,
   MAX_PLAN_JSON_BYTES,
-  MAX_PROTECTED_JSON_BYTES,
-  GC_HURRY_INTERVAL_MS,
-  MAX_SITE_STORED_BYTES,
-  MAX_SITE_STORED_FILES,
   MAX_SITES_PER_ACCOUNT,
   QUOTA_BYTES,
   SESSION_TTL_MS,
-  SITE_CLEANUP_DELAY_MS,
 } from "../lib/publish-limits";
-import { beginPublishRequest } from "../lib/publish.schemas";
-import { blobKey, sourceKey } from "../lib/storage";
+import { beginPublishRequest, completePublishRequest } from "../lib/publish.schemas";
+import { blobKey, pointerKey, siteContentKey, sourceKey } from "../lib/storage";
+import { sha256Hex } from "../test/memory-object-store";
 import {
   beginRequest,
-  completeRequest,
   defaultEntries,
+  entryFiles,
   harnesses,
   hex,
   makeTestDeps,
   MiB,
   performUploads,
+  pointerOf,
   workspaceId,
   WORKSPACE,
   type PlanInput,
@@ -39,7 +36,6 @@ import {
   getSiteStatus,
   makePublishDeps,
   setAllowRemix,
-  unionProtected,
 } from "./publish.service";
 import { PLAN_STUB } from "./publish.store";
 
@@ -53,12 +49,7 @@ const begin = async (deps: TestDeps, input: PlanInput = {}, user = USER) =>
 const publish = async (deps: TestDeps, input: PlanInput = {}, user = USER) => {
   const begun = (await begin(deps, input, user))._unsafeUnwrap();
   performUploads(deps, begun.uploads);
-  const completed = await completePublish(
-    deps,
-    user,
-    begun.publish.id,
-    completeRequest(input.entries ?? defaultEntries()),
-  );
+  const completed = await completePublish(deps, user, begun.publish.id);
   return { begun, completed: completed._unsafeUnwrap() };
 };
 
@@ -76,7 +67,8 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
     it("asks for every object of a first publish, and nothing the server has", async () => {
       const deps = setup();
       const { begun, completed } = await publish(deps);
-      expect(kinds(begun.uploads)).toEqual(["blob", "site", "site", "site", "source"]);
+      // The source, the blob, and six site contents (three files, three pages).
+      expect(kinds(begun.uploads)).toEqual(["blob", ...Array<string>(6).fill("site"), "source"]);
       expect(begun.publish).toMatchObject({ baseVersion: 0, slug: "acme-canvas-saaab" });
       expect(begun.publish.expiresAt).toBe(new Date(deps.clock.now + SESSION_TTL_MS).toISOString());
       expect(completed.version).toBe(1);
@@ -86,7 +78,7 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       expect(again.publish).toMatchObject({ baseVersion: 1, siteId: begun.publish.siteId });
     });
 
-    it("signs uploads with the right buckets, keys, types and cache control", async () => {
+    it("signs uploads with the right buckets, keys and types, and no cache control", async () => {
       const deps = setup();
       const { uploads } = (await begin(deps))._unsafeUnwrap();
       const byKind = (kind: string, path?: string) =>
@@ -99,25 +91,48 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
         `https://upload.test/sources/${blobKey(USER, hex("blob-1"))}`,
       );
       expect(byKind("blob").headers["content-type"]).toBe("application/octet-stream");
+      // A site file's content goes to the account's content key, whatever
+      // its path: the pointer names its type and caching.
       const hashed = byKind("site", "assets/index-AbC12345.js");
       expect(hashed.url).toBe(
-        "https://upload.test/sites/acme-canvas-saaab/assets/index-AbC12345.js",
+        `https://upload.test/sites/c/${USER}/${hex("site-assets/index-AbC12345.js")}`,
       );
-      expect(hashed.headers["cache-control"]).toBe("public, max-age=31536000, immutable");
-      expect(byKind("site", "logo.png").headers["cache-control"]).toBeUndefined();
-      expect(byKind("source").headers["cache-control"]).toBeUndefined();
+      expect(hashed.headers["content-type"]).toBe("application/octet-stream");
+      const index = byKind("site", "index.html");
+      expect(index.url).toBe(
+        `https://upload.test/sites/${siteContentKey(USER, await sha256Hex(defaultEntries()["index.html"]))}`,
+      );
+      for (const u of uploads) expect(u.headers["cache-control"]).toBeUndefined();
+      expect(byKind("source").path).toBeUndefined();
     });
 
-    it("re-uploads a site file whose stored copy differs (repairs public files)", async () => {
+    it("asks once for a content several paths share, and never for one the account has", async () => {
       const deps = setup();
-      const { begun } = await publish(deps);
-      deps.sitesBucket.upload(`${begun.publish.slug}/logo.png`, {
-        size: 1,
-        sha256: hex("tampered"),
-        contentType: "image/png",
-      });
-      const again = (await begin(deps))._unsafeUnwrap();
-      expect(again.uploads.map((u) => u.path)).toEqual(["logo.png"]);
+      const same = { sha256: hex("shared"), size: 42 };
+      const first = (
+        await begin(deps, {
+          files: [
+            { path: "a.png", ...same },
+            { path: "b/a.png", ...same },
+          ],
+        })
+      )._unsafeUnwrap();
+      expect(first.uploads.filter((u) => u.sha256 === same.sha256)).toEqual([
+        expect.objectContaining({ kind: "site", path: "a.png", size: 42 }),
+      ]);
+      performUploads(deps, first.uploads);
+      (await completePublish(deps, USER, first.publish.id))._unsafeUnwrap();
+
+      // Another site of the account, with the same contents: nothing to send.
+      const other = (
+        await begin(deps, {
+          workspace: workspaceId(2),
+          name: "Other",
+          files: [{ path: "img/c.png", ...same }],
+        })
+      )._unsafeUnwrap();
+      expect(other.uploads).toEqual([]);
+      expect(deps.sitesBucket.keys(`c/${USER}/`)).toHaveLength(4);
     });
 
     it("skips unverified objects R2 already has, re-checks them at complete, and verifies them at commit", async () => {
@@ -139,7 +154,7 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
 
       // Complete HEADs them again: one vanished meanwhile.
       deps.sourcesBucket.objects.delete(blobKey(USER, hex("blob-1")));
-      const incomplete = await completePublish(deps, USER, second.publish.id, completeRequest());
+      const incomplete = await completePublish(deps, USER, second.publish.id);
       expect(incomplete._unsafeUnwrapErr()).toMatchObject({
         status: 409,
         code: "UPLOAD_INCOMPLETE",
@@ -149,7 +164,7 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       const third = (await begin(deps))._unsafeUnwrap();
       expect(kinds(third.uploads)).toEqual(["blob"]);
       performUploads(deps, third.uploads);
-      (await completePublish(deps, USER, third.publish.id, completeRequest()))._unsafeUnwrap();
+      (await completePublish(deps, USER, third.publish.id))._unsafeUnwrap();
       const rows = await deps.store.getStoredObjects(USER, refs);
       expect(rows.every((r) => r.verified)).toBe(true);
     });
@@ -171,14 +186,43 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
         files: [
           { path: "ok.js" },
           { path: "public/.env" },
-          { path: "index.html" },
+          { path: ".hashed-files.json" },
           { path: "a/.b/c" },
         ],
       });
       expect(result._unsafeUnwrapErr()).toMatchObject({
         status: 422,
         code: "INVALID_PATH",
-        details: { paths: ["public/.env", "index.html", "a/.b/c"] },
+        details: { paths: ["public/.env", ".hashed-files.json", "a/.b/c"] },
+      });
+    });
+
+    it("refuses a site without its three entry pages", async () => {
+      const deps = setup();
+      const pages = await entryFiles();
+      const result = await begin(deps, {
+        entries: null,
+        files: [{ path: "logo.png" }, pages.find((f) => f.path === "canvas.json")!],
+      });
+      expect(result._unsafeUnwrapErr()).toMatchObject({
+        status: 400,
+        code: "INVALID_REQUEST",
+        details: { paths: ["preview.html", "index.html"] },
+      });
+    });
+
+    it("refuses a site file sha256 declared with two sizes", async () => {
+      const deps = setup();
+      const result = await begin(deps, {
+        files: [
+          { path: "a.png", sha256: hex(1), size: 10 },
+          { path: "b.png", sha256: hex(1), size: 11 },
+        ],
+      });
+      expect(result._unsafeUnwrapErr()).toMatchObject({
+        status: 400,
+        code: "INVALID_REQUEST",
+        details: { sha256: hex(1) },
       });
     });
 
@@ -262,7 +306,7 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       expect(result._unsafeUnwrapErr()).toMatchObject({
         status: 413,
         code: "SITE_TOO_LARGE",
-        details: { limitBytes: 500 * MiB, siteFileCount: 2 },
+        details: { limitBytes: 500 * MiB, siteFileCount: 5 },
       });
     });
 
@@ -272,6 +316,7 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       const segment = "x".repeat(200);
       const files = Array.from({ length: 2500 }, (_, i) => ({
         path: `assets/${i}/${segment}/${segment}/${segment}.js`,
+        sha256: hex(i + 1),
       }));
       const result = await begin(deps, { files });
       const error = result._unsafeUnwrapErr();
@@ -364,14 +409,10 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       const deps = setup();
       const { begun } = await publish(deps);
       const inFlight = (await begin(deps, { entries: defaultEntries("v2") }))._unsafeUnwrap();
+      performUploads(deps, inFlight.uploads);
       const patched = await setAllowRemix(deps, USER, begun.publish.siteId, false);
       expect(patched._unsafeUnwrap().site.allowRemix).toBe(false);
-      const done = await completePublish(
-        deps,
-        USER,
-        inFlight.publish.id,
-        completeRequest(defaultEntries("v2")),
-      );
+      const done = await completePublish(deps, USER, inFlight.publish.id);
       expect(done._unsafeUnwrap().site.allowRemix).toBe(false);
     });
 
@@ -438,8 +479,7 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
         largeFiles: [{ path: "c.bin", sha256: hex(3), size: 100 * MiB }],
       });
       expect(refused._unsafeUnwrapErr().code).toBe("QUOTA_EXCEEDED");
-      const site = await deps.store.findSiteByWorkspace(USER, workspaceId(3));
-      expect(await deps.store.heldSessionPlans(site!.id, deps.clock.now)).toEqual([]);
+      expect((await deps.store.openSessions(USER, deps.clock.now)).count).toBe(2);
       expect(await deps.store.getStoredObjects(USER, [{ kind: "blob", sha256: hex(3) }])).toEqual(
         [],
       );
@@ -548,7 +588,7 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
     it("releases the hold at once when the session had no object URLs (Q9)", async () => {
       const deps = setup();
       await publish(deps);
-      const begun = (await begin(deps, { entries: defaultEntries("v2") }))._unsafeUnwrap();
+      const begun = (await begin(deps))._unsafeUnwrap();
       expect(begun.uploads).toEqual([]);
       (await abortPublish(deps, USER, begun.publish.id))._unsafeUnwrap();
       expect(await deps.store.getSession(begun.publish.id)).toMatchObject({
@@ -557,51 +597,6 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
         // It no longer counts as open, so its plan does not wait for GC.
         plan: PLAN_STUB,
       });
-    });
-
-    it("keeps a released session's plan while it may be live on a * site, or holds the lock", async () => {
-      const deps = setup();
-      const { begun: first } = await publish(deps);
-      const siteId = first.publish.siteId;
-      const noUrls = async (tag: string) => {
-        const begun = (await begin(deps, { entries: defaultEntries(tag) }))._unsafeUnwrap();
-        expect(begun.uploads).toEqual([]);
-        return begun.publish.id;
-      };
-
-      // Its complete wrote preview.html, then failed: the live entries may be its.
-      const starred = await noUrls("v2");
-      deps.sitesBucket.failPut = (key) => key.endsWith("/canvas.json");
-      const failed = await completePublish(
-        deps,
-        USER,
-        starred,
-        completeRequest(defaultEntries("v2")),
-      );
-      expect(failed._unsafeUnwrapErr().code).toBe("STORAGE_FAILED");
-      deps.sitesBucket.failPut = () => false;
-      await deps.harness.setProtected(siteId, "*");
-      (await abortPublish(deps, USER, starred))._unsafeUnwrap();
-      expect((await deps.store.getSession(starred))?.plan).not.toBe(PLAN_STUB);
-
-      // One that never wrote entries goes, "*" or not: kept, such plans (any
-      // number of begins, each aborted at once) would pile up in D1.
-      const unwritten = await noUrls("v2");
-      (await abortPublish(deps, USER, unwritten))._unsafeUnwrap();
-      expect((await deps.store.getSession(unwritten))?.plan).toBe(PLAN_STUB);
-      await deps.harness.setProtected(siteId, null);
-
-      // A complete of it is in flight: it may still write entries from this plan.
-      const locked = await noUrls("v3");
-      await deps.store.claimCompleteLock({
-        siteId,
-        sessionId: locked,
-        baseVersion: 1,
-        now: deps.clock.now,
-        expiresAt: deps.clock.now + 60_000,
-      });
-      (await abortPublish(deps, USER, locked))._unsafeUnwrap();
-      expect((await deps.store.getSession(locked))?.plan).not.toBe(PLAN_STUB);
     });
 
     it("answers 404 for an unknown or foreign session", async () => {
@@ -620,99 +615,141 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
   });
 
   describe("complete", () => {
-    it("writes the entries after verification, in order, and commits the version", async () => {
+    it("commits the version, then switches the site over with one pointer write", async () => {
       const deps = setup();
       const begun = (await begin(deps))._unsafeUnwrap();
       performUploads(deps, begun.uploads);
-      const writesBefore = deps.sitesBucket.writes.length;
-      const done = (
-        await completePublish(deps, USER, begun.publish.id, completeRequest())
-      )._unsafeUnwrap();
       const slug = begun.publish.slug;
-      expect(deps.sitesBucket.writes.slice(writesBefore)).toEqual([
-        `${slug}/preview.html`,
-        `${slug}/canvas.json`,
-        `${slug}/index.html`,
-      ]);
-      const index = deps.sitesBucket.objects.get(`${slug}/index.html`)!;
-      expect(index.contentType).toBe("text/html; charset=utf-8");
-      expect(index.cacheControl).toBeUndefined();
-      expect(deps.sitesBucket.objects.get(`${slug}/canvas.json`)?.contentType).toBe(
-        "application/json; charset=utf-8",
-      );
-      expect(done).toMatchObject({
-        version: 1,
-        site: { slug, headVersion: 1, url: `https://${slug}.antidraw.test`, allowRemix: true },
-      });
-      expect(done.site.lastPublishedAt).toBe(new Date(deps.clock.now).toISOString());
-      const site = await deps.store.findSiteById(begun.publish.siteId);
-      expect(site).toMatchObject({ completeLock: null, protectedFiles: null });
-      expect(JSON.parse(site!.liveFiles!)).toEqual([
-        "_antidraw/viewer.js",
+      expect(pointerOf(deps, slug)).toBeNull(); // uploads change nothing visitors see
+      const writesBefore = deps.sitesBucket.writes.length;
+      const done = (await completePublish(deps, USER, begun.publish.id))._unsafeUnwrap();
+      expect(deps.sitesBucket.writes.slice(writesBefore)).toEqual([pointerKey(slug)]);
+      expect(deps.sitesBucket.objects.get(pointerKey(slug))?.contentType).toBe("application/json");
+      const pointer = pointerOf(deps, slug)!;
+      expect(pointer).toMatchObject({ v: 1, version: 1, u: USER });
+      expect(Object.keys(pointer.files).sort()).toEqual([
+        "_antidraw/viewer-AbC12345.js",
         "assets/index-AbC12345.js",
         "canvas.json",
         "index.html",
         "logo.png",
         "preview.html",
       ]);
+      const index = defaultEntries()["index.html"];
+      expect(pointer.files["index.html"]).toEqual({
+        h: await sha256Hex(index),
+        s: new TextEncoder().encode(index).length,
+        t: "text/html; charset=utf-8",
+      });
+      expect(pointer.files["logo.png"]).toEqual({
+        h: hex("site-logo.png"),
+        s: 102,
+        t: "image/png",
+      });
+      expect(done).toMatchObject({
+        version: 1,
+        site: { slug, headVersion: 1, url: `https://${slug}.antidraw.test`, allowRemix: true },
+      });
+      expect(done.site.lastPublishedAt).toBe(new Date(deps.clock.now).toISOString());
+      expect(await deps.store.findSiteById(begun.publish.siteId)).toMatchObject({
+        completeLock: null,
+        headVersion: 1,
+        pointerVersion: 1,
+      });
     });
 
-    it("refuses with UPLOAD_INCOMPLETE, writing nothing, when a site file is missing or differs", async () => {
+    it("takes no data: the request body is an empty object", () => {
+      expect(completePublishRequest.safeParse({}).success).toBe(true);
+    });
+
+    it("refuses with UPLOAD_INCOMPLETE, changing nothing visitors see, when a content is missing or differs", async () => {
       const deps = setup();
-      const begun = (await begin(deps))._unsafeUnwrap();
+      const { begun: first } = await publish(deps);
+      const slug = first.publish.slug;
+      const input = {
+        files: [
+          { path: "logo.png", sha256: hex("logo-2") },
+          { path: "_antidraw/viewer-AbC12345.js", sha256: hex("viewer-2"), size: 101 },
+        ],
+      };
+      const begun = (await begin(deps, input))._unsafeUnwrap();
+      expect(begun.uploads.map((u) => u.path).sort()).toEqual([
+        "_antidraw/viewer-AbC12345.js",
+        "logo.png",
+      ]);
       performUploads(
         deps,
         begun.uploads.filter((u) => u.path !== "logo.png"),
       );
-      deps.sitesBucket.upload(`${begun.publish.slug}/_antidraw/viewer.js`, {
+      deps.sitesBucket.upload(siteContentKey(USER, hex("viewer-2")), {
         size: 101,
         sha256: hex("wrong"),
       });
-      const writes = deps.sitesBucket.writes.length;
-      const result = await completePublish(deps, USER, begun.publish.id, completeRequest());
+      const pointer = deps.sitesBucket.text(pointerKey(slug));
+      const result = await completePublish(deps, USER, begun.publish.id);
       const error = result._unsafeUnwrapErr();
       expect(error).toMatchObject({ status: 409, code: "UPLOAD_INCOMPLETE" });
-      expect(
-        (error.details as { missing: { path?: string }[] }).missing.map((m) => m.path).sort(),
-      ).toEqual(["_antidraw/viewer.js", "logo.png"]);
-      expect(deps.sitesBucket.writes.length).toBe(writes);
-      expect(await deps.harness.versionNumbers(begun.publish.siteId)).toEqual([]);
-      expect((await deps.store.findSiteById(begun.publish.siteId))?.completeLock).toBeNull();
+      expect((error.details as { missing: { kind: string; path?: string }[] }).missing).toEqual(
+        expect.arrayContaining([
+          { kind: "site", sha256: hex("logo-2"), path: "logo.png" },
+          { kind: "site", sha256: hex("viewer-2"), path: "_antidraw/viewer-AbC12345.js" },
+        ]),
+      );
+      expect(deps.sitesBucket.text(pointerKey(slug))).toBe(pointer);
+      expect(await deps.harness.versionNumbers(first.publish.siteId)).toEqual([1]);
+      expect((await deps.store.findSiteById(first.publish.siteId))?.completeLock).toBeNull();
 
       // Upload the rest and it goes through.
       performUploads(deps, begun.uploads);
-      expect((await completePublish(deps, USER, begun.publish.id, completeRequest())).isOk()).toBe(
-        true,
-      );
+      expect((await completePublish(deps, USER, begun.publish.id)).isOk()).toBe(true);
+      expect(pointerOf(deps, slug)?.files["logo.png"].h).toBe(hex("logo-2"));
     });
 
-    it("refuses entries that do not match the plan", async () => {
+    it("answers STORAGE_FAILED when the switch-over fails, and a retry switches over", async () => {
       const deps = setup();
-      const begun = (await begin(deps))._unsafeUnwrap();
+      const { begun: first } = await publish(deps);
+      const slug = first.publish.slug;
+      const begun = (await begin(deps, { entries: defaultEntries("v2") }))._unsafeUnwrap();
       performUploads(deps, begun.uploads);
-      const result = await completePublish(
-        deps,
-        USER,
-        begun.publish.id,
-        completeRequest({ ...defaultEntries(), "canvas.json": '{"tag":"v9"}' }),
+      deps.sitesBucket.failPut = (key) => key === pointerKey(slug);
+      const failed = await completePublish(deps, USER, begun.publish.id);
+      expect(failed._unsafeUnwrapErr()).toMatchObject({ status: 500, code: "STORAGE_FAILED" });
+      // Committed, not yet live.
+      expect((await deps.store.getSession(begun.publish.id))?.status).toBe("completed");
+      expect(pointerOf(deps, slug)?.version).toBe(1);
+      deps.sitesBucket.failPut = () => false;
+
+      const retried = (await completePublish(deps, USER, begun.publish.id))._unsafeUnwrap();
+      expect(retried).toMatchObject({ version: 2, site: { headVersion: 2 } });
+      expect(pointerOf(deps, slug)?.version).toBe(2);
+      expect((await deps.store.findSiteById(first.publish.siteId))?.pointerVersion).toBe(2);
+    });
+
+    it("never lets a retry of an older version replace a newer pointer", async () => {
+      const deps = setup();
+      const { begun: first } = await publish(deps);
+      const slug = first.publish.slug;
+      const second = (await begin(deps, { entries: defaultEntries("v2") }))._unsafeUnwrap();
+      performUploads(deps, second.uploads);
+      deps.sitesBucket.failPut = (key) => key === pointerKey(slug);
+      await completePublish(deps, USER, second.publish.id);
+      deps.sitesBucket.failPut = () => false;
+      await publish(deps, { entries: defaultEntries("v3") });
+      expect(pointerOf(deps, slug)?.version).toBe(3);
+
+      const writes = deps.sitesBucket.writes.length;
+      expect((await completePublish(deps, USER, second.publish.id))._unsafeUnwrap().version).toBe(
+        2,
       );
-      expect(result._unsafeUnwrapErr()).toMatchObject({
-        status: 422,
-        code: "ENTRY_MISMATCH",
-        details: { path: "canvas.json" },
-      });
-      const garbled = completeRequest();
-      garbled.entries[0].contentBase64 = "%%%";
-      expect(
-        (await completePublish(deps, USER, begun.publish.id, garbled))._unsafeUnwrapErr().code,
-      ).toBe("ENTRY_MISMATCH");
+      expect(deps.sitesBucket.writes.length).toBe(writes);
+      expect(pointerOf(deps, slug)?.version).toBe(3);
     });
 
     it("is idempotent once completed", async () => {
       const deps = setup();
       const { begun, completed } = await publish(deps);
       const writes = deps.sitesBucket.writes.length;
-      const again = await completePublish(deps, USER, begun.publish.id, completeRequest());
+      const again = await completePublish(deps, USER, begun.publish.id);
       expect(again._unsafeUnwrap()).toEqual(completed);
       expect(deps.sitesBucket.writes.length).toBe(writes);
     });
@@ -723,7 +760,7 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       performUploads(deps, begun.uploads);
       deps.clock.now += SESSION_TTL_MS + 1;
       expect(
-        (await completePublish(deps, USER, begun.publish.id, completeRequest()))._unsafeUnwrapErr(),
+        (await completePublish(deps, USER, begun.publish.id))._unsafeUnwrapErr(),
       ).toMatchObject({
         status: 410,
         code: "PUBLISH_EXPIRED",
@@ -731,19 +768,17 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
 
       const other = (await begin(deps))._unsafeUnwrap();
       (await abortPublish(deps, USER, other.publish.id))._unsafeUnwrap();
-      expect(
-        (await completePublish(deps, USER, other.publish.id, completeRequest()))._unsafeUnwrapErr()
-          .code,
-      ).toBe("PUBLISH_EXPIRED");
+      expect((await completePublish(deps, USER, other.publish.id))._unsafeUnwrapErr().code).toBe(
+        "PUBLISH_EXPIRED",
+      );
     });
 
     it("answers 404 for another user's session", async () => {
       const deps = setup();
       const begun = (await begin(deps))._unsafeUnwrap();
-      expect(
-        (await completePublish(deps, OTHER, begun.publish.id, completeRequest()))._unsafeUnwrapErr()
-          .code,
-      ).toBe("PUBLISH_NOT_FOUND");
+      expect((await completePublish(deps, OTHER, begun.publish.id))._unsafeUnwrapErr().code).toBe(
+        "PUBLISH_NOT_FOUND",
+      );
     });
 
     it("lets the first of two sessions on one base win", async () => {
@@ -751,15 +786,8 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       const a = (await begin(deps))._unsafeUnwrap();
       const b = (await begin(deps, { entries: defaultEntries("b") }))._unsafeUnwrap();
       performUploads(deps, [...a.uploads, ...b.uploads]);
-      expect((await completePublish(deps, USER, a.publish.id, completeRequest())).isOk()).toBe(
-        true,
-      );
-      const lost = await completePublish(
-        deps,
-        USER,
-        b.publish.id,
-        completeRequest(defaultEntries("b")),
-      );
+      expect((await completePublish(deps, USER, a.publish.id)).isOk()).toBe(true);
+      const lost = await completePublish(deps, USER, b.publish.id);
       expect(lost._unsafeUnwrapErr()).toMatchObject({ status: 409, code: "PUBLISH_CONFLICT" });
       expect(await deps.harness.versionNumbers(a.publish.siteId)).toEqual([1]);
     });
@@ -772,12 +800,10 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       expect(
         await deps.store.claimSiteLockForGc(begun.publish.siteId, "gc:x", now, now + 60_000),
       ).toBe(true);
-      const busy = await completePublish(deps, USER, begun.publish.id, completeRequest());
+      const busy = await completePublish(deps, USER, begun.publish.id);
       expect(busy._unsafeUnwrapErr()).toMatchObject({ status: 409, code: "PUBLISH_IN_PROGRESS" });
       deps.clock.now += 60_001;
-      expect((await completePublish(deps, USER, begun.publish.id, completeRequest())).isOk()).toBe(
-        true,
-      );
+      expect((await completePublish(deps, USER, begun.publish.id)).isOk()).toBe(true);
     });
 
     it("keeps the 5 newest versions and every keep=1 version", async () => {
@@ -791,7 +817,7 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       expect(await deps.harness.versionNumbers(siteId)).toEqual([2, 4, 5, 6, 7, 8]);
     });
 
-    it("fails the commit, not the pages, when GC claimed an object meanwhile", async () => {
+    it("fails the commit when GC claimed an object meanwhile", async () => {
       const deps = setup();
       // An object uploaded by an abandoned session, whose hold then ended.
       const abandoned = (await begin(deps))._unsafeUnwrap();
@@ -802,334 +828,59 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
         minCreatedAt: deps.clock.now - 24 * 3600_000,
         limit: 500,
       });
-      expect(claimed.map((c) => c.kind).sort()).toEqual(["blob", "source"]);
+      expect(claimed).toHaveLength(8);
 
       // A begin while GC is deleting: it must upload again...
       const begun = (await begin(deps))._unsafeUnwrap();
-      expect(kinds(begun.uploads)).toEqual(["blob", "source"]);
+      expect(begun.uploads).toHaveLength(8);
       performUploads(deps, begun.uploads);
       // ...and never commit against the doomed rows.
-      const result = await completePublish(deps, USER, begun.publish.id, completeRequest());
+      const result = await completePublish(deps, USER, begun.publish.id);
       expect(result._unsafeUnwrapErr()).toMatchObject({ status: 409, code: "UPLOAD_INCOMPLETE" });
       expect(await deps.harness.versionNumbers(begun.publish.siteId)).toEqual([]);
+      expect(pointerOf(deps, begun.publish.slug)).toBeNull();
     });
 
     it("catches a verified object removed from R2 out of band", async () => {
       const deps = setup();
       await publish(deps);
       deps.sourcesBucket.objects.delete(sourceKey(USER, hex("source-1")));
-      const begun = (await begin(deps, { entries: defaultEntries("v2") }))._unsafeUnwrap();
+      deps.sitesBucket.objects.delete(siteContentKey(USER, hex("site-logo.png")));
+      const begun = (await begin(deps))._unsafeUnwrap();
       expect(begun.uploads).toEqual([]);
-      const result = await completePublish(
-        deps,
-        USER,
-        begun.publish.id,
-        completeRequest(defaultEntries("v2")),
-      );
+      const result = await completePublish(deps, USER, begun.publish.id);
       expect(result._unsafeUnwrapErr()).toMatchObject({
         code: "UPLOAD_INCOMPLETE",
-        details: { missing: [{ kind: "source", sha256: hex("source-1") }] },
+        details: {
+          missing: [
+            { kind: "source", sha256: hex("source-1") },
+            { kind: "site", sha256: hex("site-logo.png"), path: "logo.png" },
+          ],
+        },
       });
-    });
-
-    it("does not write entries when the lock has less than 60 s left (fence)", async () => {
-      const deps = setup();
-      const begun = (await begin(deps))._unsafeUnwrap();
-      performUploads(deps, begun.uploads);
-      // Verification takes 9.5 of the lock's 10 minutes.
-      const head = deps.sources.head.bind(deps.sources);
-      deps.sources.head = async (key) => {
-        deps.clock.now += 570_000;
-        deps.sources.head = head;
-        return head(key);
-      };
-      const writes = deps.sitesBucket.writes.length;
-      const result = await completePublish(deps, USER, begun.publish.id, completeRequest());
-      expect(result._unsafeUnwrapErr()).toMatchObject({ status: 409, code: "PUBLISH_IN_PROGRESS" });
-      expect(deps.sitesBucket.writes.length).toBe(writes);
-      expect((await deps.store.findSiteById(begun.publish.siteId))?.completeLock).toBeNull();
-    });
-
-    it("leaves the plan's paths protected when it fails after writing entries", async () => {
-      const deps = setup();
-      const { begun: first } = await publish(deps);
-      const input = {
-        entries: defaultEntries("v2"),
-        files: [
-          { path: "assets/next-ZyX98765.js", immutable: true, contentType: "text/javascript" },
-        ],
-      };
-
-      // STORAGE_FAILED on index.html, after preview.html and canvas.json went live.
-      const second = (await begin(deps, input))._unsafeUnwrap();
-      performUploads(deps, second.uploads);
-      deps.sitesBucket.failPut = (key) => key.endsWith("/index.html");
-      const failed = await completePublish(
-        deps,
-        USER,
-        second.publish.id,
-        completeRequest(input.entries),
-      );
-      expect(failed._unsafeUnwrapErr()).toMatchObject({ status: 500, code: "STORAGE_FAILED" });
-      deps.sitesBucket.failPut = () => false;
-      const site = await deps.store.findSiteById(first.publish.siteId);
-      expect(site?.completeLock).toBeNull();
-      expect(JSON.parse(site!.protectedFiles!)).toContain("assets/next-ZyX98765.js");
-
-      // A commit that fails (the batch throws) leaves them protected too.
-      const third = (await begin(deps, input))._unsafeUnwrap();
-      performUploads(deps, third.uploads);
-      const commit = deps.store.commitVersion;
-      deps.store.commitVersion = async () => ({
-        ok: false,
-        reason: "other",
-        error: new Error("D1 down"),
-      });
-      const broken = await completePublish(
-        deps,
-        USER,
-        third.publish.id,
-        completeRequest(input.entries),
-      );
-      expect(broken._unsafeUnwrapErr()).toMatchObject({
-        status: 500,
-        code: "PUBLISH_STORE_FAILED",
-      });
-      deps.store.commitVersion = commit;
-
-      // GC after every hold has ended deletes none of what the live pages may use.
-      deps.clock.now += SESSION_TTL_MS + 2 * 3600_000;
-      await runGc(deps.gc, new Date(deps.clock.now));
-      const keys = deps.sitesBucket.keys(`${first.publish.slug}/`);
-      expect(keys).toContain(`${first.publish.slug}/assets/next-ZyX98765.js`);
-      expect(keys).toContain(`${first.publish.slug}/assets/index-AbC12345.js`);
-    });
-
-    it("protects the plan's paths only once every upload is verified, and a commit clears them", async () => {
-      const deps = setup();
-      const { begun: first } = await publish(deps);
-      const siteId = first.publish.siteId;
-      const input = {
-        entries: defaultEntries("v2"),
-        files: [
-          { path: "assets/next-ZyX98765.js", immutable: true, contentType: "text/javascript" },
-        ],
-      };
-      await deps.harness.setProtected(siteId, JSON.stringify(["older.js"]));
-
-      // Nothing uploaded: nothing verified, so nothing more to protect.
-      const begun = (await begin(deps, input))._unsafeUnwrap();
-      const incomplete = await completePublish(
-        deps,
-        USER,
-        begun.publish.id,
-        completeRequest(input.entries),
-      );
-      expect(incomplete._unsafeUnwrapErr().code).toBe("UPLOAD_INCOMPLETE");
-      expect((await deps.store.findSiteById(siteId))?.protectedFiles).toBe('["older.js"]');
-
-      // Verified, then index.html fails to write: the union stays.
-      performUploads(deps, begun.uploads);
-      deps.sitesBucket.failPut = (key) => key.endsWith("/index.html");
-      const failed = await completePublish(
-        deps,
-        USER,
-        begun.publish.id,
-        completeRequest(input.entries),
-      );
-      expect(failed._unsafeUnwrapErr().code).toBe("STORAGE_FAILED");
-      deps.sitesBucket.failPut = () => false;
-      expect(JSON.parse((await deps.store.findSiteById(siteId))!.protectedFiles!)).toEqual([
-        "assets/next-ZyX98765.js",
-        "canvas.json",
-        "index.html",
-        "older.js",
-        "preview.html",
-      ]);
-
-      (
-        await completePublish(deps, USER, begun.publish.id, completeRequest(input.entries))
-      )._unsafeUnwrap();
-      expect((await deps.store.findSiteById(siteId))?.protectedFiles).toBeNull();
-    });
-
-    it("leaves nothing protected after failed verifications, so GC removes a published site's junk", async () => {
-      const deps = setup();
-      const { begun: first } = await publish(deps);
-      const slug = first.publish.slug;
-      const junk = Array.from({ length: 12 }, (_, i) => ({
-        path: `junk/${"j".repeat(200)}/${"k".repeat(200)}-${i}.js`,
-        immutable: true,
-        contentType: "text/javascript",
-      }));
-      for (let round = 0; round < 2; round++) {
-        const begun = (
-          await begin(deps, { entries: defaultEntries(`junk${round}`), files: junk })
-        )._unsafeUnwrap();
-        // Every file but one arrives, so complete verifies and fails.
-        performUploads(deps, begun.uploads.slice(1));
-        const result = await completePublish(
-          deps,
-          USER,
-          begun.publish.id,
-          completeRequest(defaultEntries(`junk${round}`)),
-        );
-        expect(result._unsafeUnwrapErr().code).toBe("UPLOAD_INCOMPLETE");
-      }
-      expect((await deps.store.findSiteById(first.publish.siteId))?.protectedFiles).toBeNull();
-      expect(deps.sitesBucket.keys(`${slug}/junk/`).length).toBeGreaterThan(0);
-
-      deps.clock.now += SESSION_TTL_MS + 2 * 3600_000;
-      await runGc(deps.gc, new Date(deps.clock.now));
-      expect(deps.sitesBucket.keys(`${slug}/junk/`)).toEqual([]);
-      expect(deps.sitesBucket.keys(`${slug}/`)).toContain(`${slug}/assets/index-AbC12345.js`);
-    });
-
-    it("narrows protection to its own paths once its entries are live, which also clears *", async () => {
-      const deps = setup();
-      const { begun: first } = await publish(deps);
-      const siteId = first.publish.siteId;
-      const slug = first.publish.slug;
-      await deps.harness.setProtected(siteId, "*");
-      deps.sitesBucket.upload(`${slug}/stale.js`, { size: 1, sha256: hex("stale") });
-
-      const input = {
-        entries: defaultEntries("v2"),
-        files: [
-          { path: "assets/next-ZyX98765.js", immutable: true, contentType: "text/javascript" },
-        ],
-      };
-      const begun = (await begin(deps, input))._unsafeUnwrap();
-      performUploads(deps, begun.uploads);
-      const commit = deps.store.commitVersion;
-      deps.store.commitVersion = async () => ({
-        ok: false,
-        reason: "other",
-        error: new Error("D1 down"),
-      });
-      const broken = await completePublish(
-        deps,
-        USER,
-        begun.publish.id,
-        completeRequest(input.entries),
-      );
-      deps.store.commitVersion = commit;
-      expect(broken._unsafeUnwrapErr().code).toBe("PUBLISH_STORE_FAILED");
-      const site = await deps.store.findSiteById(siteId);
-      expect(site?.completeLock).toBeNull();
-      expect(JSON.parse(site!.protectedFiles!)).toEqual([
-        "assets/next-ZyX98765.js",
-        "canvas.json",
-        "index.html",
-        "preview.html",
-      ]);
-
-      // GC works on the site again: the live pages' paths stay, the rest goes.
-      deps.clock.now += SESSION_TTL_MS + 2 * 3600_000;
-      await runGc(deps.gc, new Date(deps.clock.now));
-      const keys = deps.sitesBucket.keys(`${slug}/`);
-      expect(keys).not.toContain(`${slug}/stale.js`);
-      expect(keys).toContain(`${slug}/assets/next-ZyX98765.js`);
-      expect(keys).toContain(`${slug}/assets/index-AbC12345.js`); // live_files (v1)
-    });
-
-    it("answers PUBLISH_IN_PROGRESS, writing nothing, when protected_files changed under its lock", async () => {
-      const deps = setup();
-      const begun = (await begin(deps))._unsafeUnwrap();
-      performUploads(deps, begun.uploads);
-      const head = deps.sources.head.bind(deps.sources);
-      deps.sources.head = async (key) => {
-        await deps.harness.setProtected(begun.publish.siteId, JSON.stringify(["racer.js"]));
-        return head(key);
-      };
-      const writes = deps.sitesBucket.writes.length;
-      const result = await completePublish(deps, USER, begun.publish.id, completeRequest());
-      expect(result._unsafeUnwrapErr()).toMatchObject({ status: 409, code: "PUBLISH_IN_PROGRESS" });
-      expect(deps.sitesBucket.writes.length).toBe(writes);
-      const site = await deps.store.findSiteById(begun.publish.siteId);
-      expect(site?.completeLock).toBeNull();
-      expect(site?.protectedFiles).toBe('["racer.js"]');
-    });
-
-    it("collapses protected_files to * once too large", async () => {
-      const deps = setup();
-      const begun = (await begin(deps))._unsafeUnwrap();
-      performUploads(deps, begun.uploads);
-      const huge = JSON.stringify(
-        Array.from({ length: 2100 }, (_, i) => `${i}-${"p".repeat(850)}`),
-      );
-      await deps.harness.setProtected(begun.publish.siteId, huge);
-      // A failed entry write keeps the union for us to see.
-      deps.sitesBucket.failPut = (key) => key.endsWith("/index.html");
-      const result = await completePublish(deps, USER, begun.publish.id, completeRequest());
-      expect(result._unsafeUnwrapErr().code).toBe("STORAGE_FAILED");
-      expect((await deps.store.findSiteById(begun.publish.siteId))?.protectedFiles).toBe("*");
-    });
-
-    it("collapses to * when live_files and protected_files together would not fit D1's row", async () => {
-      const deps = setup();
-      const { begun: first } = await publish(deps);
-      const siteId = first.publish.siteId;
-      // Each well under MAX_PROTECTED_JSON_BYTES; together just under 2 MB.
-      const paths = (n: number, tag: string) =>
-        JSON.stringify(Array.from({ length: n }, (_, i) => `${tag}/${i}-${"x".repeat(990)}`));
-      await deps.harness.setLiveFiles(siteId, paths(1200, "live"));
-      await deps.harness.setProtected(siteId, paths(780, "old"));
-      const long = (i: number) => `assets/${"a".repeat(240)}/${"b".repeat(240)}/${i}.js`;
-      const input = {
-        entries: defaultEntries("v2"),
-        files: Array.from({ length: 20 }, (_, i) => ({ path: long(i), immutable: true })),
-      };
-      const begun = (await begin(deps, input))._unsafeUnwrap();
-      performUploads(deps, begun.uploads);
-      deps.sitesBucket.failPut = (key) => key.endsWith("/index.html");
-      const failed = await completePublish(
-        deps,
-        USER,
-        begun.publish.id,
-        completeRequest(input.entries),
-      );
-      deps.sitesBucket.failPut = () => false;
-      expect(failed._unsafeUnwrapErr().code).toBe("STORAGE_FAILED");
-      expect((await deps.store.findSiteById(siteId))?.protectedFiles).toBe("*");
-
-      // And the site can still be published.
-      const done = await completePublish(
-        deps,
-        USER,
-        begun.publish.id,
-        completeRequest(input.entries),
-      );
-      expect(done._unsafeUnwrap().version).toBe(2);
-      expect((await deps.store.findSiteById(siteId))?.protectedFiles).toBeNull();
     });
 
     it("releases the lock when a store call throws after taking it", async () => {
       const deps = setup();
       const begun = (await begin(deps))._unsafeUnwrap();
       performUploads(deps, begun.uploads);
-      const setProtected = deps.store.setProtectedFiles;
-      deps.store.setProtectedFiles = async () => {
+      const commit = deps.store.commitVersion;
+      deps.store.commitVersion = async () => {
         throw new Error("D1 hiccup");
       };
-      const failed = await completePublish(deps, USER, begun.publish.id, completeRequest());
-      deps.store.setProtectedFiles = setProtected;
+      const failed = await completePublish(deps, USER, begun.publish.id);
+      deps.store.commitVersion = commit;
       expect(failed._unsafeUnwrapErr()).toMatchObject({
         status: 500,
         code: "PUBLISH_STORE_FAILED",
       });
       expect((await deps.store.findSiteById(begun.publish.siteId))?.completeLock).toBeNull();
-      expect(
-        (await completePublish(deps, USER, begun.publish.id, completeRequest()))._unsafeUnwrap()
-          .version,
-      ).toBe(1);
+      expect((await completePublish(deps, USER, begun.publish.id))._unsafeUnwrap().version).toBe(1);
     });
 
     it("lets a session take back the lock a dead request of it left, but no other session", async () => {
       const deps = setup();
-      const other = (
-        await begin(deps, { entries: defaultEntries("other") })
-      )._unsafeUnwrap();
+      const other = (await begin(deps, { entries: defaultEntries("other") }))._unsafeUnwrap();
       const begun = (await begin(deps))._unsafeUnwrap();
       performUploads(deps, [...other.uploads, ...begun.uploads]);
       // A request of `begun` that died holding the lock.
@@ -1144,17 +895,9 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
         }),
       ).not.toBeNull();
       deps.clock.now += 5_000;
-      const busy = await completePublish(
-        deps,
-        USER,
-        other.publish.id,
-        completeRequest(defaultEntries("other")),
-      );
+      const busy = await completePublish(deps, USER, other.publish.id);
       expect(busy._unsafeUnwrapErr().code).toBe("PUBLISH_IN_PROGRESS");
-      expect(
-        (await completePublish(deps, USER, begun.publish.id, completeRequest()))._unsafeUnwrap()
-          .version,
-      ).toBe(1);
+      expect((await completePublish(deps, USER, begun.publish.id))._unsafeUnwrap().version).toBe(1);
     });
 
     it("answers a retry that lost the commit to its own session's request with the result", async () => {
@@ -1167,13 +910,11 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
         if (!raced) {
           raced = true;
           // The request this one retried commits first.
-          (
-            await completePublish(deps, USER, begun.publish.id, completeRequest())
-          )._unsafeUnwrap();
+          (await completePublish(deps, USER, begun.publish.id))._unsafeUnwrap();
         }
         return commit(v);
       };
-      const result = await completePublish(deps, USER, begun.publish.id, completeRequest());
+      const result = await completePublish(deps, USER, begun.publish.id);
       deps.store.commitVersion = commit;
       expect(result._unsafeUnwrap()).toMatchObject({ version: 1, site: { headVersion: 1 } });
       expect(await deps.harness.versionNumbers(begun.publish.siteId)).toEqual([1]);
@@ -1196,7 +937,7 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
         lockHeld = (await deps.store.findSiteById(v.siteId))?.completeLock === v.sessionId;
         return commit(v);
       };
-      const result = await completePublish(deps, USER, begun.publish.id, completeRequest());
+      const result = await completePublish(deps, USER, begun.publish.id);
       deps.store.commitVersion = commit;
       expect(report).toMatchObject({ expiredSessions: 1, retiredSessions: 1 });
       expect(report!.deletedObjects).toBeGreaterThan(0);
@@ -1219,7 +960,7 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
         await deps.harness.dropSessionObject(v.sessionId, "blob");
         return commit(v);
       };
-      const result = await completePublish(deps, USER, begun.publish.id, completeRequest());
+      const result = await completePublish(deps, USER, begun.publish.id);
       deps.store.commitVersion = commit;
       expect(result._unsafeUnwrapErr()).toMatchObject({ status: 410, code: "PUBLISH_EXPIRED" });
       expect(await deps.harness.versionNumbers(begun.publish.siteId)).toEqual([]);
@@ -1242,7 +983,7 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
         report = await runGc(deps.gc, new Date(deps.clock.now + 61_000));
         return commit(v);
       };
-      const result = await completePublish(deps, USER, begun.publish.id, completeRequest());
+      const result = await completePublish(deps, USER, begun.publish.id);
       deps.store.commitVersion = commit;
       expect(report).toMatchObject({ deletedObjects: 0, retiredSessions: 0 });
       expect(result._unsafeUnwrap()).toMatchObject({ version: 1 });
@@ -1266,7 +1007,7 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
         report = await runGc(deps.gc, new Date(deps.clock.now + GC_CLOCK_SKEW_MARGIN_MS + 2_000));
         return commit(v);
       };
-      const result = await completePublish(deps, USER, begun.publish.id, completeRequest());
+      const result = await completePublish(deps, USER, begun.publish.id);
       deps.store.commitVersion = commit;
       expect(report).toMatchObject({ retiredSessions: 1 });
       expect(report!.deletedObjects).toBeGreaterThan(0);
@@ -1280,19 +1021,19 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       performUploads(deps, begun.uploads);
       deps.limits.complete = false;
       let heads = 0;
-      const head = deps.sources.head.bind(deps.sources);
-      deps.sources.head = async (key) => {
-        heads++;
-        return head(key);
-      };
-      const result = await completePublish(deps, USER, begun.publish.id, completeRequest());
+      for (const store of [deps.sources, deps.sites]) {
+        const head = store.head.bind(store);
+        store.head = async (key) => {
+          heads++;
+          return head(key);
+        };
+      }
+      const result = await completePublish(deps, USER, begun.publish.id);
       expect(result._unsafeUnwrapErr()).toMatchObject({ status: 429, code: "RATE_LIMITED" });
       expect(heads).toBe(0);
       expect((await deps.store.findSiteById(begun.publish.siteId))?.completeLock).toBeNull();
       deps.limits.complete = true;
-      expect((await completePublish(deps, USER, begun.publish.id, completeRequest())).isOk()).toBe(
-        true,
-      );
+      expect((await completePublish(deps, USER, begun.publish.id)).isOk()).toBe(true);
     });
   });
 
@@ -1356,140 +1097,8 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       const { begun } = await publish(deps);
       expect((await deps.store.getSession(begun.publish.id))?.plan).toBe(PLAN_STUB);
       // Complete stays idempotent without it.
-      expect(
-        (await completePublish(deps, USER, begun.publish.id, completeRequest()))._unsafeUnwrap(),
-      ).toMatchObject({ version: 1 });
-    });
-  });
-
-  describe("site storage", () => {
-    const big = (path: string, size = 450 * MiB) => ({ path, size, immutable: true });
-
-    it("refuses a begin that would leave more than the site may hold under its prefix", async () => {
-      const deps = setup();
-      await publish(deps, { files: [big("assets/a.js")] });
-      await publish(deps, { files: [big("assets/b.js")] });
-      // a.js is stale; b.js, live, is released by this commit (not counted).
-      const { begun: third } = await publish(deps, { files: [big("assets/c.js")] });
-      const refused = await begin(deps, { files: [big("assets/d.js")] });
-      expect(refused._unsafeUnwrapErr()).toMatchObject({
-        status: 413,
-        code: "SITE_TOO_LARGE",
-        message: "This site's earlier files have not been cleaned up yet. Try again in an hour.",
-        details: {
-          reason: "stored",
-          limitBytes: MAX_SITE_STORED_BYTES,
-          siteFileCount: 6, // d.js, the entries, a.js and b.js
-          cleanupDueAt: new Date(deps.clock.now + SITE_CLEANUP_DELAY_MS).toISOString(),
-        },
-      });
-      expect(
-        (refused._unsafeUnwrapErr().details as { siteBytes: number }).siteBytes,
-      ).toBeGreaterThan(MAX_SITE_STORED_BYTES);
-      expect((await deps.store.findSiteById(third.publish.siteId))?.hurriedAt).toBe(deps.clock.now);
-      // Replacing a stored file does not count it twice.
-      expect((await begin(deps, { files: [big("assets/b.js", 400 * MiB)] })).isOk()).toBe(true);
-    });
-
-    it("does not count, up to a site's worth, what its commit releases: the live and a failed complete's files", async () => {
-      const deps = setup();
-      const files = (tag: string) =>
-        [0, 1, 2, 3].map((i) => big(`assets/${tag}${i}.bin`, 100 * MiB));
-      const { begun: v1 } = await publish(deps, {
-        files: files("a"),
-        entries: defaultEntries("1"),
-      });
-      // v2's complete wrote preview.html, then failed: its paths stay protected.
-      const v2 = (
-        await begin(deps, { files: files("b"), entries: defaultEntries("2") })
-      )._unsafeUnwrap();
-      performUploads(deps, v2.uploads);
-      deps.sitesBucket.failPut = (key) => key.endsWith("/canvas.json");
-      const failed = await completePublish(
-        deps,
-        USER,
-        v2.publish.id,
-        completeRequest(defaultEntries("2")),
-      );
-      expect(failed._unsafeUnwrapErr().code).toBe("STORAGE_FAILED");
-      deps.sitesBucket.failPut = () => false;
-      expect(
-        JSON.parse((await deps.store.findSiteById(v1.publish.siteId))!.protectedFiles!),
-      ).toContain("assets/b0.bin");
-
-      // 1 200 MiB under the prefix once v3 lands, but its commit releases 800 of it.
-      const { completed } = await publish(deps, {
-        files: files("c"),
-        entries: defaultEntries("3"),
-      });
-      expect(completed.version).toBe(2);
-      expect((await deps.store.findSiteById(v1.publish.siteId))?.protectedFiles).toBeNull();
-    });
-
-    it("says so, and hurries nothing, when what is in the way is kept", async () => {
-      const deps = setup();
-      const { begun: v1 } = await publish(deps, { files: [big("assets/a.js")] });
-      const siteId = v1.publish.siteId;
-      // Two unfinished publishes hold 600 MiB of new paths.
-      for (const path of ["assets/b.js", "assets/c.js"]) {
-        const held = (await begin(deps, { files: [big(path, 300 * MiB)] }))._unsafeUnwrap();
-        performUploads(deps, held.uploads);
-      }
-      const before = await deps.store.findSiteById(siteId);
-      const refused = await begin(deps, { files: [big("assets/d.js")] });
-      expect(refused._unsafeUnwrapErr()).toMatchObject({
-        status: 413,
-        code: "SITE_TOO_LARGE",
-        details: { reason: "in-use", limitBytes: MAX_SITE_STORED_BYTES },
-      });
-      expect(refused._unsafeUnwrapErr().message).not.toMatch(/hour/);
-      expect(await deps.store.findSiteById(siteId)).toMatchObject({
-        cleanupAfter: before!.cleanupAfter,
-        cleanupSince: before!.cleanupSince,
-        hurriedAt: null,
-      });
-    });
-
-    it("hurries one site per account per hour, and only schedules the others", async () => {
-      const deps = setup();
-      const fill = async (n: number) => {
-        let siteId = "";
-        for (const tag of ["a", "b", "c"]) {
-          const { begun } = await publish(deps, {
-            workspace: workspaceId(n),
-            files: [big(`assets/${tag}.js`)],
-            entries: defaultEntries(`${n}${tag}`),
-          });
-          siteId = begun.publish.siteId;
-        }
-        return siteId;
-      };
-      const first = await fill(1);
-      const second = await fill(2);
-      const tooMuch = (n: number) =>
-        begin(deps, { workspace: workspaceId(n), files: [big("assets/d.js")] });
-      expect((await tooMuch(1))._unsafeUnwrapErr().message).toMatch(/Try again in an hour/);
-      const later = (await tooMuch(2))._unsafeUnwrapErr();
-      expect(later).toMatchObject({ details: { reason: "stored" } });
-      expect(later.message).toMatch(/Try again later/);
-      expect((await deps.store.findSiteById(first))?.hurriedAt).toBe(deps.clock.now);
-      expect((await deps.store.findSiteById(second))?.hurriedAt).toBeNull();
-
-      deps.clock.now += GC_HURRY_INTERVAL_MS + 1;
-      expect((await tooMuch(2))._unsafeUnwrapErr().message).toMatch(/Try again in an hour/);
-    });
-
-    it("refuses once the prefix would hold too many keys", async () => {
-      const deps = setup();
-      const { begun } = await publish(deps);
-      const slug = begun.publish.slug;
-      for (let i = 0; i < MAX_SITE_STORED_FILES; i++) {
-        deps.sitesBucket.upload(`${slug}/junk/${i}.js`, { size: 1, sha256: hex(`j${i}`) });
-      }
-      const refused = await begin(deps, { files: [{ path: "new.js" }] });
-      expect(refused._unsafeUnwrapErr()).toMatchObject({
-        code: "SITE_TOO_LARGE",
-        details: { reason: "stored", limitFiles: MAX_SITE_STORED_FILES },
+      expect((await completePublish(deps, USER, begun.publish.id))._unsafeUnwrap()).toMatchObject({
+        version: 1,
       });
     });
   });
@@ -1499,6 +1108,12 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       workspace: workspaceId(n),
       files: [{ path: `assets/big-${n}.js`, size, immutable: true }],
     });
+    // Every session of these sites also carries the entry pages' contents,
+    // uncommitted until one of them commits.
+    const E = Object.values(defaultEntries()).reduce(
+      (a, text) => a + new TextEncoder().encode(text).length,
+      0,
+    );
 
     it("refuses new site uploads past 1 GiB across the account's uncommitted sessions", async () => {
       const deps = setup();
@@ -1511,8 +1126,8 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
         details: {
           reason: "pending-site",
           quotaBytes: MAX_PENDING_SITE_BYTES,
-          usedBytes: 900 * MiB,
-          publishBytes: 200 * MiB,
+          usedBytes: 900 * MiB + 2 * E,
+          publishBytes: 200 * MiB + E,
         },
       });
       // Refused before a session was created.
@@ -1524,9 +1139,7 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       const first = (await begin(deps, siteOf(1, 450 * MiB)))._unsafeUnwrap();
       (await begin(deps, siteOf(2, 450 * MiB)))._unsafeUnwrap();
       performUploads(deps, first.uploads);
-      (
-        await completePublish(deps, USER, first.publish.id, completeRequest())
-      )._unsafeUnwrap();
+      (await completePublish(deps, USER, first.publish.id))._unsafeUnwrap();
       expect((await begin(deps, siteOf(3, 200 * MiB))).isOk()).toBe(true);
     });
 
@@ -1559,14 +1172,18 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       deps.store.openSessions = open;
       expect(refused._unsafeUnwrapErr()).toMatchObject({
         code: "QUOTA_EXCEEDED",
-        details: { reason: "pending-site", usedBytes: 900 * MiB, publishBytes: 200 * MiB },
+        details: {
+          reason: "pending-site",
+          usedBytes: 900 * MiB + 2 * E,
+          publishBytes: 200 * MiB + E,
+        },
       });
       expect((await deps.store.openSessions(USER, deps.clock.now)).siteUploadBytes).toBe(
-        900 * MiB,
+        900 * MiB + 2 * E,
       );
-      expect(await deps.store.getStoredObjects(USER, [{ kind: "source", sha256: hex("s3") }])).toEqual(
-        [],
-      );
+      expect(
+        await deps.store.getStoredObjects(USER, [{ kind: "source", sha256: hex("s3") }]),
+      ).toEqual([]);
       expect((await deps.harness.sessionRows(USER)).count).toBe(2);
     });
 
@@ -1576,7 +1193,7 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       const begun = (
         await begin(deps, { files: [{ path: "new.js" }], entries: defaultEntries("v2") })
       )._unsafeUnwrap();
-      expect(kinds(begun.uploads)).toEqual(["site"]);
+      expect(kinds(begun.uploads)).toEqual(["site", "site", "site", "site"]);
       (await abortPublish(deps, USER, begun.publish.id))._unsafeUnwrap();
       expect((await deps.store.getSession(begun.publish.id))?.holdUntil).toBe(
         deps.clock.now + SESSION_TTL_MS,
@@ -1624,17 +1241,6 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       });
       expect((await getSiteStatus(deps, OTHER, WORKSPACE))._unsafeUnwrap()).toEqual({ site: null });
     });
-  });
-});
-
-describe("unionProtected", () => {
-  it("unions and sorts, keeps *, and collapses past the limit", () => {
-    expect(unionProtected(null, ["b", "a"])).toBe('["a","b"]');
-    expect(unionProtected('["c","a"]', ["b", "a"])).toBe('["a","b","c"]');
-    expect(unionProtected("*", ["a"])).toBe("*");
-    const big = Array.from({ length: 3000 }, (_, i) => `${i}-${"x".repeat(600)}`);
-    expect(JSON.stringify(big).length).toBeGreaterThan(MAX_PROTECTED_JSON_BYTES);
-    expect(unionProtected(null, big)).toBe("*");
   });
 });
 

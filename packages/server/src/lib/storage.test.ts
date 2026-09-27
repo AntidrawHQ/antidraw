@@ -7,7 +7,8 @@ import {
   hexToBase64,
   isWorkerStorageMode,
   makeUrlSigner,
-  siteKey,
+  pointerKey,
+  siteContentKey,
   sourceKey,
 } from "./storage";
 import { verifyStorageToken } from "./storage-token";
@@ -27,7 +28,8 @@ describe("keys and encodings", () => {
   it("builds the bucket keys", () => {
     expect(sourceKey("u1", SHA)).toBe(`u/u1/source/${SHA}.tar.gz`);
     expect(blobKey("u1", SHA)).toBe(`u/u1/blob/${SHA}`);
-    expect(siteKey("acme-x7k2p", "assets/a.js")).toBe("acme-x7k2p/assets/a.js");
+    expect(siteContentKey("u1", SHA)).toBe(`c/u1/${SHA}`);
+    expect(pointerKey("acme-x7k2p")).toBe("m/acme-x7k2p.json");
   });
 
   it("hexToBase64 encodes the digest bytes", () => {
@@ -111,21 +113,20 @@ describe("S3 presigned URLs", () => {
     });
   });
 
-  it("signs cache-control for immutable site files, into the sites bucket", async () => {
+  it("signs site contents into the sites bucket, over the same headers", async () => {
     const { url, headers } = await signer.uploadUrl({
       bucket: "sites",
-      key: "acme-x7k2p/assets/a-AbC12345.js",
+      key: siteContentKey("u1", SHA),
       sha256: SHA,
       size: 1,
-      contentType: "text/javascript",
-      cacheControl: "public, max-age=31536000, immutable",
+      contentType: "application/octet-stream",
     });
     const parsed = new URL(url);
-    expect(parsed.pathname).toBe("/antidraw-sites/acme-x7k2p/assets/a-AbC12345.js");
+    expect(parsed.pathname).toBe(`/antidraw-sites/c/u1/${SHA}`);
     expect(parsed.searchParams.get("X-Amz-SignedHeaders")).toBe(
-      "cache-control;content-length;content-type;host;x-amz-checksum-sha256;x-amz-meta-sha256",
+      "content-length;content-type;host;x-amz-checksum-sha256;x-amz-meta-sha256",
     );
-    expect(headers["cache-control"]).toBe("public, max-age=31536000, immutable");
+    expect(headers["cache-control"]).toBeUndefined();
   });
 
   it("percent-encodes each key segment", async () => {

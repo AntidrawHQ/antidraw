@@ -7,7 +7,9 @@
   "scripts": {
     "dev": "wrangler dev --env dev",
     "deploy": "wrangler deploy --env=\"\"",
-    "types": "wrangler types"
+    "types": "wrangler types",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p test",
+    "test": "vitest run"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260924.1",
