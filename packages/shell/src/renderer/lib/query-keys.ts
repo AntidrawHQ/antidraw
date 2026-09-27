@@ -32,6 +32,9 @@ export const queryKeys = {
     catalog: ["model-catalog"] as const,
   },
   account: ["account"] as const,
+  publish: {
+    status: (workspaceId: string) => ["publish-status", workspaceId] as const,
+  },
   frameLayouts: {
     byWorkspace: (workspaceId: string | null) =>
       ["frameLayouts", workspaceId] as const,

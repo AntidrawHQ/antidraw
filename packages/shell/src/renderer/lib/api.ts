@@ -9,12 +9,14 @@ import type {
   DevServerState,
   EffortLevel,
   ModelInfo,
+  PublishEvent,
+  SiteStatus,
   StreamEvent,
   Workspace,
 } from "@/main/api";
 import type { ImageAttachment } from "@/shared/utils/message";
 import { fetchEventSource } from "@microsoft/fetch-event-source";
-import { ok, err, type Result } from "neverthrow";
+import { ok, err } from "neverthrow";
 
 export type { StreamEvent, EffortLevel } from "@/main/api";
 
@@ -969,16 +971,131 @@ export const signOut = async () => {
   }
 };
 
-// TODO: publishing has no server side yet. Once the Worker has a publish
-// endpoint, main proxies it through cloudFetch (which answers SIGNED_OUT on a
-// dead token) and this calls that route.
-export const publishWorkspace = async (
-  _workspaceId: string,
-): Promise<
-  Result<{ url: string }, { status: 501; code: string; message: string }>
-> =>
-  err({
-    status: 501,
-    code: "NOT_IMPLEMENTED",
-    message: "Publishing isn't available yet",
+// ============================================================================
+// Publish API
+// ============================================================================
+
+// Streams the publish's progress until a `done` or `error` event. Aborting
+// `signal` cancels the publish, except once it is finishing (main ignores it
+// then: the server may already have committed).
+export async function* publishWorkspace(
+  workspaceId: string,
+  opts: { allowRemix?: boolean; signal?: AbortSignal } = {},
+): AsyncGenerator<PublishEvent> {
+  const abort = new AbortController();
+  const onAbort = () => abort.abort();
+  if (opts.signal?.aborted) abort.abort();
+  opts.signal?.addEventListener("abort", onAbort, { once: true });
+
+  const stream = new ReadableStream<PublishEvent>({
+    start(controller) {
+      fetchEventSource(`antidraw://app/api/publish/${workspaceId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        // Only an explicit choice is sent; absent keeps the site's setting.
+        body: JSON.stringify(
+          opts.allowRemix !== undefined ? { allowRemix: opts.allowRemix } : {},
+        ),
+        signal: abort.signal,
+        openWhenHidden: true,
+
+        onmessage: (ev) => {
+          const event = JSON.parse(ev.data) as PublishEvent;
+          controller.enqueue(event);
+        },
+        onerror: (error) => {
+          controller.error(error);
+          throw error;
+        },
+        onclose: () => {
+          controller.close();
+          throw new Error("Connection closed");
+        },
+      });
+    },
+    cancel() {
+      abort.abort();
+    },
   });
+
+  try {
+    yield* stream;
+  } finally {
+    opts.signal?.removeEventListener("abort", onAbort);
+  }
+}
+
+// The published site for this workspace, or null (never published, or
+// signed out).
+export const getPublishStatus = async (workspaceId: string) => {
+  try {
+    const response = await fetch(`antidraw://app/api/publish/${workspaceId}`);
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      return err({
+        status: response.status as 500,
+        code: (errorBody?.error?.code as string) ?? "FETCH_ERROR",
+        message: (errorBody?.error?.message as string) ?? response.statusText,
+      });
+    }
+
+    const data: { site: SiteStatus | null } = await response.json();
+    return ok(data.site);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "NETWORK_ERROR",
+      message: "Failed to get publish status",
+    });
+  }
+};
+
+// Takes effect at once, for the live site; a publish in flight can't undo it.
+export const setPublishAllowRemix = async (
+  workspaceId: string,
+  allowRemix: boolean,
+) => {
+  try {
+    const response = await fetch(`antidraw://app/api/publish/${workspaceId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ allowRemix }),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      return err({
+        status: response.status as 500,
+        code: (errorBody?.error?.code as string) ?? "FETCH_ERROR",
+        message: (errorBody?.error?.message as string) ?? response.statusText,
+      });
+    }
+
+    const data: { site: SiteStatus } = await response.json();
+    return ok(data.site);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "NETWORK_ERROR",
+      message: "Failed to change the remix setting",
+    });
+  }
+};
+
+export const cancelPublish = async (workspaceId: string) => {
+  try {
+    await fetch(`antidraw://app/api/publish/${workspaceId}/cancel`, {
+      method: "POST",
+    });
+    return ok(true);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "NETWORK_ERROR",
+      message: "Failed to cancel publishing",
+    });
+  }
+};

@@ -14,6 +14,22 @@ export type { DevServerInfo } from "@/main/services/dev-server.service";
 export type { EffortLevel, ModelInfo } from "./claude-code-ops";
 export type { Account, AccountError } from "@/main/services/account.service";
 export type {
+  PublishEvent,
+  PublishResult,
+  PublishError,
+  PublishErrorCode,
+  PublishErrorDetails,
+  PublishNote,
+  PublishStep,
+  SiteStatus,
+} from "@/main/services/publish/types";
+export type {
+  ExclusionReport,
+  Exclusion,
+  ExclusionGroup,
+  ExclusionReason,
+} from "@/main/lib/snapshot";
+export type {
   ComponentListItem,
   ComponentSource,
   ComponentStreamEvent,
@@ -53,6 +69,7 @@ import { workspaceController } from "./controllers/workspace.controller";
 import { preferenceController } from "./controllers/preference.controller";
 import { claudeCliInteractionsController } from "./controllers/claude-cli-interactions.controller";
 import { accountController } from "./controllers/account.controller";
+import { publishController } from "./controllers/publish.controller";
 
 const api = new Hono();
 
@@ -60,6 +77,7 @@ api.route("/workspaces", workspaceController);
 api.route("/preferences", preferenceController);
 api.route("/claude-cli", claudeCliInteractionsController);
 api.route("/account", accountController);
+api.route("/publish", publishController);
 
 const imageAttachmentSchema = z.object({
   data: z.string(),
