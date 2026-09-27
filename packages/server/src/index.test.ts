@@ -2,12 +2,14 @@ import { describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { err } from "neverthrow";
-import app, { createApp } from "./index";
+import worker, { createApp } from "./index";
 import { apiError } from "./lib/errors";
 import { respond } from "./lib/respond";
 import type { AppEnv } from "./lib/env";
 
 describe("antidraw-server", () => {
+  const app = createApp();
+
   it("GET /api/health returns ok", async () => {
     const res = await app.request("/api/health");
 
@@ -25,6 +27,22 @@ describe("antidraw-server", () => {
     expect(await res.json()).toEqual({
       error: { code: "UNAUTHORIZED", message: "Sign in required" },
     });
+  });
+
+  it("gates publish and remix behind a session", async () => {
+    for (const path of ["/api/publish/sessions", "/api/remix"]) {
+      const res = await app.request(path, { method: "POST" });
+
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({
+        error: { code: "UNAUTHORIZED", message: "Sign in required" },
+      });
+    }
+  });
+
+  it("exports the fetch and scheduled (GC) handlers", () => {
+    expect(typeof worker.fetch).toBe("function");
+    expect(typeof worker.scheduled).toBe("function");
   });
 
   it("answers unknown routes with the JSON error envelope", async () => {

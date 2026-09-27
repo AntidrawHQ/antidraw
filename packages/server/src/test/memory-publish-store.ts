@@ -1,0 +1,422 @@
+// An in-memory PublishStore with the same semantics as d1PublishStore's SQL:
+// the unique constraints, the cascades, the guarded all-or-nothing commit,
+// the GC claim's conditions. Service tests run against it (and against the
+// D1 store over node:sqlite where that is available), so a divergence between
+// the two shows up as a test that passes on one and fails on the other.
+import type {
+  CommitFailure,
+  LargeFileRow,
+  ObjectRef,
+  PublishStore,
+  SessionRow,
+  SiteRow,
+  StoredObjectRow,
+  UserObjectRef,
+  VersionRow,
+} from "../services/publish.store";
+
+type SessionObject = {
+  sessionId: string;
+  userId: string;
+  kind: ObjectRef["kind"];
+  sha256: string;
+  size: number;
+};
+type LargeFile = LargeFileRow & { versionId: string; userId: string };
+
+export type MemoryPublishState = {
+  sites: Map<string, SiteRow>;
+  versions: VersionRow[];
+  largeFiles: LargeFile[];
+  objects: Map<string, StoredObjectRow>;
+  sessions: Map<string, SessionRow>;
+  sessionObjects: SessionObject[];
+};
+
+const objectId = (o: { userId: string; kind: string; sha256: string }) =>
+  `${o.userId}|${o.kind}|${o.sha256}`;
+
+export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState } => {
+  const state: MemoryPublishState = {
+    sites: new Map(),
+    versions: [],
+    largeFiles: [],
+    objects: new Map(),
+    sessions: new Map(),
+    sessionObjects: [],
+  };
+  const copy = <T>(row: T | undefined | null): T | null => (row ? { ...row } : null);
+
+  const deleteVersions = (keep: (v: VersionRow) => boolean) => {
+    const gone = new Set(state.versions.filter((v) => !keep(v)).map((v) => v.id));
+    state.versions = state.versions.filter((v) => !gone.has(v.id));
+    state.largeFiles = state.largeFiles.filter((f) => !gone.has(f.versionId));
+    return gone.size;
+  };
+  const deleteSessions = (drop: (s: SessionRow) => boolean) => {
+    const gone = new Set([...state.sessions.values()].filter(drop).map((s) => s.id));
+    for (const id of gone) state.sessions.delete(id);
+    state.sessionObjects = state.sessionObjects.filter((o) => !gone.has(o.sessionId));
+    return gone.size;
+  };
+
+  const referencedByVersion = (o: { userId: string; kind: string; sha256: string }) =>
+    o.kind === "source"
+      ? state.versions.some((v) => v.userId === o.userId && v.sourceSha256 === o.sha256)
+      : state.largeFiles.some((f) => f.userId === o.userId && f.sha256 === o.sha256);
+  const heldBySession = (o: { userId: string; kind: string; sha256: string }, now: number) =>
+    state.sessionObjects.some(
+      (so) =>
+        so.userId === o.userId &&
+        so.kind === o.kind &&
+        so.sha256 === o.sha256 &&
+        (state.sessions.get(so.sessionId)?.holdUntil ?? 0) > now,
+    );
+
+  const missingSessionObjects = async (sessionId: string) =>
+    state.sessionObjects
+      .filter((so) => so.sessionId === sessionId)
+      .filter((so) => {
+        const row = state.objects.get(objectId(so));
+        return !row || row.size !== so.size || row.deleting;
+      })
+      .map((so) => ({ kind: so.kind, sha256: so.sha256 }))
+      .sort((a, b) => (a.kind + a.sha256 < b.kind + b.sha256 ? -1 : 1));
+
+  const lockFree = (site: SiteRow, now: number) =>
+    site.completeLock === null || (site.completeLockExpiresAt ?? 0) < now;
+
+  const store: PublishStore & { state: MemoryPublishState } = {
+    state,
+
+    async findSiteByWorkspace(userId, clientWorkspaceId) {
+      return copy(
+        [...state.sites.values()].find(
+          (s) => s.userId === userId && s.clientWorkspaceId === clientWorkspaceId,
+        ),
+      );
+    },
+    async findSiteById(siteId) {
+      return copy(state.sites.get(siteId));
+    },
+    async findSiteBySlug(slug) {
+      return copy([...state.sites.values()].find((s) => s.slug === slug));
+    },
+    async countSites(userId) {
+      return [...state.sites.values()].filter((s) => s.userId === userId).length;
+    },
+    async insertSiteIfAbsent(site) {
+      const sites = [...state.sites.values()];
+      if (
+        sites.some(
+          (s) => s.userId === site.userId && s.clientWorkspaceId === site.clientWorkspaceId,
+        )
+      ) {
+        return "exists";
+      }
+      if (sites.some((s) => s.slug === site.slug)) return "slug-taken";
+      state.sites.set(site.id, {
+        id: site.id,
+        userId: site.userId,
+        clientWorkspaceId: site.clientWorkspaceId,
+        name: site.name,
+        slug: site.slug,
+        headVersion: 0,
+        allowRemix: site.allowRemix,
+        liveFiles: null,
+        protectedFiles: null,
+        completeLock: null,
+        completeLockExpiresAt: null,
+        cleanupAfter: null,
+        createdAt: site.now,
+        updatedAt: site.now,
+      });
+      return "inserted";
+    },
+    async updateSite(siteId, patch, now) {
+      const site = state.sites.get(siteId);
+      if (!site) return null;
+      if (patch.name === undefined && patch.allowRemix === undefined) return copy(site);
+      if (patch.name !== undefined) site.name = patch.name;
+      if (patch.allowRemix !== undefined) site.allowRemix = patch.allowRemix;
+      site.updatedAt = now;
+      return copy(site);
+    },
+
+    async getStoredObjects(userId, refs) {
+      return refs
+        .map((r) => state.objects.get(objectId({ userId, ...r })))
+        .filter((r): r is StoredObjectRow => !!r)
+        .map((r) => ({ ...r }));
+    },
+    async releaseUnheldObjects(userId, refs, now) {
+      let released = 0;
+      for (const r of refs) {
+        const id = objectId({ userId, ...r });
+        const row = state.objects.get(id);
+        if (!row || row.verified || row.deleting) continue;
+        if (referencedByVersion(row) || heldBySession(row, now)) continue;
+        state.objects.delete(id);
+        released++;
+      }
+      return released;
+    },
+
+    async createSession(s) {
+      if (state.sessions.has(s.id)) throw new Error("UNIQUE constraint failed: publish_session.id");
+      state.sessions.set(s.id, {
+        id: s.id,
+        userId: s.userId,
+        siteId: s.siteId,
+        baseVersion: s.baseVersion,
+        status: "pending",
+        plan: s.plan,
+        resultVersion: null,
+        expiresAt: s.expiresAt,
+        holdUntil: s.holdUntil,
+        createdAt: s.now,
+      });
+      for (const o of s.objects) {
+        state.sessionObjects.push({ sessionId: s.id, userId: s.userId, ...o });
+        const id = objectId({ userId: s.userId, ...o });
+        const row = state.objects.get(id);
+        if (!row) {
+          state.objects.set(id, {
+            userId: s.userId,
+            ...o,
+            verified: false,
+            deleting: false,
+            createdAt: s.now,
+          });
+        } else if (!row.verified && !row.deleting) {
+          row.size = o.size;
+        }
+      }
+      const site = state.sites.get(s.siteId);
+      if (site) site.cleanupAfter = Math.max(site.cleanupAfter ?? 0, s.cleanupAfter);
+    },
+    async getSession(sessionId) {
+      return copy(state.sessions.get(sessionId));
+    },
+    async setSessionStatus(sessionId, status, opts = {}) {
+      const session = state.sessions.get(sessionId);
+      if (!session || (opts.onlyIfPending && session.status !== "pending")) return false;
+      session.status = status;
+      if (opts.holdUntil !== undefined) session.holdUntil = opts.holdUntil;
+      return true;
+    },
+    async usedBytes(userId) {
+      return [...state.objects.values()]
+        .filter((o) => o.userId === userId && !o.deleting)
+        .reduce((sum, o) => sum + o.size, 0);
+    },
+
+    async claimCompleteLock(c) {
+      const site = state.sites.get(c.siteId);
+      if (
+        !site ||
+        site.headVersion !== c.baseVersion ||
+        !lockFree(site, c.now) ||
+        site.protectedFiles !== c.seenProtected
+      ) {
+        return false;
+      }
+      site.completeLock = c.sessionId;
+      site.completeLockExpiresAt = c.expiresAt;
+      site.protectedFiles = c.protectedFiles;
+      return true;
+    },
+    async checkCompleteLock(siteId, lock, now, minRemainingMs) {
+      const site = state.sites.get(siteId);
+      return (
+        !!site &&
+        site.completeLock === lock &&
+        (site.completeLockExpiresAt ?? 0) >= now + minRemainingMs
+      );
+    },
+    async releaseCompleteLock(siteId, lock) {
+      const site = state.sites.get(siteId);
+      if (site && site.completeLock === lock) {
+        site.completeLock = null;
+        site.completeLockExpiresAt = null;
+      }
+    },
+    async commitVersion(v): Promise<{ ok: true } | ({ ok: false } & CommitFailure)> {
+      const site = state.sites.get(v.siteId);
+      const next = v.baseVersion + 1;
+      const guard =
+        !!site &&
+        site.headVersion === v.baseVersion &&
+        site.completeLock === v.sessionId &&
+        (await missingSessionObjects(v.sessionId)).length === 0;
+      const duplicate = state.versions.some((x) => x.siteId === v.siteId && x.version === next);
+      if (!guard || duplicate || !site) {
+        if (!site || site.headVersion !== v.baseVersion) return { ok: false, reason: "conflict" };
+        const missing = await missingSessionObjects(v.sessionId);
+        if (missing.length > 0) return { ok: false, reason: "objects-gone", missing };
+        if (site.completeLock !== v.sessionId) return { ok: false, reason: "lock-lost" };
+        return { ok: false, reason: "other", error: new Error("UNIQUE constraint failed") };
+      }
+      state.versions.push({
+        id: v.id,
+        siteId: v.siteId,
+        userId: v.userId,
+        version: next,
+        sourceSha256: v.source.sha256,
+        sourceSize: v.source.size,
+        snapshotBytes: v.snapshotBytes,
+        fileCount: v.fileCount,
+        siteFileCount: v.siteFileCount,
+        siteBytes: v.siteBytes,
+        allowRemix: site.allowRemix,
+        keep: false,
+        publishSessionId: v.sessionId,
+        createdAt: v.now,
+      });
+      for (const f of v.largeFiles)
+        state.largeFiles.push({ ...f, versionId: v.id, userId: v.userId });
+      for (const so of state.sessionObjects.filter((o) => o.sessionId === v.sessionId)) {
+        const row = state.objects.get(objectId(so));
+        if (row && !row.deleting) row.verified = true;
+      }
+      site.headVersion = next;
+      site.liveFiles = v.liveFiles;
+      site.protectedFiles = null;
+      site.completeLock = null;
+      site.completeLockExpiresAt = null;
+      site.cleanupAfter = Math.max(site.cleanupAfter ?? 0, v.cleanupAfter);
+      site.updatedAt = v.now;
+      const session = state.sessions.get(v.sessionId);
+      if (session) {
+        session.status = "completed";
+        session.resultVersion = next;
+      }
+      deleteVersions(
+        (x) => !(x.siteId === v.siteId && !x.keep && x.version <= next - v.keepVersions),
+      );
+      return { ok: true };
+    },
+    missingSessionObjects,
+
+    async getHeadVersion(site) {
+      if (site.headVersion === 0) return null;
+      return copy(
+        state.versions.find((v) => v.siteId === site.id && v.version === site.headVersion),
+      );
+    },
+    async getLargeFiles(versionId) {
+      return state.largeFiles
+        .filter((f) => f.versionId === versionId)
+        .map(({ path, sha256, size, mode }) => ({ path, sha256, size, mode }))
+        .sort((a, b) => (a.path < b.path ? -1 : 1));
+    },
+
+    async expireSessions(now) {
+      let n = 0;
+      for (const s of state.sessions.values()) {
+        if (s.status === "pending" && s.expiresAt < now) {
+          s.status = "expired";
+          n++;
+        }
+      }
+      return n;
+    },
+    async pruneVersions(keepVersions) {
+      return deleteVersions((v) => {
+        const head = state.sites.get(v.siteId)?.headVersion ?? 0;
+        return v.keep || v.version > head - keepVersions;
+      });
+    },
+    async leftoverDeletingObjects(limit) {
+      return [...state.objects.values()]
+        .filter((o) => o.deleting)
+        .slice(0, Math.max(limit, 0))
+        .map(({ userId, kind, sha256 }) => ({ userId, kind, sha256 }));
+    },
+    async claimGcObjects({ now, minCreatedAt, limit }) {
+      const claimed: UserObjectRef[] = [];
+      for (const o of state.objects.values()) {
+        if (claimed.length >= limit) break;
+        if (o.deleting || (o.verified && o.createdAt >= minCreatedAt)) continue;
+        if (referencedByVersion(o) || heldBySession(o, now)) continue;
+        o.deleting = true;
+        o.verified = false;
+        claimed.push({ userId: o.userId, kind: o.kind, sha256: o.sha256 });
+      }
+      return claimed;
+    },
+    async deleteObjectRows(keys) {
+      let n = 0;
+      for (const k of keys) {
+        const id = objectId(k);
+        if (state.objects.get(id)?.deleting) {
+          state.objects.delete(id);
+          n++;
+        }
+      }
+      return n;
+    },
+    async sitesDueForCleanup(now, limit) {
+      return [...state.sites.values()]
+        .filter((s) => s.cleanupAfter !== null && s.cleanupAfter < now)
+        .sort((a, b) => (a.cleanupAfter ?? 0) - (b.cleanupAfter ?? 0))
+        .slice(0, limit)
+        .map((s) => ({ ...s }));
+    },
+    async claimSiteLockForGc(siteId, lock, now, expiresAt) {
+      const site = state.sites.get(siteId);
+      if (!site || !lockFree(site, now)) return false;
+      site.completeLock = lock;
+      site.completeLockExpiresAt = expiresAt;
+      return true;
+    },
+    async heldSessionPlans(siteId, now) {
+      return [...state.sessions.values()]
+        .filter((s) => s.siteId === siteId && s.holdUntil > now)
+        .map((s) => ({ plan: s.plan, holdUntil: s.holdUntil }));
+    },
+    async finishSiteCleanup(siteId, lock, seen, next) {
+      const site = state.sites.get(siteId);
+      if (!site) return;
+      if (site.completeLock === lock) {
+        site.completeLock = null;
+        site.completeLockExpiresAt = null;
+      }
+      if (site.cleanupAfter === seen) site.cleanupAfter = next;
+    },
+    async deleteOldSessions(now, createdBefore) {
+      return deleteSessions(
+        (s) => s.status !== "pending" && s.holdUntil < now && s.createdAt < createdBefore,
+      );
+    },
+    async abandonedSites(now, createdBefore, limit) {
+      if (limit <= 0) return [];
+      return [...state.sites.values()]
+        .filter(
+          (s) =>
+            s.headVersion === 0 &&
+            s.createdAt < createdBefore &&
+            ![...state.sessions.values()].some((x) => x.siteId === s.id && x.holdUntil > now),
+        )
+        .sort((a, b) => a.createdAt - b.createdAt)
+        .slice(0, limit)
+        .map((s) => ({ ...s }));
+    },
+    async deleteAbandonedSite(siteId, lock, now) {
+      const site = state.sites.get(siteId);
+      if (
+        !site ||
+        site.headVersion !== 0 ||
+        site.completeLock !== lock ||
+        [...state.sessions.values()].some((x) => x.siteId === siteId && x.holdUntil > now)
+      ) {
+        return false;
+      }
+      state.sites.delete(siteId);
+      deleteSessions((s) => s.siteId === siteId);
+      deleteVersions((v) => v.siteId !== siteId);
+      return true;
+    },
+  };
+  return store;
+};

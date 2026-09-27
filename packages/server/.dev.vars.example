@@ -8,3 +8,17 @@ BETTER_AUTH_URL="http://localhost:8799"
 # http://localhost:8799/api/auth/callback/google (see README → Auth).
 GOOGLE_CLIENT_ID=""
 GOOGLE_CLIENT_SECRET=""
+
+# Publish storage. Production sets all three R2_* as secrets (an R2 API token
+# with Object Read & Write on antidraw-sites and antidraw-sources), and clients
+# upload with presigned URLs. Locally, leave all three empty and keep
+# STORAGE_MODE="worker": together they turn on /api/storage/:token, which
+# writes uploads to the local R2 bindings with the sha256 check. Setting any
+# R2_* value turns that route off.
+R2_ACCOUNT_ID=""
+R2_S3_ACCESS_KEY_ID=""
+R2_S3_SECRET_ACCESS_KEY=""
+STORAGE_MODE="worker"
+# Where published sites are served; the local publish Worker (packages/
+# publish-worker, `npm run dev` on :8787) answers <slug>.localhost.
+SITE_URL_TEMPLATE="http://{slug}.localhost:8787"

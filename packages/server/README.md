@@ -45,9 +45,8 @@ src/
   lib/                   # env (bindings), errors, respond helper, auth wiring
 ```
 
-Worker binding types are hand-maintained in `src/lib/env.ts` — with five
-bindings that is the single source of truth, so there is no `wrangler types`
-step to keep in sync.
+Worker binding types are hand-maintained in `src/lib/env.ts`, the single
+source of truth, so there is no `wrangler types` step to keep in sync.
 
 ## Develop
 
@@ -165,7 +164,95 @@ npx wrangler secret put BETTER_AUTH_URL
 npm run deploy
 ```
 
-## Next step
+## Publish
 
-Publishing: a Worker endpoint behind `requireSession` that the shell's Publish
-button calls through main.
+The Publish button (in `@antidraw/shell`, from the main process) publishes a
+workspace as a read-only canvas site at `https://<slug>.antidraw.app`, and
+stores a snapshot of its source that others can remix. All routes are behind
+`requireSession` except `/api/storage/:token`.
+
+| Route | What |
+|---|---|
+| `POST /api/publish/sessions` | begin: validate the plan, find or create the workspace's site, sign upload URLs for what the server lacks |
+| `POST /api/publish/sessions/:id/complete` | verify every upload, write the entry files (the switch-over), commit the version |
+| `POST /api/publish/sessions/:id/abort` | best effort, idempotent |
+| `GET /api/publish/sessions/:id` | settle a complete whose outcome the app could not see |
+| `GET /api/publish/sites?clientWorkspaceId=` / `PATCH /api/publish/sites/:siteId` | site status; `{ allowRemix }` |
+| `POST /api/remix` | 10-minute download URLs for a site's head snapshot |
+| `PUT` / `GET /api/storage/:token` | local dev only (below) |
+
+Code: `controllers/{publish,remix,storage}.controller.ts` → `services/publish.service.ts`,
+`remix.service.ts`, `gc.service.ts` → `services/publish.store.ts` (all the D1
+SQL) and `lib/storage.ts` (R2 and URL signing). Wire schemas are in
+`lib/publish.schemas.ts`, limits in `lib/publish-limits.ts`.
+
+**Storage.** Two R2 buckets:
+
+- `antidraw-sites` (binding `SITES`, public through `packages/publish-worker`):
+  `<slug>/<path>`. Built assets go live at upload; the three entry files
+  (`preview.html`, `canvas.json`, `index.html`) only at complete, after every
+  object is verified. Public files (fixed names such as `/logo.png`) are
+  overwritten in place at upload, so a failed publish can leave new public
+  files beside old pages until the next successful publish repairs them.
+- `antidraw-sources` (binding `SOURCES`, private): `u/<userId>/source/<sha256>.tar.gz`
+  and `u/<userId>/blob/<sha256>`, content-addressed per account and
+  deduplicated. Each account has a 1 GiB quota over every stored object GC has
+  not removed, committed or not.
+
+Clients PUT bytes straight to R2 with presigned S3 URLs (aws4fetch), signed
+over `content-length`, the sha256 checksum and the metadata; complete then
+HEAD-checks size and sha256 of every object. Every upload carries its sha256.
+
+**GC** runs nightly from the cron trigger (`src/scheduled.ts`): expire lapsed
+sessions, drop versions beyond the newest 5 (`keep` ones excepted), delete
+account objects nothing references or holds (never-committed ones as soon as
+no session's upload URLs can still reach them, committed ones after 24 h),
+delete stale site keys, forget old sessions, and free the slugs of sites that
+never completed. Each step is bounded and independent.
+
+### Local end to end
+
+Everything runs against local wrangler state; nothing touches Cloudflare.
+
+```sh
+STATE=$PWD/../../.wrangler/shared
+# .dev.vars (from .dev.vars.example): leave R2_* empty and keep
+# STORAGE_MODE="worker" — together they enable /api/storage/:token, which
+# stands in for presigned URLs and writes to the local R2 bindings with the
+# sha256 check. SITE_URL_TEMPLATE="http://{slug}.localhost:8787".
+npm run db:migrate:local -- --persist-to "$STATE"
+npm run dev -- --persist-to "$STATE" --test-scheduled            # :8799
+npm run dev -w @antidraw/publish-worker -- --persist-to "$STATE"   # :8787, same sites bucket
+```
+
+Publish from the app, then open `http://<slug>.localhost:8787/`. Run GC with
+`curl "http://localhost:8799/cdn-cgi/handler/scheduled?cron=17+3+*+*+*"`
+(age rows first with `wrangler d1 execute antidraw --local --persist-to "$STATE"`
+to see it delete something).
+
+Tests (`npm test`) cover the SQL against node:sqlite (`src/test/d1-sqlite.ts`,
+which enforces D1's 100-parameter and 100 KB statement limits; Node >= 22.5),
+and the services against in-memory stores. R2's checksum enforcement on a
+presigned PUT, the rate limiters and cron dispatch are not unit-testable.
+
+### Deploying publish
+
+- **Workers Paid is required.** Free allows 50 subrequests per request (R2 and
+  D1 binding calls count) and 50 D1 queries per invocation; begin and complete
+  need up to ~510 R2 calls and ~100 D1 statements. Paid allows 10 000 and 1 000.
+- Create the buckets (`wrangler r2 bucket create antidraw-sites` and
+  `antidraw-sources`), and set `R2_ACCOUNT_ID`, `R2_S3_ACCESS_KEY_ID` and
+  `R2_S3_SECRET_ACCESS_KEY` (an R2 API token with Object Read & Write on both
+  buckets) with `wrangler secret put`. Without all three, publish answers
+  500 `STORAGE_MISCONFIGURED`; `STORAGE_MODE` is never set in production.
+- **`BETTER_AUTH_URL` must never be a host under the site domain** (the
+  hostname of `SITE_URL_TEMPLATE` without `{slug}.`). Published sites run
+  arbitrary JS there and can set cookies on the parent domain; the server
+  refuses to publish (500 `CONFIG_INVALID`) when the two overlap.
+- **Before wildcard DNS for `*.antidraw.app` goes live**, get `antidraw.app` on
+  the Public Suffix List. Until then sibling sites are same-site: one site can
+  set cookies for all others, and one phishing slug can get the whole domain
+  flagged. No first-party service may live under that domain.
+- Open check before production: confirm once against a staging bucket that R2
+  rejects a presigned PUT whose body does not match `x-amz-checksum-sha256`
+  (see the TODO in `src/lib/storage.ts`).

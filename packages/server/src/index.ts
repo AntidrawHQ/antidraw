@@ -4,10 +4,16 @@ import type { AppEnv } from "./lib/env";
 import { respondError } from "./lib/respond";
 import { healthController } from "./controllers/health.controller";
 import { authController, meController } from "./controllers/auth.controller";
+import { publishController, type PublishOptions } from "./controllers/publish.controller";
+import { remixController } from "./controllers/remix.controller";
+import { storageController } from "./controllers/storage.controller";
+import type { Bindings } from "./lib/env";
+import { scheduled } from "./scheduled";
 
 // Built by a factory so tests can mount extra routes on a real app (with the
-// real fallbacks below) instead of asserting against a copy of them.
-export const createApp = () => {
+// real fallbacks below) instead of asserting against a copy of them, and pass
+// fake publish deps (`publishDeps`) instead of the Worker's bindings.
+export const createApp = (opts: PublishOptions = {}) => {
   // All routes live under /api, matching @antidraw/shell's in-Electron API so
   // the two share one path convention. Mount feature controllers here.
   const api = new Hono<AppEnv>();
@@ -15,6 +21,9 @@ export const createApp = () => {
   api.route("/health", healthController);
   api.route("/auth", authController); // better-auth: /api/auth/*
   api.route("/me", meController);
+  api.route("/publish", publishController(opts));
+  api.route("/remix", remixController(opts));
+  api.route("/storage", storageController); // dev only; 404 unless STORAGE_MODE="worker"
 
   const app = new Hono<AppEnv>();
   app.route("/api", api);
@@ -38,5 +47,7 @@ export const createApp = () => {
   return app;
 };
 
-// Cloudflare Workers entrypoint — Hono exports a `fetch` handler.
-export default createApp();
+// Cloudflare Workers entrypoint: Hono's `fetch`, and the cron trigger's
+// `scheduled` (nightly publish GC).
+const app = createApp();
+export default { fetch: app.fetch, scheduled } satisfies ExportedHandler<Bindings>;

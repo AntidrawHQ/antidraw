@@ -6,3 +6,4 @@
 // their own models/*.model.ts and are re-exported here; they reference
 // `user.id` (app-owned), never the Google account id (account.account_id).
 export * from "../models/auth.model";
+export * from "../models/publish.model";

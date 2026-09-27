@@ -22,5 +22,28 @@
       "database_id": "REPLACE_WITH_D1_DATABASE_ID",
       "migrations_dir": "src/db/migrations"
     }
-  ]
+  ],
+  // Publish + remix (README → Publish). Create both buckets before deploying:
+  //   npx wrangler r2 bucket create antidraw-sites
+  //   npx wrangler r2 bucket create antidraw-sources
+  "r2_buckets": [
+    // Public, served by packages/publish-worker as <slug>.antidraw.app.
+    { "binding": "SITES", "bucket_name": "antidraw-sites" },
+    // Private snapshots; clients only ever get short-lived signed URLs.
+    { "binding": "SOURCES", "bucket_name": "antidraw-sources" }
+  ],
+  "vars": {
+    "SITE_URL_TEMPLATE": "https://{slug}.antidraw.app",
+    // Must match r2_buckets: presigned S3 URLs name the bucket.
+    "SITES_BUCKET_NAME": "antidraw-sites",
+    "SOURCES_BUCKET_NAME": "antidraw-sources"
+    // STORAGE_MODE is never set here: only .dev.vars turns on the dev storage
+    // route, so a deploy missing the R2_* secrets fails closed.
+  },
+  "ratelimits": [
+    { "name": "PUBLISH_RATE_LIMITER", "namespace_id": "1001", "simple": { "limit": 20, "period": 60 } },
+    { "name": "REMIX_RATE_LIMITER", "namespace_id": "1002", "simple": { "limit": 10, "period": 60 } }
+  ],
+  // Nightly publish GC (src/scheduled.ts).
+  "triggers": { "crons": ["17 3 * * *"] }
 }
