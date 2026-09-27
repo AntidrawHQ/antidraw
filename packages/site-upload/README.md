@@ -42,7 +42,10 @@ plus those of any plan still inside its 1-hour upload window.
 
 **Commit retries.** Repeating a commit is safe while it's still the latest one:
 it returns `alreadyCommitted: true`. Once a newer publish has gone live, a
-replayed commit gets `SUPERSEDED` instead of rolling the site back.
+replayed commit gets `SUPERSEDED` instead of rolling the site back. The pointer
+counts commits (`seq`) and each plan records the count it was made against; a
+commit only goes live on top of that version. No clocks are compared, so skew
+between machines can't reorder publishes.
 
 ## Serving and caching
 

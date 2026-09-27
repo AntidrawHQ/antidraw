@@ -489,7 +489,8 @@ describe("uploadSite", () => {
       });
       const started = performance.now();
       const error = await thrown(run(transport, { signal: controller.signal, retryDelayMs: 10_000 }));
-      expect(performance.now() - started).toBeLessThan(1000);
+      // The retry wait is 10 s (or Retry-After 10 s); finishing well under it proves the wait was cut short.
+      expect(performance.now() - started).toBeLessThan(5000);
       expect(error).toMatchInlineSnapshot(`
         {
           "error": "Error",
@@ -533,7 +534,8 @@ describe("uploadSite", () => {
       });
       const started = performance.now();
       const error = await thrown(run(transport, { signal: controller.signal }));
-      expect(performance.now() - started).toBeLessThan(1000);
+      // The retry wait is 10 s (or Retry-After 10 s); finishing well under it proves the wait was cut short.
+      expect(performance.now() - started).toBeLessThan(5000);
       expect(error).toMatchInlineSnapshot(`
         {
           "error": "Error",

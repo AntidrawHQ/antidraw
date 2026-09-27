@@ -307,6 +307,72 @@ describe("handleUpload", () => {
   });
 });
 
+describe("handleUpload boundaries", () => {
+  const manifestBody = JSON.stringify(manifestOf({ "index.html": "x" }));
+
+  it("only commits on POST", async () => {
+    await post("plan", manifestBody);
+    // Store the file, so any commit that got through would make the site live.
+    await store.putFile(site, "p1", sha256("x"), new TextEncoder().encode("x"), 1);
+    const statuses: Record<string, number> = {};
+    for (const method of ["GET", "PUT", "DELETE"]) {
+      statuses[method] = (await call("commit", { method, headers: { "content-type": "application/json" } })).status;
+    }
+    const pointer = await store.readPointer(site);
+    const posted = await call("commit", { method: "POST", headers: { "content-type": "application/json" } });
+    expect({ statuses, liveAfterOthers: pointer?.publishId ?? null, post: posted.status }).toMatchInlineSnapshot(`
+      {
+        "liveAfterOthers": null,
+        "post": 200,
+        "statuses": {
+          "DELETE": 405,
+          "GET": 405,
+          "PUT": 405,
+        },
+      }
+    `);
+  });
+
+  it("reads a plan body that arrives split across chunks", async () => {
+    const bytes = new TextEncoder().encode(manifestBody);
+    const cuts = [0, 3, 17, 18, bytes.length];
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (let i = 0; i + 1 < cuts.length; i++) controller.enqueue(bytes.slice(cuts[i], cuts[i + 1]));
+        controller.close();
+      },
+    });
+    const res = await call("plan", { method: "POST", body, duplex: "half", headers: { "content-type": "application/json" } } as RequestInit);
+    expect(res).toMatchInlineSnapshot(`
+      {
+        "body": {
+          "missing": [
+            "sha(x)",
+          ],
+        },
+        "headers": {
+          "cache-control": "no-store",
+          "content-type": "application/json; charset=utf-8",
+        },
+        "status": 200,
+      }
+    `);
+  });
+
+  it("accepts a plan body of exactly the size limit, and refuses one byte more", async () => {
+    const padded = (size: number) => manifestBody + " ".repeat(size - manifestBody.length);
+    const at = await post("plan", padded(MAX_PLAN_BODY_BYTES));
+    const over = await post("plan", padded(MAX_PLAN_BODY_BYTES + 1));
+    expect({ atLimit: at.status, overLimit: over.status, overCode: (over.body as { error: { code: string } }).error.code }).toMatchInlineSnapshot(`
+      {
+        "atLimit": 200,
+        "overCode": "TOO_LARGE",
+        "overLimit": 413,
+      }
+    `);
+  });
+});
+
 describe("errorResponse", () => {
   it("hides unexpected errors and maps codes to statuses", async () => {
     expect({

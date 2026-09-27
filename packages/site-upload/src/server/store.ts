@@ -24,6 +24,8 @@ import { contentType, isDocument } from "./content-type";
 /** What a site serves: the committed files plus where it came from. */
 export type Pointer = {
   v: 1;
+  /** Counts commits: 1 for the first, one more each time. Plans record the one they were based on. */
+  seq: number;
   publishId: string;
   previous: string | null;
   committedAt: number;
@@ -35,7 +37,8 @@ export type Pointer = {
   retained: Files;
 };
 
-type StoredPlan = { v: 1; publishId: string; createdAt: number; files: Files };
+/** base: the pointer's seq when the plan was made (0 before the first commit). */
+type StoredPlan = { v: 1; publishId: string; createdAt: number; base: number; files: Files };
 
 export type CleanupResult = { deletedFiles: number; deletedPlans: number };
 
@@ -120,7 +123,7 @@ export class SiteStore {
       if (!sameFiles(existing.files, files)) throw planExists(publishId);
       if (this.isExpired(existing)) throw planExpired(publishId);
     } else {
-      const plan: StoredPlan = { v: 1, publishId, createdAt: this.now(), files };
+      const plan: StoredPlan = { v: 1, publishId, createdAt: this.now(), base: current?.seq ?? 0, files };
       await this.bucket.put(this.planKey(site, publishId), JSON.stringify(plan), {
         httpMetadata: { contentType: "application/json" },
         // Lets cleanup see a plan's age from a listing, without reading it.
@@ -220,14 +223,16 @@ export class SiteStore {
     const plan = await this.readPlan(site, publishId);
     if (!plan) throw noPlan(publishId);
     if (this.isExpired(plan)) throw planExpired(publishId);
-    // The per-site lock means each publish plans after the previous one
-    // committed, so a plan older than the live commit is a stale retry, e.g.
-    // one whose first commit went through but whose reply was lost.
-    if (current && plan.createdAt < current.committedAt) {
+    // A plan may only go live on top of the version it was made against. If
+    // anything committed since, this is a stale retry (say, one whose first
+    // commit went through but whose reply was lost) and must not roll the
+    // site back. Compared by commit count, not time: clocks on different
+    // machines disagree, and two commits can share a millisecond.
+    if ((current?.seq ?? 0) !== plan.base) {
       throw new SiteUploadError(
         "SUPERSEDED",
-        `Publish ${current.publishId} went live after ${publishId} was planned`,
-        { live: current.publishId },
+        `Publish ${current?.publishId ?? "(none)"} went live after ${publishId} was planned`,
+        { live: current?.publishId ?? null },
       );
     }
 
@@ -254,6 +259,7 @@ export class SiteStore {
     }
     const pointer: Pointer = {
       v: 1,
+      seq: (current?.seq ?? 0) + 1,
       publishId,
       previous,
       committedAt: this.now(),
@@ -416,12 +422,15 @@ function parsePointer(text: string): Pointer {
     value.v !== 1 ||
     !isId(value.publishId) ||
     !(value.previous === null || isId(value.previous)) ||
-    typeof value.committedAt !== "number"
+    typeof value.committedAt !== "number" ||
+    !Number.isSafeInteger(value.seq) ||
+    (value.seq as number) < 1
   ) {
     throw internal("The site pointer is malformed");
   }
   return {
     v: 1,
+    seq: value.seq as number,
     publishId: value.publishId,
     previous: value.previous,
     committedAt: value.committedAt,
@@ -435,13 +444,20 @@ function parsePointer(text: string): Pointer {
 
 function parsePlan(text: string): StoredPlan {
   const value = parseJson(text, "plan");
-  if (value.v !== 1 || !isId(value.publishId) || typeof value.createdAt !== "number") {
+  if (
+    value.v !== 1 ||
+    !isId(value.publishId) ||
+    typeof value.createdAt !== "number" ||
+    !Number.isSafeInteger(value.base) ||
+    (value.base as number) < 0
+  ) {
     throw internal("A stored plan is malformed");
   }
   return {
     v: 1,
     publishId: value.publishId,
     createdAt: value.createdAt,
+    base: value.base as number,
     files: parseStoredFiles(value.files, "plan"),
   };
 }

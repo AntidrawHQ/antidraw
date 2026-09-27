@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createHttpTransport, uploadSite } from "../src/client";
 import { readable, sha256, startTestWorker, summarize, uniqueSite, type TestWorker } from "./helpers";
 
@@ -28,6 +28,7 @@ beforeEach(async () => {
   site = uniqueSite("e2e");
   publishCount = 0;
 });
+afterEach(() => rm(dir, { recursive: true, force: true }));
 
 async function write(files: Record<string, string | Uint8Array>) {
   for (const [path, content] of Object.entries(files)) {
@@ -89,6 +90,21 @@ describe("end to end", () => {
         "totalFiles": 6,
         "uploadedBytes": 20971568,
         "uploadedFiles": 6,
+      }
+    `);
+
+    // A range asked for before any full read, so R2 serves it: nothing is in the edge cache yet.
+    const fromR2 = await page("/media/clip.mp4", { range: "bytes=5000-5999" });
+    const fromR2Bytes = Buffer.from(await fromR2.arrayBuffer());
+    expect({
+      status: fromR2.status,
+      contentRange: fromR2.headers.get("content-range"),
+      sameBytes: fromR2Bytes.equals(big.subarray(5000, 6000)),
+    }).toMatchInlineSnapshot(`
+      {
+        "contentRange": "bytes 5000-5999/20971520",
+        "sameBytes": true,
+        "status": 206,
       }
     `);
 
@@ -285,18 +301,9 @@ describe("end to end", () => {
     });
 
     await truncatedPut(`${base}/files/${hash}`, content.subarray(0, 100 * 1024), content.length);
-    const replan = await fetch(`${origin}${base}/plan`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ v: 1, files: { "big.bin": { h: hash, s: content.length } } }),
-    });
-    expect(readable(await replan.json())).toMatchInlineSnapshot(`
-      {
-        "missing": [
-          "sha(<262144 bytes>)",
-        ],
-      }
-    `);
+    // Check storage itself: a re-plan would call a wrong-sized file missing too, so it can't tell.
+    const stored = await worker.bucket.list({ prefix: `sites/${site}/f/` });
+    expect(readable(stored.objects.map((object) => ({ key: object.key.split("/").at(-1), size: object.size })))).toMatchInlineSnapshot(`[]`);
   });
 
   it("caches files by hash, then serves them and their ranges without R2", async () => {

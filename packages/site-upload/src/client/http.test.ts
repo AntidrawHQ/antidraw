@@ -233,3 +233,25 @@ describe("createHttpTransport", () => {
     `);
   });
 });
+
+describe("createHttpTransport signals", () => {
+  it("passes the caller's abort signal to every request", async () => {
+    const seen: boolean[] = [];
+    const controller = new AbortController();
+    const fetch = (async (_input: string | URL | Request, init: RequestInit = {}) => {
+      seen.push(init.signal === controller.signal);
+      return json(200, (init.method === "PUT" ? { ok: true } : String(_input).endsWith("/plan") ? { missing: [] } : { publishId: "p1", previous: null, alreadyCommitted: false }));
+    }) as typeof globalThis.fetch;
+    const transport = createHttpTransport({ baseUrl: base, fetch });
+    await transport.plan(manifestOf({ a: "x" }), controller.signal);
+    await transport.put(sha256("x"), new Blob(["x"]), controller.signal);
+    await transport.commit(controller.signal);
+    expect(seen).toMatchInlineSnapshot(`
+      [
+        true,
+        true,
+        true,
+      ]
+    `);
+  });
+});

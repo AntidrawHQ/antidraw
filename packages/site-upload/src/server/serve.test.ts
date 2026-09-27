@@ -150,8 +150,9 @@ describe("resolving paths", () => {
       await fetchAll(server(), {
         unknown: ["/nope"],
         "bad percent-encoding": ["/%E0%A4%A"],
-        "dot segments stay inside the site": ["/about/../../../index.html"],
-        "encoded dot segments": ["/%2e%2e/current.json"],
+        "dot segments (resolved by the URL parser first)": ["/about/../../../index.html"],
+        "encoded dot segments (also resolved by the URL parser)": ["/%2e%2e/current.json"],
+        "dot segments hidden behind %2F, which reach our decoder": ["/about%2F..%2F..%2Fcurrent.json"],
         post: ["/", { method: "POST" }],
         head: ["/video.mp4", { method: "HEAD" }],
       }),
@@ -165,7 +166,7 @@ describe("resolving paths", () => {
           },
           "status": 400,
         },
-        "dot segments stay inside the site": {
+        "dot segments (resolved by the URL parser first)": {
           "body": "<h1>home</h1>",
           "headers": {
             "accept-ranges": "bytes",
@@ -177,7 +178,17 @@ describe("resolving paths", () => {
           },
           "status": 200,
         },
-        "encoded dot segments": {
+        "dot segments hidden behind %2F, which reach our decoder": {
+          "body": "<h1>missing</h1>",
+          "headers": {
+            "cache-control": "no-store",
+            "content-length": "16",
+            "content-type": "text/html; charset=utf-8",
+            "x-content-type-options": "nosniff",
+          },
+          "status": 404,
+        },
+        "encoded dot segments (also resolved by the URL parser)": {
           "body": "<h1>missing</h1>",
           "headers": {
             "cache-control": "no-store",
@@ -677,31 +688,51 @@ describe("pointer cache", () => {
     `);
   });
 
-  it("forgets the least recently used site past the limit", async () => {
-    await publish("p1", { "index.html": "first site v1" });
-    const first = site;
-    site = uniqueSite();
-    await publish("p1", { "index.html": "second site" });
-    const second = site;
-
-    const s = server({ maxCachedSites: 1, pointerTtlMs: 60_000 });
+  it("evicts the least recently used site, not the oldest", async () => {
+    const sites: string[] = [];
+    for (const name of ["a", "b", "c"]) {
+      site = uniqueSite(name);
+      sites.push(site);
+      await publish("p1", { "index.html": `${name} v1` });
+    }
+    const [a, b, c] = sites as [string, string, string];
+    const s = server({ maxCachedSites: 2, pointerTtlMs: 60_000 });
     const home = async (key: string) => (await s.fetch(new Request("https://x.test/"), key)).text();
-    const seen = [await home(first), await home(second)];
-    site = first;
-    await publish("p2", { "index.html": "first site v2" });
-    // The first site was evicted when the second was cached, so v2 shows at once.
-    seen.push(await home(first));
+    await home(a);
+    await home(b);
+    await home(a); // a is now the most recently used
+    await home(c); // over the limit: evicts b (least recently used); first-in-first-out would evict a
+    for (const [key, name] of [[a, "a"], [b, "b"]] as const) {
+      site = key;
+      await publish("p2", { "index.html": `${name} v2` });
+    }
+    // A still-cached site keeps showing v1 until its TTL; an evicted one shows v2 at once.
+    expect({ a: await home(a), b: await home(b) }).toMatchInlineSnapshot(`
+      {
+        "a": "a v1",
+        "b": "b v2",
+      }
+    `);
+  });
+
+  it("forget() drops a site's cached pointer", async () => {
+    await publish("p1", { "index.html": "v1" });
+    const s = server({ pointerTtlMs: 60_000 });
+    const home = async () => (await get(s, "/")).text();
+    const seen = [await home()];
+    await publish("p2", { "index.html": "v2" });
+    seen.push(await home());
+    s.forget(site);
+    seen.push(await home());
     expect(seen).toMatchInlineSnapshot(`
       [
-        "first site v1",
-        "second site",
-        "first site v2",
+        "v1",
+        "v1",
+        "v2",
       ]
     `);
   });
-});
 
-describe("retained files", () => {
   it("serves the previous version's hashed chunks, but nothing else from it", async () => {
     await publish("p1", { "index.html": "v1", "assets/app-1.js": "js1", "about.txt": "old page" }, ["assets/app-1.js"]);
     await publish("p2", { "index.html": "v2", "assets/app-2.js": "js2" }, ["assets/app-2.js"]);

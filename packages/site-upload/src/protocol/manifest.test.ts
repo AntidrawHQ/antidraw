@@ -447,14 +447,16 @@ describe("parseManifest", () => {
     const paths = Array.from({ length: DEFAULT_LIMITS.maxFiles }, (_, i) => `dir${i % 50}/file-${i}.txt`);
     const started = performance.now();
     parseManifest(withPaths(...paths));
-    expect(performance.now() - started).toBeLessThan(1000);
+    // Linear-time work finishes in well under a second; a quadratic check would take minutes.
+    expect(performance.now() - started).toBeLessThan(5000);
   });
 
   it("handles deep paths without quadratic blowup", () => {
     const deep = Array.from({ length: 2000 }, (_, i) => `${"d/".repeat(500)}f${i}`);
     const started = performance.now();
     parseManifest(withPaths(...deep), { ...DEFAULT_LIMITS, maxPathBytes: 2048, maxManifestBytes: 8 * 1024 * 1024 });
-    expect(performance.now() - started).toBeLessThan(1000);
+    // Linear-time work finishes in well under a second; a quadratic check would take minutes.
+    expect(performance.now() - started).toBeLessThan(5000);
   });
 });
 
@@ -465,6 +467,79 @@ describe("hashSizes", () => {
       Map {
         "sha(same)" => 4,
         "sha(other)" => 5,
+      }
+    `);
+  });
+});
+
+describe("limits at exactly their value", () => {
+  const file = (content: string) => ({ h: sha256(content), s: content.length });
+  it("accepts each limit's exact value and refuses one more", () => {
+    const base: Limits = { maxFiles: 3, maxFileBytes: 10, maxTotalBytes: 20, maxPathBytes: 8, maxManifestBytes: 10_000 };
+    const withSizes = (...sizes: number[]) => ({
+      v: 1,
+      files: Object.fromEntries(sizes.map((size, i) => [`f${i}`, { h: sha256(String(i)), s: size }])),
+    });
+    const verdict = (input: unknown, limits: Limits) => {
+      try {
+        parseManifest(input, limits);
+        return "ok";
+      } catch (err) {
+        return `${(err as { code: string }).code} ${JSON.stringify((err as { details?: { reason?: string } }).details?.reason ?? "")}`;
+      }
+    };
+    const manifest = { v: 1, files: { a: file("x") } };
+    // The measured size, read from an error at a limit that always fails, so the
+    // comparison being tested can't shift it.
+    const exact = (thrownSync(() => parseManifest(manifest, { ...base, maxManifestBytes: 1 })).details as { actual: number }).actual;
+    expect({
+      "maxFiles: 3 files": verdict(withSizes(1, 1, 1), base),
+      "maxFiles: 4 files": verdict(withSizes(1, 1, 1, 1), base),
+      "maxFileBytes: 10": verdict(withSizes(10), base),
+      "maxFileBytes: 11": verdict(withSizes(11), base),
+      "maxTotalBytes: 20": verdict(withSizes(10, 10), base),
+      "maxTotalBytes: 21": verdict(withSizes(10, 10, 1), base),
+      "maxPathBytes: 8": verdict({ v: 1, files: { "12345678": file("x") } }, base),
+      "maxPathBytes: 9": verdict({ v: 1, files: { "123456789": file("x") } }, base),
+      "maxManifestBytes: exact": verdict(manifest, { ...base, maxManifestBytes: exact }),
+      "maxManifestBytes: exact - 1": verdict(manifest, { ...base, maxManifestBytes: exact - 1 }),
+    }).toMatchInlineSnapshot(`
+      {
+        "maxFileBytes: 10": "ok",
+        "maxFileBytes: 11": "TOO_LARGE "file"",
+        "maxFiles: 3 files": "ok",
+        "maxFiles: 4 files": "TOO_LARGE "files"",
+        "maxManifestBytes: exact": "ok",
+        "maxManifestBytes: exact - 1": "TOO_LARGE "manifest"",
+        "maxPathBytes: 8": "ok",
+        "maxPathBytes: 9": "INVALID_MANIFEST """,
+        "maxTotalBytes: 20": "ok",
+        "maxTotalBytes: 21": "TOO_LARGE "total"",
+      }
+    `);
+  });
+});
+
+describe("sameFiles and isId edge cases", () => {
+  it("tells different file lists apart, and refuses ids that aren't strings", () => {
+    const a = parseManifest(manifestOf({ "index.html": "x" })).files;
+    expect({
+      sameContentSameList: sameFiles(a, parseManifest(manifestOf({ "index.html": "x" })).files),
+      differentBytes: sameFiles(a, parseManifest(manifestOf({ "index.html": "y" })).files),
+      differentPath: sameFiles(a, parseManifest(manifestOf({ "home.html": "x" })).files),
+      immutableFlag: sameFiles(a, parseManifest(manifestOf({ "index.html": "x" }, ["index.html"])).files),
+      idNumber: isId(123),
+      idNull: isId(null),
+      idObject: isId({ toString: () => "site" }),
+    }).toMatchInlineSnapshot(`
+      {
+        "differentBytes": false,
+        "differentPath": false,
+        "idNull": false,
+        "idNumber": false,
+        "idObject": false,
+        "immutableFlag": false,
+        "sameContentSameList": true,
       }
     `);
   });

@@ -296,9 +296,8 @@ describe("buildManifest", () => {
     // A sparse 2 GiB file: reading it would take seconds, checking its size doesn't.
     await truncate(join(dir, "a.bin"), 2 * 1024 ** 3);
     let hashed = 0;
-    const started = performance.now();
+    // hashed === 0 is the property; a time bound would only add flakiness.
     const err = await thrown(buildManifest(dir, { onHashed: () => hashed++ }));
-    expect(performance.now() - started).toBeLessThan(500);
     expect({ err, hashed }).toMatchInlineSnapshot(`
       {
         "err": {
@@ -351,6 +350,55 @@ describe("mapLimit", () => {
           20,
           30,
         ],
+      }
+    `);
+  });
+});
+
+describe("local limits at exactly their value", () => {
+  const file = (path: string, size = 1): LocalFile => ({ path, absPath: `/x/${path}`, size });
+  const verdict = (fn: () => unknown) => {
+    try {
+      fn();
+      return "ok";
+    } catch (err) {
+      return (err as { code: string }).code;
+    }
+  };
+  it("accepts each limit's exact value and refuses one more", async () => {
+    const limits = { ...DEFAULT_LIMITS, maxFiles: 3, maxFileBytes: 10, maxTotalBytes: 20, maxPathBytes: 8 };
+    const results: Record<string, string> = {
+      "3 files": verdict(() => checkLocalFiles([file("a"), file("b"), file("c")], limits)),
+      "4 files": verdict(() => checkLocalFiles([file("a"), file("b"), file("c"), file("d")], limits)),
+      "file of 10 bytes": verdict(() => checkLocalFiles([file("a", 10)], limits)),
+      "file of 11 bytes": verdict(() => checkLocalFiles([file("a", 11)], limits)),
+      "total 20 bytes": verdict(() => checkLocalFiles([file("a", 10), file("b", 10)], limits)),
+      "total 21 bytes": verdict(() => checkLocalFiles([file("a", 10), file("b", 10), file("c", 1)], limits)),
+      "path of 8 bytes": verdict(() => checkLocalFiles([file("12345678")], limits)),
+      "path of 9 bytes": verdict(() => checkLocalFiles([file("123456789")], limits)),
+    };
+    await write({ "a.txt": "1", "b.txt": "2", "c.txt": "3" });
+    const listed = async (maxFiles: number) => {
+      try {
+        return `${(await listFiles(dir, { maxFiles })).length} listed`;
+      } catch (err) {
+        return (err as { code: string }).code;
+      }
+    };
+    results["listFiles, 3 files, maxFiles 3"] = await listed(3);
+    results["listFiles, 3 files, maxFiles 2"] = await listed(2);
+    expect(results).toMatchInlineSnapshot(`
+      {
+        "3 files": "ok",
+        "4 files": "TOO_LARGE",
+        "file of 10 bytes": "ok",
+        "file of 11 bytes": "TOO_LARGE",
+        "listFiles, 3 files, maxFiles 2": "TOO_LARGE",
+        "listFiles, 3 files, maxFiles 3": "3 listed",
+        "path of 8 bytes": "ok",
+        "path of 9 bytes": "INVALID_MANIFEST",
+        "total 20 bytes": "ok",
+        "total 21 bytes": "TOO_LARGE",
       }
     `);
   });

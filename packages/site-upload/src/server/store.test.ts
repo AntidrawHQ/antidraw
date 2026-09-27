@@ -114,11 +114,23 @@ describe("plan", () => {
     `);
   });
 
-  it("returns nothing missing when re-planning a committed publish", async () => {
+  it("re-plans the live publish even after its plan's upload window closed", async () => {
     await publish("p1", { "index.html": "x" });
-    expect(await plan("p1", { "index.html": "x" })).toMatchInlineSnapshot(`
+    clock += 2 * HOUR;
+    // Without the live-publish shortcut this would be PLAN_EXPIRED: the stored plan is past its window.
+    expect({
+      same: await plan("p1", { "index.html": "x" }),
+      different: await thrown(plan("p1", { "index.html": "changed" })),
+    }).toMatchInlineSnapshot(`
       {
-        "missing": [],
+        "different": {
+          "code": "PLAN_EXISTS",
+          "error": "SiteUploadError",
+          "message": "Publish p1 already has a different file list",
+        },
+        "same": {
+          "missing": [],
+        },
       }
     `);
   });
@@ -327,6 +339,7 @@ describe("commit", () => {
         "previous": null,
         "publishId": "p1",
         "retained": {},
+        "seq": 1,
         "v": 1,
       }
     `);
@@ -359,6 +372,7 @@ describe("commit", () => {
           "previous": "p1",
           "publishId": "p2",
           "retained": {},
+          "seq": 2,
           "v": 1,
         },
         "repeated": {
@@ -481,6 +495,45 @@ describe("commit retries", () => {
     `);
   });
 
+  it("orders commits by count, not time: nothing rolls back even within one millisecond", async () => {
+    // The clock never moves, so every plan and commit shares a timestamp.
+    await upload("p3", { "index.html": "three" });
+    await store.commit(site, "p3");
+    await upload("p4", { "index.html": "four" });
+    await store.commit(site, "p4");
+    expect({ replayOfP3: await thrown(store.commit(site, "p3")), live: (await pointer())?.publishId }).toMatchInlineSnapshot(`
+      {
+        "live": "p4",
+        "replayOfP3": {
+          "code": "SUPERSEDED",
+          "details": {
+            "live": "p4",
+          },
+          "error": "SiteUploadError",
+          "message": "Publish p4 went live after p3 was planned",
+        },
+      }
+    `);
+  });
+
+  it("lets a publish planned on a machine whose clock runs behind go live", async () => {
+    const ahead = new SiteStore({ bucket: env.bucket, now: () => clock + 10_000 });
+    await ahead.plan(site, "p1", manifestOf({ "index.html": "one" }));
+    await ahead.putFile(site, "p1", sha256("one"), bytes("one"), 3);
+    await ahead.commit(site, "p1");
+    // Planned after p1 went live, but stamped 10 s earlier by a slower clock.
+    const behind = new SiteStore({ bucket: env.bucket, now: () => clock });
+    await behind.plan(site, "p2", manifestOf({ "index.html": "two" }));
+    await behind.putFile(site, "p2", sha256("two"), bytes("two"), 3);
+    expect(await behind.commit(site, "p2")).toMatchInlineSnapshot(`
+      {
+        "alreadyCommitted": false,
+        "previous": "p1",
+        "publishId": "p2",
+      }
+    `);
+  });
+
   it("reports a commit that lost the race to its own retry as committed", async () => {
     await publish("p1", { "index.html": "v1" });
     await upload("p2", { "index.html": "v2" });
@@ -582,7 +635,7 @@ describe("readPointer", () => {
     const incomplete = await thrown(store.readPointer(site));
     await env.bucket.put(
       `sites/${site}/current.json`,
-      JSON.stringify({ v: 1, publishId: "p1", previous: null, committedAt: 1, files: { "../x": { h: "x", s: 1 } } }),
+      JSON.stringify({ v: 1, seq: 1, publishId: "p1", previous: null, committedAt: 1, files: { "../x": { h: "x", s: 1 } } }),
     );
     const badFiles = await thrown(store.readPointer(site));
     expect({ notJson, incomplete, badFiles }).toMatchInlineSnapshot(`
@@ -637,26 +690,38 @@ describe("cleanup", () => {
     `);
   });
 
-  it("never deletes recently uploaded files", async () => {
+  it("keeps unreferenced files for the grace period, even once their plans expired", async () => {
+    // Plans dated two hours ago (so expired), but R2 records the files as uploaded just now.
+    clock = Date.now() - 2 * HOUR;
     await publish("p1", { "index.html": "v1" });
     await publish("p2", { "index.html": "v2" });
-    await publish("p3", { "index.html": "v3" });
-    expect(await store.cleanup(site)).toMatchInlineSnapshot(`
+    clock = Date.now();
+    const early = await store.cleanup(site);
+    const keptByGrace = await stored();
+    // Past the grace period, nothing protects v1 any more.
+    clock = Date.now() + 2 * HOUR;
+    expect({ early, keptByGrace, late: await store.cleanup(site), after: await stored() }).toMatchInlineSnapshot(`
       {
-        "deletedFiles": 0,
-        "deletedPlans": 0,
+        "after": [
+          "current.json",
+          "f/sha(v2)",
+          "m/p2.json",
+        ],
+        "early": {
+          "deletedFiles": 0,
+          "deletedPlans": 1,
+        },
+        "keptByGrace": [
+          "current.json",
+          "f/sha(v1)",
+          "f/sha(v2)",
+          "m/p2.json",
+        ],
+        "late": {
+          "deletedFiles": 1,
+          "deletedPlans": 0,
+        },
       }
-    `);
-    expect(await stored()).toMatchInlineSnapshot(`
-      [
-        "current.json",
-        "f/sha(v1)",
-        "f/sha(v3)",
-        "f/sha(v2)",
-        "m/p1.json",
-        "m/p2.json",
-        "m/p3.json",
-      ]
     `);
   });
 
