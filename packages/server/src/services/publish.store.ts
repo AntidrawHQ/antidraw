@@ -5,7 +5,14 @@ import { utf8Bytes } from "../lib/paths";
 import {
   D1_JSON_PARAM_BYTES,
   D1_MAX_PARAMS,
+  FILE_KEY_INLINE_BYTES,
   FILE_ROW_OVERHEAD_BYTES,
+  OBJECT_ROW_BYTES,
+  PAGE_BYTES,
+  SESSION_OBJECT_ROW_BYTES,
+  SESSION_ROW_BYTES,
+  SITE_ROW_BYTES,
+  VERSION_ROW_BYTES,
 } from "../lib/publish-limits";
 
 // Every D1 statement publish + remix + GC run, behind one structural type so
@@ -107,12 +114,40 @@ export type SiteFileRow = {
 };
 
 // A version_site_file row's estimated D1 footprint, toward the account's
-// MAX_FILE_ROW_BYTES. `siteFileRowWeight` below is the same sum in SQL.
+// MAX_ACCOUNT_ROW_BYTES. `siteFileRowWeight` below is the same sum in SQL.
 export const siteFileRowBytes = (f: Pick<SiteFileRow, "path" | "contentType">) =>
-  utf8Bytes(f.path) + utf8Bytes(f.contentType) + FILE_ROW_OVERHEAD_BYTES;
+  3 * utf8Bytes(f.path) + 2 * utf8Bytes(f.contentType) + FILE_ROW_OVERHEAD_BYTES;
 // A version_large_file row's, likewise. Its rows stay as long as the version.
-export const largeFileRowBytes = (f: Pick<LargeFileRow, "path">) =>
-  utf8Bytes(f.path) + FILE_ROW_OVERHEAD_BYTES;
+export const largeFileRowBytes = (f: Pick<LargeFileRow, "path">) => {
+  const path = utf8Bytes(f.path);
+  return 3 * path + FILE_ROW_OVERHEAD_BYTES + (path > FILE_KEY_INLINE_BYTES ? PAGE_BYTES : 0);
+};
+// What a session's plan reserves for the version it would commit: its file
+// rows and the version row (NewSession.reservedRowBytes).
+export const PLAN_RESERVED_ROW_BYTES_KEY = "reservedRowBytes";
+
+// The rows an account keeps, as accountRowBytes (below) counts them.
+export type AccountRows = {
+  objects: number; // stored_object rows, deleting ones included
+  sessionObjects: number; // publish_session_object rows
+  sessions: number; // publish_session rows
+  planBytes: number; // Σ UTF-8 bytes of their plans
+  reservedRowBytes: number; // Σ what their plans reserve (PLAN_RESERVED_ROW_BYTES_KEY)
+  versions: number; // site_version rows
+  fileRowBytes: number; // Σ their file_row_bytes
+  sites: number;
+};
+
+// The account's estimated D1 footprint, toward MAX_ACCOUNT_ROW_BYTES.
+export const accountRowBytes = (r: AccountRows) =>
+  r.objects * OBJECT_ROW_BYTES +
+  r.sessionObjects * SESSION_OBJECT_ROW_BYTES +
+  r.sessions * SESSION_ROW_BYTES +
+  r.planBytes +
+  r.reservedRowBytes +
+  r.versions * VERSION_ROW_BYTES +
+  r.fileRowBytes +
+  r.sites * SITE_ROW_BYTES;
 // A site file of one of the site's versions, for building its pointer.
 export type VersionSiteFileRow = SiteFileRow & { version: number };
 
@@ -131,6 +166,10 @@ export type NewSession = {
   userId: string;
   siteId: string;
   baseVersion: number;
+  // JSON. Its PLAN_RESERVED_ROW_BYTES_KEY number is what the version it
+  // would commit adds (its file rows and version row), counted toward the
+  // account's rows until the commit stubs the plan and the version counts
+  // them itself.
   plan: string;
   expiresAt: number;
   holdUntil: number;
@@ -216,8 +255,11 @@ export type PublishStore = {
   // MAX_STORED_SITE_BYTES.
   storedSiteBytes(userId: string): Promise<number>;
   // Σ file_row_bytes of the account's retained versions (their large-file
-  // and site-file rows), toward MAX_FILE_ROW_BYTES.
+  // and site-file rows).
   fileRowBytes(userId: string): Promise<number>;
+  // Everything the account keeps in the publish tables, toward
+  // MAX_ACCOUNT_ROW_BYTES (see accountRowBytes).
+  accountRows(userId: string): Promise<AccountRows>;
   // The account's sessions that have not committed and still hold, and the
   // uncommitted site bytes they hold (their site_upload_bytes).
   openSessions(userId: string, now: number): Promise<{ count: number; siteUploadBytes: number }>;
@@ -256,8 +298,10 @@ export type PublishStore = {
   // GC. Where these ask whether a session has expired or still holds
   // (expires_at, hold_until against `now`), GC passes its hold cutoff as
   // `now`: its clock less GC_CLOCK_SKEW_MARGIN_MS (gc.service.ts).
-  expireSessions(now: number): Promise<number>;
-  pruneVersions(keepVersions: number): Promise<number>;
+  // Each of these acts on at most `limit` rows (and their cascades) per call,
+  // so no GC statement deletes an unbounded number of rows.
+  expireSessions(now: number, limit: number): Promise<number>;
+  pruneVersions(keepVersions: number, limit: number): Promise<number>;
   leftoverDeletingObjects(limit: number): Promise<UserObjectRef[]>;
   // Round-robin across accounts: every account's oldest candidate before any
   // account's second, so one account's garbage cannot fill the claim.
@@ -269,25 +313,39 @@ export type PublishStore = {
   deleteObjectRows(keys: UserObjectRef[]): Promise<number>;
   // Sites whose pointer is behind their head version, longest waiting first.
   sitesBehindPointer(limit: number): Promise<SiteRow[]>;
+  // Takes the lock of a site that has never committed (head_version 0), for
+  // deleting it as abandoned. The head check is here, not only in
+  // abandonedSites' query: a publish that began after that query may commit
+  // before GC reaches the site. While GC holds the lock no commit can move
+  // the head (a commit needs its own session's lock).
   claimSiteLockForGc(
     siteId: string,
     lock: string,
     now: number,
     expiresAt: number,
   ): Promise<boolean>;
-  // Sessions whose hold has ended: their held objects are dropped, their plan
-  // stubbed and hold_until set to 0. At most `limit`.
-  retireSessions(now: number, limit: number): Promise<number>;
+  // Sessions whose hold has ended: their held objects are dropped (at most
+  // `objectLimit` per call, whole sessions first), their plan stubbed and
+  // hold_until set to 0 (at most `limit`, once their objects are all gone).
+  retireSessions(
+    now: number,
+    limit: number,
+    objectLimit: number,
+  ): Promise<{ sessions: number; objects: number }>;
   // Completed sessions created before `completedBefore`, and uncommitted ones
-  // that expired before `uncommittedBefore`. At most `limit`.
+  // that expired before `uncommittedBefore`, that have no session objects left
+  // (retired), so the delete cascades to nothing. At most `limit`.
   deleteOldSessions(opts: {
     now: number;
     completedBefore: number;
     uncommittedBefore: number;
     limit: number;
   }): Promise<number>;
-  abandonedSites(now: number, createdBefore: number, limit: number): Promise<SiteRef[]>;
-  deleteAbandonedSite(siteId: string, lock: string, now: number): Promise<boolean>;
+  // Sites that never committed, created before `createdBefore`, with no
+  // session left (deleteOldSessions removes an uncommitted one a day after it
+  // expired), so deleting one cascades to nothing.
+  abandonedSites(createdBefore: number, limit: number): Promise<SiteRef[]>;
+  deleteAbandonedSite(siteId: string, lock: string): Promise<boolean>;
 };
 
 // Rows per statement so `perRow` parameters a row, plus `fixed` parameters
@@ -427,7 +485,7 @@ const referencedByVersion = (so: SQL) => sql`(
 const graceCandidate = (f: SQL) => sql`(${f}.immutable = 1)`;
 // siteFileRowBytes, in SQL. CAST AS BLOB: length() of a TEXT counts characters.
 const siteFileRowWeight = (f: SQL) =>
-  sql`(length(CAST(${f}.path AS BLOB)) + length(CAST(${f}.content_type AS BLOB))
+  sql`(3 * length(CAST(${f}.path AS BLOB)) + 2 * length(CAST(${f}.content_type AS BLOB))
     + ${FILE_ROW_OVERHEAD_BYTES})`;
 
 // Column `i` of a json_each row (`j.value`, a JSON array).
@@ -617,6 +675,35 @@ export const d1PublishStore = (db: Db): PublishStore => {
       const row = await first(sql`SELECT COALESCE(SUM(file_row_bytes), 0) AS bytes
         FROM site_version WHERE user_id = ${userId}`);
       return num(row?.bytes ?? 0);
+    },
+
+    // Seven counts on the user_id prefix of each table's primary key or an
+    // index; the plans read are the account's sessions', nearly all stubs.
+    async accountRows(userId) {
+      const row = await first(sql`SELECT
+          (SELECT count(*) FROM stored_object WHERE user_id = ${userId}) AS objects,
+          (SELECT count(*) FROM publish_session_object WHERE user_id = ${userId})
+            AS session_objects,
+          (SELECT count(*) FROM publish_session WHERE user_id = ${userId}) AS sessions,
+          (SELECT COALESCE(SUM(length(CAST(plan AS BLOB))), 0) FROM publish_session
+            WHERE user_id = ${userId}) AS plan_bytes,
+          (SELECT COALESCE(SUM(json_extract(plan, ${`$.${PLAN_RESERVED_ROW_BYTES_KEY}`})), 0)
+            FROM publish_session WHERE user_id = ${userId} AND plan != ${PLAN_STUB})
+            AS reserved,
+          (SELECT count(*) FROM site_version WHERE user_id = ${userId}) AS versions,
+          (SELECT COALESCE(SUM(file_row_bytes), 0) FROM site_version WHERE user_id = ${userId})
+            AS file_rows,
+          (SELECT count(*) FROM site WHERE user_id = ${userId}) AS sites`);
+      return {
+        objects: num(row?.objects ?? 0),
+        sessionObjects: num(row?.session_objects ?? 0),
+        sessions: num(row?.sessions ?? 0),
+        planBytes: num(row?.plan_bytes ?? 0),
+        reservedRowBytes: num(row?.reserved ?? 0),
+        versions: num(row?.versions ?? 0),
+        fileRowBytes: num(row?.file_rows ?? 0),
+        sites: num(row?.sites ?? 0),
+      };
     },
 
     async openSessions(userId, now) {
@@ -815,18 +902,23 @@ export const d1PublishStore = (db: Db): PublishStore => {
       ]);
     },
 
-    async expireSessions(now) {
-      return changes(sql`UPDATE publish_session SET status = 'expired'
-        WHERE status = 'pending' AND expires_at < ${now}`);
+    async expireSessions(now, limit) {
+      if (limit <= 0) return 0;
+      return changes(sql`UPDATE publish_session SET status = 'expired' WHERE id IN (
+          SELECT id FROM publish_session WHERE status = 'pending' AND expires_at < ${now}
+          LIMIT ${limit})`);
     },
 
     // RETURNING rather than meta.changes, which on D1 also counts the rows a
     // cascade removed.
-    async pruneVersions(keepVersions) {
+    async pruneVersions(keepVersions, limit) {
+      if (limit <= 0) return 0;
       return (
-        await all(sql`DELETE FROM site_version WHERE keep = 0
-          AND version <= (SELECT head_version FROM site WHERE site.id = site_version.site_id)
-            - ${keepVersions}
+        await all(sql`DELETE FROM site_version WHERE id IN (
+          SELECT id FROM site_version WHERE keep = 0
+            AND version <= (SELECT head_version FROM site WHERE site.id = site_version.site_id)
+              - ${keepVersions}
+          LIMIT ${limit})
           RETURNING id`)
       ).length;
     },
@@ -862,14 +954,15 @@ export const d1PublishStore = (db: Db): PublishStore => {
       ).map(toUserObject);
     },
 
-    // One D1 batch. `+deleting` keeps the planner on the primary key: the
-    // partial index would have it walk every row GC has marked.
+    // One D1 batch, a statement per JSON chunk (a thousand keys fit one).
+    // `+deleting` keeps the planner on the primary key: the partial index
+    // would have it walk every row GC has marked.
     async deleteObjectRows(keys) {
       return batch(
-        chunk(keys, 3).map(
-          (part) => sql`DELETE FROM stored_object WHERE +deleting = 1
+        jsonChunks(keys.map((k) => [k.userId, k.kind, k.sha256])).map(
+          (json) => sql`DELETE FROM stored_object WHERE +deleting = 1
             AND (user_id, kind, sha256) IN
-              (VALUES ${values(part, (k) => sql`(${k.userId}, ${k.kind}, ${k.sha256})`)})`,
+              (SELECT ${col(0)}, ${col(1)}, ${col(2)} FROM json_each(${json}) j)`,
         ),
       );
     },
@@ -886,24 +979,28 @@ export const d1PublishStore = (db: Db): PublishStore => {
       return (
         (await changes(sql`UPDATE site
           SET complete_lock = ${lock}, complete_lock_expires_at = ${expiresAt}
-          WHERE id = ${siteId} AND (complete_lock IS NULL OR complete_lock_expires_at < ${now})`)) >
-        0
+          WHERE id = ${siteId} AND head_version = 0
+            AND (complete_lock IS NULL OR complete_lock_expires_at < ${now})`)) > 0
       );
     },
 
-    async retireSessions(now, limit) {
-      const ids = (
-        await all(sql`SELECT id FROM publish_session
-          WHERE hold_until > 0 AND hold_until < ${now} LIMIT ${Math.min(limit, 97)}`)
-      ).map((r) => String(r.id));
-      if (ids.length === 0) return 0;
-      const idList = join(ids.map((id) => sql`${id}`));
-      await batch([
-        sql`DELETE FROM publish_session_object WHERE session_id IN (${idList})`,
-        sql`UPDATE publish_session SET hold_until = 0, plan = ${PLAN_STUB}
-          WHERE id IN (${idList}) AND hold_until > 0 AND hold_until < ${now}`,
+    // Two statements, each bounded. Session objects of a session whose hold
+    // ended may go before its plan is stubbed: a commit needs every one of
+    // them (its guard counts them), and nothing holds by them any more.
+    async retireSessions(now, limit, objectLimit) {
+      const ended = sql`ps.hold_until > 0 AND ps.hold_until < ${now}`;
+      const [objects, sessions] = await batchEach([
+        sql`DELETE FROM publish_session_object WHERE rowid IN (
+            SELECT pso.rowid FROM publish_session ps
+              JOIN publish_session_object pso ON pso.session_id = ps.id
+            WHERE ${ended} ORDER BY ps.hold_until, ps.id LIMIT ${objectLimit})`,
+        sql`UPDATE publish_session SET hold_until = 0, plan = ${PLAN_STUB} WHERE id IN (
+            SELECT ps.id FROM publish_session ps WHERE ${ended}
+              AND NOT EXISTS (SELECT 1 FROM publish_session_object pso
+                WHERE pso.session_id = ps.id)
+            LIMIT ${limit})`,
       ]);
-      return ids.length;
+      return { sessions, objects };
     },
 
     async deleteOldSessions({ now, completedBefore, uncommittedBefore, limit }) {
@@ -912,28 +1009,28 @@ export const d1PublishStore = (db: Db): PublishStore => {
           SELECT ps.id FROM publish_session ps WHERE ps.hold_until < ${now} AND (
             (ps.status = 'completed' AND ps.created_at < ${completedBefore})
             OR (ps.status != 'completed' AND ps.expires_at < ${uncommittedBefore}))
+            AND NOT EXISTS (SELECT 1 FROM publish_session_object pso
+              WHERE pso.session_id = ps.id)
           LIMIT ${limit})
         RETURNING id`)
       ).length;
     },
 
-    async abandonedSites(now, createdBefore, limit) {
+    async abandonedSites(createdBefore, limit) {
       if (limit <= 0) return [];
       return (
         await all(sql`SELECT id, slug FROM site
           WHERE head_version = 0 AND created_at < ${createdBefore}
-          AND NOT EXISTS (SELECT 1 FROM publish_session ps WHERE ps.site_id = site.id
-            AND ps.hold_until > ${now})
+          AND NOT EXISTS (SELECT 1 FROM publish_session ps WHERE ps.site_id = site.id)
           ORDER BY created_at LIMIT ${limit}`)
       ).map(toSiteRef);
     },
 
-    async deleteAbandonedSite(siteId, lock, now) {
+    async deleteAbandonedSite(siteId, lock) {
       return (
         (await changes(sql`DELETE FROM site WHERE id = ${siteId} AND head_version = 0
           AND complete_lock = ${lock}
-          AND NOT EXISTS (SELECT 1 FROM publish_session ps WHERE ps.site_id = site.id
-            AND ps.hold_until > ${now})`)) > 0
+          AND NOT EXISTS (SELECT 1 FROM publish_session ps WHERE ps.site_id = site.id)`)) > 0
       );
     },
   };

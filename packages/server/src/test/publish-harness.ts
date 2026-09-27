@@ -29,7 +29,21 @@ export type Harness = {
   markDeleting(userId: string, ref: ObjectRef): Promise<void>;
   // The site's retained version_site_file rows, as "<version>:<path>", sorted.
   siteFileRows(siteId: string): Promise<string[]>;
+  // The bytes the publish tables and their indexes take in the database
+  // (dbstat's page sizes), or null for the memory store.
+  tableBytes(): number | null;
 };
+
+// Every table publish writes, as dbstat names their B-trees.
+const PUBLISH_TABLES = [
+  "site",
+  "site_version",
+  "version_site_file",
+  "version_large_file",
+  "stored_object",
+  "publish_session",
+  "publish_session_object",
+];
 
 const memoryHarness = (): Harness => {
   const store = memoryPublishStore();
@@ -75,6 +89,7 @@ const memoryHarness = (): Harness => {
         .map((f) => `${versions.get(f.versionId)}:${f.path}`)
         .sort();
     },
+    tableBytes: () => null,
   };
 };
 
@@ -138,6 +153,16 @@ const d1Harness = (): Harness => {
       )
         .map((r) => `${r.version}:${r.path}`)
         .sort();
+    },
+    tableBytes() {
+      const marks = PUBLISH_TABLES.map(() => "?").join(", ");
+      const row = shim.sqlite
+        .prepare(
+          `SELECT COALESCE(SUM(pgsize), 0) AS bytes FROM dbstat WHERE name IN (
+            SELECT name FROM sqlite_master WHERE tbl_name IN (${marks}))`,
+        )
+        .get(...PUBLISH_TABLES) as { bytes: number };
+      return Number(row.bytes);
     },
   };
 };

@@ -128,7 +128,9 @@ const sessionParamSchema = z.object({
 // committed but not yet switched live, is also nudged: main sends its
 // (idempotent) complete again, so asking is what lets it finish. For the
 // session main kept, "completed" means live; committed but not live reads
-// "pending".
+// "pending". A session the server no longer knows (404) reads "completed" only
+// when main saw it commit, "expired" when main never did and it is past its
+// expiry, and is the server's error otherwise.
 publishController.get(
   "/:workspaceId/session/:publishId",
   zValidator("param", sessionParamSchema),

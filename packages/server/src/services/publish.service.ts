@@ -13,16 +13,22 @@ import {
 import {
   COMPLETE_LOCK_TTL_MS,
   KEEP_VERSIONS,
+  MAX_ACCOUNT_ROW_BYTES,
+  MAX_BEGIN_HEADS,
   MAX_OPEN_SESSIONS_PER_ACCOUNT,
   MAX_PENDING_SITE_BYTES,
   MAX_PLAN_JSON_BYTES,
   MAX_SITE_BYTES,
-  MAX_FILE_ROW_BYTES,
   MAX_SITES_PER_ACCOUNT,
   MAX_SNAPSHOT_BYTES,
   MAX_STORED_SITE_BYTES,
+  OBJECT_ROW_BYTES,
   QUOTA_BYTES,
+  SESSION_OBJECT_ROW_BYTES,
+  SESSION_ROW_BYTES,
   SESSION_TTL_MS,
+  SITE_ROW_BYTES,
+  VERSION_ROW_BYTES,
 } from "../lib/publish-limits";
 import {
   storedPlan,
@@ -47,8 +53,10 @@ import {
   type UrlSigner,
 } from "../lib/storage";
 import {
+  accountRowBytes,
   d1PublishStore,
   largeFileRowBytes,
+  PLAN_RESERVED_ROW_BYTES_KEY,
   siteFileRowBytes,
   type ObjectKind,
   type ObjectRef,
@@ -74,6 +82,13 @@ import { syncPointer } from "./site-pointer";
 // cancelled publish leaves the site as it was. See the spec's §2 and §11 for
 // the contract and §3 for the SQL (publish.store.ts).
 
+// Tests shrink these.
+export type PublishCaps = { accountRowBytes: number; beginHeads: number };
+const PUBLISH_CAPS: PublishCaps = {
+  accountRowBytes: MAX_ACCOUNT_ROW_BYTES,
+  beginHeads: MAX_BEGIN_HEADS,
+};
+
 export type PublishDeps = {
   store: PublishStore;
   sites: ObjectStore;
@@ -86,6 +101,7 @@ export type PublishDeps = {
   now: () => Date;
   newId: (prefix: "site" | "pub" | "ver") => string;
   slugSuffix: () => string;
+  caps?: Partial<PublishCaps>;
 };
 
 // ---------------------------------------------------------------------------
@@ -251,7 +267,7 @@ const planObjects = (
 };
 
 // The D1 footprint the plan's version would keep: a row per large file and
-// per site file (toward MAX_FILE_ROW_BYTES).
+// per site file (the version's file_row_bytes).
 const planRowBytes = (plan: Pick<StoredPlan, "largeFiles" | "site">) =>
   plan.largeFiles.reduce((a, f) => a + largeFileRowBytes(f), 0) +
   plan.site.files.reduce((a, f) => a + siteFileRowBytes(f), 0);
@@ -283,6 +299,8 @@ const siteStatusOf = async (deps: PublishDeps, site: SiteRow): Promise<SiteStatu
 
 // ---------------------------------------------------------------------------
 // Begin
+
+const EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 const validateBegin = (req: BeginPublishRequest): Result<void, ApiError> => {
   const { snapshot, site } = req;
@@ -330,6 +348,16 @@ const validateBegin = (req: BeginPublishRequest): Result<void, ApiError> => {
       return err(invalidRequest("A blob sha256 appears with two sizes", { sha256: f.sha256 }));
     }
     blobSizes.set(f.sha256, f.size);
+  }
+  // A file of no bytes has one possible content: anything else declared at
+  // size 0 is a row nothing could ever upload.
+  const notEmpty = site.files.filter((f) => f.size === 0 && f.sha256 !== EMPTY_SHA256);
+  if (notEmpty.length > 0) {
+    return err(
+      invalidRequest("An empty site file must have the empty content's sha256", {
+        paths: notEmpty.slice(0, 50).map((f) => f.path),
+      }),
+    );
   }
   const contentSizes = new Map<string, number>();
   for (const f of site.files) {
@@ -418,41 +446,70 @@ const findOrCreateSite = async (
   return updated ? ok(updated) : err(storeFailure(new Error("site vanished during update")));
 };
 
-// `committed`: a commit verified its row, so it is neither new nor pending.
-type ObjectNeed = SizedObjectRef & { upload: boolean; committed: boolean };
+// What begin knows of an object from its row alone. `committed`: a commit
+// verified it, so it is neither new nor pending. `row`: the row begin found
+// ("none" when there was none, so begin's insert creates it). `stored`: the
+// size its row counts toward the caps already (0 without a live row).
+type ObjectState = SizedObjectRef & {
+  committed: boolean;
+  row: "none" | "deleting" | "verified" | "unverified";
+  stored: number;
+};
+type ObjectNeed = ObjectState & { upload: boolean };
+
+// The plan's objects as their rows describe them, without asking R2: every
+// refusal that depends only on rows runs on this, before any HEAD.
+const readObjects = async (
+  deps: PublishDeps,
+  userId: string,
+  needed: SizedObjectRef[],
+): Promise<Result<ObjectState[], ApiError>> => {
+  const rows = new Map<string, StoredObjectRow>();
+  for (const row of await deps.store.getStoredObjects(userId, needed)) rows.set(refKey(row), row);
+  const states: ObjectState[] = [];
+  for (const o of needed) {
+    const row = rows.get(refKey(o));
+    if (!row) states.push({ ...o, committed: false, row: "none", stored: 0 });
+    else if (row.deleting) states.push({ ...o, committed: false, row: "deleting", stored: 0 });
+    else if (row.verified) {
+      if (row.size !== o.size) {
+        return err(
+          invalidRequest("An object was declared with another size", { sha256: o.sha256 }),
+        );
+      }
+      states.push({ ...o, committed: true, row: "verified", stored: row.size });
+    } else states.push({ ...o, committed: false, row: "unverified", stored: row.size });
+  }
+  return ok(states);
+};
 
 // Which account objects need an upload. A verified row is trusted (see
 // findMissing). An object without a row is not in R2 either (GC deletes a
 // key before its row, and a row goes without its key only when no session
 // that could have uploaded it holds it), so it is asked for without a HEAD;
 // only an unverified row is looked up in R2, so bytes an earlier session
-// uploaded but never committed are not sent twice.
-const resolveObjects = async (
+// uploaded but never committed are not sent twice. At most `maxHeads` of
+// them, the largest first: the rest are asked for again, which costs the
+// client an upload rather than the operator an unbounded run of HEADs.
+const resolveUploads = async (
   deps: PublishDeps,
   userId: string,
-  needed: SizedObjectRef[],
-): Promise<Result<ObjectNeed[], ApiError>> => {
-  const rows = new Map<string, StoredObjectRow>();
-  for (const row of await deps.store.getStoredObjects(userId, needed)) rows.set(refKey(row), row);
-
-  for (const o of needed) {
-    const row = rows.get(refKey(o));
-    if (row?.verified && !row.deleting && row.size !== o.size) {
-      return err(invalidRequest("An object was declared with another size", { sha256: o.sha256 }));
-    }
-  }
-  return ok(
-    await mapLimit(needed, HEAD_CONCURRENCY, async (o): Promise<ObjectNeed> => {
-      const row = rows.get(refKey(o));
-      // No row, or GC is removing it.
-      if (!row || row.deleting) return { ...o, upload: true, committed: false };
-      if (row.verified) return { ...o, upload: false, committed: true };
-      // One R2 could not answer about is asked for again: sending the same
-      // bytes twice is harmless, a begin failed by one HEAD is not.
-      const present = isObject(await tryHead(deps, userId, o), o);
-      return { ...o, upload: !present, committed: false };
-    }),
+  objects: ObjectState[],
+  maxHeads: number,
+): Promise<ObjectNeed[]> => {
+  const toHead = new Set(
+    objects
+      .filter((o) => o.row === "unverified")
+      .sort((a, b) => b.size - a.size)
+      .slice(0, Math.max(maxHeads, 0)),
   );
+  return mapLimit(objects, HEAD_CONCURRENCY, async (o): Promise<ObjectNeed> => {
+    if (o.row === "verified") return { ...o, upload: false };
+    if (!toHead.has(o)) return { ...o, upload: true };
+    // One R2 could not answer about is asked for again: sending the same
+    // bytes twice is harmless, a begin failed by one HEAD is not.
+    return { ...o, upload: !isObject(await tryHead(deps, userId, o), o) };
+  });
 };
 
 const tooManyOpen = (count: number) =>
@@ -471,10 +528,19 @@ const siteStorageExceeded = (usedBytes: number, publishBytes: number) =>
     publishBytes,
   });
 
-const siteFilesExceeded = (usedBytes: number, publishBytes: number) =>
+// The account's rows (accountRowBytes), not its bytes: the files its sites'
+// versions list and the objects and sessions it keeps.
+const siteFilesExceeded = (quotaBytes: number, usedBytes: number, publishBytes: number) =>
   apiError(413, "QUOTA_EXCEEDED", "Your published sites have too many files between them.", {
     reason: "site-files",
-    quotaBytes: MAX_FILE_ROW_BYTES,
+    quotaBytes,
+    usedBytes,
+    publishBytes,
+  });
+
+const quotaExceeded = (usedBytes: number, publishBytes: number) =>
+  apiError(413, "QUOTA_EXCEEDED", "This publish would exceed your storage quota", {
+    quotaBytes: QUOTA_BYTES,
     usedBytes,
     publishBytes,
   });
@@ -487,12 +553,19 @@ const pendingSiteExceeded = (usedBytes: number, publishBytes: number) =>
     { reason: "pending-site", quotaBytes: MAX_PENDING_SITE_BYTES, usedBytes, publishBytes },
   );
 
+// Every check begin makes before it asks R2 anything depends on D1 rows
+// alone, so a refused begin costs no R2 call: the quota, site-storage,
+// pending-site, account-rows and open-session checks run on the rows first,
+// and again after the session's insert (which is what holds against
+// concurrent begins). Only a begin that passed them all HEADs, and at most
+// MAX_BEGIN_HEADS objects.
 export const beginPublish = (
   deps: PublishDeps,
   userId: string,
   req: BeginPublishRequest,
 ): ResultAsync<BeginPublishResponse, ApiError> =>
   run(async () => {
+    const caps = { ...PUBLISH_CAPS, ...deps.caps };
     const { success } = await deps.publishLimiter.limit({ key: userId });
     if (!success) {
       return err(apiError(429, "RATE_LIMITED", "Too many publishes. Try again in a minute."));
@@ -528,23 +601,31 @@ export const beginPublish = (
       );
     }
 
-    // Every retained version keeps rows for its large files and site files in
-    // D1 (site-file rows the pointer can no longer use are pruned as it moves
-    // on), so the account's total is bounded, not only each plan's: a plan's
-    // thousand large files may all name one blob, costing no quota.
-    const rowBytesBefore = await deps.store.fileRowBytes(userId);
-    const rowBytes = planRowBytes(plan);
-    if (rowBytesBefore + rowBytes > MAX_FILE_ROW_BYTES) {
-      return err(siteFilesExceeded(rowBytesBefore, rowBytes));
-    }
-
-    const siteResult = await findOrCreateSite(deps, userId, req);
-    if (siteResult.isErr()) return err(siteResult.error);
-    const site = siteResult.value;
-
-    const objectsResult = await resolveObjects(deps, userId, planObjects(plan));
+    const objectsResult = await readObjects(deps, userId, planObjects(plan));
     if (objectsResult.isErr()) return err(objectsResult.error);
     const objects = objectsResult.value;
+    const added = (keep: (o: ObjectState) => boolean) =>
+      objects.filter(keep).reduce((a, o) => a + Math.max(0, o.size - o.stored), 0);
+
+    // What the account keeps in D1 (accountRowBytes): every retained version
+    // keeps rows for its large files and site files (a plan's thousand large
+    // files may all name one blob, costing no quota), every object a row, and
+    // every session its row, plan and session objects. The session's plan
+    // reserves its version's rows until the commit adds them.
+    // (A site row is counted whether or not begin creates one: this check is
+    // the cheap one, the one after the insert is exact.)
+    const reservedRowBytes = planRowBytes(plan) + VERSION_ROW_BYTES;
+    const rowsBefore = accountRowBytes(await deps.store.accountRows(userId));
+    const rowsAdded =
+      reservedRowBytes +
+      SESSION_ROW_BYTES +
+      planBytes +
+      objects.length * SESSION_OBJECT_ROW_BYTES +
+      objects.filter((o) => o.row === "none").length * OBJECT_ROW_BYTES +
+      SITE_ROW_BYTES;
+    if (rowsBefore + rowsAdded > caps.accountRowBytes) {
+      return err(siteFilesExceeded(caps.accountRowBytes, rowsBefore, rowsAdded));
+    }
 
     // Site contents are outside the quota, but what no commit has verified
     // counts toward the pending-site cap while the session holds, uploaded
@@ -555,15 +636,29 @@ export const beginPublish = (
     if (openBefore.siteUploadBytes + siteUploadBytes > MAX_PENDING_SITE_BYTES) {
       return err(pendingSiteExceeded(openBefore.siteUploadBytes, siteUploadBytes));
     }
+    const usedBefore = await deps.store.usedBytes(userId);
+    const quotaAdded = added((o) => o.kind !== "site");
+    if (usedBefore + quotaAdded > QUOTA_BYTES) {
+      return err(quotaExceeded(usedBefore, quotaAdded));
+    }
+    const siteStoredBefore = await deps.store.storedSiteBytes(userId);
+    const siteAdded = added((o) => o.kind === "site");
+    if (siteAdded > 0 && siteStoredBefore + siteAdded > MAX_STORED_SITE_BYTES) {
+      return err(siteStorageExceeded(siteStoredBefore, siteAdded));
+    }
+
+    const siteResult = await findOrCreateSite(deps, userId, req);
+    if (siteResult.isErr()) return err(siteResult.error);
+    const site = siteResult.value;
+
+    const needs = await resolveUploads(deps, userId, objects, caps.beginHeads);
 
     const now = deps.now().getTime();
     const expiresAt = now + SESSION_TTL_MS;
     const sessionId = deps.newId("pub");
-    const uploads = objects.filter((o) => o.upload);
+    const uploads = needs.filter((o) => o.upload);
     const objectUploads = uploads.filter((o) => o.kind !== "site");
     const siteUploads = uploads.filter((o) => o.kind === "site");
-    const usedBefore = await deps.store.usedBytes(userId);
-    const siteStoredBefore = await deps.store.storedSiteBytes(userId);
     await deps.store.createSession({
       id: sessionId,
       userId,
@@ -575,6 +670,7 @@ export const beginPublish = (
         ...plan,
         objectUploads: objectUploads.length,
         siteUploads: siteUploads.length,
+        [PLAN_RESERVED_ROW_BYTES_KEY]: reservedRowBytes,
       }),
       expiresAt,
       holdUntil: expiresAt,
@@ -586,28 +682,29 @@ export const beginPublish = (
     // No URL was issued and the client never learns the session's id, so a
     // refused session is deleted outright (its plan with it: kept, refused
     // begins would pile plans up in D1 outside the open-session cap), and
-    // rows only this begin needed (for objects R2 does not have) are
-    // released again.
+    // the rows this begin's insert created are released again. Only those:
+    // an object that had a row before may have its bytes in R2, and a row
+    // must not go while its key stays.
     const refuse = async (error: ApiError) => {
       await deps.store.discardSession(sessionId);
-      await deps.store.releaseUnheldObjects(userId, uploads, now);
+      await deps.store.releaseUnheldObjects(
+        userId,
+        objects.filter((o) => o.row === "none"),
+        now,
+      );
       return err(error);
     };
     const used = await deps.store.usedBytes(userId);
-    if (used > QUOTA_BYTES) {
-      return refuse(
-        apiError(413, "QUOTA_EXCEEDED", "This publish would exceed your storage quota", {
-          quotaBytes: QUOTA_BYTES,
-          usedBytes: usedBefore,
-          publishBytes: used - usedBefore,
-        }),
-      );
-    }
+    if (used > QUOTA_BYTES) return refuse(quotaExceeded(usedBefore, used - usedBefore));
     // Checked after the insert, like the quota. A publish that adds no site
     // bytes (its contents all stored already) is let through at the cap.
     const siteStored = await deps.store.storedSiteBytes(userId);
     if (siteStored > MAX_STORED_SITE_BYTES && siteStored > siteStoredBefore) {
       return refuse(siteStorageExceeded(siteStoredBefore, siteStored - siteStoredBefore));
+    }
+    const rows = accountRowBytes(await deps.store.accountRows(userId));
+    if (rows > caps.accountRowBytes) {
+      return refuse(siteFilesExceeded(caps.accountRowBytes, rowsBefore, rows - rowsBefore));
     }
     const open = await deps.store.openSessions(userId, now);
     if (open.siteUploadBytes > MAX_PENDING_SITE_BYTES) {

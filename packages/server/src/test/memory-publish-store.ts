@@ -3,7 +3,9 @@
 // the GC claim's conditions. Service tests run against it (and against the
 // D1 store over node:sqlite where that is available), so a divergence between
 // the two shows up as a test that passes on one and fails on the other.
+import { utf8Bytes } from "../lib/paths";
 import {
+  PLAN_RESERVED_ROW_BYTES_KEY,
   PLAN_STUB,
   siteFileRowBytes,
   type CommitFailure,
@@ -238,6 +240,25 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
         .filter((v) => v.userId === userId)
         .reduce((sum, v) => sum + v.fileRowBytes, 0);
     },
+    async accountRows(userId) {
+      const sessions = [...state.sessions.values()].filter((s) => s.userId === userId);
+      const versions = state.versions.filter((v) => v.userId === userId);
+      const reserved = (plan: string) => {
+        if (plan === PLAN_STUB) return 0;
+        const value = (JSON.parse(plan) as Record<string, unknown>)[PLAN_RESERVED_ROW_BYTES_KEY];
+        return typeof value === "number" ? value : 0;
+      };
+      return {
+        objects: [...state.objects.values()].filter((o) => o.userId === userId).length,
+        sessionObjects: state.sessionObjects.filter((o) => o.userId === userId).length,
+        sessions: sessions.length,
+        planBytes: sessions.reduce((sum, s) => sum + utf8Bytes(s.plan), 0),
+        reservedRowBytes: sessions.reduce((sum, s) => sum + reserved(s.plan), 0),
+        versions: versions.length,
+        fileRowBytes: versions.reduce((sum, v) => sum + v.fileRowBytes, 0),
+        sites: [...state.sites.values()].filter((s) => s.userId === userId).length,
+      };
+    },
     async openSessions(userId, now) {
       const open = [...state.sessions.values()].filter(
         (s) => s.userId === userId && s.status !== "completed" && s.holdUntil > now,
@@ -406,9 +427,10 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
       site.pointerVersion = to;
     },
 
-    async expireSessions(now) {
+    async expireSessions(now, limit) {
       let n = 0;
       for (const s of state.sessions.values()) {
+        if (n >= limit) break;
         if (s.status === "pending" && s.expiresAt < now) {
           s.status = "expired";
           n++;
@@ -416,11 +438,17 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
       }
       return n;
     },
-    async pruneVersions(keepVersions) {
-      return deleteVersions((v) => {
-        const head = state.sites.get(v.siteId)?.headVersion ?? 0;
-        return v.keep || v.version > head - keepVersions;
-      });
+    async pruneVersions(keepVersions, limit) {
+      const due = new Set(
+        state.versions
+          .filter((v) => {
+            const head = state.sites.get(v.siteId)?.headVersion ?? 0;
+            return !v.keep && v.version <= head - keepVersions;
+          })
+          .slice(0, Math.max(limit, 0))
+          .map((v) => v.id),
+      );
+      return deleteVersions((v) => !due.has(v.id));
     },
     async leftoverDeletingObjects(limit) {
       return [...state.objects.values()]
@@ -476,22 +504,31 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
     },
     async claimSiteLockForGc(siteId, lock, now, expiresAt) {
       const site = state.sites.get(siteId);
-      if (!site || !lockFree(site, now)) return false;
+      if (!site || site.headVersion !== 0 || !lockFree(site, now)) return false;
       site.completeLock = lock;
       site.completeLockExpiresAt = expiresAt;
       return true;
     },
-    async retireSessions(now, limit) {
-      const due = [...state.sessions.values()]
+    async retireSessions(now, limit, objectLimit) {
+      const ended = [...state.sessions.values()]
         .filter((s) => s.holdUntil > 0 && s.holdUntil < now)
-        .slice(0, Math.min(limit, 97));
-      const ids = new Set(due.map((s) => s.id));
-      state.sessionObjects = state.sessionObjects.filter((o) => !ids.has(o.sessionId));
+        .sort((a, b) => a.holdUntil - b.holdUntil || (a.id < b.id ? -1 : 1));
+      const order = new Map(ended.map((s, i) => [s.id, i]));
+      const drop = new Set(
+        state.sessionObjects
+          .filter((o) => order.has(o.sessionId))
+          .sort((a, b) => order.get(a.sessionId)! - order.get(b.sessionId)!)
+          .slice(0, Math.max(objectLimit, 0)),
+      );
+      state.sessionObjects = state.sessionObjects.filter((o) => !drop.has(o));
+      const due = ended
+        .filter((s) => !state.sessionObjects.some((o) => o.sessionId === s.id))
+        .slice(0, Math.max(limit, 0));
       for (const s of due) {
         s.holdUntil = 0;
         s.plan = PLAN_STUB;
       }
-      return due.length;
+      return { sessions: due.length, objects: drop.size };
     },
     async deleteOldSessions({ now, completedBefore, uncommittedBefore, limit }) {
       const old = [...state.sessions.values()]
@@ -500,32 +537,33 @@ export const memoryPublishStore = (): PublishStore & { state: MemoryPublishState
             s.holdUntil < now &&
             (s.status === "completed"
               ? s.createdAt < completedBefore
-              : s.expiresAt < uncommittedBefore),
+              : s.expiresAt < uncommittedBefore) &&
+            !state.sessionObjects.some((o) => o.sessionId === s.id),
         )
         .slice(0, limit);
       const ids = new Set(old.map((s) => s.id));
       return deleteSessions((s) => ids.has(s.id));
     },
-    async abandonedSites(now, createdBefore, limit) {
+    async abandonedSites(createdBefore, limit) {
       if (limit <= 0) return [];
       return [...state.sites.values()]
         .filter(
           (s) =>
             s.headVersion === 0 &&
             s.createdAt < createdBefore &&
-            ![...state.sessions.values()].some((x) => x.siteId === s.id && x.holdUntil > now),
+            ![...state.sessions.values()].some((x) => x.siteId === s.id),
         )
         .sort((a, b) => a.createdAt - b.createdAt)
         .slice(0, limit)
         .map(ref);
     },
-    async deleteAbandonedSite(siteId, lock, now) {
+    async deleteAbandonedSite(siteId, lock) {
       const site = state.sites.get(siteId);
       if (
         !site ||
         site.headVersion !== 0 ||
         site.completeLock !== lock ||
-        [...state.sessions.values()].some((x) => x.siteId === siteId && x.holdUntil > now)
+        [...state.sessions.values()].some((x) => x.siteId === siteId)
       ) {
         return false;
       }

@@ -367,11 +367,12 @@ const runs = new Map<string, Run>();
 // gone by then, but complete needs only the session: everything was uploaded.
 // Dropped once complete answers (live, or refused for good), when the server
 // reports the session aborted or expired, when it is aborted, when a new run
-// of the workspace is about to begin (not when it starts: one that ends before
-// begin leaves it be), or once it has expired. Its retry and a run of the same
-// workspace never overlap: a run waits for a retry in flight before it begins (else the
-// old session could commit after the new one's begin and fail its complete
-// as a conflict), and no retry starts while a run holds the workspace.
+// of the workspace has begun its own session (not when it starts: one that
+// ends before begin answers leaves it be), or once it has expired. Its retry
+// and a run of the same workspace never overlap: a run waits for a retry in
+// flight before it begins (else the old session could commit after the new
+// one's begin and fail its complete as a conflict), and no retry starts while
+// a run holds the workspace.
 type Unfinished = {
   publishId: string;
   expiresAt: number;
@@ -388,6 +389,32 @@ const unfinished = new Map<string, Unfinished>();
 // meanwhile waits for it before it begins, a cancelled one included (it must
 // not leave the next one free to begin under it).
 const retries = new Map<string, Promise<unknown>>();
+
+// The sessions this process began (the newest BEGUN_KEPT), by publishId: when
+// each expires, and whether this process ever saw it committed. A session the
+// server answers 404 about is told apart by these (see goneOutcome): the
+// server forgets a session that never committed a day after it expired, and a
+// committed one only after a week, and answers 404 for another account's
+// session too, so the 404 alone says nothing about whether it went live.
+// Kept apart from `unfinished`, which drops its record before every ask about
+// the session has come in.
+type Begun = { expiresAt: number; committed: boolean };
+const BEGUN_KEPT = 100;
+const begunSessions = new Map<string, Begun>();
+
+const rememberBegun = (publishId: string, expiresAt: number) => {
+  begunSessions.delete(publishId);
+  begunSessions.set(publishId, { expiresAt, committed: false });
+  for (const oldest of begunSessions.keys()) {
+    if (begunSessions.size <= BEGUN_KEPT) break;
+    begunSessions.delete(oldest);
+  }
+};
+
+const markCommitted = (publishId: string) => {
+  const begun = begunSessions.get(publishId);
+  if (begun) begun.committed = true;
+};
 
 const forgetUnfinished = (workspaceId: string) => {
   const held = unfinished.get(workspaceId);
@@ -418,9 +445,9 @@ const dropUnfinished = (workspaceId: string, held: Unfinished) => {
 // follow-up survive a closed panel but not a reload or a closed window. Each
 // is getPublishOutcome, which already keeps to one attempt at a time and
 // stays out of a run's way. They stop once the record is dropped (a final
-// answer, or a new run of the workspace is about to begin) or the session
-// has expired. While a run holds the workspace they only read, and carry on
-// once it ends without beginning.
+// answer, or a new run of the workspace has begun its own session) or the
+// session has expired. While a run holds the workspace they only read, and
+// carry on once it ends without beginning.
 const followUnfinished = (workspaceId: string, held: Unfinished, attempt: number) => {
   const delays = publishTiming.followDelaysMs;
   if (delays.length === 0) return;
@@ -508,7 +535,7 @@ export async function* publishWorkspace(
   runs.set(workspaceId, run);
   // A "check status" retry of an earlier unfinished publish still in flight:
   // the run waits for it before it begins. The earlier record itself is kept
-  // until the run is about to begin (see steps).
+  // until the run has begun its own session (see steps).
   const retrying = retries.get(workspaceId) ?? null;
 
   const onCallerAbort = () => {
@@ -962,20 +989,26 @@ const steps = async (ctx: {
   if (body.isErr()) return err(body.error);
 
   // The new session replaces whatever an earlier run left unfinished, but
-  // only from here: a run that ends before begin (cancelled, refused, a
-  // failed build) leaves it, and main's follow-up of it, as they were. Until
-  // now that record was only read (the run holds the workspace), and a retry
-  // of it in flight was waited for before the run got this far. "uploading"
-  // is the step that tells the renderer the earlier session was let go.
-  forgetUnfinished(workspaceId);
-  emit({ type: "step", step: "uploading" });
+  // only once begin has answered with it and the run goes on: a run that ends
+  // before that (cancelled, a failed build, a begin that failed, was refused
+  // or was cancelled) leaves it, and main's follow-up of it, as they were.
+  // Until then that record is only read (the run holds the workspace, so no
+  // retry of it starts), and a retry of it in flight was waited for before
+  // the run got this far. A begin whose answer was lost may still have made a
+  // session, but nothing uploads to or completes that one, so the earlier
+  // session committing after it conflicts with nothing. "uploading" is the
+  // step that tells the renderer the earlier session was let go, so it comes
+  // after begin.
   const begun = await beginPublish(body.value, { signal });
   if (begun.isErr()) {
     return err(signal.aborted ? CANCELLED : mapCloudError(begun.error, packed.manifest));
   }
   const publishId = begun.value.publish.id;
   state.session = publishId;
+  rememberBegun(publishId, Date.parse(begun.value.publish.expiresAt));
   if (signal.aborted) return err(CANCELLED);
+  forgetUnfinished(workspaceId);
+  emit({ type: "step", step: "uploading" });
   const objects = planObjectCount(body.value);
 
   const tasks = uploadTasks(begun.value.uploads, packed, built);
@@ -1071,6 +1104,7 @@ const steps = async (ctx: {
     return session.error.code === "SIGNED_OUT" ? err(SIGNED_OUT) : outcomeUnknown();
   }
   const { status, resultVersion, live } = session.value;
+  if (status === "completed") markCommitted(publishId);
   if (status === "completed" && resultVersion !== null) {
     // Committed is not live: the server commits, then switches the site
     // over. The read says which (retrying the switch-over first), so a live
@@ -1116,12 +1150,16 @@ export const getPublishOutcome = async (
   const isHeld = held?.publishId === publishId;
   if (result.isErr()) {
     if (result.error.code === "PUBLISH_NOT_FOUND") {
-      if (held && isHeld) dropUnfinished(workspaceId, held);
-      return supersededOutcome(workspaceId, result.error);
+      const gone = await goneOutcome(workspaceId, publishId, result.error);
+      // Only a final answer lets the session go: a 404 before it expired is
+      // another account's answer, and it may still finish under its own.
+      if (gone.isOk() && held && isHeld) dropUnfinished(workspaceId, held);
+      return gone;
     }
     return err(mapCloudError(result.error));
   }
   const session = result.value;
+  if (session.status === "completed") markCommitted(publishId);
   if (!held || !isHeld) return ok(asSeen(session));
   // While a run holds the workspace, only read (the run waits for no retry
   // started now).
@@ -1146,21 +1184,38 @@ export const getPublishOutcome = async (
 const asSeen = (session: PublishSessionResponse): PublishSessionResponse =>
   session.status === "completed" && !session.live ? { ...session, status: "pending" } : session;
 
-// The server forgets a completed session once its version is pruned (several
-// publishes later), and only a completed one: it committed, and the site has
-// since moved on to a newer version, which is what visitors see. So it reads
-// as done, with the site as it is now (resultVersion unknown). Without a site
-// (unpublished since) it is the server's error.
-const supersededOutcome = async (
+// A session the server answers 404 about. The server deletes a session that
+// never committed (pending, aborted or expired) a day after it expired, a
+// committed one a week after it began, and answers 404 for another account's
+// session as well, so the 404 by itself proves neither that it committed nor
+// that it did not. What this process saw of the session decides (see
+// begunSessions):
+// - seen committed: it committed and has since been superseded; it reads as
+//   done, with the site as it is now (resultVersion unknown);
+// - never seen committed, and past its expiry: it can no longer commit, and
+//   nothing showed it did, so it reads as expired (it never went live);
+// - otherwise (not expired yet, so another account's answer; or a session
+//   this process did not begin): the server's error, which proves nothing.
+// Without a site (unpublished since) it is the server's error as well.
+const goneOutcome = async (
   workspaceId: string,
+  publishId: string,
   notFound: CloudError,
 ): Promise<Result<PublishSessionResponse, PublishError>> => {
+  const begun = begunSessions.get(publishId);
+  const committed = begun?.committed === true;
+  const expired = begun !== undefined && !committed && Date.now() > begun.expiresAt;
+  if (!committed && !expired) return err(mapCloudError(notFound));
   const site = await fetchSiteStatus(workspaceId);
   if (site.isErr()) {
     return err(site.error.code === "SIGNED_OUT" ? SIGNED_OUT : mapCloudError(site.error));
   }
   if (!site.value) return err(mapCloudError(notFound));
-  return ok({ status: "completed", resultVersion: null, live: true, site: site.value });
+  return ok(
+    committed
+      ? { status: "completed", resultVersion: null, live: true, site: site.value }
+      : { status: "expired", resultVersion: null, live: false, site: site.value },
+  );
 };
 
 const finishUnfinished = async (
@@ -1172,6 +1227,7 @@ const finishUnfinished = async (
   if (committed || !held.refused) {
     const completed = await completePublish(held.publishId, held.objects);
     if (completed.isOk()) {
+      markCommitted(held.publishId);
       dropUnfinished(workspaceId, held);
       return ok({
         status: "completed",

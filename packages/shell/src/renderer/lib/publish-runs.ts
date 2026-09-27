@@ -192,7 +192,12 @@ export const startPublish = async (
     if (error.code === "SIGNED_OUT" || error.code === "CANCELLED") {
       // A quiet end: nothing a visitor sees changed (the site switches over
       // only when a publish commits).
-      if (current) setRun(workspaceId, null);
+      if (current) {
+        setRun(workspaceId, null);
+        // Signed out: the sign-in panel comes up in the run's place, and
+        // either publishes again or closes (which brings the answer back).
+        if (error.code === "CANCELLED") showHeldAnswer(workspaceId);
+      }
       return error.code === "SIGNED_OUT" ? "signed-out" : "cancelled";
     }
     console.error("Publish failed:", error);
@@ -263,6 +268,13 @@ const follows = new Map<string, Follow>();
 export const isFollowedFailure = (error: AccountRequestError) =>
   error.code === "PUBLISH_OUTCOME_UNKNOWN" && !!error.details?.publishId;
 
+// A followed session's final answer that came while a newer run of the
+// workspace was up (still before "uploading", or showing its failure). It is
+// shown once that run is gone: dismissed, or ended quietly. Dropped with the
+// follow, when a newer run begins its own session.
+type HeldAnswer = { runId: number; error: AccountRequestError; status: string; site: SiteStatus };
+const heldAnswers = new Map<string, HeldAnswer>();
+
 // Stops following a workspace's unfinished publish, or every one.
 export const stopFollowing = (workspaceId?: string) => {
   for (const [ws, f] of follows) {
@@ -270,6 +282,8 @@ export const stopFollowing = (workspaceId?: string) => {
     if (f.timer) clearTimeout(f.timer);
     follows.delete(ws);
   }
+  if (workspaceId === undefined) heldAnswers.clear();
+  else heldAnswers.delete(workspaceId);
 };
 
 const follow = (
@@ -319,29 +333,38 @@ const ask = async (workspaceId: string, f: Follow) => {
 };
 
 // The server's final answer about a followed session. Shown on its run while
-// that is still up; brought back when it was closed, unless the workspace has
-// a newer run.
+// that is still up; brought back when it was closed. While a newer run of the
+// workspace is up, held until that run is gone.
 const settleFollowed = (
   workspaceId: string,
   f: Follow,
   { status, site }: { status: string; site: SiteStatus },
 ) => {
   stopFollowing(workspaceId);
-  const run = getRun(workspaceId);
-  const shown = run?.id === f.runId && run.phase === "failed";
-  if (run && !shown) return;
   if (status === "completed") {
     f.queryClient.setQueryData(queryKeys.publish.status(workspaceId), site);
-    setRun(workspaceId, { id: f.runId, phase: "published", url: site.url, result: null });
-  } else {
-    setRun(workspaceId, {
-      id: f.runId,
-      phase: "failed",
-      error: f.error,
-      checking: false,
-      check: "ended",
-    });
   }
+  const answer: HeldAnswer = { runId: f.runId, error: f.error, status, site };
+  const run = getRun(workspaceId);
+  const shown = run?.id === f.runId && run.phase === "failed";
+  if (run && !shown) heldAnswers.set(workspaceId, answer);
+  else showAnswer(workspaceId, answer);
+};
+
+const showAnswer = (workspaceId: string, { runId, error, status, site }: HeldAnswer) => {
+  if (status === "completed") {
+    setRun(workspaceId, { id: runId, phase: "published", url: site.url, result: null });
+  } else {
+    setRun(workspaceId, { id: runId, phase: "failed", error, checking: false, check: "ended" });
+  }
+};
+
+// Shows a held answer once the workspace has no run up.
+const showHeldAnswer = (workspaceId: string) => {
+  const answer = heldAnswers.get(workspaceId);
+  if (!answer || getRun(workspaceId)) return;
+  heldAnswers.delete(workspaceId);
+  showAnswer(workspaceId, answer);
 };
 
 // PUBLISH_OUTCOME_UNKNOWN: the server may still commit. Main names the
@@ -402,8 +425,15 @@ export const checkPublishStatus = async (
 };
 
 // Closes a failure panel or a published toast. A publish in flight stays, and
-// so does the background follow of one that may still finish.
-export const dismissPublishRun = (workspaceId: string) => {
+// so does the background follow of one that may still finish. An earlier
+// publish's answer held behind the closed run shows next, unless the panel is
+// closing only to publish again (`republishing`): the answer then waits for
+// how that run ends.
+export const dismissPublishRun = (
+  workspaceId: string,
+  { republishing = false }: { republishing?: boolean } = {},
+) => {
   if (getRun(workspaceId)?.phase === "publishing") return;
   setRun(workspaceId, null);
+  if (!republishing) showHeldAnswer(workspaceId);
 };

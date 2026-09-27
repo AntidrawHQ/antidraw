@@ -9,6 +9,7 @@ import {
 import {
   createPointerCache,
   MAX_POINTER_BYTES,
+  MAX_STALE_MS,
   MISS_REVALIDATE_MS,
   REVALIDATE_MS,
 } from "../src/pointer";
@@ -449,6 +450,23 @@ describe("R2 failures", () => {
     expect(response.status).toBe(503);
     expect(response.headers.get("Retry-After")).toBe("5");
     errors.mockRestore();
+  });
+
+  test("a cached site is served as cached while its pointer cannot be read, for up to MAX_STALE_MS", async () => {
+    const errors = quiet();
+    const warnings = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect((await fetchSite("/")).status).toBe(200);
+    r2.fail((key) => key.startsWith("m/"));
+    time += REVALIDATE_MS;
+    const response = await fetchSite("/");
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe(FILES["index.html"]!.body);
+    // The warning names the site, never the owner.
+    expect(JSON.stringify(warnings.mock.calls.map((call) => call.map(String)))).not.toContain(OWNER);
+    time += MAX_STALE_MS;
+    expect((await fetchSite("/")).status).toBe(503);
+    errors.mockRestore();
+    warnings.mockRestore();
   });
 
   test("the site recovers once R2 does", async () => {

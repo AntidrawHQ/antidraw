@@ -1040,16 +1040,19 @@ describe("publishWorkspace: cancel and time limits around server calls", () => {
   test("begin gets the run's signal: a cancel while it is in flight ends the run at once", async () => {
     vi.mocked(beginPublish).mockImplementationOnce(
       (_body, opts) =>
-        new Promise((resolve) =>
+        new Promise((resolve) => {
           opts?.signal?.addEventListener("abort", () =>
             resolve(err({ status: 499, code: "CANCELLED", message: "The request was cancelled" })),
-          ),
-        ),
+          );
+          expect(cancelPublish(WS)).toBe(true);
+        }),
     );
 
-    const events = await cancelOn("uploading");
+    const events = await run();
 
     expect(lastError(events)).toEqual({ code: "CANCELLED", message: "Publishing was cancelled." });
+    // "uploading" comes only once begin has answered with a session.
+    expect(events).not.toContainEqual({ type: "step", step: "uploading" });
     expect(uploadAll).not.toHaveBeenCalled();
     // No session came back, so there is nothing to abort.
     expect(abortPublish).not.toHaveBeenCalled();
@@ -1152,6 +1155,81 @@ describe("main finishes a publish left unfinished in the background", () => {
     live();
     expect((await getPublishOutcome(WS, "pub_1"))._unsafeUnwrap().status).toBe("completed");
     expect(completePublish).toHaveBeenCalledTimes(1);
+  });
+
+  // Begin answered without a session: nothing replaced the earlier one, so it
+  // is still finished, and the renderer is never told it was let go.
+  test.each([
+    ["a server error", err({ status: 503, code: "INTERNAL_ERROR", message: "Down" } as const), "SERVER_ERROR"],
+    ["the rate limit", err({ status: 429, code: "RATE_LIMITED", message: "Slow down" } as const), "RATE_LIMITED"],
+    [
+      "the open-sessions cap",
+      err({ status: 429, code: "RATE_LIMITED", message: "Too many", details: { reason: "open-sessions" } } as const),
+      "RATE_LIMITED",
+    ],
+    ["the quota", err({ status: 413, code: "QUOTA_EXCEEDED", message: "Full" } as const), "QUOTA_EXCEEDED"],
+    ["a lost answer", err({ status: 502, code: "SERVER_UNREACHABLE", message: "Timed out" } as const), "SERVER_UNREACHABLE"],
+  ])("a begin refused by %s keeps the earlier session, and a check still finishes it", async (_, refusal, code) => {
+    await leaveUnfinished();
+    vi.mocked(beginPublish).mockClear().mockResolvedValueOnce(refusal);
+    const events = await run();
+    expect(lastError(events).code).toBe(code);
+    expect(beginPublish).toHaveBeenCalledTimes(1);
+    expect(events).not.toContainEqual({ type: "step", step: "uploading" });
+
+    live();
+    expect((await getPublishOutcome(WS, "pub_1"))._unsafeUnwrap()).toMatchObject({
+      status: "completed",
+      resultVersion: 4,
+    });
+    expect(completePublish).toHaveBeenCalledWith("pub_1", 7);
+  });
+
+  test("main keeps following it through a begin that failed, and finishes it after", async () => {
+    publishTiming.followDelaysMs = [5];
+    await leaveUnfinished();
+    vi.mocked(beginPublish).mockResolvedValueOnce(
+      err({ status: 503, code: "INTERNAL_ERROR", message: "Down" }),
+    );
+    expect(lastError(await run()).code).toBe("SERVER_ERROR");
+
+    live();
+    await waitFor(() =>
+      vi.mocked(completePublish).mock.calls.some(([id]) => id === "pub_1"),
+    );
+  });
+
+  test("a publish cancelled while begin is in flight keeps it too", async () => {
+    await leaveUnfinished();
+    vi.mocked(beginPublish).mockImplementationOnce(
+      (_body, opts) =>
+        new Promise((resolve) => {
+          opts?.signal?.addEventListener("abort", () =>
+            resolve(err({ status: 499, code: "CANCELLED", message: "The request was cancelled" })),
+          );
+          cancelPublish(WS);
+        }),
+    );
+    expect(lastError(await run()).code).toBe("CANCELLED");
+
+    live();
+    expect((await getPublishOutcome(WS, "pub_1"))._unsafeUnwrap().status).toBe("completed");
+    expect(completePublish).toHaveBeenCalledWith("pub_1", 7);
+  });
+
+  test("a cancel that lands just as begin answers keeps it, and aborts only the new session", async () => {
+    await leaveUnfinished();
+    vi.mocked(beginPublish).mockImplementationOnce(async () => {
+      cancelPublish(WS);
+      return ok({ ...beginResponse(), publish: { ...beginResponse().publish, id: "pub_2" } });
+    });
+    expect(lastError(await run()).code).toBe("CANCELLED");
+    expect(abortPublish).toHaveBeenCalledWith("pub_2");
+    expect(abortPublish).not.toHaveBeenCalledWith("pub_1");
+
+    live();
+    expect((await getPublishOutcome(WS, "pub_1"))._unsafeUnwrap().status).toBe("completed");
+    expect(completePublish).toHaveBeenCalledWith("pub_1", 7);
   });
 
   test("main keeps following it through a cancelled publish, and finishes it after", async () => {
@@ -1319,31 +1397,108 @@ describe("getPublishOutcome: finishing a publish left pending", () => {
     expect(completePublish).not.toHaveBeenCalled();
   });
 
-  test("a session the server no longer knows (its version pruned) reads done, with the site as it is now", async () => {
-    const publishId = await leavePending();
+  // The server answers 404 for a session GC deleted (one that never committed
+  // a day after it expired, a committed one after a week) and for another
+  // account's: only what this process saw of it says whether it went live.
+  describe("a session the server no longer knows", () => {
     const notFound = err({ status: 404, code: "PUBLISH_NOT_FOUND", message: "Publish session not found" } as const);
-    vi.mocked(getPublishSession).mockResolvedValue(notFound);
-    vi.mocked(fetchSiteStatus).mockResolvedValue(ok({ ...site, headVersion: 9 }));
+    const leaveWith = async (expiresAt: string, read: typeof pending | ReturnType<typeof committedRead>) => {
+      vi.mocked(beginPublish).mockResolvedValue(
+        ok({ ...beginResponse(), publish: { ...beginResponse().publish, expiresAt } }),
+      );
+      vi.mocked(completePublish).mockResolvedValue(
+        err({ status: 502, code: "SERVER_UNREACHABLE", message: "Offline" }),
+      );
+      vi.mocked(getPublishSession).mockResolvedValueOnce(ok(read));
+      const error = lastError(await run());
+      expect(error.code).toBe("PUBLISH_OUTCOME_UNKNOWN");
+      vi.mocked(completePublish).mockReset();
+      vi.mocked(getPublishSession).mockReset();
+      return error.details!.publishId!;
+    };
+    const committedRead = () => ({ status: "completed" as const, resultVersion: 4, live: false, site });
+    const past = () => new Date(Date.now() - 60_000).toISOString();
+    const future = () => new Date(Date.now() + 60 * 60_000).toISOString();
 
-    expect((await getPublishOutcome(WS, publishId))._unsafeUnwrap()).toEqual({
-      status: "completed",
-      resultVersion: null,
-      live: true,
-      site: { ...site, headVersion: 9 },
+    test("never seen committed, and past its expiry: it ended, it did not go live", async () => {
+      const publishId = await leaveWith(past(), pending);
+      vi.mocked(getPublishSession).mockResolvedValue(notFound);
+      vi.mocked(fetchSiteStatus).mockResolvedValue(ok({ ...site, headVersion: 3 }));
+
+      expect((await getPublishOutcome(WS, publishId))._unsafeUnwrap()).toEqual({
+        status: "expired",
+        resultVersion: null,
+        live: false,
+        site: { ...site, headVersion: 3 },
+      });
+      expect(completePublish).not.toHaveBeenCalled();
+
+      // Let go: nothing is sent for it again.
+      vi.mocked(getPublishSession).mockResolvedValue(ok(pending));
+      await getPublishOutcome(WS, publishId);
+      expect(completePublish).not.toHaveBeenCalled();
     });
-    expect(completePublish).not.toHaveBeenCalled();
 
-    // Let go: nothing is sent for it again.
-    vi.mocked(getPublishSession).mockResolvedValue(ok(pending));
-    await getPublishOutcome(WS, publishId);
-    expect(completePublish).not.toHaveBeenCalled();
+    test("seen committed: done, with the site as it is now", async () => {
+      const publishId = await leaveWith(past(), committedRead());
+      vi.mocked(getPublishSession).mockResolvedValue(notFound);
+      vi.mocked(fetchSiteStatus).mockResolvedValue(ok({ ...site, headVersion: 9 }));
 
-    // Without a site (unpublished since), it is the server's error.
-    vi.mocked(getPublishSession).mockResolvedValue(notFound);
-    vi.mocked(fetchSiteStatus).mockResolvedValue(ok(null));
-    expect((await getPublishOutcome(WS, publishId))._unsafeUnwrapErr().details?.serverCode).toBe(
-      "PUBLISH_NOT_FOUND",
-    );
+      expect((await getPublishOutcome(WS, publishId))._unsafeUnwrap()).toEqual({
+        status: "completed",
+        resultVersion: null,
+        live: true,
+        site: { ...site, headVersion: 9 },
+      });
+      expect(completePublish).not.toHaveBeenCalled();
+    });
+
+    test("seen committed by a later check's read, then gone: done", async () => {
+      const publishId = await leaveWith(past(), pending);
+      vi.mocked(getPublishSession).mockResolvedValueOnce(ok(committedRead()));
+      vi.mocked(completePublish).mockResolvedValue(
+        err({ status: 500, code: "STORAGE_FAILED", message: "saved, but not switched over" }),
+      );
+      expect((await getPublishOutcome(WS, publishId))._unsafeUnwrap().status).toBe("pending");
+
+      vi.mocked(getPublishSession).mockResolvedValue(notFound);
+      vi.mocked(fetchSiteStatus).mockResolvedValue(ok({ ...site, headVersion: 9 }));
+      expect((await getPublishOutcome(WS, publishId))._unsafeUnwrap().status).toBe("completed");
+    });
+
+    test("before its expiry (another account's answer): the server's error, and it is still finished later", async () => {
+      const publishId = await leaveWith(future(), pending);
+      vi.mocked(getPublishSession).mockResolvedValue(notFound);
+      vi.mocked(fetchSiteStatus).mockResolvedValue(ok({ ...site, headVersion: 3 }));
+
+      expect((await getPublishOutcome(WS, publishId))._unsafeUnwrapErr().details?.serverCode).toBe(
+        "PUBLISH_NOT_FOUND",
+      );
+      expect(completePublish).not.toHaveBeenCalled();
+
+      // Kept: once the session reads again, it is finished.
+      vi.mocked(getPublishSession).mockResolvedValue(ok(pending));
+      vi.mocked(completePublish).mockResolvedValue(ok({ site: { ...site, headVersion: 4 }, version: 4 }));
+      expect((await getPublishOutcome(WS, publishId))._unsafeUnwrap().status).toBe("completed");
+      expect(completePublish).toHaveBeenCalledWith("pub_1", 7);
+    });
+
+    test("a session this process did not begin: the server's error", async () => {
+      vi.mocked(getPublishSession).mockResolvedValue(notFound);
+      vi.mocked(fetchSiteStatus).mockResolvedValue(ok({ ...site, headVersion: 9 }));
+      expect((await getPublishOutcome(WS, "pub_unknown"))._unsafeUnwrapErr().details?.serverCode).toBe(
+        "PUBLISH_NOT_FOUND",
+      );
+    });
+
+    test("without a site (unpublished since): the server's error", async () => {
+      const publishId = await leaveWith(past(), committedRead());
+      vi.mocked(getPublishSession).mockResolvedValue(notFound);
+      vi.mocked(fetchSiteStatus).mockResolvedValue(ok(null));
+      expect((await getPublishOutcome(WS, publishId))._unsafeUnwrapErr().details?.serverCode).toBe(
+        "PUBLISH_NOT_FOUND",
+      );
+    });
   });
 
   test("still no answer → pending, and the next check tries again", async () => {

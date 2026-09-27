@@ -478,7 +478,7 @@ export const PublishButton = ({
     if (action !== "start") return;
     clear();
     abandonSignIn();
-    dismissPublishRun(workspaceId);
+    dismissPublishRun(workspaceId, { republishing: true });
     if (account) {
       // detail is 0 for a click from the keyboard: no pointer to hold.
       setPointerHeld(e.detail > 0);

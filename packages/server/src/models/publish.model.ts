@@ -75,7 +75,7 @@ export const siteVersion = sqliteTable(
     // The estimated D1 bytes of the version's version_large_file and
     // version_site_file rows still retained (largeFileRowBytes and
     // siteFileRowBytes in publish.store.ts): counted toward the account's
-    // MAX_FILE_ROW_BYTES, and lowered when the site-file rows no pointer can
+    // MAX_ACCOUNT_ROW_BYTES, and lowered when the site-file rows no pointer can
     // use any more are pruned.
     fileRowBytes: integer("file_row_bytes").notNull().default(0),
     // A record of the setting at commit only; remix reads site.allow_remix.

@@ -6,13 +6,17 @@ import {
   GC_CLOCK_SKEW_MARGIN_MS,
   GC_LOCK_TTL_MS,
   GC_MIN_AGE_MS,
+  GC_OBJECTS_PER_CLAIM,
   GC_OBJECTS_PER_RUN,
   GC_POINTER_SYNCS_PER_RUN,
   GC_RUN_BUDGET_MS,
+  GC_SESSION_OBJECTS_PER_STATEMENT,
   GC_SESSION_RETENTION_MS,
   GC_SESSION_STATEMENTS_PER_RUN,
   GC_SESSIONS_PER_STATEMENT,
   GC_UNCOMMITTED_SESSION_RETENTION_MS,
+  GC_VERSION_STATEMENTS_PER_RUN,
+  GC_VERSIONS_PER_STATEMENT,
   KEEP_VERSIONS,
   R2_DELETE_BATCH,
 } from "../lib/publish-limits";
@@ -30,7 +34,8 @@ import { syncPointer } from "./site-pointer";
 // bounded (the GcLimits below, and a wall-clock budget for the run) so one
 // run fits the Workers Paid limits, each logging its counts; a failing step
 // does not stop the next. A step that stops with work left names itself in
-// `report.backlog`, and the next run continues.
+// `report.backlog`, and the next run continues. Every statement a step runs
+// acts on a bounded number of rows, cascades included.
 //
 //   1. expire lapsed pending sessions
 //   2. drop versions beyond the newest KEEP_VERSIONS (keep=1 excepted)
@@ -41,8 +46,8 @@ import { syncPointer } from "./site-pointer";
 //      are unreferenced (taking turns across accounts), deleted from R2, and
 //      only then their rows
 //   5. retire sessions whose hold ended, and forget old ones
-//   6. delete sites that never completed a publish (their pointer, then the
-//      row), freeing their slugs
+//   6. delete sites that never completed a publish and have no session left
+//      (their pointer, then the row), freeing their slugs
 //
 // A site's files are ordinary objects: what no retained version lists is
 // collected by step 4 like any other. Every step that asks whether a session
@@ -53,21 +58,29 @@ import { syncPointer } from "./site-pointer";
 export type GcLimits = {
   runBudgetMs: number;
   objectsPerRun: number;
+  objectsPerClaim: number;
   deleteBatch: number;
   pointerSyncsPerRun: number;
   abandonedSitesPerRun: number;
   sessionsPerStatement: number;
+  sessionObjectsPerStatement: number;
   sessionStatementsPerRun: number;
+  versionsPerStatement: number;
+  versionStatementsPerRun: number;
 };
 
 export const GC_LIMITS: GcLimits = {
   runBudgetMs: GC_RUN_BUDGET_MS,
   objectsPerRun: GC_OBJECTS_PER_RUN,
+  objectsPerClaim: GC_OBJECTS_PER_CLAIM,
   deleteBatch: R2_DELETE_BATCH,
   pointerSyncsPerRun: GC_POINTER_SYNCS_PER_RUN,
   abandonedSitesPerRun: GC_ABANDONED_SITES_PER_RUN,
   sessionsPerStatement: GC_SESSIONS_PER_STATEMENT,
+  sessionObjectsPerStatement: GC_SESSION_OBJECTS_PER_STATEMENT,
   sessionStatementsPerRun: GC_SESSION_STATEMENTS_PER_RUN,
+  versionsPerStatement: GC_VERSIONS_PER_STATEMENT,
+  versionStatementsPerRun: GC_VERSION_STATEMENTS_PER_RUN,
 };
 
 export type GcDeps = {
@@ -121,6 +134,20 @@ const behind = (run: Run, step: string) => {
   if (!run.report.backlog.includes(step)) run.report.backlog.push(step);
 };
 
+// Runs a bounded statement (`once`, returning whether it may have left work)
+// up to `times` times, while the run has time. Names `step` as behind when
+// work is left.
+const repeat = async (run: Run, step: string, times: number, once: () => Promise<boolean>) => {
+  for (let i = 0; i < times; i++) {
+    if (run.outOfTime()) {
+      behind(run, step);
+      return;
+    }
+    if (!(await once())) return;
+  }
+  behind(run, step);
+};
+
 const inBatches = <T>(items: T[], size: number) => {
   const out: T[][] = [];
   for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
@@ -141,10 +168,11 @@ const deleteKeys = async (store: ObjectStore, keys: string[]) => {
   return false;
 };
 
-// Step 4. A row is deleted only after its own key is gone. A batch R2 refuses
-// twice keeps its rows `deleting` (never `verified`, so no commit can lean on
-// them meanwhile), and so does every batch the run did not reach: the next
-// run takes them first, as leftovers.
+// Step 4, in claims of at most objectsPerClaim up to objectsPerRun. A row is
+// deleted only after its own key is gone. A batch R2 refuses twice keeps its
+// rows `deleting` (never `verified`, so no commit can lean on them
+// meanwhile), and so does every batch the run did not reach: the next claim
+// or run takes them first, as leftovers.
 //
 // Invariant: this is the only code that deletes an account object's key, and
 // it deletes only keys whose rows claimGcObjects already marked deleting (and
@@ -154,19 +182,33 @@ const deleteKeys = async (store: ObjectStore, keys: string[]) => {
 // (publish.service.ts, findMissing). Anything new that deletes object keys
 // must mark their rows the same way first.
 const collectObjects = async (run: Run) => {
+  let taken = 0;
+  while (taken < run.limits.objectsPerRun) {
+    if (taken > 0 && run.outOfTime()) break;
+    const want = Math.min(run.limits.objectsPerClaim, run.limits.objectsPerRun - taken);
+    const outcome = await collectObjectClaim(run, want);
+    if (outcome === "stopped") return;
+    taken += outcome;
+    if (outcome < want) return; // nothing left to claim
+  }
+  behind(run, "objects");
+};
+
+// One claim of up to `limit` objects: how many it took, or "stopped" when R2
+// refused or the run ran out of time (either marks the step behind).
+const collectObjectClaim = async (run: Run, limit: number): Promise<number | "stopped"> => {
   const { deps, limits, now, report } = run;
-  const leftovers = await deps.store.leftoverDeletingObjects(limits.objectsPerRun);
+  const leftovers = await deps.store.leftoverDeletingObjects(limit);
   const claimed = await deps.store.claimGcObjects({
     now: holdCutoff(now),
     minCreatedAt: now - GC_MIN_AGE_MS,
-    limit: limits.objectsPerRun - leftovers.length,
+    limit: limit - leftovers.length,
   });
   const todo = [...leftovers, ...claimed];
-  if (todo.length >= limits.objectsPerRun) behind(run, "objects");
   for (const batch of inBatches(todo, limits.deleteBatch)) {
     if (run.outOfTime()) {
       behind(run, "objects");
-      return;
+      return "stopped";
     }
     const keys = { sites: [] as string[], sources: [] as string[] };
     for (const o of batch) {
@@ -179,10 +221,11 @@ const collectObjects = async (run: Run) => {
       // R2 is refusing; the rest waits for the next run.
       report.failedObjectBatches++;
       behind(run, "objects");
-      return;
+      return "stopped";
     }
     report.deletedObjects += await deps.store.deleteObjectRows(batch);
   }
+  return todo.length;
 };
 
 // Step 3. Conditional pointer writes make this safe beside a complete that is
@@ -218,7 +261,7 @@ const deleteAbandonedSite = async (run: Run, site: SiteRef) => {
   }
   try {
     await deps.sites.delete([pointerKey(site.slug)]);
-    if (await deps.store.deleteAbandonedSite(site.id, lock, holdCutoff(run.clock()))) {
+    if (await deps.store.deleteAbandonedSite(site.id, lock)) {
       report.deletedAbandonedSites++;
     }
   } finally {
@@ -226,34 +269,32 @@ const deleteAbandonedSite = async (run: Run, site: SiteRef) => {
   }
 };
 
-// Step 5.
+// Step 5. Retiring deletes session objects whole sessions at a time, and a
+// session is retired once its last one is gone.
 const sweepSessions = async (run: Run) => {
   const { deps, limits, now, report } = run;
-  const repeat = async (name: string, once: () => Promise<number>) => {
-    let total = 0;
-    for (let i = 0; i < limits.sessionStatementsPerRun; i++) {
-      if (run.outOfTime()) {
-        behind(run, name);
-        return total;
-      }
-      const n = await once();
-      total += n;
-      if (n < limits.sessionsPerStatement) return total;
-    }
-    behind(run, name);
-    return total;
-  };
-  report.retiredSessions = await repeat("retire-sessions", () =>
-    deps.store.retireSessions(holdCutoff(now), limits.sessionsPerStatement),
-  );
-  report.deletedSessions = await repeat("old-sessions", () =>
-    deps.store.deleteOldSessions({
+  await repeat(run, "retire-sessions", limits.sessionStatementsPerRun, async () => {
+    const done = await deps.store.retireSessions(
+      holdCutoff(now),
+      limits.sessionsPerStatement,
+      limits.sessionObjectsPerStatement,
+    );
+    report.retiredSessions += done.sessions;
+    return (
+      done.sessions >= limits.sessionsPerStatement ||
+      done.objects >= limits.sessionObjectsPerStatement
+    );
+  });
+  await repeat(run, "old-sessions", limits.sessionStatementsPerRun, async () => {
+    const n = await deps.store.deleteOldSessions({
       now: holdCutoff(now),
       completedBefore: now - GC_SESSION_RETENTION_MS,
       uncommittedBefore: now - GC_UNCOMMITTED_SESSION_RETENTION_MS,
       limit: limits.sessionsPerStatement,
-    }),
-  );
+    });
+    report.deletedSessions += n;
+    return n >= limits.sessionsPerStatement;
+  });
 };
 
 export const runGc = async (deps: GcDeps, when: Date): Promise<GcReport> => {
@@ -292,14 +333,22 @@ export const runGc = async (deps: GcDeps, when: Date): Promise<GcReport> => {
     }
   };
 
-  await step("expire-sessions", async () => {
+  await step("expire-sessions", () =>
     // A session's expiry is its hold's end until something ends the hold
     // sooner; expiring it fails a commit its (lagging) complete would pass.
-    report.expiredSessions = await deps.store.expireSessions(holdCutoff(now));
-  });
-  await step("prune-versions", async () => {
-    report.prunedVersions = await deps.store.pruneVersions(KEEP_VERSIONS);
-  });
+    repeat(run, "expire-sessions", limits.sessionStatementsPerRun, async () => {
+      const n = await deps.store.expireSessions(holdCutoff(now), limits.sessionsPerStatement);
+      report.expiredSessions += n;
+      return n >= limits.sessionsPerStatement;
+    }),
+  );
+  await step("prune-versions", () =>
+    repeat(run, "prune-versions", limits.versionStatementsPerRun, async () => {
+      const n = await deps.store.pruneVersions(KEEP_VERSIONS, limits.versionsPerStatement);
+      report.prunedVersions += n;
+      return n >= limits.versionsPerStatement;
+    }),
+  );
   // Before objects: a pointer that lags its head may still list contents of
   // a version pruned since, and re-syncing it first narrows that window.
   await step("pointers", () => syncPointers(run));
@@ -307,7 +356,6 @@ export const runGc = async (deps: GcDeps, when: Date): Promise<GcReport> => {
   await step("sessions", () => sweepSessions(run));
   await step("abandoned-sites", async () => {
     const abandoned = await deps.store.abandonedSites(
-      holdCutoff(now),
       now - GC_ABANDONED_SITE_AGE_MS,
       limits.abandonedSitesPerRun,
     );

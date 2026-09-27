@@ -380,10 +380,10 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
   // objects once its hold ends, deletes them and then retires the session,
   // deleting its session objects, so the object check has nothing to check.
   const gcRun = async (store: PublishStore, now: number) => {
-    await store.expireSessions(now);
+    await store.expireSessions(now, 97);
     const claimed = await store.claimGcObjects({ now, minCreatedAt: now - 86_400_000, limit: 500 });
     await store.deleteObjectRows(claimed);
-    await store.retireSessions(now, 97);
+    await store.retireSessions(now, 97, 10_000);
     return claimed;
   };
   const expired = { ok: false, reason: "expired" };
@@ -823,6 +823,60 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     expect(await store.claimSiteLockForGc("site_1", "gc:2", 361, 700)).toBe(true);
   });
 
+  it("never claims GC's lock on a site that has committed", async () => {
+    const { store, q } = setup();
+    await site(store);
+    q("UPDATE site SET head_version = 1");
+    expect(await store.claimSiteLockForGc("site_1", "gc:1", 60, 360)).toBe(false);
+    expect((await store.findSiteById("site_1"))?.completeLock).toBeNull();
+  });
+
+  it("retires sessions a bounded number of session objects at a time, whole sessions first", async () => {
+    const { store, q } = setup();
+    await site(store);
+    await store.createSession(session({ holdUntil: 100 }));
+    await store.createSession(session({ id: "pub_2", holdUntil: 90 }));
+    // pub_2's hold ended first: its two objects go, and it is retired.
+    expect(await store.retireSessions(200, 97, 3)).toEqual({ sessions: 1, objects: 3 });
+    expect(await store.getSession("pub_2")).toMatchObject({ holdUntil: 0, plan: PLAN_STUB });
+    // pub_1 lost one of its two, so it cannot commit; not retired yet.
+    expect(await store.getSession("pub_1")).toMatchObject({ holdUntil: 100 });
+    expect(q("SELECT count(*) AS n FROM publish_session_object")).toEqual([{ n: 1 }]);
+    expect(await store.retireSessions(200, 97, 3)).toEqual({ sessions: 1, objects: 1 });
+    expect(await store.retireSessions(200, 97, 3)).toEqual({ sessions: 0, objects: 0 });
+  });
+
+  it("counts every row the account keeps in accountRows", async () => {
+    const { store } = setup();
+    await site(store);
+    await site(store, "site_2", U, "w2");
+    const plan = JSON.stringify({ reservedRowBytes: 1234 });
+    await store.createSession(session({ plan }));
+    expect(await store.accountRows(U)).toEqual({
+      objects: 2,
+      sessionObjects: 2,
+      sessions: 1,
+      planBytes: plan.length,
+      reservedRowBytes: 1234,
+      versions: 0,
+      fileRowBytes: 0,
+      sites: 2,
+    });
+    await lock(store);
+    expect(await store.commitVersion(version())).toEqual({ ok: true });
+    expect(await store.accountRows(U)).toEqual({
+      objects: 2,
+      sessionObjects: 0,
+      sessions: 1,
+      planBytes: PLAN_STUB.length,
+      reservedRowBytes: 0,
+      versions: 1,
+      fileRowBytes: version().fileRowBytes,
+      sites: 2,
+    });
+    expect((await store.accountRows(V)).objects).toBe(0);
+  });
+
   // D1 never runs ANALYZE, so the planner has no statistics to steer it off a
   // low-cardinality index. Every per-account stored_object query must use the
   // primary key, not walk all accounts' rows.
@@ -917,8 +971,8 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     await store.createSession(session({ plan, holdUntil: 100 }));
     await store.createSession(session({ id: "pub_2", plan, holdUntil: 100 }));
     await store.createSession(session({ id: "pub_3", plan, holdUntil: 900 }));
-    expect(await store.retireSessions(200, 97)).toBe(2);
-    expect(await store.retireSessions(200, 97)).toBe(0);
+    expect(await store.retireSessions(200, 97, 10_000)).toEqual({ sessions: 2, objects: 4 });
+    expect(await store.retireSessions(200, 97, 10_000)).toEqual({ sessions: 0, objects: 0 });
     expect(await store.getSession("pub_1")).toMatchObject({ holdUntil: 0, plan: PLAN_STUB });
     expect(await store.getSession("pub_2")).toMatchObject({ holdUntil: 0, plan: PLAN_STUB });
     expect(await store.getSession("pub_3")).toMatchObject({ holdUntil: 900, plan });
@@ -926,18 +980,24 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
       [{ session_id: "pub_3" }],
     );
     const old = { now: 5000, completedBefore: 0, uncommittedBefore: 4000, limit: 10 };
-    expect(await store.deleteOldSessions(old)).toBe(3);
+    // pub_3's hold has ended too, but it is not retired yet: its session
+    // objects would go with it in a cascade no statement bounds.
+    expect(await store.deleteOldSessions(old)).toBe(2);
+    expect(await store.retireSessions(5000, 97, 10_000)).toEqual({ sessions: 1, objects: 2 });
+    expect(await store.deleteOldSessions(old)).toBe(1);
   });
 
   it("prunes old versions, expires and forgets sessions, and deletes abandoned sites", async () => {
     const { store, q } = setup();
     await site(store);
     await store.createSession(session({ expiresAt: 100, holdUntil: 100 }));
-    expect(await store.expireSessions(101)).toBe(1);
+    expect(await store.expireSessions(101, 10)).toBe(1);
     const old = { now: 101, completedBefore: 11, uncommittedBefore: 101, limit: 10 };
+    // Not before its session objects are gone: the delete would cascade to them.
+    expect(await store.deleteOldSessions(old)).toBe(0);
+    expect(await store.retireSessions(101, 10, 10)).toEqual({ sessions: 1, objects: 2 });
     expect(await store.deleteOldSessions({ ...old, uncommittedBefore: 100 })).toBe(0);
     expect(await store.deleteOldSessions(old)).toBe(1);
-    expect(q("SELECT count(*) AS n FROM publish_session_object")).toEqual([{ n: 0 }]); // cascade
 
     q("UPDATE site SET head_version = 9");
     for (let v = 1; v <= 9; v++) {
@@ -951,7 +1011,8 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
         v === 2 ? 1 : 0,
       );
     }
-    expect(await store.pruneVersions(5)).toBe(3);
+    expect(await store.pruneVersions(5, 2)).toBe(2);
+    expect(await store.pruneVersions(5, 2)).toBe(1);
     expect(
       q("SELECT version FROM site_version ORDER BY version").map(
         (r) => (r as { version: number }).version,
@@ -960,10 +1021,10 @@ describe.skipIf(!hasNodeSqlite)("d1PublishStore (node:sqlite)", () => {
     expect(q("SELECT count(*) AS n FROM version_site_file")).toEqual([{ n: 0 }]);
 
     await site(store, "site_2", U, "w2");
-    expect((await store.abandonedSites(100, 2, 10)).map((s) => s.id)).toEqual(["site_2"]);
-    expect(await store.deleteAbandonedSite("site_2", "gc:1", 100)).toBe(false); // lock not held
+    expect((await store.abandonedSites(2, 10)).map((s) => s.id)).toEqual(["site_2"]);
+    expect(await store.deleteAbandonedSite("site_2", "gc:1")).toBe(false); // lock not held
     await store.claimSiteLockForGc("site_2", "gc:1", 100, 400);
-    expect(await store.deleteAbandonedSite("site_2", "gc:1", 100)).toBe(true);
+    expect(await store.deleteAbandonedSite("site_2", "gc:1")).toBe(true);
     expect(await store.findSiteById("site_2")).toBeNull();
   });
 

@@ -237,8 +237,10 @@ export const createWorker = (pointers: PointerCache = createPointerCache()) =>
         return new Response(object.body, { headers });
       } catch (e) {
         // R2 being unavailable, a pointer that cannot be read, or pointer
-        // loads at their memory budget (PointerBusyError). The log names the
-        // site, never the owner id in the content key.
+        // loads at their memory budget (PointerBusyError), for a site not
+        // cached here (a cached one is served as cached for a while, see
+        // MAX_STALE_MS). The log names the site, never the owner id in the
+        // content key.
         console.error(`${slug}/${path.slice(0, 200)}`, e);
         return text(503, "Service unavailable", { "Retry-After": "5" });
       }

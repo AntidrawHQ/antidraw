@@ -5,7 +5,8 @@ import {
   MAX_OPEN_SESSIONS_PER_ACCOUNT,
   MAX_PENDING_SITE_BYTES,
   MAX_PLAN_JSON_BYTES,
-  MAX_FILE_ROW_BYTES,
+  MAX_ACCOUNT_ROW_BYTES,
+  MAX_BEGIN_HEADS,
   MAX_SITES_PER_ACCOUNT,
   MAX_STORED_SITE_BYTES,
   QUOTA_BYTES,
@@ -40,7 +41,7 @@ import {
   makePublishDeps,
   setAllowRemix,
 } from "./publish.service";
-import { largeFileRowBytes, PLAN_STUB, siteFileRowBytes } from "./publish.store";
+import { accountRowBytes, largeFileRowBytes, PLAN_STUB, siteFileRowBytes } from "./publish.store";
 
 const USER = "user-1";
 const OTHER = "user-2";
@@ -197,6 +198,85 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       expect(again.uploads.map((u) => u.path)).toEqual(["logo.png"]);
     });
 
+    // Every refusal that needs only D1 rows runs before any HEAD: a refused
+    // begin costs no R2 call, however many unverified objects it names.
+    it("makes no R2 call for a begin refused on pending site bytes", async () => {
+      const deps = setup();
+      const files = (tag: string) =>
+        Array.from({ length: 9 }, (_, i) => ({
+          path: `assets/${tag}-${i}.js`,
+          sha256: hex(`${tag}-${i}`),
+          size: 50 * MiB,
+        }));
+      (await begin(deps, { workspace: workspaceId(1), files: files("a") }))._unsafeUnwrap();
+      (await begin(deps, { workspace: workspaceId(2), files: files("b") }))._unsafeUnwrap();
+      const heads = recordHeads(deps);
+      // The same unverified contents again: 900 + 450 MiB pending.
+      const refused = await begin(deps, { workspace: workspaceId(3), files: files("a") });
+      expect(refused._unsafeUnwrapErr()).toMatchObject({ details: { reason: "pending-site" } });
+      expect(heads).toEqual([]);
+    });
+
+    it("makes no R2 call for a begin refused on the quota, even with no session holding", async () => {
+      const deps = setup();
+      const T = deps.clock.now;
+      const blobs = [1, 2, 3, 4].map((n) => ({
+        path: `b${n}.bin`,
+        sha256: hex(`q${n}`),
+        size: 240 * MiB,
+      }));
+      for (const [n, pair] of [blobs.slice(0, 2), blobs.slice(2)].entries()) {
+        const begun = (
+          await begin(deps, { workspace: workspaceId(n), largeFiles: pair })
+        )._unsafeUnwrap();
+        performUploads(deps, begun.uploads);
+      }
+      // Their holds end; GC has not run, so their unverified rows still count.
+      deps.clock.now = T + SESSION_TTL_MS + 1;
+      const heads = recordHeads(deps);
+      const refused = await begin(deps, {
+        largeFiles: [blobs[0], { path: "more.bin", sha256: hex("q5"), size: 100 * MiB }],
+      });
+      expect(refused._unsafeUnwrapErr()).toMatchObject({
+        code: "QUOTA_EXCEEDED",
+        details: { usedBytes: 960 * MiB + 1000, publishBytes: 100 * MiB },
+      });
+      expect(heads).toEqual([]);
+      expect((await deps.harness.sessionRows(USER)).count).toBe(2);
+      // The rows it found are left alone: their bytes are in R2.
+      expect(await deps.store.usedBytes(USER)).toBe(960 * MiB + 1000);
+    });
+
+    it(`HEADs at most ${MAX_BEGIN_HEADS} unverified objects, the largest first, and asks for the rest`, async () => {
+      const deps = setup();
+      const files = Array.from({ length: MAX_BEGIN_HEADS + 20 }, (_, i) => ({
+        path: `assets/f-${i}.js`,
+        size: 100 + i,
+      }));
+      const first = (await begin(deps, { files }))._unsafeUnwrap();
+      performUploads(deps, first.uploads);
+      const unverified = first.uploads.length;
+      expect(unverified).toBe(MAX_BEGIN_HEADS + 25); // source, blob and every content
+
+      const heads = recordHeads(deps);
+      const second = (await begin(deps, { files }))._unsafeUnwrap();
+      expect(heads).toHaveLength(MAX_BEGIN_HEADS);
+      // The HEADs found theirs; the rest are asked for again.
+      expect(second.uploads).toHaveLength(unverified - MAX_BEGIN_HEADS);
+      expect(heads).toContain(blobKey(USER, hex("blob-1")));
+      expect(second.uploads.map((u) => u.size).every((size) => size <= 100 + 24)).toBe(true);
+
+      // A smaller cap, likewise.
+      deps.caps = { beginHeads: 3 };
+      heads.length = 0;
+      const third = (await begin(deps, { files }))._unsafeUnwrap();
+      expect(heads).toHaveLength(3);
+      expect(third.uploads).toHaveLength(unverified - 3);
+      // Uploading again what R2 has is harmless: it commits.
+      performUploads(deps, third.uploads);
+      expect((await completePublish(deps, USER, third.publish.id)).isOk()).toBe(true);
+    });
+
     it("refuses when the limiter says so", async () => {
       const deps = setup();
       deps.limits.publish = false;
@@ -285,6 +365,22 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
         code: "INVALID_PATH",
         details: { paths: [".git/objects/pack/p.pack"] },
       });
+    });
+
+    it("refuses an empty site file whose sha256 is not the empty content's", async () => {
+      const deps = setup();
+      const refused = await begin(deps, {
+        files: [{ path: "empty.txt", sha256: hex("not-empty"), size: 0 }],
+      });
+      expect(refused._unsafeUnwrapErr()).toMatchObject({
+        status: 400,
+        code: "INVALID_REQUEST",
+        details: { paths: ["empty.txt"] },
+      });
+      const empty = await sha256Hex("");
+      expect(
+        (await begin(deps, { files: [{ path: "empty.txt", sha256: empty, size: 0 }] })).isOk(),
+      ).toBe(true);
     });
 
     it("refuses a blob sha256 declared with two sizes", async () => {
@@ -1009,7 +1105,7 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
 
     it("stops HEADing once it has found as many missing objects as it reports", async () => {
       const deps = setup();
-      const files = Array.from({ length: 400 }, (_, i) => ({ path: `f/${i}.txt`, size: 0 }));
+      const files = Array.from({ length: 400 }, (_, i) => ({ path: `f/${i}.txt`, size: 1 }));
       const begun = (await begin(deps, { files }))._unsafeUnwrap();
       const heads = recordHeads(deps);
       const error = (await completePublish(deps, USER, begun.publish.id))._unsafeUnwrapErr();
@@ -1580,34 +1676,147 @@ describe.each(harnesses)("publish service (%s)", (_name, makeHarness) => {
       ]);
     });
 
-    it(`refuses a publish that would take the account's rows past ${MAX_FILE_ROW_BYTES / MiB} MiB`, async () => {
-      const deps = setup();
-      await publish(deps);
-      const req = await beginRequest({ workspace: workspaceId(2), name: "Other" });
-      const adds = rowBytes(req.site.files) + largeRowBytes(req.snapshot.largeFiles);
-      const actual = deps.store.fileRowBytes;
-      // The account's rows, as if just under the cap before this plan.
-      const room = async (spare: number) => {
-        const used = await actual(USER);
-        deps.store.fileRowBytes = async (u) =>
-          (await actual(u)) + MAX_FILE_ROW_BYTES - used - adds - spare;
+    it("refuses a publish that would take the account's rows past its cap, before or after the insert", async () => {
+      // A new source: begin's insert creates its row.
+      const req = await beginRequest({
+        workspace: workspaceId(2),
+        name: "Other",
+        source: { sha256: hex("other-source"), size: 10 },
+      });
+      const attempt = async (cap?: number) => {
+        const deps = setup();
+        await publish(deps);
+        if (cap !== undefined) deps.caps = { accountRowBytes: cap };
+        const before = await deps.store.accountRows(USER);
+        const result = await beginPublish(deps, USER, req);
+        const after = await deps.store.accountRows(USER);
+        return { deps, before, after, result, bytes: [before, after].map(accountRowBytes) };
       };
-      await room(-1);
-      const refused = await beginPublish(deps, USER, req);
-      expect(refused._unsafeUnwrapErr()).toMatchObject({
+      const free = await attempt();
+      expect(free.result.isOk()).toBe(true);
+      const [freeBefore, freeAfter] = free.bytes;
+      // The plan's file rows are reserved from begin on.
+      expect(freeAfter - freeBefore).toBeGreaterThan(
+        rowBytes(req.site.files) + largeRowBytes(req.snapshot.largeFiles),
+      );
+      expect((await attempt(freeAfter)).result.isOk()).toBe(true);
+
+      // Past the cap by the rows begin inserts: refused after the insert, and
+      // everything it inserted but the site discarded.
+      const late = await attempt(freeAfter - 1);
+      expect(late.result._unsafeUnwrapErr()).toMatchObject({
         status: 413,
         code: "QUOTA_EXCEEDED",
-        details: {
-          reason: "site-files",
-          quotaBytes: MAX_FILE_ROW_BYTES,
-          usedBytes: MAX_FILE_ROW_BYTES - adds + 1,
-          publishBytes: adds,
-        },
+        details: { reason: "site-files", quotaBytes: freeAfter - 1, usedBytes: freeBefore },
       });
-      // Refused before a site or a session was created.
-      expect(await deps.store.findSiteByWorkspace(USER, workspaceId(2))).toBeNull();
-      await room(0);
-      expect((await beginPublish(deps, USER, req)).isOk()).toBe(true);
+      expect(late.after).toEqual({ ...late.before, sites: late.before.sites + 1 });
+
+      // Far past it: refused before a site or a session was created.
+      const early = await attempt(freeBefore + 1000);
+      expect(early.result._unsafeUnwrapErr()).toMatchObject({
+        details: { reason: "site-files", usedBytes: freeBefore },
+      });
+      expect(await early.deps.store.findSiteByWorkspace(USER, workspaceId(2))).toBeNull();
+      expect(early.after).toEqual(early.before);
+    });
+  });
+
+  // Each loop is the cheapest way found to make one account's rows grow in
+  // one table, repeated until begin refuses. The account's estimate
+  // (accountRowBytes) stays under the cap, and on the D1 store what the
+  // tables really take stays under the estimate: no GC runs, so the bound
+  // holds however far GC is behind.
+  describe("account rows", () => {
+    const rowsOf = async (deps: TestDeps) => accountRowBytes(await deps.store.accountRows(USER));
+    const fill = async (
+      deps: TestDeps,
+      cap: number,
+      step: (i: number) => Promise<{ isErr(): boolean; _unsafeUnwrapErr(): unknown }>,
+    ) => {
+      const empty = deps.harness.tableBytes();
+      for (let i = 0; i < 1000; i++) {
+        const result = await step(i);
+        if (!result.isErr()) continue;
+        expect(result._unsafeUnwrapErr()).toMatchObject({
+          code: "QUOTA_EXCEEDED",
+          details: { reason: "site-files", quotaBytes: cap },
+        });
+        const estimate = await rowsOf(deps);
+        expect(estimate).toBeLessThanOrEqual(cap);
+        const tables = deps.harness.tableBytes();
+        // Less the empty tables' root pages.
+        if (tables !== null && empty !== null) {
+          expect(tables - empty).toBeLessThanOrEqual(estimate);
+        }
+        return i;
+      }
+      throw new Error("never refused");
+    };
+    const distinct = (tag: string, n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        path: `f/${i}.txt`,
+        sha256: hex(`${tag}-${i}`),
+        size: 1,
+      }));
+
+    it(`bounds never-uploaded objects and their session objects at ${MAX_ACCOUNT_ROW_BYTES / MiB} MiB`, async () => {
+      const deps = setup();
+      const T = deps.clock.now;
+      const begun = await fill(deps, MAX_ACCOUNT_ROW_BYTES, async (i) => {
+        // Ten sessions hold at once; then their holds end (GC never runs).
+        if (i > 0 && i % MAX_OPEN_SESSIONS_PER_ACCOUNT === 0) {
+          deps.clock.now = T + (i / MAX_OPEN_SESSIONS_PER_ACCOUNT) * (SESSION_TTL_MS + 1);
+        }
+        return begin(deps, {
+          workspace: workspaceId(i % MAX_SITES_PER_ACCOUNT),
+          files: distinct(`u${i}`, 4997),
+        });
+      });
+      expect(begun).toBeGreaterThan(2);
+    });
+
+    it("bounds committed objects and their versions' file rows", async () => {
+      const deps = setup();
+      const cap = 8 * MiB;
+      deps.caps = { accountRowBytes: cap };
+      await fill(deps, cap, async (i) => {
+        const result = await begin(deps, {
+          files: distinct(`c${i}`, 1000),
+          entries: defaultEntries(`c${i}`),
+        });
+        if (result.isErr()) return result;
+        performUploads(deps, result.value.uploads);
+        return completePublish(deps, USER, result.value.publish.id);
+      });
+    });
+
+    it("bounds the rows of sessions begun and aborted", async () => {
+      const deps = setup();
+      const cap = 64 * 1024;
+      deps.caps = { accountRowBytes: cap };
+      await publish(deps);
+      const aborted = await fill(deps, cap, async () => {
+        // Nothing to upload: abort releases the session at once.
+        const result = await begin(deps);
+        if (result.isErr()) return result;
+        return abortPublish(deps, USER, result.value.publish.id);
+      });
+      expect(aborted).toBeGreaterThan(50);
+    });
+
+    it("bounds large-file rows, a thousand long paths naming one blob per version", async () => {
+      const deps = setup();
+      const largeFiles = Array.from({ length: 1000 }, (_, i) => ({
+        path: `${Array(4).fill("d".repeat(250)).join("/")}/${String(i).padStart(4, "0")}.bin`,
+        sha256: hex("one-blob"),
+        size: MiB,
+      }));
+      await fill(deps, MAX_ACCOUNT_ROW_BYTES, async (i) => {
+        const result = await begin(deps, { workspace: workspaceId(i), largeFiles });
+        if (result.isErr()) return result;
+        performUploads(deps, result.value.uploads);
+        return completePublish(deps, USER, result.value.publish.id);
+      });
     });
   });
 

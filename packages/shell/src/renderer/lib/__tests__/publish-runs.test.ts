@@ -616,6 +616,97 @@ describe("a publish that may still finish is finished in the background", () => 
     expect(runOf("A")?.phase).toBe("publishing");
   });
 
+  // The earlier session's answer comes while a newer run is up: held, not lost.
+  const completed = () =>
+    ok({ status: "completed" as const, resultVersion: 2, live: true, site: site("A", 2) });
+
+  test("an answer behind a newer run's failure panel shows once that panel closes", async () => {
+    await failUnknown();
+    dismissPublishRun("A");
+    const again = startPublish(queryClient, "A");
+    push("A", { type: "step", step: "building" });
+    push("A", fail("BUILD_FAILED"));
+    expect(await again).toBe("failed");
+
+    mockSession.mockResolvedValueOnce(completed());
+    await vi.advanceTimersByTimeAsync(FOLLOW_DELAYS_MS[0]!);
+    expect(mockSession).toHaveBeenCalledTimes(1);
+    // The newer failure stays up; the site's status is already the live one.
+    expect(runOf("A")).toMatchObject({ phase: "failed", error: { code: "BUILD_FAILED" } });
+    expect(queryClient.getQueryData(queryKeys.publish.status("A"))).toEqual(site("A", 2));
+
+    dismissPublishRun("A");
+    expect(runOf("A")).toMatchObject({ phase: "published", url: "https://A.example.test", result: null });
+    dismissPublishRun("A");
+    expect(runOf("A")).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(FOLLOW_MAX_MS);
+    expect(mockSession).toHaveBeenCalledTimes(1);
+    expect(runOf("A")).toBeUndefined();
+  });
+
+  test("an answer that comes mid-run shows once that run is cancelled", async () => {
+    await failUnknown();
+    dismissPublishRun("A");
+    const again = startPublish(queryClient, "A");
+    push("A", { type: "step", step: "checking" });
+    mockSession.mockResolvedValueOnce(completed());
+    await vi.advanceTimersByTimeAsync(FOLLOW_DELAYS_MS[0]!);
+    expect(runOf("A")?.phase).toBe("publishing");
+    expect(queryClient.getQueryData(queryKeys.publish.status("A"))).toEqual(site("A", 2));
+
+    push("A", fail("CANCELLED"));
+    expect(await again).toBe("cancelled");
+    expect(runOf("A")).toMatchObject({ phase: "published", url: "https://A.example.test", result: null });
+  });
+
+  test("an answer that comes mid-run shows after that run fails and its panel closes", async () => {
+    await failUnknown();
+    const again = startPublish(queryClient, "A");
+    mockSession.mockResolvedValueOnce(
+      ok({ status: "expired", resultVersion: null, live: false, site: site("A", 1) }),
+    );
+    await vi.advanceTimersByTimeAsync(FOLLOW_DELAYS_MS[0]!);
+    push("A", fail("WORKSPACE_BUSY"));
+    expect(await again).toBe("failed");
+    expect(runOf("A")).toMatchObject({ phase: "failed", error: { code: "WORKSPACE_BUSY" } });
+
+    dismissPublishRun("A");
+    expect(runOf("A")).toMatchObject({
+      phase: "failed",
+      error: { code: "PUBLISH_OUTCOME_UNKNOWN" },
+      check: "ended",
+    });
+  });
+
+  test("closing a panel to publish again keeps the answer for how that run ends", async () => {
+    await failUnknown();
+    const first = startPublish(queryClient, "A");
+    mockSession.mockResolvedValueOnce(completed());
+    await vi.advanceTimersByTimeAsync(FOLLOW_DELAYS_MS[0]!);
+    push("A", fail("SERVER_UNREACHABLE"));
+    await first;
+
+    // The Publish button closes the panel and starts again.
+    dismissPublishRun("A", { republishing: true });
+    expect(runOf("A")).toBeUndefined();
+    const second = startPublish(queryClient, "A");
+    push("A", fail("CANCELLED"));
+    expect(await second).toBe("cancelled");
+    expect(runOf("A")).toMatchObject({ phase: "published", result: null });
+  });
+
+  test("a held answer is dropped once a newer run begins its own session", async () => {
+    await failUnknown();
+    const again = startPublish(queryClient, "A");
+    mockSession.mockResolvedValueOnce(completed());
+    await vi.advanceTimersByTimeAsync(FOLLOW_DELAYS_MS[0]!);
+    push("A", { type: "step", step: "uploading" });
+    push("A", fail("UPLOAD_FAILED"));
+    expect(await again).toBe("failed");
+    dismissPublishRun("A");
+    expect(runOf("A")).toBeUndefined();
+  });
+
   test("other failures are not followed", async () => {
     const a = startPublish(queryClient, "A");
     push("A", fail("BUILD_FAILED"));

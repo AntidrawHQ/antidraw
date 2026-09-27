@@ -326,6 +326,89 @@ describe.each(harnesses)("gc (%s)", (_name, makeHarness) => {
     expect(await deps.store.getSession(kept.publish.id)).toBeNull();
   });
 
+  it("never deletes the pointer of a site whose first publish commits while GC is on its way", async () => {
+    const deps = setup();
+    const T = deps.clock.now;
+    const first = await begin(deps);
+    const slug = first.publish.slug;
+    // A week on, the site never committed: this run lists it as abandoned.
+    // Before GC reaches it, a publish of the workspace commits v1.
+    const list = deps.store.abandonedSites;
+    deps.store.abandonedSites = async (...args) => {
+      const sites = await list(...args);
+      expect(sites.map((s) => s.slug)).toEqual([slug]);
+      await publish(deps);
+      return sites;
+    };
+    deps.clock.now = T + 8 * DAY;
+    const report = await runGc(deps.gc, new Date(deps.clock.now));
+    deps.store.abandonedSites = list;
+    expect(report).toMatchObject({ deletedAbandonedSites: 0, skippedSites: 1 });
+    expect(pointerOf(deps, slug)?.version).toBe(1);
+    expect(await deps.store.findSiteBySlug(slug)).toMatchObject({
+      headVersion: 1,
+      pointerVersion: 1,
+      completeLock: null,
+    });
+  });
+
+  it("keeps a site with sessions left until they are forgotten, so its delete cascades to nothing", async () => {
+    const deps = setup();
+    const T = deps.clock.now;
+    const never = await begin(deps);
+    // The session outlives the site's abandonment age: retiring it is behind.
+    deps.gc.limits = { sessionStatementsPerRun: 0 };
+    expect(await gcAt(deps, T + 8 * DAY)).toMatchObject({ deletedAbandonedSites: 0 });
+    expect(await deps.store.findSiteById(never.publish.siteId)).not.toBeNull();
+    deps.gc.limits = {};
+    expect(await gcAt(deps, T + 8 * DAY + HOUR)).toMatchObject({
+      deletedSessions: 1,
+      deletedAbandonedSites: 1,
+    });
+  });
+
+  it("retires sessions a bounded number of session objects per statement", async () => {
+    const deps = setup();
+    const T = deps.clock.now;
+    const files = Array.from({ length: 7 }, (_, i) => ({ path: `f${i}.js` }));
+    const a = await begin(deps, { files });
+    const b = await begin(deps, { workspace: workspaceId(2), files });
+    // 12 session objects each; 5 per statement, 2 statements a run.
+    deps.gc.limits = { sessionObjectsPerStatement: 5, sessionStatementsPerRun: 2 };
+    const first = await gcAt(deps, T + SESSION_TTL_MS + HOUR);
+    expect(first).toMatchObject({ retiredSessions: 0 });
+    expect(first.backlog).toContain("retire-sessions");
+    expect(await deps.harness.sessionObjectRows(a.publish.id)).toBe(2);
+    expect(await deps.harness.sessionObjectRows(b.publish.id)).toBe(12);
+    const second = await gcAt(deps, T + SESSION_TTL_MS + 2 * HOUR);
+    expect(second).toMatchObject({ retiredSessions: 1 });
+    const third = await gcAt(deps, T + SESSION_TTL_MS + 3 * HOUR);
+    expect(third).toMatchObject({ retiredSessions: 1 });
+    expect(third.backlog).not.toContain("retire-sessions");
+    for (const id of [a.publish.id, b.publish.id]) {
+      expect(await deps.store.getSession(id)).toMatchObject({ holdUntil: 0, plan: PLAN_STUB });
+    }
+  });
+
+  it("claims a run's objects in several bounded claims", async () => {
+    const deps = setup();
+    const T = deps.clock.now;
+    await begin(deps);
+    deps.gc.limits = { objectsPerRun: 5, objectsPerClaim: 2 };
+    const claims: number[] = [];
+    const claim = deps.store.claimGcObjects;
+    deps.store.claimGcObjects = async (opts) => {
+      claims.push(opts.limit);
+      return claim(opts);
+    };
+    const first = await gcAt(deps, T + SESSION_TTL_MS + HOUR);
+    expect(first).toMatchObject({ deletedObjects: 5, backlog: ["objects"] });
+    expect(claims).toEqual([2, 2, 1]);
+    const second = await gcAt(deps, T + SESSION_TTL_MS + 2 * HOUR);
+    deps.store.claimGcObjects = claim;
+    expect(second).toMatchObject({ deletedObjects: PLAN_OBJECTS - 5, backlog: [] });
+  });
+
   it("does not stop at a failing step", async () => {
     const deps = setup();
     await begin(deps);

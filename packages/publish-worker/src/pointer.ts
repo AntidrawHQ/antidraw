@@ -81,10 +81,15 @@ export const entryFor = (
 // written, which stands in for every file's modification date (a file of the
 // site cannot have changed since the pointer that serves it was written).
 export type LoadedPointer = { pointer: Pointer | null; written: Date | null };
-
-type Cached = LoadedPointer & {
-  etag: string | null;
+// A site's cached pointer.
+type Cached = {
+  pointer: Pointer;
+  written: Date;
+  etag: string;
+  // When R2 was last asked, and when it last answered: they differ while a
+  // stale copy is served (MAX_STALE_MS).
   checkedAt: number;
+  confirmedAt: number;
   // What the parsed pointer is estimated to take of the heap.
   heap: number;
 };
@@ -98,6 +103,12 @@ export const REVALIDATE_MS = 5_000;
 // has. The floor bounds what a stream of real 404s costs: at most one
 // conditional get per site per isolate this often, however many there are.
 export const MISS_REVALIDATE_MS = 500;
+// When asking R2 fails (R2 unavailable, the loads in flight at their memory
+// budget, a new pointer that cannot be read), a site that is cached goes on
+// being served as it was, and R2 is asked again a revalidation window later:
+// a few seconds' more staleness rather than a 503. Only for this long after R2
+// last answered for it; past that, the failure is the response.
+export const MAX_STALE_MS = 60_000;
 
 // Memory. An isolate has 128 MB, shared by every request it serves, for any
 // site. The server keeps a pointer under 2 MB (MAX_POINTER_BYTES in
@@ -108,46 +119,100 @@ export const MAX_POINTER_BYTES = 2_500_000;
 // of 2 MB held 61 MB), so the cache is charged 2.5 bytes per character.
 export const cachedHeapOf = (text: string) => Math.ceil(text.length * 2.5);
 export const MAX_CACHED_HEAP = 32 * 1024 * 1024;
-const MAX_CACHED_SITES = 1_000;
+export const MAX_CACHED_SITES = 1_000;
+// One owner's sites share at most this much of the cache (two pointers of the
+// largest size), so one account's large pointers cannot push every other
+// site out: past it, that owner's least recently used site goes first.
+export const MAX_OWNER_CACHED_HEAP = 12 * 1024 * 1024;
+// Slugs with no pointer are remembered apart, in an LRU of their own, so a
+// stream of requests for made-up slugs never pushes a real site out.
+export const MAX_ABSENT_SITES = 1_000;
 // A load holds the text and the parsed pointer at once, before the cache
 // evicts anything: charged 4 bytes per byte of the object, from its size and
 // before its body is read. Loads of different sites run in parallel; past
-// this many bytes between them a load is refused (a 503 the client retries)
-// rather than risk the isolate. A single pointer of the largest size fits
-// twice over.
+// this many bytes between them a load is refused (a 503 the client retries,
+// or the stale copy, see MAX_STALE_MS) rather than risk the isolate. A single
+// pointer of the largest size fits twice over.
 export const loadingHeapOf = (size: number) => size * 4;
 export const MAX_LOADING_HEAP = 24 * 1024 * 1024;
+// One owner's loads share at most half of that (one of the largest size), so
+// loads for one account's sites leave room for everyone else's. The owner of a
+// slug is known once its pointer has been read in this isolate (a site read
+// for the first time is charged to the whole budget only).
+export const MAX_OWNER_LOADING_HEAP = MAX_LOADING_HEAP / 2;
+// How many slugs' owners are remembered, cached or not, for that charge.
+const MAX_KNOWN_OWNERS = 10_000;
 
 export class MalformedPointerError extends Error {}
 // The loads in flight hold as much memory as they may: try again shortly.
 export class PointerBusyError extends Error {}
 
+// Adds `amount` (negative to take away) to `key`'s tally, dropping it at 0.
+const tally = (totals: Map<string, number>, key: string, amount: number) => {
+  const total = (totals.get(key) ?? 0) + amount;
+  if (total > 0) totals.set(key, total);
+  else totals.delete(key);
+};
+
+// Makes `key` the most recently used of an LRU map (a Map iterates in
+// insertion order), and drops its oldest keys past `max`.
+const touch = <V>(map: Map<string, V>, key: string, value: V, max: number) => {
+  map.delete(key);
+  map.set(key, value);
+  for (const oldest of map.keys()) {
+    if (map.size <= max) break;
+    map.delete(oldest);
+  }
+};
+
 // A per-isolate cache of pointers, keyed by slug. At most one R2 read per slug
 // is in flight: requests that arrive while one is revalidating wait for it.
 export const createPointerCache = (now: () => number = Date.now) => {
   const cache = new Map<string, Cached>();
-  const inflight = new Map<string, Promise<Cached>>();
+  // Slugs with no pointer, by when R2 said so.
+  const absent = new Map<string, number>();
+  const owners = new Map<string, string>();
+  const inflight = new Map<string, Promise<LoadedPointer>>();
   let cachedHeap = 0;
+  const ownerHeap = new Map<string, number>();
   let loadingHeap = 0;
+  const ownerLoading = new Map<string, number>();
+
+  const drop = (slug: string) => {
+    const entry = cache.get(slug);
+    if (!entry) return;
+    cache.delete(slug);
+    cachedHeap -= entry.heap;
+    tally(ownerHeap, entry.pointer.u, -entry.heap);
+  };
 
   const store = (slug: string, entry: Cached) => {
-    const previous = cache.get(slug);
-    if (previous) {
-      cachedHeap -= previous.heap;
-      cache.delete(slug);
-    }
+    drop(slug);
+    absent.delete(slug);
     cache.set(slug, entry);
     cachedHeap += entry.heap;
+    const owner = entry.pointer.u;
+    tally(ownerHeap, owner, entry.heap);
+    touch(owners, slug, owner, MAX_KNOWN_OWNERS);
     // Oldest first: a Map iterates in insertion order, and a hit re-inserts.
+    // The owner's own sites first, down to its share; then anyone's.
     for (const [key, old] of cache) {
+      if ((ownerHeap.get(owner) ?? 0) <= MAX_OWNER_CACHED_HEAP) break;
+      if (key !== slug && old.pointer.u === owner) drop(key);
+    }
+    for (const key of cache.keys()) {
       if (cachedHeap <= MAX_CACHED_HEAP && cache.size <= MAX_CACHED_SITES) break;
-      if (key === slug) continue;
-      cache.delete(key);
-      cachedHeap -= old.heap;
+      if (key !== slug) drop(key);
     }
   };
 
-  // Reads and parses a pointer's body, within the loading budget.
+  const storeAbsent = (slug: string) => {
+    drop(slug);
+    touch(absent, slug, now(), MAX_ABSENT_SITES);
+  };
+
+  // Reads and parses a pointer's body, within the loading budget, and within
+  // its owner's share of it when the owner is known.
   const read = async (slug: string, object: R2ObjectBody) => {
     const discard = () => object.body.cancel().catch(() => {});
     if (object.size > MAX_POINTER_BYTES) {
@@ -155,11 +220,16 @@ export const createPointerCache = (now: () => number = Date.now) => {
       throw new MalformedPointerError(`pointer of ${slug} is ${object.size} bytes`);
     }
     const reserved = loadingHeapOf(object.size);
-    if (loadingHeap + reserved > MAX_LOADING_HEAP) {
+    const owner = owners.get(slug);
+    if (
+      loadingHeap + reserved > MAX_LOADING_HEAP ||
+      (owner !== undefined && (ownerLoading.get(owner) ?? 0) + reserved > MAX_OWNER_LOADING_HEAP)
+    ) {
       await discard();
       throw new PointerBusyError(`pointer loads are at their memory budget (${slug})`);
     }
     loadingHeap += reserved;
+    if (owner !== undefined) tally(ownerLoading, owner, reserved);
     try {
       const text = await object.text();
       const pointer = parsePointer(text);
@@ -167,29 +237,50 @@ export const createPointerCache = (now: () => number = Date.now) => {
       return { pointer, heap: cachedHeapOf(text) };
     } finally {
       loadingHeap -= reserved;
+      if (owner !== undefined) tally(ownerLoading, owner, -reserved);
     }
   };
 
-  const refresh = async (bucket: R2Bucket, slug: string, cached: Cached | undefined) => {
-    const etag = cached?.pointer ? cached.etag : null;
+  const ask = async (bucket: R2Bucket, slug: string, cached: Cached | undefined) => {
     const object = await bucket.get(
       pointerKey(slug),
-      etag ? { onlyIf: { etagDoesNotMatch: etag } } : undefined,
+      cached ? { onlyIf: { etagDoesNotMatch: cached.etag } } : undefined,
     );
-    let entry: Cached;
     if (object === null) {
-      // No pointer: the site does not exist (or no longer does). Cached too,
-      // so a stream of requests for a missing site does not each read R2.
-      entry = { pointer: null, written: null, etag: null, checkedAt: now(), heap: 0 };
-    } else if (!("body" in object)) {
+      // No pointer: the site does not exist (or no longer does). Remembered
+      // too, so a stream of requests for a missing site does not each read R2.
+      storeAbsent(slug);
+      return { pointer: null, written: null };
+    }
+    const checkedAt = now();
+    let entry: Cached;
+    if (!("body" in object)) {
       // Unchanged since the cached copy.
-      entry = { ...cached!, checkedAt: now() };
+      entry = { ...cached!, checkedAt, confirmedAt: checkedAt };
     } else {
       const { pointer, heap } = await read(slug, object);
-      entry = { pointer, written: object.uploaded, etag: object.etag, checkedAt: now(), heap };
+      entry = { pointer, written: object.uploaded, etag: object.etag, checkedAt, confirmedAt: checkedAt, heap };
     }
     store(slug, entry);
     return entry;
+  };
+
+  const refresh = async (
+    bucket: R2Bucket,
+    slug: string,
+    cached: Cached | undefined,
+  ): Promise<LoadedPointer> => {
+    try {
+      return await ask(bucket, slug, cached);
+    } catch (e) {
+      // The cached copy, while R2 answered for it recently enough; asked
+      // again a revalidation window from now.
+      if (!cached || now() - cached.confirmedAt >= MAX_STALE_MS) throw e;
+      console.warn(`serving the cached pointer of ${slug}:`, e);
+      const entry = { ...cached, checkedAt: now() };
+      if (cache.get(slug) === cached) store(slug, entry);
+      return entry;
+    }
   };
 
   // `maxAgeMs`: how long ago the cached copy may have been checked to be
@@ -207,6 +298,11 @@ export const createPointerCache = (now: () => number = Date.now) => {
       cache.set(slug, cached);
       return cached;
     }
+    const absentAt = absent.get(slug);
+    if (absentAt !== undefined && now() - absentAt < maxAgeMs) {
+      touch(absent, slug, absentAt, MAX_ABSENT_SITES);
+      return { pointer: null, written: null };
+    }
     let pending = inflight.get(slug);
     if (!pending) {
       pending = refresh(bucket, slug, cached).finally(() => inflight.delete(slug));
@@ -217,8 +313,11 @@ export const createPointerCache = (now: () => number = Date.now) => {
 
   return {
     load,
+    // Sites cached with a pointer, and slugs remembered as having none.
     size: () => cache.size,
+    absent: () => absent.size,
     cachedHeap: () => cachedHeap,
+    ownerHeap: (owner: string) => ownerHeap.get(owner) ?? 0,
     loadingHeap: () => loadingHeap,
   };
 };
