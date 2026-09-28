@@ -53,6 +53,8 @@ export async function handleUpload(
 
 export function errorResponse(err: unknown): Response {
   if (!(err instanceof SiteUploadError)) {
+    // The client only sees "Internal error", so the cause has to reach the logs.
+    console.error(err);
     return json(500, { error: { code: "INTERNAL", message: "Internal error" } } satisfies ErrorBody);
   }
   const body: ErrorBody = { error: { code: err.code, message: err.message } };

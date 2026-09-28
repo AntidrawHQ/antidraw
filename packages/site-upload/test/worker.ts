@@ -1,6 +1,6 @@
 // A Worker wiring the server half the way a real deployment would, for the
-// end-to-end tests. Bundled with esbuild for a neutral platform, so any Node
-// import in src/server fails the bundle.
+// end-to-end tests. Wrangler's test harness bundles and runs it (see
+// startTestWorker in helpers.ts), as a deploy would.
 import { handleUpload, SiteServer, SiteStore, type Bucket, type FileCache } from "../src/server";
 
 type Env = { BUCKET: Bucket };
