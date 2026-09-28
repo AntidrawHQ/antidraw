@@ -3,6 +3,8 @@
 
 # Signs session tokens — generate with: openssl rand -base64 32
 BETTER_AUTH_SECRET=""
-BETTER_AUTH_URL="http://localhost:8787"
+BETTER_AUTH_URL="http://localhost:8799"
+# A Google OAuth "Web application" client whose authorized redirect URIs include
+# http://localhost:8799/api/auth/callback/google (see README → Auth).
 GOOGLE_CLIENT_ID=""
 GOOGLE_CLIENT_SECRET=""

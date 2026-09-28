@@ -3,11 +3,16 @@
   "name": "antidraw-server",
   "main": "src/index.ts",
   "compatibility_date": "2026-06-27",
-  // nodejs_compat is required by better-auth (node crypto) — added now so the
-  // auth wiring in the next step drops in without a config change.
+  // nodejs_compat is required by better-auth (AsyncLocalStorage, node crypto).
   "compatibility_flags": ["nodejs_compat"],
   "observability": {
     "enabled": true
+  },
+  // Pinned so `npm run dev` matches BETTER_AUTH_URL and the Google OAuth
+  // client's redirect URI (http://localhost:8799/api/auth/callback/google),
+  // and stays clear of wrangler's default 8787 used by other Workers.
+  "dev": {
+    "port": 8799
   },
   "d1_databases": [
     {

@@ -18,6 +18,15 @@ describe("antidraw-server", () => {
     });
   });
 
+  it("GET /api/me without a session is 401 in the error envelope", async () => {
+    const res = await app.request("/api/me");
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({
+      error: { code: "UNAUTHORIZED", message: "Sign in required" },
+    });
+  });
+
   it("answers unknown routes with the JSON error envelope", async () => {
     const res = await app.request("/api/nope");
 
