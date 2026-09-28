@@ -1,0 +1,52 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "antidraw-sites",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "observability": {
+    "enabled": true
+  },
+  // The same database and bucket as @antidraw/server, which owns the schema
+  // (its migrations are applied from there) and writes both; this Worker only
+  // reads them.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "antidraw",
+      // The id in packages/server/wrangler.jsonc.
+      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      "migrations_dir": "../server/src/db/migrations"
+    }
+  ],
+  "r2_buckets": [{ "binding": "SITES", "bucket_name": "antidraw-sites" }],
+  "vars": {
+    // Sites are served at <slug>.<SITE_DOMAIN>: a domain of their own, apart
+    // from antidraw.com, so published code never shares an origin or cookies
+    // with the product.
+    "SITE_DOMAIN": "antidraw.app"
+  },
+  "routes": [
+    // Every first-level subdomain; the zone needs a proxied wildcard DNS record
+    // (* AAAA 100::) for requests to reach the route.
+    { "pattern": "*.antidraw.app/*", "zone_name": "antidraw.app" }
+  ],
+  "env": {
+    // `npm run dev`: sites at <slug>.localhost:8787, which browsers resolve to
+    // this machine. No routes: with one, wrangler dev rewrites every request's
+    // host to the route's zone and the slug is lost. State is persisted with
+    // the server's `wrangler dev`, so sites published to it are served here.
+    "dev": {
+      "routes": [],
+      "vars": { "SITE_DOMAIN": "localhost" },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "antidraw",
+          "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+          "migrations_dir": "../server/src/db/migrations"
+        }
+      ],
+      "r2_buckets": [{ "binding": "SITES", "bucket_name": "antidraw-sites" }]
+    }
+  }
+}
