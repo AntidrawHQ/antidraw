@@ -6,6 +6,12 @@
   "observability": {
     "enabled": true
   },
+  // Pinned beside the server's (8799): sites at <slug>.localhost:8787, and an
+  // inspector port of its own so both run at once.
+  "dev": {
+    "port": 8787,
+    "inspector_port": 9230
+  },
   // The same database and bucket as @antidraw/server, which owns the schema
   // (its migrations are applied from there) and writes both; this Worker only
   // reads them.

@@ -6,7 +6,7 @@
   "description": "Serves published sites at <slug>.antidraw.app from R2, through @antidraw/site-upload's SiteServer.",
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev --env dev",
+    "dev": "wrangler dev --env dev --persist-to ../server/.wrangler/state",
     "deploy": "wrangler deploy --env=\"\"",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
