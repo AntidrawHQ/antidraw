@@ -32,7 +32,13 @@ export const isUsableSlug = (slug: string) =>
  * nothing slugify can spell (emoji, or a script it can't transliterate).
  */
 export function* slugCandidates(title: string, attempts = 5): Generator<string> {
-  const base = slugify(title).slice(0, MAX_BASE).replace(/-+$/, "");
+  const full = slugify(title);
+  let base = full.slice(0, MAX_BASE);
+  // Cut a long title at a word boundary, not mid-word, when there is one.
+  if (full.length > MAX_BASE && full[MAX_BASE] !== "-" && base.includes("-")) {
+    base = base.slice(0, base.lastIndexOf("-"));
+  }
+  base = base.replace(/-+$/, "");
   if (isUsableSlug(base)) yield base;
   for (let i = 0; i < attempts; i++) {
     const suffix = generateRandomString(SUFFIX_LENGTH, "a-z", "0-9");
