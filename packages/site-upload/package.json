@@ -1,0 +1,28 @@
+{
+  "name": "@antidraw/site-upload",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "description": "Content-addressed static-site uploads to R2: a Node client that hashes a build folder and uploads only what changed, and a Worker-side store that verifies, commits atomically, cleans up and serves.",
+  "type": "module",
+  "exports": {
+    "./protocol": "./src/protocol/index.ts",
+    "./client": "./src/client/index.ts",
+    "./server": "./src/server/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.17",
+    "fast-check": "^4.10.2",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.5",
+    "wrangler": "^4.142.0"
+  },
+  "dependencies": {
+    "mime": "^4.1.0"
+  }
+}
