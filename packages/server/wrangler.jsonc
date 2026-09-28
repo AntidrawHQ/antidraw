@@ -22,5 +22,21 @@
       "database_id": "REPLACE_WITH_D1_DATABASE_ID",
       "migrations_dir": "src/db/migrations"
     }
-  ]
+  ],
+  "r2_buckets": [
+    // Published sites' files, under sites/<site id>/ (@antidraw/site-upload).
+    // The site-serving Worker binds the same bucket.
+    { "binding": "SITES", "bucket_name": "antidraw-sites" }
+  ],
+  "vars": {
+    // A published site's URL; * is its slug. Sites live on their own domain,
+    // apart from antidraw.com, so their code never shares an origin or cookies
+    // with the product. Overridden in .dev.vars for local development.
+    "SITE_URL_PATTERN": "https://*.antidraw.app"
+  },
+  "triggers": {
+    // Hourly: clears the uploads of publishes that were started and never
+    // committed (see cleanUpAbandoned in services/site.service.ts).
+    "crons": ["17 * * * *"]
+  }
 }

@@ -17,8 +17,10 @@
     "auth:generate": "auth generate --config src/lib/auth.ts --output src/models/auth.model.ts --adapter drizzle --dialect sqlite --yes"
   },
   "dependencies": {
+    "@antidraw/site-upload": "^0.0.0",
     "@better-auth/drizzle-adapter": "^1.7.6",
     "@hono/zod-validator": "^0.7.6",
+    "@sindresorhus/slugify": "^3.0.1",
     "better-auth": "^1.7.6",
     "drizzle-orm": "^0.45.3",
     "hono": "^4.11.1",

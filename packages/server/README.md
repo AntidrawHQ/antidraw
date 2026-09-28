@@ -58,6 +58,10 @@ npm test             # vitest
 npm run typecheck
 ```
 
+Tests that need storage run the real Worker in workerd with local D1 and R2
+(`src/test/harness.ts`, Wrangler's test harness); the rest call the Hono app
+directly.
+
 `GET /api/health` → `{ "status": "ok", "service": "antidraw-server" }`.
 
 For local secrets, copy `.dev.vars.example` to `.dev.vars` (gitignored).
@@ -138,6 +142,16 @@ of type **Web application** with these authorized redirect URIs:
 Put its ID and secret in `.dev.vars` locally (see `.dev.vars.example`). While
 the consent screen is in "Testing", only its listed test users can sign in.
 
+## Publishing
+
+Signed-in users publish static sites, served at `<slug>.antidraw.app` by a
+separate Worker. The routes are in `src/controllers/site.controller.ts`, and
+the upload protocol, storage and serving are `@antidraw/site-upload`'s. D1
+holds each site's owner, slug and lock (`src/models/site.model.ts`); R2 holds
+the files, keyed by the site's permanent id, never its slug. The routes take
+only a bearer token, never a cookie. An hourly cron clears the uploads of
+publishes that were started and never committed.
+
 ## Deploy (needs a Cloudflare login)
 
 ```sh
@@ -147,8 +161,9 @@ npx wrangler login
 #    wrangler.jsonc (d1_databases[0].database_id).
 npx wrangler d1 create antidraw
 
-# 2. Apply migrations.
+# 2. Apply migrations, and create the bucket for published sites.
 npm run db:migrate            # remote D1
+npx wrangler r2 bucket create antidraw-sites
 
 # 3. Set production secrets.
 npx wrangler secret put BETTER_AUTH_SECRET
