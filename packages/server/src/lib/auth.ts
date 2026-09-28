@@ -22,6 +22,13 @@ for (const name of [
 if (typeof env.BETTER_AUTH_SECRET === "string" && env.BETTER_AUTH_SECRET.length < 32) {
   throw new Error("BETTER_AUTH_SECRET must be at least 32 characters");
 }
+// better-auth signs with BETTER_AUTH_SECRETS (its key-rotation list) over the
+// secret passed below whenever that is set, reading it from process.env, and
+// only warns about a short key. Refuse it until rotation is set up here.
+const rotation: unknown = (env as unknown as Record<string, unknown>).BETTER_AUTH_SECRETS;
+if (typeof rotation === "string" && rotation !== "") {
+  throw new Error("BETTER_AUTH_SECRETS is not supported; set BETTER_AUTH_SECRET only");
+}
 
 // One better-auth instance per isolate, built at module scope from the
 // `cloudflare:workers` env import rather than per request from `ctx.env`:
@@ -31,8 +38,8 @@ if (typeof env.BETTER_AUTH_SECRET === "string" && env.BETTER_AUTH_SECRET.length 
 // better-auth CLI load this file to generate the schema — the CLI stubs
 // `cloudflare:workers` and needs an exported instance, not a factory.
 export const auth = betterAuth({
-  // Explicit rather than read from process.env, which is only populated on
-  // Workers under some compat settings.
+  // Explicit rather than read from process.env, so the values checked above
+  // are the ones used.
   baseURL: env.BETTER_AUTH_URL,
   secret: env.BETTER_AUTH_SECRET,
   database: drizzleAdapter(getDb(env), {

@@ -147,23 +147,14 @@ export const desktopAuth = () =>
         async (ctx) => {
           const { state, error } = ctx.query;
 
-          // The browser session only carried the user from Google to here; the
-          // app gets its own at /token. Drop it before anything can bail out,
-          // so no exit from here leaves the browser signed in on the Worker's
-          // domain.
-          const session = await getSessionFromCtx(ctx);
-          if (session) {
-            await ctx.context.internalAdapter.deleteSession(session.session.token);
-            deleteSessionCookie(ctx);
-          }
-
           const flowCookie = ctx.context.createAuthCookie(FLOW_COOKIE);
           const boundState = await ctx.getSignedCookie(
             flowCookie.name,
             ctx.context.secret,
           );
           // A mismatched cookie may belong to a newer flow in another tab, so
-          // it is only cleared once it has been used.
+          // it is only cleared once it has been used. Nothing else happens
+          // before this check: the route is a GET any page can navigate to.
           if (boundState !== state) {
             return errorPage({
               status: 400,
@@ -172,6 +163,17 @@ export const desktopAuth = () =>
             });
           }
           ctx.setCookie(flowCookie.name, "", { ...flowCookie.attributes, maxAge: 0 });
+
+          // The browser session only carried the user from Google to here; the
+          // app gets its own at /token. Drop it before anything else can bail
+          // out, so no exit past the state check leaves the browser signed in
+          // on the Worker's domain. The cookie goes even when the lookup
+          // failed (better-auth reports a failed lookup as no session).
+          const session = await getSessionFromCtx(ctx);
+          if (session) {
+            await ctx.context.internalAdapter.deleteSession(session.session.token);
+          }
+          deleteSessionCookie(ctx);
 
           const flow = await takeDesktopFlow(ctx.context.internalAdapter, state);
           if (flow.isErr()) return errorPage(flow.error);
