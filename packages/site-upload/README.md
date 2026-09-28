@@ -52,7 +52,8 @@ between machines can't reorder publishes.
 `SiteServer` reads a site's `current.json` (kept in memory for 5 s, one read
 shared by concurrent requests, 32 MiB of pointers at most; a pointer is under
 4 MiB at the default limits, so at least 8 fit), maps the URL to a
-file, and answers ETag/304 and single-range requests itself. It never throws:
+file (`/a` is `a`, else `a.html`, else a redirect to `/a/` for
+`a/index.html`), and answers ETag/304 and single-range requests itself. It never throws:
 storage failures become a 503 with `retry-after`.
 
 Pass `cache: caches.default` to read file bytes through the Workers Cache API,

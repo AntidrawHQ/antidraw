@@ -343,6 +343,9 @@ function resolve(pointer: Pointer | null, path: string): Resolved {
   // for by pages opened before this version went live.
   const entry = files[path] ?? pointer.retained[path];
   if (entry) return { kind: "file", path, entry };
+  // Clean URLs, as Cloudflare's static assets serve them: /preview is preview.html.
+  const page = files[`${path}.html`];
+  if (page) return { kind: "file", path: `${path}.html`, entry: page };
   if (files[`${path}/index.html`]) return { kind: "redirect" };
   return { kind: "miss" };
 }
