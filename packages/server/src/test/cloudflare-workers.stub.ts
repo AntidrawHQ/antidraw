@@ -15,7 +15,7 @@ const unavailable = <T extends object>(name: string) =>
 export const env: Bindings = {
   DB: unavailable<D1Database>("D1"),
   SITES: unavailable<R2Bucket>("R2"),
-  SITE_URL_PATTERN: "http://*.localhost:8787",
+  SHARE_URL_PATTERN: "http://localhost:8786/s/*",
   BETTER_AUTH_SECRET: "test-secret-with-enough-entropy-0123456789abcdef",
   BETTER_AUTH_URL: "http://localhost:8799",
   GOOGLE_CLIENT_ID: "test-google-client-id",

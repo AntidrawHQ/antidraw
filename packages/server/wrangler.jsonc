@@ -29,10 +29,10 @@
     { "binding": "SITES", "bucket_name": "antidraw-sites" }
   ],
   "vars": {
-    // A published site's URL; * is its slug. Sites live on their own domain,
-    // apart from antidraw.com, so their code never shares an origin or cookies
-    // with the product. Overridden in .dev.vars for local development.
-    "SITE_URL_PATTERN": "https://*.antidraw.app"
+    // A published site's share page, * being its slug: the canvas that shows
+    // the site's components, which are served from <slug>.antidraw.app (see
+    // @antidraw/site-worker). Overridden in .dev.vars for local development.
+    "SHARE_URL_PATTERN": "https://antidraw.com/s/*"
   },
   "triggers": {
     // Hourly: clears the uploads of publishes that were started and never

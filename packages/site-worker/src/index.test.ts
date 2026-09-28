@@ -15,7 +15,7 @@ let store: SiteStore;
 beforeAll(async () => {
   harness = createTestHarness({
     root: fileURLToPath(new URL("..", import.meta.url)),
-    workers: [{ configPath: "./wrangler.jsonc", vars: { SITE_DOMAIN: "sites.test" } }],
+    workers: [{ configPath: "./wrangler.jsonc", vars: { SITE_DOMAIN: "sites.test", SHARE_URL_PATTERN: "https://share.test/s/*" } }],
   });
   await harness.listen();
   const worker = harness.getWorker<Env>();
@@ -50,9 +50,9 @@ async function publish(slug: string, contents: Record<string, string>) {
 
 /** Status, the headers worth reviewing, and the body. */
 async function get(url: string) {
-  const res = await harness.getWorker().fetch(url);
+  const res = await harness.getWorker().fetch(url, { redirect: "manual" });
   const headers = Object.fromEntries(
-    ["content-type", "cache-control", "location"].flatMap((name) => {
+    ["content-type", "cache-control", "location", "access-control-allow-origin"].flatMap((name) => {
       const value = res.headers.get(name);
       return value === null ? [] : [[name, value]];
     }),
@@ -62,9 +62,9 @@ async function get(url: string) {
 
 describe("site worker", () => {
   it("serves a published site at its slug's subdomain", async () => {
-    await publish("my-canvas", { "index.html": "<h1>hi</h1>", "app.js": "console.log(1)" });
+    await publish("my-canvas", { "preview.html": "<h1>hi</h1>", "assets/app.js": "console.log(1)" });
 
-    expect(await get("https://my-canvas.sites.test/")).toMatchInlineSnapshot(`
+    expect(await get("https://my-canvas.sites.test/preview?componentName=Card")).toMatchInlineSnapshot(`
       {
         "body": "<h1>hi</h1>",
         "headers": {
@@ -74,7 +74,7 @@ describe("site worker", () => {
         "status": 200,
       }
     `);
-    expect(await get("https://my-canvas.sites.test/app.js")).toMatchInlineSnapshot(`
+    expect(await get("https://my-canvas.sites.test/assets/app.js")).toMatchInlineSnapshot(`
       {
         "body": "console.log(1)",
         "headers": {
@@ -86,12 +86,52 @@ describe("site worker", () => {
     `);
   });
 
-  it("keeps each site to its own subdomain", async () => {
-    await publish("first", { "index.html": "first" });
-    await publish("second", { "index.html": "second" });
+  it("sends / to the site's share page", async () => {
+    await publish("shared", { "preview.html": "preview", "index.html": "never served" });
 
-    expect((await get("https://first.sites.test/")).body).toBe("first");
-    expect((await get("https://second.sites.test/")).body).toBe("second");
+    expect(await get("https://shared.sites.test/")).toMatchInlineSnapshot(`
+      {
+        "body": "",
+        "headers": {
+          "cache-control": "no-store",
+          "location": "https://share.test/s/shared",
+        },
+        "status": 302,
+      }
+    `);
+  });
+
+  it("lets any origin read canvas.json, and nothing else", async () => {
+    await publish("cors", { "preview.html": "preview", "canvas.json": '{"layouts":[]}' });
+
+    expect({
+      canvas: await get("https://cors.sites.test/canvas.json"),
+      preview: (await get("https://cors.sites.test/preview")).headers,
+    }).toMatchInlineSnapshot(`
+      {
+        "canvas": {
+          "body": "{"layouts":[]}",
+          "headers": {
+            "access-control-allow-origin": "*",
+            "cache-control": "public, max-age=0, must-revalidate",
+            "content-type": "application/json",
+          },
+          "status": 200,
+        },
+        "preview": {
+          "cache-control": "public, max-age=0, must-revalidate",
+          "content-type": "text/html; charset=utf-8",
+        },
+      }
+    `);
+  });
+
+  it("keeps each site to its own subdomain", async () => {
+    await publish("first", { "preview.html": "first" });
+    await publish("second", { "preview.html": "second" });
+
+    expect((await get("https://first.sites.test/preview")).body).toBe("first");
+    expect((await get("https://second.sites.test/preview")).body).toBe("second");
   });
 
   it("answers 404 for hosts that name no site", async () => {

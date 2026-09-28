@@ -29,7 +29,9 @@
     // Sites are served at <slug>.<SITE_DOMAIN>: a domain of their own, apart
     // from antidraw.com, so published code never shares an origin or cookies
     // with the product.
-    "SITE_DOMAIN": "antidraw.app"
+    "SITE_DOMAIN": "antidraw.app",
+    // Where / on a site sends visitors: its share page, * being its slug.
+    "SHARE_URL_PATTERN": "https://antidraw.com/s/*"
   },
   "routes": [
     // Every first-level subdomain; the zone needs a proxied wildcard DNS record
@@ -43,7 +45,8 @@
     // the server's `wrangler dev`, so sites published to it are served here.
     "dev": {
       "routes": [],
-      "vars": { "SITE_DOMAIN": "localhost" },
+      // The share page is the web canvas's dev server.
+      "vars": { "SITE_DOMAIN": "localhost", "SHARE_URL_PATTERN": "http://localhost:8786/s/*" },
       "d1_databases": [
         {
           "binding": "DB",

@@ -2,6 +2,12 @@
 // in D1, whose permanent id keys its files in R2, and SiteServer does the rest
 // (@antidraw/site-upload). @antidraw/server writes both; this Worker only reads.
 //
+// A site is a workspace's built components (preview.html and its assets) and
+// its canvas.json, not a page to visit: the canvas that shows them is the
+// share page (SHARE_URL_PATTERN, on antidraw.com), which loads canvas.json
+// from here and each component in an iframe of /preview. So / sends visitors
+// to the share page, and canvas.json may be read from any origin.
+//
 // Each site gets its own subdomain, so its own origin: one site's code cannot
 // read another's storage, and none of it runs on the product's domain
 // (antidraw.com). Cookies are the exception: until antidraw.app is on the
@@ -14,6 +20,8 @@ export interface Env {
   DB: D1Database;
   SITES: R2Bucket;
   SITE_DOMAIN: string;
+  // A site's share page, with * for its slug: https://antidraw.com/s/*
+  SHARE_URL_PATTERN: string;
 }
 
 // A slug is one DNS label. Checked only to skip the D1 read for hosts that
@@ -57,10 +65,23 @@ export default {
     const siteId = await siteIdFor(env.DB, slug, Date.now());
     if (!siteId) return notFound();
 
+    const { pathname } = new URL(request.url);
+    if (pathname === "/") {
+      // 302: where the share page lives may change.
+      return new Response(null, {
+        status: 302,
+        headers: { location: env.SHARE_URL_PATTERN.replace("*", slug), "cache-control": "no-store" },
+      });
+    }
+
     server ??= new SiteServer({
       store: new SiteStore({ bucket: env.SITES }),
       cache: (caches as unknown as { default: FileCache }).default,
     });
-    return server.fetch(request, siteId, ctx);
+    const response = await server.fetch(request, siteId, ctx);
+    // Public, and fetched without credentials, so any origin will do: the
+    // share page, and the web canvas's dev server and preview deployments.
+    if (pathname === "/canvas.json") response.headers.set("access-control-allow-origin", "*");
+    return response;
   },
 } satisfies ExportedHandler<Env>;

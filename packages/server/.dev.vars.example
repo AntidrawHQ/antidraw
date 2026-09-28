@@ -9,5 +9,5 @@ BETTER_AUTH_URL="http://localhost:8799"
 GOOGLE_CLIENT_ID=""
 GOOGLE_CLIENT_SECRET=""
 
-# Where `wrangler dev` of the site-serving Worker serves published sites.
-SITE_URL_PATTERN="http://*.localhost:8787"
+# A published site's share page: the web canvas's dev server.
+SHARE_URL_PATTERN="http://localhost:8786/s/*"

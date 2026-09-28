@@ -15,7 +15,7 @@ import {
 
 // Publishing a site (see @antidraw/site-upload for the upload protocol):
 //
-//   POST /api/sites                          { title } -> { id, slug, url }
+//   POST /api/sites                          { title } -> { id, slug, url }  (url: the share page)
 //   POST /api/sites/:id/publishes            -> { publishId, uploadUrl }
 //   POST /api/sites/:id/publishes/:pid/plan          manifest -> { missing }
 //   PUT  /api/sites/:id/publishes/:pid/files/:sha256 bytes -> { ok }
@@ -42,7 +42,7 @@ siteController.post(
     const db = getDb(ctx.env);
     return respond(
       ctx,
-      await createSite(db, ctx.get("user").id, title, ctx.env.SITE_URL_PATTERN),
+      await createSite(db, ctx.get("user").id, title, ctx.env.SHARE_URL_PATTERN),
       201,
     );
   },

@@ -101,7 +101,7 @@ describe("POST /api/sites", () => {
           "body": {
             "id": "<id1>",
             "slug": "paper-shaders",
-            "url": "https://paper-shaders.sites.test",
+            "url": "https://share.test/s/paper-shaders",
           },
           "status": 201,
         },
@@ -109,7 +109,7 @@ describe("POST /api/sites", () => {
           "body": {
             "id": "<id2>",
             "slug": "paper-shaders-<random>",
-            "url": "https://paper-shaders-<random>.sites.test",
+            "url": "https://share.test/s/paper-shaders-<random>",
           },
           "status": 201,
         },

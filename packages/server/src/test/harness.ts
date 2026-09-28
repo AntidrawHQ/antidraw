@@ -33,7 +33,7 @@ export async function startServer(): Promise<TestServer> {
           GOOGLE_CLIENT_ID: "test-google-client-id",
           GOOGLE_CLIENT_SECRET: "test-google-client-secret",
         },
-        vars: { SITE_URL_PATTERN: "https://*.sites.test" },
+        vars: { SHARE_URL_PATTERN: "https://share.test/s/*" },
       },
     ],
   });

@@ -137,15 +137,19 @@ In Google Cloud console → APIs & Services → Credentials, create an OAuth cli
 of type **Web application** with these authorized redirect URIs:
 
 - `http://localhost:8799/api/auth/callback/google` (local)
-- `https://<worker-host>/api/auth/callback/google` (production)
+- `https://api.antidraw.com/api/auth/callback/google` (production)
 
 Put its ID and secret in `.dev.vars` locally (see `.dev.vars.example`). While
 the consent screen is in "Testing", only its listed test users can sign in.
 
 ## Publishing
 
-Signed-in users publish static sites, served at `<slug>.antidraw.app` by a
-separate Worker. The routes are in `src/controllers/site.controller.ts`, and
+Signed-in users publish a workspace's built components and its `canvas.json`,
+served at `<slug>.antidraw.app` by a separate Worker (`@antidraw/site-worker`).
+People visit the site's share page, `antidraw.com/s/<slug>` (the `url`
+`POST /api/sites` returns): the canvas, which reads `canvas.json` from the site
+and shows each component in an iframe of its `/preview`. The site's own `/`
+redirects there. The routes are in `src/controllers/site.controller.ts`, and
 the upload protocol, storage and serving are `@antidraw/site-upload`'s. D1
 holds each site's owner, slug and lock (`src/models/site.model.ts`); R2 holds
 the files, keyed by the site's permanent id, never its slug. The routes take
@@ -165,15 +169,21 @@ npx wrangler d1 create antidraw
 npm run db:migrate            # remote D1
 npx wrangler r2 bucket create antidraw-sites
 
-# 3. Set production secrets.
+# 3. Serve the API at api.antidraw.com: in the dashboard, Workers & Pages →
+#    antidraw-server → Settings → Domains & Routes → add the custom domain.
+#    (Its own subdomain, not antidraw.com/api: the landing page and the share
+#    pages keep antidraw.com, and the API's auth cookies stay off them.)
+
+# 4. Set production secrets.
 npx wrangler secret put BETTER_AUTH_SECRET
 npx wrangler secret put GOOGLE_CLIENT_ID
 npx wrangler secret put GOOGLE_CLIENT_SECRET
-# Required too: an https URL here is what makes auth cookies Secure. Either a
-# secret or a plain var in wrangler.jsonc ("vars": { "BETTER_AUTH_URL": ... }).
+# Required too: https://api.antidraw.com. An https URL here is what makes auth
+# cookies Secure. Either a secret or a plain var in wrangler.jsonc
+# ("vars": { "BETTER_AUTH_URL": ... }).
 npx wrangler secret put BETTER_AUTH_URL
 
-# 4. Ship it.
+# 5. Ship it.
 npm run deploy
 ```
 

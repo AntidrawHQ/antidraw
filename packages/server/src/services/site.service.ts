@@ -16,11 +16,13 @@ const ORPHAN_GRACE_MS = 60 * 60 * 1000;
 // How long a scheduled cleanup holds a site before another may try again.
 const CLEANUP_HOLD_MS = 10 * 60 * 1000;
 
+// url is the site's share page, the address to give out; its files are
+// served from <slug>.antidraw.app, which the share page reads.
 export type CreatedSite = { id: string; slug: string; url: string };
 
 const notFound = (what: string) => apiError(404, "NOT_FOUND", `No such ${what}`);
 
-export const siteUrl = (pattern: string, slug: string) => pattern.replace("*", slug);
+export const shareUrl = (pattern: string, slug: string) => pattern.replace("*", slug);
 
 export const createSite = async (
   db: Db,
@@ -36,7 +38,7 @@ export const createSite = async (
       .values({ id, ownerId, slug, title })
       .onConflictDoNothing({ target: site.slug })
       .returning({ id: site.id });
-    if (row) return ok({ id, slug, url: siteUrl(urlPattern, slug) });
+    if (row) return ok({ id, slug, url: shareUrl(urlPattern, slug) });
   }
   // Only after several random suffixes all collided.
   return err(apiError(503, "SLUG_UNAVAILABLE", "Couldn't find a free name for the site; try again"));
