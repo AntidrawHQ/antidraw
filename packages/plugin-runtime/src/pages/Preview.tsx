@@ -1,6 +1,7 @@
 import { Component, Suspense, lazy, useEffect, useMemo, useRef } from "react"
 import type { ReactNode } from "react"
 import { useSearch } from "@tanstack/react-router"
+import { loadComponent } from "../load-component"
 
 class LoadErrorBoundary extends Component<
   { children: ReactNode; fallback: ReactNode },
@@ -68,11 +69,7 @@ export const Preview = () => {
 
   const LazyComponent = useMemo(() => {
     if (!componentName || !isPreviewableName(componentName)) return null
-    return lazy(() =>
-      import(
-        /* @vite-ignore */ `/src/components/user-components/${encodeURIComponent(componentName)}.tsx`
-      ),
-    )
+    return lazy(() => loadComponent(componentName))
   }, [componentName])
 
   if (!componentName) {
