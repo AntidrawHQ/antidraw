@@ -22,7 +22,7 @@ import { triggerClaudeLogin } from "@/renderer/lib/api";
 import { ArrowUp, ImageIcon, Paperclip, Square, X } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { retryStream } from "./lib/stream-subscription";
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import {
   useCancelStream,
   useConversationMessages,
@@ -288,14 +288,67 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry, hiddenIds, reveal
 });
 MessageList.displayName = "MessageList";
 
-type AppChatProps = React.ComponentProps<"div">;
+const fileToBase64 = (
+  file: File
+): Promise<{ data: string; mediaType: SupportedImageMediaType }> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      // A data URL is "<metadata>,<base64>". Anything without the comma is
+      // not one, and resolving with an undefined payload would put a broken
+      // image on the wire rather than failing where the mistake happened.
+      const base64 = result.split(",")[1];
+      if (base64 === undefined) {
+        reject(new Error(`Could not read ${file.name} as a data URL`));
+        return;
+      }
+      resolve({ data: base64, mediaType: file.type as SupportedImageMediaType });
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+};
 
-export function AppChat({ className, ...props }: AppChatProps) {
-  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
-  const activeConversationId = useWorkspaceStore((s) => s.activeConversationId);
-  const setActiveConversationId = useWorkspaceStore((s) => s.setActiveConversationId);
+// Module level so its identity is stable: MessageList is memoized, and a
+// callback recreated on every AppChat render would defeat that.
+const handleSignIn = () => {
+  triggerClaudeLogin();
+};
+
+type ComposerProps = {
+  composer: ReturnType<typeof useComposerModel>;
+  isStreaming: boolean;
+  streamFailed: boolean;
+  isSendPending: boolean;
+  // A workspace is open to send into.
+  canSend: boolean;
+  onSend: (
+    prompt: string,
+    images: ImageAttachment[] | undefined
+  ) => Promise<void>;
+  onStop: () => void;
+  isStopPending: boolean;
+  onReconnect: () => void;
+};
+
+// Owns the draft (text and attached images) so a keystroke re-renders only
+// this, not the transcript above it. Nothing outside needs the draft: a send
+// hands the finished prompt up through onSend.
+function Composer({
+  composer,
+  isStreaming,
+  streamFailed,
+  isSendPending,
+  canSend,
+  onSend,
+  onStop,
+  isStopPending,
+  onReconnect,
+}: ComposerProps) {
   const [input, setInput] = useState("");
   const [attachedImages, setAttachedImages] = useState<File[]>([]);
+  const isLoading = isSendPending || isStreaming;
 
   const handleFilesAdded = (files: File[]) => {
     const imageFiles = files.filter((f) =>
@@ -331,6 +384,139 @@ export function AppChat({ className, ...props }: AppChatProps) {
     return () => imageUrls.forEach((url) => URL.revokeObjectURL(url));
   }, [imageUrls]);
 
+  const handleSubmit = async () => {
+    if (!canSend || !input.trim() || isSendPending) return;
+
+    const prompt = input.trim();
+
+    let imagesToSend: ImageAttachment[] | undefined;
+    try {
+      imagesToSend =
+        attachedImages.length > 0
+          ? await Promise.all(attachedImages.map(fileToBase64))
+          : undefined;
+    } catch (err) {
+      console.error("Failed to process images:", err);
+      // TODO: show toast if toast system exists
+      alert("Failed to process attached images. Please try again.");
+      return;
+    }
+
+    setInput("");
+    setAttachedImages([]);
+
+    await onSend(prompt, imagesToSend);
+  };
+
+  return (
+    <FileUpload onFilesAdded={handleFilesAdded} accept="image/*">
+      <div className="p-4 pt-2">
+        {streamFailed && <StreamError onReconnect={onReconnect} />}
+        <PromptInput
+          value={input}
+          onValueChange={setInput}
+          isLoading={isLoading}
+          onSubmit={handleSubmit}
+          className="bg-neutral-700 border-neutral-600"
+        >
+          {attachedImages.length > 0 && (
+            <div className="flex flex-wrap gap-2 p-2 pb-0">
+              {attachedImages.map((file, index) => (
+                <div key={index} className="relative group">
+                  <img
+                    src={imageUrls[index]}
+                    alt={file.name}
+                    className="h-16 w-16 rounded-lg object-cover border border-neutral-600"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => removeImage(index)}
+                    className="absolute -top-1.5 -right-1.5 bg-neutral-600 hover:bg-neutral-500 rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+                  >
+                    <X className="size-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <PromptInputTextarea
+            placeholder="Ask me anything..."
+            className="bg-transparent dark:bg-transparent"
+            onPaste={handlePaste}
+          />
+          <PromptInputActions className="justify-between pt-2">
+            <div className="flex items-center gap-2">
+              <ModelPicker
+                models={composer.models}
+                value={composer.selectedModelId}
+                onChange={composer.handleModelChange}
+              />
+              <EffortDropdown
+                levels={composer.effortLevels}
+                value={composer.effort}
+                onChange={composer.handleEffortChange}
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <PromptInputAction tooltip="Attach image">
+                <FileUploadTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 rounded-full"
+                  >
+                    <Paperclip className="size-4" />
+                  </Button>
+                </FileUploadTrigger>
+              </PromptInputAction>
+              {isStreaming && (
+                <PromptInputAction tooltip="Stop generation">
+                  <Button
+                    variant="secondary"
+                    size="icon"
+                    className="h-8 w-8 rounded-full"
+                    onClick={onStop}
+                    disabled={isStopPending}
+                  >
+                    <Square className="size-4 fill-current" />
+                  </Button>
+                </PromptInputAction>
+              )}
+              <PromptInputAction
+                tooltip={isStreaming ? "Queue message" : "Send message"}
+              >
+                <Button
+                  variant="default"
+                  size="icon"
+                  className="h-8 w-8 rounded-full"
+                  onClick={handleSubmit}
+                  disabled={!input.trim() || isSendPending}
+                >
+                  <ArrowUp className="size-4" />
+                </Button>
+              </PromptInputAction>
+            </div>
+          </PromptInputActions>
+        </PromptInput>
+      </div>
+
+      <FileUploadContent className="border-2 border-dashed border-neutral-500">
+        <div className="flex flex-col items-center gap-2 text-neutral-300">
+          <ImageIcon className="size-12" />
+          <p className="text-lg font-medium">Drop images here</p>
+        </div>
+      </FileUploadContent>
+    </FileUpload>
+  );
+}
+
+type AppChatProps = React.ComponentProps<"div">;
+
+export function AppChat({ className, ...props }: AppChatProps) {
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
+  const activeConversationId = useWorkspaceStore((s) => s.activeConversationId);
+  const setActiveConversationId = useWorkspaceStore((s) => s.setActiveConversationId);
+
   const createConversation = useCreateConversation();
   const sendMessage = useSendMessage();
   const generateTitle = useGenerateTitle();
@@ -358,45 +544,11 @@ export function AppChat({ className, ...props }: AppChatProps) {
   const hasMessages = (conversation?.messages?.length ?? 0) > 0;
   const showEmptyState = !hasMessages && !isLoading && !isConversationLoading;
 
-  const fileToBase64 = (
-    file: File
-  ): Promise<{ data: string; mediaType: SupportedImageMediaType }> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const result = reader.result as string;
-        // A data URL is "<metadata>,<base64>". Anything without the comma is
-        // not one, and resolving with an undefined payload would put a broken
-        // image on the wire rather than failing where the mistake happened.
-        const base64 = result.split(",")[1];
-        if (base64 === undefined) {
-          reject(new Error(`Could not read ${file.name} as a data URL`));
-          return;
-        }
-        resolve({ data: base64, mediaType: file.type as SupportedImageMediaType });
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
-  };
-
-  const handleSubmit = async () => {
-    if (!activeWorkspaceId || !input.trim() || isSendPending) return;
-
-    const prompt = input.trim();
-
-    let imagesToSend: ImageAttachment[] | undefined;
-    try {
-      imagesToSend =
-        attachedImages.length > 0
-          ? await Promise.all(attachedImages.map(fileToBase64))
-          : undefined;
-    } catch (err) {
-      console.error("Failed to process images:", err);
-      // TODO: show toast if toast system exists
-      alert("Failed to process attached images. Please try again.");
-      return;
-    }
+  const handleSend = async (
+    prompt: string,
+    imagesToSend: ImageAttachment[] | undefined
+  ) => {
+    if (!activeWorkspaceId) return;
 
     // Sending while disconnected would otherwise post into a conversation
     // nothing is watching: the owner effect is keyed on the conversation, and
@@ -404,9 +556,6 @@ export function AppChat({ className, ...props }: AppChatProps) {
     if (streamFailed && activeConversationId) {
       retryStream(activeConversationId, queryClient);
     }
-
-    setInput("");
-    setAttachedImages([]);
 
     // Generate userMessageId for dedup
     const userMessageId = crypto.randomUUID();
@@ -453,16 +602,13 @@ export function AppChat({ className, ...props }: AppChatProps) {
     }
   };
 
-  const handleSignIn = () => {
-    triggerClaudeLogin();
-  };
-
   const handleReconnect = () => {
     if (!activeConversationId) return;
     retryStream(activeConversationId, queryClient);
   };
 
-  const handleRetry = async () => {
+  // Stable across keystroke-free renders so MessageList's memo holds.
+  const handleRetry = useCallback(async () => {
     if (!activeWorkspaceId || !activeConversationId || isSendPending) return;
 
     await sendMessage.mutateAsync({
@@ -475,7 +621,14 @@ export function AppChat({ className, ...props }: AppChatProps) {
       model: composer.selectedModelId,
       effort: composer.effort,
     });
-  };
+  }, [
+    activeWorkspaceId,
+    activeConversationId,
+    isSendPending,
+    sendMessage.mutateAsync,
+    composer.selectedModelId,
+    composer.effort,
+  ]);
 
   return (
     <div
@@ -509,104 +662,17 @@ export function AppChat({ className, ...props }: AppChatProps) {
         />
       )}
 
-      <FileUpload onFilesAdded={handleFilesAdded} accept="image/*">
-        <div className="p-4 pt-2">
-          {streamFailed && <StreamError onReconnect={handleReconnect} />}
-          <PromptInput
-            value={input}
-            onValueChange={setInput}
-            isLoading={isLoading}
-            onSubmit={handleSubmit}
-            className="bg-neutral-700 border-neutral-600"
-          >
-            {attachedImages.length > 0 && (
-              <div className="flex flex-wrap gap-2 p-2 pb-0">
-                {attachedImages.map((file, index) => (
-                  <div key={index} className="relative group">
-                    <img
-                      src={imageUrls[index]}
-                      alt={file.name}
-                      className="h-16 w-16 rounded-lg object-cover border border-neutral-600"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => removeImage(index)}
-                      className="absolute -top-1.5 -right-1.5 bg-neutral-600 hover:bg-neutral-500 rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
-                    >
-                      <X className="size-3" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-            <PromptInputTextarea
-              placeholder="Ask me anything..."
-              className="bg-transparent dark:bg-transparent"
-              onPaste={handlePaste}
-            />
-            <PromptInputActions className="justify-between pt-2">
-              <div className="flex items-center gap-2">
-                <ModelPicker
-                  models={composer.models}
-                  value={composer.selectedModelId}
-                  onChange={composer.handleModelChange}
-                />
-                <EffortDropdown
-                  levels={composer.effortLevels}
-                  value={composer.effort}
-                  onChange={composer.handleEffortChange}
-                />
-              </div>
-              <div className="flex items-center gap-2">
-                <PromptInputAction tooltip="Attach image">
-                  <FileUploadTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 rounded-full"
-                    >
-                      <Paperclip className="size-4" />
-                    </Button>
-                  </FileUploadTrigger>
-                </PromptInputAction>
-                {isStreaming && (
-                  <PromptInputAction tooltip="Stop generation">
-                    <Button
-                      variant="secondary"
-                      size="icon"
-                      className="h-8 w-8 rounded-full"
-                      onClick={handleStop}
-                      disabled={cancelStream.isPending}
-                    >
-                      <Square className="size-4 fill-current" />
-                    </Button>
-                  </PromptInputAction>
-                )}
-                <PromptInputAction
-                  tooltip={isStreaming ? "Queue message" : "Send message"}
-                >
-                  <Button
-                    variant="default"
-                    size="icon"
-                    className="h-8 w-8 rounded-full"
-                    onClick={handleSubmit}
-                    disabled={!input.trim() || isSendPending}
-                  >
-                    <ArrowUp className="size-4" />
-                  </Button>
-                </PromptInputAction>
-              </div>
-            </PromptInputActions>
-          </PromptInput>
-        </div>
-
-        <FileUploadContent className="border-2 border-dashed border-neutral-500">
-          <div className="flex flex-col items-center gap-2 text-neutral-300">
-            <ImageIcon className="size-12" />
-            <p className="text-lg font-medium">Drop images here</p>
-          </div>
-        </FileUploadContent>
-      </FileUpload>
+      <Composer
+        composer={composer}
+        isStreaming={isStreaming}
+        streamFailed={streamFailed}
+        isSendPending={isSendPending}
+        canSend={!!activeWorkspaceId}
+        onSend={handleSend}
+        onStop={handleStop}
+        isStopPending={cancelStream.isPending}
+        onReconnect={handleReconnect}
+      />
     </div>
   );
 }
