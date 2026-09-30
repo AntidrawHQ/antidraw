@@ -19,8 +19,10 @@
     {
       "binding": "DB",
       "database_name": "antidraw",
-      // The id in packages/server/wrangler.jsonc.
+      // The id in packages/server/wrangler.jsonc (its README, Deploy step 1).
       "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      // The server's local state, as in its wrangler.jsonc.
+      "preview_database_id": "antidraw-local",
       "migrations_dir": "../server/src/db/migrations"
     }
   ],
@@ -35,7 +37,8 @@
   },
   "routes": [
     // Every first-level subdomain; the zone needs a proxied wildcard DNS record
-    // (* AAAA 100::) for requests to reach the route.
+    // (* AAAA 100::) for requests to reach the route, and no other Worker may
+    // hold the route (see the server's README, Deploy).
     { "pattern": "*.antidraw.app/*", "zone_name": "antidraw.app" }
   ],
   "env": {
@@ -51,7 +54,9 @@
         {
           "binding": "DB",
           "database_name": "antidraw",
+          // Unused locally: preview_database_id names the local state.
           "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+          "preview_database_id": "antidraw-local",
           "migrations_dir": "../server/src/db/migrations"
         }
       ],

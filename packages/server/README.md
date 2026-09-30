@@ -158,23 +158,22 @@ leave behind: uploads never committed, and files the live version dropped.
 
 ## Deploy (needs a Cloudflare login)
 
+Two Workers: this API, and `@antidraw/site-worker`, which serves published
+sites at `<slug>.antidraw.app`. They share the D1 database and R2 bucket.
+
 ```sh
 npx wrangler login
 
 # 1. Create the D1 database, then paste the printed database_id into
-#    wrangler.jsonc (d1_databases[0].database_id).
+#    wrangler.jsonc (d1_databases[0].database_id) here and in
+#    packages/site-worker/wrangler.jsonc (the top-level one).
 npx wrangler d1 create antidraw
 
 # 2. Apply migrations, and create the bucket for published sites.
 npm run db:migrate            # remote D1
 npx wrangler r2 bucket create antidraw-sites
 
-# 3. Serve the API at api.antidraw.com: in the dashboard, Workers & Pages →
-#    antidraw-server → Settings → Domains & Routes → add the custom domain.
-#    (Its own subdomain, not antidraw.com/api: the landing page and the share
-#    pages keep antidraw.com, and the API's auth cookies stay off them.)
-
-# 4. Set production secrets.
+# 3. Set production secrets.
 npx wrangler secret put BETTER_AUTH_SECRET
 npx wrangler secret put GOOGLE_CLIENT_ID
 npx wrangler secret put GOOGLE_CLIENT_SECRET
@@ -183,8 +182,19 @@ npx wrangler secret put GOOGLE_CLIENT_SECRET
 # ("vars": { "BETTER_AUTH_URL": ... }).
 npx wrangler secret put BETTER_AUTH_URL
 
-# 5. Ship it.
-npm run deploy
+# 4. Ship the API (from the repo root).
+npm run deploy:server
+
+# 5. Serve it at api.antidraw.com: in the dashboard, Workers & Pages →
+#    antidraw-server → Settings → Domains & Routes → add the custom domain.
+#    (Its own subdomain, not antidraw.com/api: the landing page and the share
+#    pages keep antidraw.com, and the API's auth cookies stay off them.)
+
+# 6. Serve sites. In the antidraw.app zone, add a proxied DNS record
+#    `* AAAA 100::` so every subdomain reaches Cloudflare. The Worker's
+#    `*.antidraw.app/*` route must be free: if another Worker holds it, remove
+#    that route first (the deploy refuses otherwise). Then:
+npm run deploy:sites
 ```
 
 ## Next step

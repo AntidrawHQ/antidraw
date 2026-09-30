@@ -19,7 +19,12 @@
       "binding": "DB",
       "database_name": "antidraw",
       // Replace after running:  npx wrangler d1 create antidraw
+      // (and in @antidraw/site-worker's wrangler.jsonc, which shares it).
       "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      // Local state (wrangler dev, --local migrations, tests) is kept under
+      // this instead of database_id, so it doesn't move when the real id is
+      // filled in, and the site Worker's `npm run dev` finds it.
+      "preview_database_id": "antidraw-local",
       "migrations_dir": "src/db/migrations"
     }
   ],
