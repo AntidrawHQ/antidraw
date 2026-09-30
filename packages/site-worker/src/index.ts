@@ -47,25 +47,33 @@ async function siteIdFor(db: D1Database, slug: string, now: number): Promise<str
   return id;
 }
 
-const notFound = () =>
-  new Response("Site not found", {
+// canvas.json may be read from any origin (see fetch below), and that includes
+// its 404: the share page tells a slug with nothing published from a failure.
+const cors = (pathname: string, headers: Headers) => {
+  if (pathname === "/canvas.json") headers.set("access-control-allow-origin", "*");
+};
+
+const notFound = (pathname: string) => {
+  const response = new Response("Site not found", {
     status: 404,
     headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
   });
+  cors(pathname, response.headers);
+  return response;
+};
 
 // One server per isolate, so its pointer cache lasts across requests.
 let server: SiteServer | undefined;
 
 export default {
   async fetch(request, env, ctx) {
-    const host = new URL(request.url).hostname;
+    const { hostname: host, pathname } = new URL(request.url);
     const suffix = `.${env.SITE_DOMAIN}`;
     const slug = host.endsWith(suffix) ? host.slice(0, -suffix.length) : "";
-    if (!SLUG_RE.test(slug)) return notFound();
+    if (!SLUG_RE.test(slug)) return notFound(pathname);
     const siteId = await siteIdFor(env.DB, slug, Date.now());
-    if (!siteId) return notFound();
+    if (!siteId) return notFound(pathname);
 
-    const { pathname } = new URL(request.url);
     if (pathname === "/") {
       // 302: where the share page lives may change.
       return new Response(null, {
@@ -81,7 +89,7 @@ export default {
     const response = await server.fetch(request, siteId, ctx);
     // Public, and fetched without credentials, so any origin will do: the
     // share page, and the web canvas's dev server and preview deployments.
-    if (pathname === "/canvas.json") response.headers.set("access-control-allow-origin", "*");
+    cors(pathname, response.headers);
     return response;
   },
 } satisfies ExportedHandler<Env>;

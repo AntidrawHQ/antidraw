@@ -140,19 +140,21 @@ describe("site worker", () => {
       "https://sites.test/", // the bare domain
       "https://a.b.sites.test/", // nested subdomain
       "https://my-canvas.elsewhere.test/", // another domain
+      "https://nobody.sites.test/canvas.json", // readable by the share page
     ];
     const answers = await Promise.all(
       hosts.map(async (url) => {
         const { status, headers, body } = await get(url);
-        return `${status} ${headers["cache-control"]} ${body}`;
+        return `${status} ${headers["cache-control"]} ${body} ${headers["access-control-allow-origin"] ?? "-"}`;
       }),
     );
     expect(answers).toMatchInlineSnapshot(`
       [
-        "404 no-store Site not found",
-        "404 no-store Site not found",
-        "404 no-store Site not found",
-        "404 no-store Site not found",
+        "404 no-store Site not found -",
+        "404 no-store Site not found -",
+        "404 no-store Site not found -",
+        "404 no-store Site not found -",
+        "404 no-store Site not found *",
       ]
     `);
   });
