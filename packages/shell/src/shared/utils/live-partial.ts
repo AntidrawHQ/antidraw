@@ -78,6 +78,8 @@ export const materializePartial = (
     return partial;
   }
   const parsed = parsePartialJson(partial.partialJson);
-  if (parsed === null) return partial;
+  // parsePartialJson reports failure as undefined. Keep the last input that
+  // did parse rather than wiping it on a chunk that ends mid-token.
+  if (parsed === undefined) return partial;
   return { ...partial, block: { ...partial.block, input: parsed } };
 };

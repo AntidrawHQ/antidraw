@@ -1045,3 +1045,168 @@ describe("a prompt accepted from the queue", () => {
     `);
   });
 });
+
+describe("the live block's writes", () => {
+  const liveKey = (id: string) => queryKeys.conversations.livePartial(id);
+  const liveOf = (id: string) =>
+    queryClient.getQueryData<LivePartial | null>(liveKey(id));
+  const streamEvent = (event: unknown) =>
+    ({ type: "partial", partial: { event } }) as unknown as StreamEvent;
+  const start = (block: unknown) =>
+    streamEvent({ type: "content_block_start", index: 0, content_block: block });
+  const textDelta = (text: string) =>
+    streamEvent({
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "text_delta", text },
+    });
+  const jsonDelta = (partial_json: string) =>
+    streamEvent({
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "input_json_delta", partial_json },
+    });
+  const assistantRow = (seq: number) =>
+    ({
+      ...message(seq, "unused"),
+      messageType: "assistant",
+      sdkMessage: { type: "assistant", message: { content: [] } },
+    }) as unknown as Message;
+
+  // Counts cache writes to the live key: the thing a render per token costs.
+  const countWrites = (id: string) => {
+    const writes = { count: 0 };
+    queryClient.getQueryCache().subscribe((e) => {
+      if (
+        e.type === "updated" &&
+        e.action.type === "success" &&
+        JSON.stringify(e.query.queryKey) === JSON.stringify(liveKey(id))
+      )
+        writes.count++;
+    });
+    return writes;
+  };
+
+  test("a burst of deltas is one write, carrying all of them", async () => {
+    const id = freshId();
+    seedCache(queryClient, id, []);
+    const writes = countWrites(id);
+    scriptAttempts([
+      {
+        events: [
+          start({ type: "text", text: "" }),
+          ...["a", "b", "c", "d", "e"].map(textDelta),
+        ],
+        hangs: true,
+      },
+    ]);
+
+    subscribeToStream(id, queryClient);
+    await flush();
+
+    // Folded, not yet written: nothing has been asked to render.
+    expect(writes.count).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(50);
+    expect(writes.count).toBe(1);
+    expect((liveOf(id)?.block as { text?: string }).text).toBe("abcde");
+
+    releaseStream(id);
+  });
+
+  test("a persisted assistant message cancels the pending write", async () => {
+    const id = freshId();
+    seedCache(queryClient, id, []);
+    scriptAttempts([
+      {
+        events: [
+          start({ type: "text", text: "" }),
+          textDelta("partial"),
+          { type: "message", message: assistantRow(1) },
+        ],
+        hangs: true,
+      },
+    ]);
+
+    subscribeToStream(id, queryClient);
+    await flush();
+    await vi.advanceTimersByTimeAsync(50);
+
+    // A flush landing after the clear would put the finished block back.
+    expect(liveOf(id)).toBeNull();
+
+    releaseStream(id);
+  });
+
+  test("going idle cancels the pending write", async () => {
+    const id = freshId();
+    seedCache(queryClient, id, []);
+    scriptAttempts([
+      {
+        events: [
+          start({ type: "text", text: "" }),
+          textDelta("partial"),
+          { type: "state", state: "idle" } as unknown as StreamEvent,
+        ],
+        hangs: true,
+      },
+    ]);
+
+    subscribeToStream(id, queryClient);
+    await flush();
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(liveOf(id)).toBeNull();
+
+    releaseStream(id);
+  });
+
+  test("a tool input is parsed once per write, and a bad chunk keeps the last good input", async () => {
+    const id = freshId();
+    seedCache(queryClient, id, []);
+    scriptAttempts([
+      {
+        events: [
+          start({ type: "tool_use", id: "t1", name: "Write", input: {} }),
+          jsonDelta('{"file_path":"/a.ts","content":"hi'),
+        ],
+        hangs: true,
+      },
+    ]);
+    subscribeToStream(id, queryClient);
+    await flush();
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect((liveOf(id)?.block as { input?: unknown }).input).toEqual({
+      file_path: "/a.ts",
+      content: "hi",
+    });
+    releaseStream(id);
+
+    // A chunk that cannot be parsed yet must not blank what already rendered.
+    const { materializePartial } = await import("@/shared/utils/live-partial");
+    const good = liveOf(id)!;
+    const broken = { ...good, partialJson: "not json" };
+    expect(
+      (materializePartial(broken)?.block as { input?: unknown }).input,
+    ).toEqual({ file_path: "/a.ts", content: "hi" });
+  });
+
+  test("releasing drops a write that has not happened yet", async () => {
+    const id = freshId();
+    seedCache(queryClient, id, []);
+    scriptAttempts([
+      {
+        events: [start({ type: "text", text: "" }), textDelta("late")],
+        hangs: true,
+      },
+    ]);
+
+    subscribeToStream(id, queryClient);
+    await flush();
+    releaseStream(id);
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(liveOf(id)).toBeUndefined();
+  });
+});
