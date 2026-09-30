@@ -84,8 +84,7 @@ const getToolTitle = (toolPart: ToolPart): string => {
 
 type ChatMessage = ConversationWithMessages["messages"][number];
 
-// The tool_use ids a message renders, so a row can tell whether any of its
-// tools changed without comparing the whole map.
+// The tool_use ids a message renders, in the order it renders them.
 const toolUseIds = (msg: ChatMessage): string[] => {
   const sdkMessage = msg.sdkMessage;
   if (sdkMessage.type !== "user" && sdkMessage.type !== "assistant") return [];
@@ -111,9 +110,23 @@ const imageSrc = (block: Base64ImageBlock): string => {
   return src;
 };
 
+const NO_TOOLS: readonly (ToolPart | undefined)[] = [];
+
+// A row's own tools, one per tool_use block in order. Handed over instead of
+// the whole map: a memoized row keeps the props of its last real render, so
+// each row holding the map would keep every generation of it alive.
+const rowTools = (
+  msg: ChatMessage,
+  toolMap: ReadonlyMap<string, ToolPart>,
+): readonly (ToolPart | undefined)[] => {
+  const ids = toolUseIds(msg);
+  return ids.length ? ids.map((id) => toolMap.get(id)) : NO_TOOLS;
+};
+
 type MessageRowProps = {
   msg: ChatMessage;
-  toolMap: ReadonlyMap<string, ToolPart>;
+  // Parallel to the message's tool_use blocks (see rowTools).
+  tools: readonly (ToolPart | undefined)[];
   // Persisted, never acked, and no live handle holds it: the CLI never
   // received this prompt. The backend decides (see useFailedMessageIds);
   // a live queued mark wins over a list that has not been refetched.
@@ -133,11 +146,11 @@ const rowPropsEqual = (a: MessageRowProps, b: MessageRowProps): boolean =>
   a.revealed === b.revealed &&
   a.onSignIn === b.onSignIn &&
   a.onRetry === b.onRetry &&
-  (a.toolMap === b.toolMap ||
-    toolUseIds(a.msg).every((id) => a.toolMap.get(id) === b.toolMap.get(id)));
+  a.tools.length === b.tools.length &&
+  a.tools.every((tool, i) => tool === b.tools[i]);
 
 const MessageRow = memo(
-  ({ msg, toolMap, isFailed, revealed, onSignIn, onRetry }: MessageRowProps) => {
+  ({ msg, tools, isFailed, revealed, onSignIn, onRetry }: MessageRowProps) => {
     const sdkMessage = msg.sdkMessage;
     if (sdkMessage.type !== "user" && sdkMessage.type !== "assistant") {
       return null;
@@ -176,6 +189,9 @@ const MessageRow = memo(
       : blocks.some((b) => b.type === "tool_use" || b.type === "tool_result")
         ? "tool"
         : "text";
+
+    // Walks `tools` alongside the tool_use blocks below.
+    let toolIndex = 0;
 
     return (
       <Message
@@ -227,7 +243,7 @@ const MessageRow = memo(
             }
 
             if (block.type === "tool_use") {
-              const toolPart = toolMap.get(block.id);
+              const toolPart = tools[toolIndex++];
               if (toolPart) {
                 return (
                   <Tool
@@ -360,7 +376,7 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry, hiddenIds, reveal
           <MessageRow
             key={msg.id}
             msg={msg}
-            toolMap={toolMap}
+            tools={rowTools(msg, toolMap)}
             isFailed={isFailed}
             revealed={revealedIds.has(msg.id)}
             onSignIn={onSignIn}

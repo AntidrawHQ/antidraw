@@ -1171,9 +1171,13 @@ describe("the live block's writes", () => {
 
   // A stream the test feeds by hand, so deltas can land in separate frames.
   // Hangs between pushes the way a live link does, and ends on release.
+  // push resolves once every event it was given has been handled, however
+  // many ticks that takes: a fixed tick budget would quietly under-deliver.
   const liveStream = () => {
     const queue: StreamEvent[] = [];
     let wake: (() => void) | null = null;
+    let pushed = 0;
+    let handled = 0;
     mockSubscribe.mockImplementation(((
       _conversationId: string,
       _afterSeq?: number,
@@ -1184,6 +1188,9 @@ describe("the live block's writes", () => {
           const next = queue.shift();
           if (next) {
             yield next;
+            // Resumed: the loop asked for the next event, so this one's
+            // handler has run.
+            handled++;
             continue;
           }
           await new Promise<void>((resolve) => {
@@ -1196,9 +1203,12 @@ describe("the live block's writes", () => {
       })()) as typeof subscribeToConversation);
     return async (...events: StreamEvent[]) => {
       queue.push(...events);
+      pushed += events.length;
       wake?.();
       wake = null;
-      await flush();
+      for (let i = 0; i < 10_000 && handled < pushed; i++)
+        await Promise.resolve();
+      expect(handled).toBe(pushed);
     };
   };
   const inputOf = (id: string) =>
