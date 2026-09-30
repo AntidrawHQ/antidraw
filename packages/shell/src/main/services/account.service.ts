@@ -17,9 +17,13 @@ const SERVER_URL = (
   process.env.ANTIDRAW_SERVER_URL ?? "http://localhost:8799"
 ).replace(/\/$/, "");
 
-// The server only honors a flow for about this long (better-auth's OAuth state
-// cookie), so waiting on the browser any longer is pointless.
-const SIGN_IN_TIMEOUT_MS = 5 * 60 * 1000;
+// As long as the server honors a flow (FLOW_TTL_MS in packages/server's
+// auth.service.ts): waiting on the browser any longer is pointless, and giving
+// up sooner closes the loopback on a user who is still at Google.
+const SIGN_IN_TIMEOUT_MS = 10 * 60 * 1000;
+
+// How long a request to the Worker may take before it counts as unreachable.
+const REQUEST_TIMEOUT_MS = 15_000;
 
 export type Account = {
   id: string;
@@ -48,6 +52,7 @@ const accountError = (
 ): AccountError => ({ status, code, message });
 
 const SIGNED_OUT = accountError(401, "SIGNED_OUT", "Not signed in");
+const CANCELLED = accountError(409, "CANCELLED", "Sign-in was cancelled");
 const UNREACHABLE = accountError(
   502,
   "SERVER_UNREACHABLE",
@@ -77,7 +82,11 @@ const saveToken = async (value: string) => {
   token = value;
   // Without OS encryption (some Linux setups) the token is kept in memory
   // only, so the user stays signed in until quit rather than on disk in clear.
-  if (!safeStorage.isEncryptionAvailable()) return;
+  // A file from an earlier sign-in would bring that account back next launch.
+  if (!safeStorage.isEncryptionAvailable()) {
+    await fs.rm(tokenFile(), { force: true }).catch(() => {});
+    return;
+  }
   try {
     await fs.writeFile(tokenFile(), safeStorage.encryptString(value), {
       mode: 0o600,
@@ -117,7 +126,8 @@ export const cloudFetch = async (
   }
 
   if (response.status === 401) {
-    await clearToken();
+    // Only the token this request carried: one saved meanwhile is still good.
+    if (token === current) await clearToken();
     return err(SIGNED_OUT);
   }
   return ok(response);
@@ -126,7 +136,9 @@ export const cloudFetch = async (
 export const getAccount = async (): Promise<
   Result<Account | null, AccountError>
 > => {
-  const result = await cloudFetch("/api/me");
+  const result = await cloudFetch("/api/me", {
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
   if (result.isErr()) {
     return result.error.code === "SIGNED_OUT" ? ok(null) : err(result.error);
   }
@@ -137,24 +149,28 @@ export const getAccount = async (): Promise<
   return ok(body.user);
 };
 
+// Best effort: ends a token's session on the server. Offline, the session
+// just expires there. better-auth refuses the request (415) without a JSON body.
+const revoke = async (value: string) => {
+  const response = await fetch(`${SERVER_URL}/api/auth/sign-out`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${value}`,
+      "content-type": "application/json",
+    },
+    body: "{}",
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  }).catch(() => null);
+  if (response && !response.ok && response.status !== 401) {
+    console.error(`Server sign-out failed: ${response.status}`);
+  }
+};
+
 export const signOut = async (): Promise<Result<true, never>> => {
   const current = await loadToken();
-  if (current) {
-    // Best effort: ends the session on the server too. Offline, the token is
-    // still forgotten here, which is what signing out means to the user.
-    // better-auth refuses the request (415) without a JSON body.
-    const response = await fetch(`${SERVER_URL}/api/auth/sign-out`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${current}`,
-        "content-type": "application/json",
-      },
-      body: "{}",
-    }).catch(() => null);
-    if (response && !response.ok && response.status !== 401) {
-      console.error(`Server sign-out failed: ${response.status}`);
-    }
-  }
+  // Forgotten here even if the server can't be told, which is what signing
+  // out means to the user.
+  if (current) await revoke(current);
   await clearToken();
   return ok(true);
 };
@@ -177,32 +193,66 @@ export const signIn = async (): Promise<Result<Account, AccountError>> => {
   pendingSignIn = controller;
 
   try {
+    // A Worker that's down would otherwise leave the user on a browser error
+    // page while the app waits out the whole flow.
+    const reachable = await fetch(`${SERVER_URL}/api/health`, {
+      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5_000)]),
+    }).then(
+      (response) => response.ok,
+      () => false,
+    );
+    if (controller.signal.aborted) return err(CANCELLED);
+    if (!reachable) return err(UNREACHABLE);
+
     const browser = await signInWithBrowser(controller.signal);
     if (browser.isErr()) return err(browser.error);
 
-    let response: Response;
-    try {
-      response = await fetch(`${SERVER_URL}/api/auth/desktop/token`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          code: browser.value.code,
-          code_verifier: browser.value.verifier,
-        }),
-      });
-    } catch {
-      return err(UNREACHABLE);
-    }
-    if (!response.ok) {
-      return err(accountError(502, "SIGN_IN_FAILED", "Sign-in failed"));
-    }
-
-    const body = (await response.json()) as { token: string; user: Account };
-    await saveToken(body.token);
-    return ok(body.user);
+    const { code, verifier, reply } = browser.value;
+    const result = await exchange(code, verifier, controller.signal);
+    // The browser tab says what actually happened, now that it's known.
+    reply(
+      result.isOk()
+        ? "Signed in. You can close this tab and return to AntiDraw."
+        : result.error.code === "CANCELLED"
+          ? "Sign-in was cancelled in AntiDraw. You can close this tab."
+          : "Sign-in didn't complete. You can close this tab and try again in AntiDraw.",
+    );
+    return result;
   } finally {
     if (pendingSignIn === controller) pendingSignIn = null;
   }
+};
+
+// Swaps the authorization code for a session token and keeps it. A cancel
+// that lands before the token is saved wins: nothing is kept.
+const exchange = async (
+  code: string,
+  verifier: string,
+  signal: AbortSignal,
+): Promise<Result<Account, AccountError>> => {
+  let body: { token: string; user: Account };
+  try {
+    const response = await fetch(`${SERVER_URL}/api/auth/desktop/token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code, code_verifier: verifier }),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
+    });
+    if (!response.ok) {
+      return err(accountError(502, "SIGN_IN_FAILED", "Sign-in failed"));
+    }
+    body = (await response.json()) as { token: string; user: Account };
+  } catch {
+    return err(signal.aborted ? CANCELLED : UNREACHABLE);
+  }
+  // Signing in again replaces the token here; its server session would
+  // otherwise stay valid with no copy left to end it.
+  const previous = await loadToken();
+  // Last point a cancel can still win (the request itself aborts on one).
+  if (signal.aborted) return err(CANCELLED);
+  await saveToken(body.token);
+  if (previous && previous !== body.token) void revoke(previous);
+  return ok(body.user);
 };
 
 const CLOSE_TAB_PAGE = (message: string) =>
@@ -210,10 +260,17 @@ const CLOSE_TAB_PAGE = (message: string) =>
   `<body style="font:14px system-ui;background:#262626;color:#e0e0e0;display:grid;place-items:center;height:100vh;margin:0">` +
   `<p>${message}</p>`;
 
+type BrowserResult = {
+  code: string;
+  verifier: string;
+  /** Answers the browser tab, which waits until the sign-in has finished. */
+  reply: (message: string) => void;
+};
+
 // Opens the system browser on the server's /desktop/start and waits for it to
 // come back to a one-shot server on 127.0.0.1 with the authorization code.
 const signInWithBrowser = (signal: AbortSignal) =>
-  new Promise<Result<{ code: string; verifier: string }, AccountError>>(
+  new Promise<Result<BrowserResult, AccountError>>(
     (resolve) => {
       const verifier = randomBytes(32).toString("base64url");
       const challenge = createHash("sha256")
@@ -221,13 +278,12 @@ const signInWithBrowser = (signal: AbortSignal) =>
         .digest("base64url");
       const state = randomBytes(16).toString("base64url");
 
-      const finish = (
-        result: Result<{ code: string; verifier: string }, AccountError>,
-      ) => {
+      const finish = (result: Result<BrowserResult, AccountError>) => {
         clearTimeout(timer);
         signal.removeEventListener("abort", onAbort);
+        // Stops listening; the tab's own connection stays open until replied to.
         server.close();
-        server.closeAllConnections();
+        if (result.isErr()) server.closeAllConnections();
         resolve(result);
       };
 
@@ -245,24 +301,24 @@ const signInWithBrowser = (signal: AbortSignal) =>
 
         const code = url.searchParams.get("code");
         const error = url.searchParams.get("error");
-        res
-          .writeHead(200, { "content-type": "text/html; charset=utf-8" })
-          .end(
-            CLOSE_TAB_PAGE(
-              code
-                ? "Signed in. You can close this tab and return to AntiDraw."
-                : "Sign-in didn't complete. You can close this tab and try again in AntiDraw.",
-            ),
-          );
+        const reply = (message: string) => {
+          res
+            .writeHead(200, { "content-type": "text/html; charset=utf-8" })
+            .end(CLOSE_TAB_PAGE(message));
+          server.closeAllConnections();
+        };
 
-        if (code) finish(ok({ code, verifier }));
-        else if (error === "access_denied")
+        if (code) {
+          finish(ok({ code, verifier, reply }));
+          return;
+        }
+        reply("Sign-in didn't complete. You can close this tab and try again in AntiDraw.");
+        if (error === "access_denied")
           finish(err(accountError(401, "ACCESS_DENIED", "Sign-in was declined")));
         else finish(err(accountError(502, "SIGN_IN_FAILED", "Sign-in failed")));
       });
 
-      const onAbort = () =>
-        finish(err(accountError(409, "CANCELLED", "Sign-in was cancelled")));
+      const onAbort = () => finish(err(CANCELLED));
       signal.addEventListener("abort", onAbort);
 
       const timer = setTimeout(

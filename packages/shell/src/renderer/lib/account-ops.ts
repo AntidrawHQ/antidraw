@@ -32,6 +32,9 @@ export const useAccount = () => {
       return result.value;
     },
     staleTime: Infinity,
+    // PublishButton asks again on every click, so a failure isn't retried
+    // here in the background, where no one waits for it.
+    retry: false,
   });
 };
 

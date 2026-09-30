@@ -58,6 +58,8 @@ const createWindow = () => {
   const mainWindow = new BrowserWindow({
     width: 900,
     height: 670,
+    // The titlebar's workspace switcher and Publish button need the room.
+    minWidth: 480,
     titleBarStyle: "hidden",
     trafficLightPosition: { x: 12, y: 13 },
     backgroundColor: "#0a0a0a",

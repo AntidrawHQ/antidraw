@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { Popover as PopoverPrimitive } from "radix-ui";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { Check, Copy, Globe, LoaderCircle, X } from "lucide-react";
 import antidrawIcon from "@/renderer/assets/antidraw-icon.svg";
 import {
+  AccountRequestError,
   useAccount,
   useCancelSignIn,
   usePublishWorkspace,
@@ -15,6 +17,10 @@ import {
    sign-in panel anchored under the button: AntiDraw icon, one-line
    title, a single "Sign in with Google" button that carries every
    state. On success the panel closes and publishing continues.
+
+   The panel is a modal Radix popover: it traps focus, gives it back
+   to the Publish button on close, and takes Escape only when it's
+   the topmost layer.
    ──────────────────────────────────────────────────────────── */
 
 // Quick and smooth: a strong ease-out, a critically damped spring (no
@@ -31,7 +37,30 @@ const tint = (c: string, p: number) => `color-mix(in oklch, ${c} ${p}%, transpar
 const LINKED_BEAT_MS = 500;
 const PUBLISHED_TOAST_MS = 4900;
 
-type Step = "closed" | "signin" | "waiting" | "error" | "publishing" | "published";
+type Step =
+  | "closed"
+  | "checking" // asking main whether we're signed in
+  | "signin"
+  | "waiting"
+  | "error"
+  | "publishing"
+  | "published";
+
+// What went wrong, and what "Try again" does about it.
+type Failure = { message: string; retry: "signin" | "publish" };
+
+const problem = (code: string) => {
+  switch (code) {
+    case "SERVER_UNREACHABLE":
+      return "Couldn't reach AntiDraw. Check your connection and try again.";
+    case "TIMED_OUT":
+      return "Sign-in timed out. Try again.";
+    case "ACCESS_DENIED":
+      return "Sign-in was declined in Google.";
+    default:
+      return "Something went wrong. Try again.";
+  }
+};
 
 function GoogleG({ size = 16 }: { size?: number }) {
   return (
@@ -56,14 +85,17 @@ export const PublishButton = ({
   const [linked, setLinked] = useState(false); // brief green beat before the modal closes
   const [copied, setCopied] = useState(false);
   const [link, setLink] = useState<string | null>(null);
+  const [failure, setFailure] = useState<Failure | null>(null);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const publishButton = useRef<HTMLButtonElement>(null);
+  const signInButton = useRef<HTMLButtonElement>(null);
   // For mutation callbacks, which outlive the render that started them.
   const stepRef = useRef(step);
   useEffect(() => {
     stepRef.current = step;
   });
 
-  const { data: account } = useAccount();
+  const { refetch: refetchAccount } = useAccount();
   const signInMutation = useSignIn();
   const cancelSignInMutation = useCancelSignIn();
   const publishMutation = usePublishWorkspace();
@@ -74,6 +106,11 @@ export const PublishButton = ({
   };
   useEffect(() => clear, []);
   const later = (ms: number, fn: () => void) => timers.current.push(setTimeout(fn, ms));
+
+  const fail = (next: Failure) => {
+    setFailure(next);
+    setStep("error");
+  };
 
   const publish = () => {
     setLinked(false);
@@ -86,6 +123,7 @@ export const PublishButton = ({
       },
       onError: (error) => {
         if (error.code === "SIGNED_OUT") {
+          setFailure(null);
           setStep("signin");
           return;
         }
@@ -100,28 +138,46 @@ export const PublishButton = ({
     if (stepRef.current === "waiting") cancelSignInMutation.mutate();
   };
 
-  const onPublishClick = () => {
+  const onPublishClick = async () => {
     clear();
-    if (step === "publishing") return;
+    if (step === "publishing" || step === "checking") return;
     abandonSignIn();
     setLinked(false);
-    if (account) publish();
+    setFailure(null);
+    setStep("checking");
+    // Asked on every click: a sign-in that finished after a reload, or a
+    // server that was down at launch, changes the answer.
+    const { data, error } = await refetchAccount();
+    if (data) publish();
+    else if (error)
+      fail({
+        message: problem(error instanceof AccountRequestError ? error.code : ""),
+        retry: "publish",
+      });
     else setStep("signin");
   };
 
   const signIn = () => {
+    // aria-disabled, not disabled, while waiting: the button keeps focus.
+    if (step === "waiting" || linked) return;
     clear();
+    setFailure(null);
     setStep("waiting");
     signInMutation.mutate(undefined, {
       onSuccess: () => {
-        // Closed or cancelled while the browser was finishing: stay signed in, don't publish.
-        if (stepRef.current !== "waiting") return;
+        if (stepRef.current !== "waiting") {
+          // Cancelled as the token was being saved: signed in after all, so
+          // don't keep offering sign-in. Closed meanwhile: stay closed. Either
+          // way, don't publish.
+          if (stepRef.current === "signin" || stepRef.current === "error") setStep("closed");
+          return;
+        }
         setLinked(true);
         later(LINKED_BEAT_MS, publish);
       },
       onError: (error) => {
         if (error.code === "CANCELLED") return;
-        setStep((s) => (s === "waiting" ? "error" : s));
+        if (stepRef.current === "waiting") fail({ message: problem(error.code), retry: "signin" });
       },
     });
   };
@@ -130,6 +186,7 @@ export const PublishButton = ({
     clear();
     abandonSignIn();
     setLinked(false);
+    setFailure(null);
     setStep("signin");
   };
 
@@ -137,6 +194,7 @@ export const PublishButton = ({
     clear();
     abandonSignIn();
     setLinked(false);
+    setFailure(null);
     setStep("closed");
   };
 
@@ -146,65 +204,84 @@ export const PublishButton = ({
     return () => clearTimeout(t);
   }, [copied]);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape" || linked) return;
-      if (step === "waiting") backToSignIn();
-      else if (step === "signin" || step === "error") close();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  });
-
-  const modalOpen = step === "signin" || step === "waiting" || step === "error";
+  const panelOpen = step === "signin" || step === "waiting" || step === "error";
   const busy = step === "waiting";
+  const retryPublish = failure?.retry === "publish";
 
   return (
     <>
-      <button
-        type="button"
-        onClick={onPublishClick}
-        className="flex h-[26px] min-w-[84px] items-center justify-center gap-1.5 rounded-lg bg-[#e0e0e0] px-2.5 text-[13px] font-medium text-neutral-900 transition-colors hover:bg-white"
-        style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+      <PopoverPrimitive.Root
+        open={panelOpen}
+        onOpenChange={(open) => {
+          if (!open) close();
+        }}
+        modal
       >
-        {step === "publishing" ? (
-          <>
-            <LoaderCircle size={13} className="animate-spin" />
-            Publishing
-          </>
-        ) : step === "published" ? (
-          <>
-            <Check size={13} strokeWidth={2.5} />
-            Published
-          </>
-        ) : (
-          <>
-            <Globe size={13} strokeWidth={2.2} />
-            Publish
-          </>
-        )}
-      </button>
+        <PopoverPrimitive.Anchor asChild>
+          <button
+            ref={publishButton}
+            type="button"
+            onClick={onPublishClick}
+            className="flex h-[26px] min-w-[84px] items-center justify-center gap-1.5 rounded-lg bg-[#e0e0e0] px-2.5 text-[13px] font-medium text-neutral-900 transition-colors hover:bg-white"
+            style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+          >
+            {step === "publishing" ? (
+              <>
+                <LoaderCircle size={13} className="animate-spin" />
+                Publishing
+              </>
+            ) : step === "published" ? (
+              <>
+                <Check size={13} strokeWidth={2.5} />
+                Published
+              </>
+            ) : (
+              <>
+                {step === "checking" ? (
+                  <LoaderCircle size={13} className="animate-spin" />
+                ) : (
+                  <Globe size={13} strokeWidth={2.2} />
+                )}
+                Publish
+              </>
+            )}
+          </button>
+        </PopoverPrimitive.Anchor>
 
-      {createPortal(
-        <>
-          {/* modal */}
-          <AnimatePresence initial={false}>
-            {modalOpen && (
-              <motion.div
-                className="fixed inset-0 top-[38px] z-40 flex items-start justify-end pr-3 pt-2"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0, transition: EXIT }}
-                transition={{ duration: 0.15, ease: EASE_OUT }}
-                onMouseDown={(e) => {
-                  if (e.target === e.currentTarget && !busy) close();
+        {/* the panel */}
+        <AnimatePresence initial={false}>
+          {panelOpen && (
+            <PopoverPrimitive.Portal forceMount>
+              <PopoverPrimitive.Content
+                forceMount
+                asChild
+                side="bottom"
+                align="end"
+                sideOffset={8}
+                aria-labelledby="publish-handshake-title"
+                onOpenAutoFocus={(e) => {
+                  e.preventDefault();
+                  signInButton.current?.focus();
+                }}
+                onCloseAutoFocus={(e) => {
+                  e.preventDefault();
+                  publishButton.current?.focus();
+                }}
+                onEscapeKeyDown={(e) => {
+                  if (linked) e.preventDefault();
+                  else if (busy) {
+                    e.preventDefault();
+                    backToSignIn();
+                  }
+                }}
+                onPointerDownOutside={(e) => {
+                  if (busy || linked) e.preventDefault();
                 }}
               >
                 <motion.div
-                  role="dialog"
-                  aria-modal
-                  aria-labelledby="publish-handshake-title"
-                  className="relative flex w-[320px] origin-top-right flex-col items-start rounded-[14px] border border-[#2d2d2d] bg-[#2c2c2c] p-5 text-left shadow-[0_24px_80px_-20px_rgba(0,0,0,0.8)]"
+                  // Above the See Code panel (z-[100]), below its copy menu (z-[200]).
+                  className="relative z-[110] flex w-[320px] flex-col items-start rounded-[14px] border border-[#2d2d2d] bg-[#2c2c2c] p-5 text-left antialiased shadow-[0_24px_80px_-20px_rgba(0,0,0,0.8)] outline-none"
+                  style={{ transformOrigin: "var(--radix-popover-content-transform-origin)" }}
                   initial={{ opacity: 0, scale: reduce ? 1 : 0.97, y: reduce ? 0 : -4 }}
                   animate={{ opacity: 1, scale: 1, y: 0 }}
                   exit={{ opacity: 0, scale: reduce ? 1 : 0.98, transition: EXIT }}
@@ -214,7 +291,7 @@ export const PublishButton = ({
                     type="button"
                     aria-label="Close"
                     onClick={close}
-                    className="absolute right-3 top-3 flex h-6 w-6 items-center justify-center rounded-md text-neutral-500 transition-colors hover:bg-white/[0.06] hover:text-neutral-300"
+                    className="absolute right-3 top-3 flex h-6 w-6 items-center justify-center rounded-md text-neutral-400 transition-colors hover:bg-white/[0.06] hover:text-neutral-200"
                   >
                     <X size={14} />
                   </button>
@@ -222,20 +299,22 @@ export const PublishButton = ({
                   <img src={antidrawIcon} alt="AntiDraw" className="h-10 w-10" />
 
                   <h2 id="publish-handshake-title" className="mt-4 text-base font-medium tracking-[-0.01em] text-[#e0e0e0]">
-                    Sign in to publish
+                    {retryPublish ? "Couldn't publish" : "Sign in to publish"}
                   </h2>
                   <p className="mt-1.5 text-[13px] leading-[1.6] text-[#9a9a9a]">
                     {busy
                       ? "Finish signing in with Google in your browser. We'll publish right after."
-                      : `Once you're signed in, ${workspaceName} goes live on a link you can share.`}
+                      : retryPublish
+                        ? `We couldn't check your account, so ${workspaceName} wasn't published.`
+                        : `Once you're signed in, ${workspaceName} goes live on a link you can share.`}
                   </p>
 
                   <button
+                    ref={signInButton}
                     type="button"
-                    onClick={signIn}
-                    disabled={busy}
-                    autoFocus
-                    className="mt-5 flex h-10 w-full items-center justify-center gap-2.5 rounded-[10px] border border-white/[0.12] bg-white/[0.08] text-sm font-medium text-[#e0e0e0] transition-colors hover:border-white/[0.24] hover:bg-white/[0.12] focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-white/20 disabled:hover:border-white/[0.12] disabled:hover:bg-white/[0.08]"
+                    onClick={retryPublish ? onPublishClick : signIn}
+                    aria-disabled={busy || linked}
+                    className="mt-5 flex h-10 w-full items-center justify-center gap-2.5 rounded-[10px] border border-white/[0.12] bg-white/[0.08] text-sm font-medium text-[#e0e0e0] transition-colors hover:border-white/[0.24] hover:bg-white/[0.12] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white/60 aria-disabled:cursor-default aria-disabled:hover:border-white/[0.12] aria-disabled:hover:bg-white/[0.08]"
                   >
                     {linked ? (
                       <>
@@ -249,64 +328,78 @@ export const PublishButton = ({
                       </>
                     ) : (
                       <>
-                        <GoogleG size={16} />
+                        {!retryPublish && <GoogleG size={16} />}
                         {step === "error" ? "Try again" : "Sign in with Google"}
                       </>
                     )}
                   </button>
 
+                  {/* Announced: what the button now shows. The page behind is hidden from
+                      assistive tech while the panel is open, so this lives in the panel. */}
+                  <span role="status" className="sr-only">
+                    {linked ? "Signed in" : busy ? "Waiting for Google sign-in in your browser" : ""}
+                  </span>
+
                   {/* only shown when there's something to say */}
                   {(busy || step === "error") && (
-                    <div className="mt-3 flex h-4 items-center text-[11px]">
+                    <div className="mt-3 flex min-h-4 items-center text-[11px]">
                       {busy ? (
                         <button
                           type="button"
                           onClick={backToSignIn}
                           disabled={linked}
-                          className="text-neutral-500 transition-colors hover:text-neutral-300 disabled:opacity-0"
+                          className="text-neutral-400 transition-colors hover:text-neutral-200 disabled:opacity-0"
                         >
                           Cancel
                         </button>
                       ) : (
-                        <span style={{ color: RED }}>Couldn't connect to Google. Try again.</span>
+                        <span role="alert" style={{ color: RED }}>
+                          {failure?.message}
+                        </span>
                       )}
                     </div>
                   )}
                 </motion.div>
-              </motion.div>
-            )}
-          </AnimatePresence>
+              </PopoverPrimitive.Content>
+            </PopoverPrimitive.Portal>
+          )}
+        </AnimatePresence>
+      </PopoverPrimitive.Root>
 
-          {/* published toast */}
-          <AnimatePresence>
-            {step === "published" && link && (
-              <motion.div
-                className="fixed bottom-5 right-5 z-50 flex items-center gap-3 rounded-[10px] border border-[#2d2d2d] bg-[#2c2c2c] py-2 pl-3 pr-2 shadow-[0_16px_48px_-12px_rgba(0,0,0,0.7)]"
-                initial={{ opacity: 0, y: reduce ? 0 : 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: reduce ? 0 : 4, transition: EXIT }}
-                transition={SPRING}
+      <span role="status" className="sr-only">
+        {step === "publishing" ? "Publishing" : ""}
+      </span>
+
+      {createPortal(
+        <AnimatePresence>
+          {step === "published" && link && (
+            <motion.div
+              role="status"
+              className="fixed bottom-5 right-5 z-[120] flex items-center gap-3 rounded-[10px] border border-[#2d2d2d] bg-[#2c2c2c] py-2 pl-3 pr-2 antialiased shadow-[0_16px_48px_-12px_rgba(0,0,0,0.7)]"
+              initial={{ opacity: 0, y: reduce ? 0 : 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: reduce ? 0 : 4, transition: EXIT }}
+              transition={SPRING}
+            >
+              <span className="flex h-5 w-5 items-center justify-center rounded-full" style={{ background: tint(GREEN, 16), color: GREEN }}>
+                <Check size={11} strokeWidth={3} />
+              </span>
+              <span className="text-[13px] text-[#e0e0e0]">Published</span>
+              <span className="font-mono text-[11px] text-neutral-400">{link.replace(/^https?:\/\//, "")}</span>
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard?.writeText(link).catch(() => {});
+                  setCopied(true);
+                }}
+                className="flex h-7 items-center gap-1.5 rounded-md bg-white/[0.08] px-2.5 text-[12px] font-medium text-neutral-200 transition-colors hover:bg-white/[0.12]"
               >
-                <span className="flex h-5 w-5 items-center justify-center rounded-full" style={{ background: tint(GREEN, 16), color: GREEN }}>
-                  <Check size={11} strokeWidth={3} />
-                </span>
-                <span className="text-[13px] text-[#e0e0e0]">Published</span>
-                <span className="font-mono text-[11px] text-neutral-500">{link.replace(/^https?:\/\//, "")}</span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    navigator.clipboard?.writeText(link).catch(() => {});
-                    setCopied(true);
-                  }}
-                  className="flex h-7 items-center gap-1.5 rounded-md bg-white/[0.08] px-2.5 text-[12px] font-medium text-neutral-200 transition-colors hover:bg-white/[0.12]"
-                >
-                  {copied ? <Check size={12} style={{ color: GREEN }} /> : <Copy size={12} />}
-                  {copied ? "Copied" : "Copy link"}
-                </button>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </>,
+                {copied ? <Check size={12} style={{ color: GREEN }} /> : <Copy size={12} />}
+                {copied ? "Copied" : "Copy link"}
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>,
         document.body,
       )}
     </>
