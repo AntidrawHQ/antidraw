@@ -11,8 +11,17 @@ import { user } from "./auth.model";
 // publish allowed to upload; starting a new one takes the lock over, and every
 // upload request checks it, so a replaced publish's requests are refused.
 // lock_until is when an unfinished publish is abandoned (its plan expires);
-// commit clears both, so a lock left set and past lock_until marks a site with
-// an abandoned upload for the scheduled cleanup.
+// commit clears both.
+//
+// busy_until is set while a request that cleans up is running (a plan or a
+// commit, or the scheduled cleanup, whose claim is a `cleanup-` lock id): a
+// new publish can't take the lock until it's cleared or lapses, so a cleanup
+// never overlaps another publish's plan or commit.
+//
+// cleanup_after is when what the site's publishes left behind (uploads never
+// committed, files the live version dropped) is past the library's plan TTL
+// and orphan grace period, so the scheduled cleanup can clear it. Starting a
+// publish pushes it back; the cleanup clears it.
 export const site = sqliteTable(
   "site",
   {
@@ -24,13 +33,15 @@ export const site = sqliteTable(
     title: text("title").notNull(),
     lockPublishId: text("lock_publish_id"),
     lockUntil: integer("lock_until", { mode: "timestamp_ms" }),
+    busyUntil: integer("busy_until", { mode: "timestamp_ms" }),
+    cleanupAfter: integer("cleanup_after", { mode: "timestamp_ms" }),
     createdAt: integer("created_at", { mode: "timestamp_ms" })
       .default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
       .notNull(),
   },
   (table) => [
     index("site_owner_id_idx").on(table.ownerId),
-    index("site_lock_until_idx").on(table.lockUntil),
+    index("site_cleanup_after_idx").on(table.cleanupAfter),
   ],
 );
 

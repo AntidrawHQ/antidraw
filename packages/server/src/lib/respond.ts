@@ -5,7 +5,8 @@ import { apiError, type ApiError } from "./errors";
 
 // Maps a neverthrow Result from a service into a Hono JSON Response, keeping
 // controllers thin. Await a ResultAsync before passing it in.
-//   Err  -> { error: { code, message } } with the error's status
+//   Err  -> { error: { code, message } } with the error's status (and
+//           retry-after, if the error has one)
 //   Ok   -> the value with `successStatus` (default 200)
 export const respond = <T>(
   ctx: Context,
@@ -13,7 +14,8 @@ export const respond = <T>(
   successStatus: ContentfulStatusCode = 200,
 ) => {
   if (result.isErr()) {
-    const { status, code, message } = result.error;
+    const { status, code, message, retryAfter } = result.error;
+    if (retryAfter !== undefined) ctx.header("retry-after", String(retryAfter));
     return ctx.json({ error: { code, message } }, status);
   }
   return ctx.json(result.value, successStatus);

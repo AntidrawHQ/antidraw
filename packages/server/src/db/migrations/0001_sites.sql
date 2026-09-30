@@ -16,10 +16,12 @@ CREATE TABLE `site` (
 	`title` text NOT NULL,
 	`lock_publish_id` text,
 	`lock_until` integer,
+	`busy_until` integer,
+	`cleanup_after` integer,
 	`created_at` integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL,
 	FOREIGN KEY (`owner_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
 CREATE UNIQUE INDEX `site_slug_unique` ON `site` (`slug`);--> statement-breakpoint
 CREATE INDEX `site_owner_id_idx` ON `site` (`owner_id`);--> statement-breakpoint
-CREATE INDEX `site_lock_until_idx` ON `site` (`lock_until`);
+CREATE INDEX `site_cleanup_after_idx` ON `site` (`cleanup_after`);

@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "6ba0627c-7310-40e9-8abe-e5059d309371",
+  "id": "c5307800-7c13-4669-8bf4-6efa888f7bd7",
   "prevId": "6201c7d1-f763-4f0d-b895-5e86c5e9ba6b",
   "tables": {
     "account": {
@@ -476,6 +476,20 @@
           "notNull": false,
           "autoincrement": false
         },
+        "busy_until": {
+          "name": "busy_until",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "cleanup_after": {
+          "name": "cleanup_after",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "integer",
@@ -500,10 +514,10 @@
           ],
           "isUnique": false
         },
-        "site_lock_until_idx": {
-          "name": "site_lock_until_idx",
+        "site_cleanup_after_idx": {
+          "name": "site_cleanup_after_idx",
           "columns": [
-            "lock_until"
+            "cleanup_after"
           ],
           "isUnique": false
         }

@@ -153,8 +153,8 @@ redirects there. The routes are in `src/controllers/site.controller.ts`, and
 the upload protocol, storage and serving are `@antidraw/site-upload`'s. D1
 holds each site's owner, slug and lock (`src/models/site.model.ts`); R2 holds
 the files, keyed by the site's permanent id, never its slug. The routes take
-only a bearer token, never a cookie. An hourly cron clears the uploads of
-publishes that were started and never committed.
+only a bearer token, never a cookie. An hourly cron clears what publishes
+leave behind: uploads never committed, and files the live version dropped.
 
 ## Deploy (needs a Cloudflare login)
 
