@@ -11,11 +11,13 @@ import { err, ok, type Result } from "neverthrow";
 // account and triggers sign-in/out through /api/account, and cloud calls go
 // through cloudFetch, which attaches the token here.
 
-// Where the Worker runs. Defaults to `npm run dev` in packages/server.
-// TODO: point packaged builds at the deployed Worker once it has a URL.
-const SERVER_URL = (
-  process.env.ANTIDRAW_SERVER_URL ?? "http://localhost:8799"
-).replace(/\/$/, "");
+// Where the Worker runs: the deployed one in packaged builds, else `npm run
+// dev` in packages/server.
+const serverUrl = () =>
+  (
+    process.env.ANTIDRAW_SERVER_URL ??
+    (app.isPackaged ? "https://api.antidraw.com" : "http://localhost:8799")
+  ).replace(/\/$/, "");
 
 // The Google step must finish within better-auth's OAuth state cookie
 // (Max-Age 300 s); after that the server can only fail the flow, so waiting
@@ -116,13 +118,18 @@ const clearToken = async () => {
 const workerFetch = (url: string, init: RequestInit = {}) =>
   net.fetch(url, { ...init, credentials: "omit", redirect: "error" });
 
-// A request to the Worker as the signed-in user. A 401 means the token is dead
+// A request to the Worker as the signed-in user: a path, or a URL the Worker
+// handed out (the token only ever goes to the Worker). A 401 means the token is dead
 // (expired, or signed out elsewhere), so it's dropped and the caller gets
 // SIGNED_OUT, which the renderer answers by asking the user to sign in again.
 export const cloudFetch = async (
   pathname: string,
   init: RequestInit = {},
 ): Promise<Result<Response, AccountError>> => {
+  const url = new URL(pathname, serverUrl());
+  if (url.origin !== new URL(serverUrl()).origin) {
+    return err(accountError(502, "SERVER_ERROR", "Refused to send the session to another host"));
+  }
   const current = await loadToken();
   if (!current) return err(SIGNED_OUT);
 
@@ -131,7 +138,7 @@ export const cloudFetch = async (
 
   let response: Response;
   try {
-    response = await workerFetch(`${SERVER_URL}${pathname}`, { ...init, headers });
+    response = await workerFetch(url.href, { ...init, headers });
   } catch {
     return err(UNREACHABLE);
   }
@@ -173,7 +180,7 @@ export const getAccount = async (): Promise<
 // Best effort: ends a token's session on the server. Offline, the session
 // just expires there. better-auth refuses the request (415) without a JSON body.
 const revoke = async (value: string) => {
-  const response = await workerFetch(`${SERVER_URL}/api/auth/sign-out`, {
+  const response = await workerFetch(`${serverUrl()}/api/auth/sign-out`, {
     method: "POST",
     headers: {
       authorization: `Bearer ${value}`,
@@ -217,7 +224,7 @@ export const signIn = async (): Promise<Result<Account, AccountError>> => {
     // A Worker that's down would otherwise leave the user on a browser error
     // page while the app waits out the whole flow. (A flow the server fails
     // later, on its own error page, still waits out the timeout, or Cancel.)
-    const reachable = await workerFetch(`${SERVER_URL}/api/health`, {
+    const reachable = await workerFetch(`${serverUrl()}/api/health`, {
       signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5_000)]),
     }).then(
       (response) => response.ok,
@@ -254,7 +261,7 @@ const exchange = async (
 ): Promise<Result<Account, AccountError>> => {
   let body: { token: string; user: Account };
   try {
-    const response = await workerFetch(`${SERVER_URL}/api/auth/desktop/token`, {
+    const response = await workerFetch(`${serverUrl()}/api/auth/desktop/token`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ code, code_verifier: verifier }),
@@ -366,7 +373,7 @@ const signInWithBrowser = (signal: AbortSignal) =>
 
       server.listen(0, "127.0.0.1", () => {
         const { port } = server.address() as AddressInfo;
-        const start = new URL(`${SERVER_URL}/api/auth/desktop/start`);
+        const start = new URL(`${serverUrl()}/api/auth/desktop/start`);
         start.search = new URLSearchParams({
           redirect_uri: `http://127.0.0.1:${port}/callback`,
           code_challenge: challenge,

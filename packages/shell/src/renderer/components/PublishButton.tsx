@@ -44,7 +44,8 @@ type Step =
   | "waiting"
   | "error"
   | "publishing"
-  | "published";
+  | "published"
+  | "failed"; // the publish failed: a toast with why, until dismissed or the next publish
 
 // What went wrong, and what "Try again" does about it.
 type Failure = { message: string; retry: "signin" | "publish" };
@@ -85,6 +86,8 @@ export const PublishButton = ({
   const [linked, setLinkedState] = useState(false); // brief green beat before the modal closes
   const [copied, setCopied] = useState(false);
   const [link, setLink] = useState<string | null>(null);
+  // Why the last publish failed: a line, then any detail (a build's error).
+  const [publishError, setPublishError] = useState<string | null>(null);
   const [failure, setFailureState] = useState<Failure | null>(null);
   // Counts failures, so the same message is announced again on a retry.
   const [attempt, setAttempt] = useState(0);
@@ -167,7 +170,8 @@ export const PublishButton = ({
           return;
         }
         console.error("Publish failed:", error);
-        go("closed");
+        setPublishError(error.message);
+        go("failed");
       },
     });
   };
@@ -248,6 +252,19 @@ export const PublishButton = ({
     setFailure(null);
     go("signin");
   };
+
+  const dismissFailure = () => {
+    if (stepRef.current === "failed") go("closed");
+  };
+
+  useEffect(() => {
+    if (step !== "failed") return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") dismissFailure();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [step]);
 
   const close = () => {
     if (!panelIsUp()) return;
@@ -474,6 +491,7 @@ export const PublishButton = ({
         <AnimatePresence>
           {step === "published" && link && (
             <motion.div
+              key="published"
               role="status"
               className="fixed bottom-5 right-5 z-[120] flex items-center gap-3 rounded-[10px] border border-[#2d2d2d] bg-[#2c2c2c] py-2 pl-3 pr-2 antialiased shadow-[0_16px_48px_-12px_rgba(0,0,0,0.7)]"
               initial={{ opacity: 0, y: reduce ? 0 : 8 }}
@@ -496,6 +514,37 @@ export const PublishButton = ({
               >
                 {copied ? <Check size={12} style={{ color: GREEN }} /> : <Copy size={12} />}
                 {copied ? "Copied" : "Copy link"}
+              </button>
+            </motion.div>
+          )}
+          {step === "failed" && publishError && (
+            <motion.div
+              key="failed"
+              role="alert"
+              className="fixed bottom-5 right-5 z-[120] flex max-w-[420px] items-start gap-3 rounded-[10px] border border-[#2d2d2d] bg-[#2c2c2c] py-2 pl-3 pr-2 antialiased shadow-[0_16px_48px_-12px_rgba(0,0,0,0.7)]"
+              initial={{ opacity: 0, y: reduce ? 0 : 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: reduce ? 0 : 4, transition: EXIT }}
+              transition={SPRING}
+            >
+              <span className="mt-1 flex h-5 w-5 shrink-0 items-center justify-center rounded-full" style={{ background: tint(RED, 16), color: RED }}>
+                <X size={11} strokeWidth={3} />
+              </span>
+              <div className="min-w-0 flex-1 py-1">
+                <p className="text-[13px] text-[#e0e0e0]">{publishError.split("\n")[0]}</p>
+                {publishError.includes("\n") && (
+                  <pre className="mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap font-mono text-[11px] text-neutral-400">
+                    {publishError.slice(publishError.indexOf("\n") + 1)}
+                  </pre>
+                )}
+              </div>
+              <button
+                type="button"
+                aria-label="Dismiss"
+                onClick={dismissFailure}
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-400 transition-colors hover:bg-white/[0.08] hover:text-neutral-200"
+              >
+                <X size={13} />
               </button>
             </motion.div>
           )}

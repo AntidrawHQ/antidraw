@@ -195,7 +195,7 @@ describe("migration 0005", () => {
 
     stageTo(staged, 4);
     await migrate(legacy, { migrationsFolder: staged });
-    await legacy.insert(workspaces).values({ id: "w", name: "legacy" });
+    await legacy.run(sql`INSERT INTO workspaces (id, name) VALUES ('w', 'legacy')`);
     await legacy.insert(conversations).values({ id: "c", workspaceId: "w" });
     await legacy.run(
       sql`INSERT INTO messages (id, conversation_id, message_type, sdk_message, created_at)

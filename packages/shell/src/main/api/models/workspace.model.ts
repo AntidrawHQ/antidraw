@@ -9,6 +9,9 @@ export const workspaces = sqliteTable("workspaces", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
   createdBy: text("created_by"), // For future teams feature
+  // The cloud site this workspace publishes to (@antidraw/server), once it has.
+  siteId: text("site_id"),
+  siteUrl: text("site_url"),
   createdAt: integer("created_at", { mode: "timestamp_ms" })
     .notNull()
     .default(sql`(unixepoch() * 1000)`),

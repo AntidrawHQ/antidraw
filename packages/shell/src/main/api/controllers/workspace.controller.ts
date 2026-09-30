@@ -15,6 +15,7 @@ import {
   stopDevServer,
   getDevServerStatus,
 } from "@/main/services/dev-server.service";
+import { publishWorkspace } from "@/main/services/publish.service";
 import { listConversations } from "../services/chat.service";
 import {
   getFrameLayouts,
@@ -111,6 +112,24 @@ workspaceController.get(
   async (ctx) => {
     const { workspaceId } = ctx.req.valid("param");
     const result = await listConversations(workspaceId);
+
+    if (result.isErr()) {
+      const { status, code, message } = result.error;
+      return ctx.json({ error: { code, message } }, status);
+    }
+
+    return ctx.json(result.value);
+  }
+);
+
+// Builds the workspace and publishes it to its cloud site; answers the share
+// page's URL.
+workspaceController.post(
+  "/:workspaceId/publish",
+  zValidator("param", workspaceIdParamSchema),
+  async (ctx) => {
+    const { workspaceId } = ctx.req.valid("param");
+    const result = await publishWorkspace(workspaceId);
 
     if (result.isErr()) {
       const { status, code, message } = result.error;
