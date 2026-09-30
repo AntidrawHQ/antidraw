@@ -889,9 +889,13 @@ export const saveFrameLayouts = async (
 // Cloud account API
 // ============================================================================
 
+// The account routes answer only the app's own pages, which prove it with
+// main's per-launch key (main/lib/app-key.ts).
+const appKeyHeader = () => ({ "x-antidraw-app-key": window.electronAPI?.appKey ?? "" });
+
 export const getAccount = async () => {
   try {
-    const response = await fetch("antidraw://app/api/account");
+    const response = await fetch("antidraw://app/api/account", { headers: appKeyHeader() });
 
     if (!response.ok) {
       const errorBody = await response.json().catch(() => ({}));
@@ -918,6 +922,7 @@ export const getAccount = async () => {
 export const signIn = async () => {
   try {
     const response = await fetch("antidraw://app/api/account/sign-in", {
+      headers: appKeyHeader(),
       method: "POST",
     });
 
@@ -944,6 +949,7 @@ export const signIn = async () => {
 export const cancelSignIn = async () => {
   try {
     await fetch("antidraw://app/api/account/sign-in/cancel", {
+      headers: appKeyHeader(),
       method: "POST",
     });
     return ok(true);
@@ -958,7 +964,10 @@ export const cancelSignIn = async () => {
 
 export const signOut = async () => {
   try {
-    await fetch("antidraw://app/api/account/sign-out", { method: "POST" });
+    await fetch("antidraw://app/api/account/sign-out", {
+      method: "POST",
+      headers: appKeyHeader(),
+    });
     return ok(true);
   } catch (_e) {
     return err({

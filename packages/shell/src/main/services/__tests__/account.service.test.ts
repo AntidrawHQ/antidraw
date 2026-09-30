@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 
 // Sign-in and the cloud session in main, against a stand-in Worker on a local
 // port and a "browser" that follows the Worker's redirect to the app's
@@ -28,12 +28,17 @@ vi.mock("electron", () => ({
     decryptString: (value: Buffer) => value.toString().replace(/^enc:/, ""),
   },
   shell: { openExternal: (url: string) => electron.openExternal(url) },
+  // Electron's fetch (system proxy and certificates); plain fetch here.
+  net: { fetch: (input: string, init?: RequestInit) => fetch(input, init) },
 }));
 
 // ---- the stand-in Worker ---------------------------------------------------
 
 const worker = {
   healthy: true,
+  // How Google's step ends: a code, or better-auth's ?error= value.
+  google: "code" as "code" | { error: string },
+  meBody: null as string | null,
   tokens: 0,
   exchange: { delayMs: 0, status: 200 },
   me: { delayMs: 0 } as { delayMs: number },
@@ -51,9 +56,12 @@ beforeAll(async () => {
     if (url.pathname === "/api/health") {
       res.writeHead(worker.healthy ? 200 : 503).end();
     } else if (url.pathname === "/api/auth/desktop/start") {
-      // Google says yes at once: back to the app's loopback with a code.
+      // Google's step is over at once: back to the app's loopback.
       const back = new URL(url.searchParams.get("redirect_uri")!);
-      back.search = new URLSearchParams({ code: "the-code", state: url.searchParams.get("state")! }).toString();
+      const state = url.searchParams.get("state")!;
+      back.search = new URLSearchParams(
+        worker.google === "code" ? { code: "the-code", state } : { error: worker.google.error, state },
+      ).toString();
       res.writeHead(302, { location: back.href }).end();
     } else if (url.pathname === "/api/auth/desktop/token") {
       await sleep(worker.exchange.delayMs);
@@ -70,6 +78,7 @@ beforeAll(async () => {
       const token = bearer(req);
       await sleep(worker.me.delayMs);
       if (!worker.valid.has(token)) return res.writeHead(401).end();
+      if (worker.meBody !== null) return res.writeHead(200, { "content-type": "text/html" }).end(worker.meBody);
       res.writeHead(200, { "content-type": "application/json" }).end(
         JSON.stringify({ user: { id: "u1", name: "Ada", email: "ada@example.com", image: null } }),
       );
@@ -98,10 +107,19 @@ beforeEach(() => {
   electron.openExternal = async (url) => {
     void browse(url);
   };
-  Object.assign(worker, { healthy: true, tokens: 0, exchange: { delayMs: 0, status: 200 }, me: { delayMs: 0 }, log: [] });
+  Object.assign(worker, {
+    healthy: true,
+    google: "code",
+    meBody: null,
+    tokens: 0,
+    exchange: { delayMs: 0, status: 200 },
+    me: { delayMs: 0 },
+    log: [],
+  });
   worker.valid.clear();
   vi.resetModules();
 });
+afterEach(() => fs.rmSync(electron.userData, { recursive: true, force: true }));
 
 /** A fresh copy of the service: nothing in memory, userData as the test left it. */
 const service = () => import("../account.service");
@@ -254,22 +272,78 @@ it("doesn't leave an earlier account's token on disk when it can't encrypt", asy
   `);
 });
 
-it("answers the account routes only to the app's own pages", async () => {
+it("answers the account routes only with this launch's app key", async () => {
+  // Electron hands the protocol handler no Origin, and no referrer for the
+  // app's own requests, so the key is what tells them apart.
   const { accountController } = await import("../../api/controllers/account.controller");
-  const origins = ["antidraw://app", "https://localhost:5174", "http://localhost:5173", "null", undefined];
+  const { APP_KEY } = await import("../../lib/app-key");
+  const keys = { "this launch's key": APP_KEY, "another key": "x".repeat(APP_KEY.length), "a prefix of it": APP_KEY.slice(0, 10), none: undefined };
   const answers = await Promise.all(
-    origins.map(async (origin) => {
-      const res = await accountController.request("/", { headers: origin ? { origin } : {} });
-      return `${origin ?? "(no Origin)"} → ${res.status}`;
+    Object.entries(keys).map(async ([name, key]) => {
+      const res = await accountController.request("/", { headers: key === undefined ? {} : { "x-antidraw-app-key": key } });
+      return `${name} → ${res.status}`;
     }),
   );
   expect(answers).toMatchInlineSnapshot(`
     [
-      "antidraw://app → 200",
-      "https://localhost:5174 → 403",
-      "http://localhost:5173 → 403",
-      "null → 403",
-      "(no Origin) → 200",
+      "this launch's key → 200",
+      "another key → 403",
+      "a prefix of it → 403",
+      "none → 403",
     ]
+  `);
+});
+
+it("finishes the flow only for its own state, and says how Google's step ended", async () => {
+  const { signIn } = await service();
+  // Another local process finds the port and knocks with a code of its own.
+  let knocked: number | undefined;
+  electron.openExternal = async (url) => {
+    const loopback = new URL(new URL(url).searchParams.get("redirect_uri")!);
+    loopback.search = "?code=attacker&state=guessed";
+    knocked = (await fetch(loopback)).status;
+    void browse(url);
+  };
+  const ownState = outcome(await signIn());
+  const endings: Record<string, unknown> = {};
+  electron.openExternal = async (url) => void browse(url);
+  for (const error of ["access_denied", "state_mismatch", "server_error"]) {
+    worker.google = { error };
+    endings[error] = outcome(await signIn());
+  }
+  expect({ knocked, ownState, endings }).toMatchInlineSnapshot(`
+    {
+      "endings": {
+        "access_denied": {
+          "err": "ACCESS_DENIED",
+        },
+        "server_error": {
+          "err": "SIGN_IN_FAILED",
+        },
+        "state_mismatch": {
+          "err": "TIMED_OUT",
+        },
+      },
+      "knocked": 404,
+      "ownState": {
+        "ok": {
+          "email": "ada@example.com",
+          "id": "u1",
+          "image": null,
+          "name": "Ada",
+        },
+      },
+    }
+  `);
+});
+
+it("reports a page that isn't the account as a server error, not a crash", async () => {
+  const { signIn, getAccount } = await service();
+  await signIn();
+  worker.meBody = "<html>Sign in to the Wi-Fi</html>";
+  expect(outcome(await getAccount())).toMatchInlineSnapshot(`
+    {
+      "err": "SERVER_ERROR",
+    }
   `);
 });

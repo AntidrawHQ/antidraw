@@ -207,3 +207,152 @@ it("asks again on every click, so a sign-in that finished elsewhere publishes", 
     }
   `);
 });
+
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => (resolve = r));
+  return { promise, resolve };
+};
+const SHARE = ok({ url: "https://antidraw.com/s/paper-shaders" });
+
+it("publishes once, after a beat of Connected, when sign-in succeeds", async () => {
+  api.signIn.mockResolvedValue(ok(ADA));
+  api.publishWorkspace.mockResolvedValue(SHARE);
+  await render();
+  await click(/^Publish$/);
+  await click(/Sign in with Google/);
+  const connected = { label: button(/Connected/)?.textContent, published: api.publishWorkspace.mock.calls.length };
+  await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 600))));
+  expect({ connected, after: { dialog: screen().dialog, published: api.publishWorkspace.mock.calls.length } })
+    .toMatchInlineSnapshot(`
+      {
+        "after": {
+          "dialog": null,
+          "published": 1,
+        },
+        "connected": {
+          "label": "Connected",
+          "published": 0,
+        },
+      }
+    `);
+});
+
+it("doesn't publish when sign-in finishes after the panel was closed", async () => {
+  const signedIn = deferred<unknown>();
+  api.signIn.mockReturnValue(signedIn.promise);
+  await render();
+  await click(/^Publish$/);
+  await click(/Sign in with Google/);
+  await click(/^Close$/);
+  await act(async () => signedIn.resolve(ok(ADA)));
+  await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 600))));
+  expect({ dialog: screen().dialog, published: api.publishWorkspace.mock.calls.length }).toMatchInlineSnapshot(`
+    {
+      "dialog": null,
+      "published": 0,
+    }
+  `);
+});
+
+it("asks to sign in again when the publish finds the session gone", async () => {
+  api.getAccount.mockResolvedValue(ok(ADA));
+  api.publishWorkspace.mockResolvedValue(failure(401, "SIGNED_OUT"));
+  await render();
+  await click(/^Publish$/);
+  expect(screen().dialog).toMatchInlineSnapshot(`
+    [
+      "Sign in to publish",
+      "Once you're signed in, Paper Shaders goes live on a link you can share.",
+    ]
+  `);
+});
+
+it("says it couldn't publish when the check fails after an earlier one succeeded", async () => {
+  api.getAccount.mockResolvedValue(ok(ADA)); // loaded at launch
+  await render();
+  api.getAccount.mockResolvedValue(failure(502, "SERVER_UNREACHABLE"));
+  await click(/^Publish$/);
+  expect({ ...screen(), published: api.publishWorkspace.mock.calls.length }).toMatchInlineSnapshot(`
+    {
+      "alert": "Couldn't reach AntiDraw. Check your connection and try again.",
+      "dialog": [
+        "Couldn't publish",
+        "We couldn't check your account, so Paper Shaders wasn't published.",
+      ],
+      "focus": "Try again",
+      "published": 0,
+    }
+  `);
+});
+
+it("keeps the panel up while Try again checks, and publishes once for a double click", async () => {
+  api.getAccount.mockResolvedValue(failure(502, "SERVER_UNREACHABLE"));
+  api.publishWorkspace.mockResolvedValue(SHARE);
+  await render();
+  await click(/^Publish$/);
+  const check = deferred<unknown>();
+  api.getAccount.mockReturnValue(check.promise);
+  await act(async () => {
+    button(/Try again/).click();
+    button(/Try again|Checking/).click();
+  });
+  const checking = { ...screen(), label: button(/Checking/)?.textContent, ariaDisabled: button(/Checking/)?.getAttribute("aria-disabled") };
+  await act(async () => check.resolve(ok(ADA)));
+  await settle();
+  expect({ checking, published: api.publishWorkspace.mock.calls.length }).toMatchInlineSnapshot(`
+    {
+      "checking": {
+        "alert": "Couldn't reach AntiDraw. Check your connection and try again.",
+        "ariaDisabled": "true",
+        "dialog": [
+          "Couldn't publish",
+          "We couldn't check your account, so Paper Shaders wasn't published.",
+        ],
+        "focus": "Checking…",
+        "label": "Checking…",
+      },
+      "published": 1,
+    }
+  `);
+});
+
+it("ignores Enter on the panel as it closes", async () => {
+  await render();
+  await click(/^Publish$/);
+  await act(async () => {
+    const signIn = button(/Sign in with Google/);
+    document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    signIn.click(); // Enter on the focused button, before the exit animation ends
+  });
+  await settle();
+  expect({ dialog: screen().dialog, signIns: api.signIn.mock.calls.length }).toMatchInlineSnapshot(`
+    {
+      "dialog": null,
+      "signIns": 0,
+    }
+  `);
+});
+
+it("takes clicks outside the panel: closes it, but not while waiting for Google", async () => {
+  api.signIn.mockReturnValue(new Promise(() => {}));
+  await render();
+  await click(/^Publish$/);
+  await click(/Sign in with Google/);
+  const outside = () =>
+    act(async () => {
+      document.querySelector("[data-publish-overlay]")!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    });
+  await outside();
+  await settle();
+  const waiting = screen().dialog?.[1];
+  await key("Escape"); // back to Sign in
+  await outside();
+  await settle();
+  expect({ waiting, afterOutsideClick: screen().dialog }).toMatchInlineSnapshot(`
+    {
+      "afterOutsideClick": null,
+      "waiting": "Finish signing in with Google in your browser. We'll publish right after.",
+    }
+  `);
+});

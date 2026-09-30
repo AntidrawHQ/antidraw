@@ -1,4 +1,4 @@
-import { app, safeStorage, shell } from "electron";
+import { app, net, safeStorage, shell } from "electron";
 import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
 import { createServer } from "node:http";
@@ -17,10 +17,10 @@ const SERVER_URL = (
   process.env.ANTIDRAW_SERVER_URL ?? "http://localhost:8799"
 ).replace(/\/$/, "");
 
-// As long as the server honors a flow (FLOW_TTL_MS in packages/server's
-// auth.service.ts): waiting on the browser any longer is pointless, and giving
-// up sooner closes the loopback on a user who is still at Google.
-const SIGN_IN_TIMEOUT_MS = 10 * 60 * 1000;
+// The Google step must finish within better-auth's OAuth state cookie
+// (Max-Age 300 s); after that the server can only fail the flow, so waiting
+// longer is pointless. A little extra for the redirect back.
+const SIGN_IN_TIMEOUT_MS = 5 * 60 * 1000 + 30_000;
 
 // How long a request to the Worker may take before it counts as unreachable.
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -105,6 +105,11 @@ const clearToken = async () => {
 // Cloud requests
 // ============================================================================
 
+// Requests to the Worker go through Electron's net.fetch, which uses the
+// system proxy and certificate store as the browser does; Node's fetch
+// doesn't, so on a proxied network the browser would sign in and the app
+// couldn't.
+
 // A request to the Worker as the signed-in user. A 401 means the token is dead
 // (expired, or signed out elsewhere), so it's dropped and the caller gets
 // SIGNED_OUT, which the renderer answers by asking the user to sign in again.
@@ -120,7 +125,7 @@ export const cloudFetch = async (
 
   let response: Response;
   try {
-    response = await fetch(`${SERVER_URL}${pathname}`, { ...init, headers });
+    response = await net.fetch(`${SERVER_URL}${pathname}`, { ...init, headers });
   } catch {
     return err(UNREACHABLE);
   }
@@ -145,14 +150,23 @@ export const getAccount = async (): Promise<
   if (!result.value.ok) {
     return err(accountError(502, "SERVER_ERROR", "Couldn't load the account"));
   }
-  const body = (await result.value.json()) as { user: Account };
-  return ok(body.user);
+  try {
+    const body = (await result.value.json()) as { user: Account };
+    return ok(body.user);
+  } catch (error) {
+    // A captive portal's page, or a body that outlasted the timeout.
+    return err(
+      error instanceof Error && error.name === "TimeoutError"
+        ? UNREACHABLE
+        : accountError(502, "SERVER_ERROR", "Couldn't load the account"),
+    );
+  }
 };
 
 // Best effort: ends a token's session on the server. Offline, the session
 // just expires there. better-auth refuses the request (415) without a JSON body.
 const revoke = async (value: string) => {
-  const response = await fetch(`${SERVER_URL}/api/auth/sign-out`, {
+  const response = await net.fetch(`${SERVER_URL}/api/auth/sign-out`, {
     method: "POST",
     headers: {
       authorization: `Bearer ${value}`,
@@ -194,8 +208,9 @@ export const signIn = async (): Promise<Result<Account, AccountError>> => {
 
   try {
     // A Worker that's down would otherwise leave the user on a browser error
-    // page while the app waits out the whole flow.
-    const reachable = await fetch(`${SERVER_URL}/api/health`, {
+    // page while the app waits out the whole flow. (A flow the server fails
+    // later, on its own error page, still waits out the timeout, or Cancel.)
+    const reachable = await net.fetch(`${SERVER_URL}/api/health`, {
       signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5_000)]),
     }).then(
       (response) => response.ok,
@@ -232,7 +247,7 @@ const exchange = async (
 ): Promise<Result<Account, AccountError>> => {
   let body: { token: string; user: Account };
   try {
-    const response = await fetch(`${SERVER_URL}/api/auth/desktop/token`, {
+    const response = await net.fetch(`${SERVER_URL}/api/auth/desktop/token`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ code, code_verifier: verifier }),
@@ -254,6 +269,13 @@ const exchange = async (
   if (previous && previous !== body.token) void revoke(previous);
   return ok(body.user);
 };
+
+// What better-auth sends back when the Google step outlived its state cookie.
+const STATE_EXPIRED = new Set([
+  "state_mismatch",
+  "state_security_mismatch",
+  "please_restart_the_process",
+]);
 
 const CLOSE_TAB_PAGE = (message: string) =>
   `<!doctype html><meta charset="utf-8"><title>AntiDraw</title>` +
@@ -313,7 +335,9 @@ const signInWithBrowser = (signal: AbortSignal) =>
           return;
         }
         reply("Sign-in didn't complete. You can close this tab and try again in AntiDraw.");
-        if (error === "access_denied")
+        if (STATE_EXPIRED.has(error ?? ""))
+          finish(err(accountError(408, "TIMED_OUT", "Sign-in took too long")));
+        else if (error === "access_denied")
           finish(err(accountError(401, "ACCESS_DENIED", "Sign-in was declined")));
         else finish(err(accountError(502, "SIGN_IN_FAILED", "Sign-in failed")));
       });

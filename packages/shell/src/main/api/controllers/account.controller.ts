@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { APP_KEY_HEADER, isAppKey } from "@/main/lib/app-key";
 import {
   cancelSignIn,
   getAccount,
@@ -8,19 +9,11 @@ import {
 
 export const accountController = new Hono();
 
-// The app's own pages only. Workspace previews run in the same session and
+// The app's own pages only: workspace previews run in the same session and
 // could otherwise read the account, sign the user out, or keep opening
-// sign-in tabs. Browsers send Origin on every cross-origin fetch and every
-// POST; the one request without it, a same-origin or no-cors GET, can't read
-// the answer from another origin.
-const APP_ORIGINS = new Set([
-  "antidraw://app",
-  ...(process.env.NODE_ENV === "development" ? ["http://localhost:5173"] : []),
-]);
-
+// sign-in tabs. See app-key.ts.
 accountController.use(async (ctx, next) => {
-  const origin = ctx.req.header("origin");
-  if (origin !== undefined && !APP_ORIGINS.has(origin)) {
+  if (!isAppKey(ctx.req.header(APP_KEY_HEADER))) {
     return ctx.json(
       { error: { code: "FORBIDDEN", message: "Not available to this page" } },
       403,

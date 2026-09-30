@@ -26,6 +26,7 @@ import {
 import { installNodeShim } from "./lib/node-shim";
 import { runMigrations } from "./db/migrate";
 import { shutdownPostHog } from "./lib/posthog";
+import { APP_KEY, APP_KEY_ARG } from "@/main/lib/app-key";
 
 // Keep the renderer responsive when the window is unfocused or occluded.
 // Without these, Chromium throttles rAF/timers/request scheduling in packaged
@@ -65,6 +66,7 @@ const createWindow = () => {
     backgroundColor: "#0a0a0a",
     webPreferences: {
       preload: path.join(__dirname, "../preload/preload.cjs"),
+      additionalArguments: [`${APP_KEY_ARG}${APP_KEY}`],
       contextIsolation: true,
       nodeIntegration: false,
       backgroundThrottling: false,

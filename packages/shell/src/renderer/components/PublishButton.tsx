@@ -86,14 +86,20 @@ export const PublishButton = ({
   const [copied, setCopied] = useState(false);
   const [link, setLink] = useState<string | null>(null);
   const [failure, setFailure] = useState<Failure | null>(null);
+  // Counts failures, so the same message is announced again on a retry.
+  const [attempt, setAttempt] = useState(0);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const publishButton = useRef<HTMLButtonElement>(null);
   const signInButton = useRef<HTMLButtonElement>(null);
-  // For mutation callbacks, which outlive the render that started them.
+  // The current step for guards and callbacks, which can run from an old
+  // render (a mutation callback, or the panel's buttons while it animates
+  // out). Set together with the state, so a second click in the same frame
+  // already sees the first one's step.
   const stepRef = useRef(step);
-  useEffect(() => {
-    stepRef.current = step;
-  });
+  const go = (next: Step) => {
+    stepRef.current = next;
+    setStep(next);
+  };
 
   const { refetch: refetchAccount } = useAccount();
   const signInMutation = useSignIn();
@@ -109,26 +115,29 @@ export const PublishButton = ({
 
   const fail = (next: Failure) => {
     setFailure(next);
-    setStep("error");
+    setAttempt((n) => n + 1);
+    go("error");
   };
 
   const publish = () => {
     setLinked(false);
-    setStep("publishing");
+    go("publishing");
     publishMutation.mutate(workspaceId, {
       onSuccess: ({ url }) => {
         setLink(url);
-        setStep("published");
-        later(PUBLISHED_TOAST_MS, () => setStep((s) => (s === "published" ? "closed" : s)));
+        go("published");
+        later(PUBLISHED_TOAST_MS, () => {
+          if (stepRef.current === "published") go("closed");
+        });
       },
       onError: (error) => {
         if (error.code === "SIGNED_OUT") {
           setFailure(null);
-          setStep("signin");
+          go("signin");
           return;
         }
         console.error("Publish failed:", error);
-        setStep("closed");
+        go("closed");
       },
     });
   };
@@ -138,38 +147,59 @@ export const PublishButton = ({
     if (stepRef.current === "waiting") cancelSignInMutation.mutate();
   };
 
-  const onPublishClick = async () => {
+  // Checks the account, then publishes or asks to sign in. Asked on every
+  // click: a sign-in that finished after a reload, or a server that was down
+  // at launch, changes the answer. A retry from the "Couldn't publish" panel
+  // keeps the panel (and its message) up while it checks.
+  const checkThenPublish = async () => {
     clear();
-    if (step === "publishing" || step === "checking") return;
     abandonSignIn();
     setLinked(false);
-    setFailure(null);
-    setStep("checking");
-    // Asked on every click: a sign-in that finished after a reload, or a
-    // server that was down at launch, changes the answer.
-    const { data, error } = await refetchAccount();
-    if (data) publish();
-    else if (error)
+    go("checking");
+    const result = await refetchAccount();
+    if (stepRef.current !== "checking") return;
+    // By status: a failed refetch keeps the last account it loaded.
+    if (result.isError)
       fail({
-        message: problem(error instanceof AccountRequestError ? error.code : ""),
+        message: problem(result.error instanceof AccountRequestError ? result.error.code : ""),
         retry: "publish",
       });
-    else setStep("signin");
+    else if (result.data) {
+      setFailure(null);
+      publish();
+    } else {
+      setFailure(null);
+      go("signin");
+    }
+  };
+
+  const onPublishClick = () => {
+    if (stepRef.current === "publishing" || stepRef.current === "checking") return;
+    setFailure(null);
+    void checkThenPublish();
+  };
+
+  // The panel's buttons only act while the panel is up: an animating-out
+  // panel keeps its old handlers and can still take a click or an Enter.
+  const panelIsUp = () => stepRef.current === "signin" || stepRef.current === "error";
+
+  const retryPublish = () => {
+    if (panelIsUp()) void checkThenPublish();
   };
 
   const signIn = () => {
     // aria-disabled, not disabled, while waiting: the button keeps focus.
-    if (step === "waiting" || linked) return;
+    if (!panelIsUp()) return;
     clear();
     setFailure(null);
-    setStep("waiting");
+    go("waiting");
     signInMutation.mutate(undefined, {
       onSuccess: () => {
         if (stepRef.current !== "waiting") {
           // Cancelled as the token was being saved: signed in after all, so
           // don't keep offering sign-in. Closed meanwhile: stay closed. Either
           // way, don't publish.
-          if (stepRef.current === "signin" || stepRef.current === "error") setStep("closed");
+          if (stepRef.current === "signin" || stepRef.current === "error") go("closed");
           return;
         }
         setLinked(true);
@@ -187,7 +217,7 @@ export const PublishButton = ({
     abandonSignIn();
     setLinked(false);
     setFailure(null);
-    setStep("signin");
+    go("signin");
   };
 
   const close = () => {
@@ -195,7 +225,7 @@ export const PublishButton = ({
     abandonSignIn();
     setLinked(false);
     setFailure(null);
-    setStep("closed");
+    go("closed");
   };
 
   useEffect(() => {
@@ -204,9 +234,11 @@ export const PublishButton = ({
     return () => clearTimeout(t);
   }, [copied]);
 
-  const panelOpen = step === "signin" || step === "waiting" || step === "error";
+  // A retry of the account check keeps the panel it came from.
+  const rechecking = step === "checking" && failure?.retry === "publish";
+  const panelOpen = step === "signin" || step === "waiting" || step === "error" || rechecking;
   const busy = step === "waiting";
-  const retryPublish = failure?.retry === "publish";
+  const retryingPublish = failure?.retry === "publish";
 
   return (
     <>
@@ -222,6 +254,7 @@ export const PublishButton = ({
             ref={publishButton}
             type="button"
             onClick={onPublishClick}
+            aria-busy={step === "checking" || step === "publishing"}
             className="flex h-[26px] min-w-[84px] items-center justify-center gap-1.5 rounded-lg bg-[#e0e0e0] px-2.5 text-[13px] font-medium text-neutral-900 transition-colors hover:bg-white"
             style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
           >
@@ -247,6 +280,16 @@ export const PublishButton = ({
             )}
           </button>
         </PopoverPrimitive.Anchor>
+
+        {/* Catches clicks outside the panel. Radix's modal turns off pointer
+            events on the page, but the canvas's frames turn theirs back on, so a
+            click could land in a frame and take focus. A click here is an outside
+            click to Radix (closes, unless busy). */}
+        {panelOpen &&
+          createPortal(
+            <div data-publish-overlay className="pointer-events-auto fixed inset-0 z-[105]" aria-hidden />,
+            document.body,
+          )}
 
         {/* the panel */}
         <AnimatePresence initial={false}>
@@ -299,12 +342,12 @@ export const PublishButton = ({
                   <img src={antidrawIcon} alt="AntiDraw" className="h-10 w-10" />
 
                   <h2 id="publish-handshake-title" className="mt-4 text-base font-medium tracking-[-0.01em] text-[#e0e0e0]">
-                    {retryPublish ? "Couldn't publish" : "Sign in to publish"}
+                    {retryingPublish ? "Couldn't publish" : "Sign in to publish"}
                   </h2>
                   <p className="mt-1.5 text-[13px] leading-[1.6] text-[#9a9a9a]">
                     {busy
                       ? "Finish signing in with Google in your browser. We'll publish right after."
-                      : retryPublish
+                      : retryingPublish
                         ? `We couldn't check your account, so ${workspaceName} wasn't published.`
                         : `Once you're signed in, ${workspaceName} goes live on a link you can share.`}
                   </p>
@@ -312,8 +355,8 @@ export const PublishButton = ({
                   <button
                     ref={signInButton}
                     type="button"
-                    onClick={retryPublish ? onPublishClick : signIn}
-                    aria-disabled={busy || linked}
+                    onClick={retryingPublish ? retryPublish : signIn}
+                    aria-disabled={busy || linked || rechecking}
                     className="mt-5 flex h-10 w-full items-center justify-center gap-2.5 rounded-[10px] border border-white/[0.12] bg-white/[0.08] text-sm font-medium text-[#e0e0e0] transition-colors hover:border-white/[0.24] hover:bg-white/[0.12] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white/60 aria-disabled:cursor-default aria-disabled:hover:border-white/[0.12] aria-disabled:hover:bg-white/[0.08]"
                   >
                     {linked ? (
@@ -321,14 +364,14 @@ export const PublishButton = ({
                         <Check size={15} strokeWidth={2.5} style={{ color: GREEN }} />
                         Connected
                       </>
-                    ) : busy ? (
+                    ) : busy || rechecking ? (
                       <>
                         <LoaderCircle size={15} className="animate-spin text-[#9a9a9a]" />
-                        <span className="text-[#9a9a9a]">Waiting for Google…</span>
+                        <span className="text-[#9a9a9a]">{busy ? "Waiting for Google…" : "Checking…"}</span>
                       </>
                     ) : (
                       <>
-                        {!retryPublish && <GoogleG size={16} />}
+                        {!retryingPublish && <GoogleG size={16} />}
                         {step === "error" ? "Try again" : "Sign in with Google"}
                       </>
                     )}
@@ -337,11 +380,17 @@ export const PublishButton = ({
                   {/* Announced: what the button now shows. The page behind is hidden from
                       assistive tech while the panel is open, so this lives in the panel. */}
                   <span role="status" className="sr-only">
-                    {linked ? "Signed in" : busy ? "Waiting for Google sign-in in your browser" : ""}
+                    {linked
+                      ? "Signed in"
+                      : busy
+                        ? "Waiting for Google sign-in in your browser"
+                        : rechecking
+                          ? "Checking your account"
+                          : ""}
                   </span>
 
                   {/* only shown when there's something to say */}
-                  {(busy || step === "error") && (
+                  {(busy || step === "error" || rechecking) && (
                     <div className="mt-3 flex min-h-4 items-center text-[11px]">
                       {busy ? (
                         <button
@@ -353,7 +402,8 @@ export const PublishButton = ({
                           Cancel
                         </button>
                       ) : (
-                        <span role="alert" style={{ color: RED }}>
+                        // Keyed by attempt, so the same message is announced again.
+                        <span key={attempt} role="alert" style={{ color: RED }}>
                           {failure?.message}
                         </span>
                       )}
@@ -367,7 +417,7 @@ export const PublishButton = ({
       </PopoverPrimitive.Root>
 
       <span role="status" className="sr-only">
-        {step === "publishing" ? "Publishing" : ""}
+        {step === "publishing" ? "Publishing" : step === "checking" && !rechecking ? "Checking your account" : ""}
       </span>
 
       {createPortal(
