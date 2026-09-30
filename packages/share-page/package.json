@@ -1,0 +1,33 @@
+{
+  "name": "@antidraw/share-page",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "description": "The share page at antidraw.com/s/<slug>: the shell's canvas, read-only, over a site published to <slug>.antidraw.app.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "deploy": "vite build && wrangler deploy",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.worker.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.90.12",
+    "@xyflow/react": "^12.10.0",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260627.1",
+    "@tailwindcss/vite": "^4.1.18",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.2",
+    "tailwindcss": "^4.1.18",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.2",
+    "vitest": "^4.1.5",
+    "wrangler": "^4.142.0"
+  }
+}

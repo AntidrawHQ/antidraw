@@ -1,0 +1,18 @@
+{
+  // The app (src/app), which also compiles the shell's canvas it imports.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "allowImportingTsExtensions": true,
+    "baseUrl": ".",
+    "paths": { "@/*": ["../shell/src/*"] }
+  },
+  "include": ["src/app", "src/site.ts", "vite.config.ts"]
+}

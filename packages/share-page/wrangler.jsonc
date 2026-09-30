@@ -1,0 +1,24 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "antidraw-share-page",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-09-01",
+  "observability": {
+    "enabled": true
+  },
+  // The app, built by `vite build` into dist/s/. A request for one of its
+  // files is served without running the Worker.
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS"
+  },
+  "vars": {
+    // Where published sites are served (@antidraw/site-worker), * being the slug.
+    "SITE_URL_PATTERN": "https://*.antidraw.app"
+  },
+  "routes": [
+    // Only /s/ on antidraw.com; the rest of the domain is the landing page's.
+    // A route wins over a custom domain on the same host.
+    { "pattern": "antidraw.com/s/*", "zone_name": "antidraw.com" }
+  ]
+}
