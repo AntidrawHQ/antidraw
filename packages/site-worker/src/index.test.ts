@@ -52,7 +52,7 @@ async function publish(slug: string, contents: Record<string, string>) {
 async function get(url: string) {
   const res = await harness.getWorker().fetch(url, { redirect: "manual" });
   const headers = Object.fromEntries(
-    ["content-type", "cache-control", "location", "access-control-allow-origin"].flatMap((name) => {
+    ["content-type", "cache-control", "location", "access-control-allow-origin", "retry-after"].flatMap((name) => {
       const value = res.headers.get(name);
       return value === null ? [] : [[name, value]];
     }),
@@ -157,5 +157,41 @@ describe("site worker", () => {
         "404 no-store Site not found *",
       ]
     `);
+  });
+
+  // Last: it breaks D1 for a moment.
+  it("answers 503 when D1 fails, readable from any origin for canvas.json", async () => {
+    await env.DB.prepare("ALTER TABLE site RENAME TO site_away").run();
+    try {
+      // Slugs this isolate hasn't cached.
+      expect({
+        canvas: await get("https://uncached.sites.test/canvas.json"),
+        preview: await get("https://uncached-too.sites.test/preview"),
+      }).toMatchInlineSnapshot(`
+        {
+          "canvas": {
+            "body": "Temporarily unavailable",
+            "headers": {
+              "access-control-allow-origin": "*",
+              "cache-control": "no-store",
+              "content-type": "text/plain; charset=utf-8",
+              "retry-after": "1",
+            },
+            "status": 503,
+          },
+          "preview": {
+            "body": "Temporarily unavailable",
+            "headers": {
+              "cache-control": "no-store",
+              "content-type": "text/plain; charset=utf-8",
+              "retry-after": "1",
+            },
+            "status": 503,
+          },
+        }
+      `);
+    } finally {
+      await env.DB.prepare("ALTER TABLE site_away RENAME TO site").run();
+    }
   });
 });

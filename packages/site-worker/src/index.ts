@@ -53,14 +53,16 @@ const cors = (pathname: string, headers: Headers) => {
   if (pathname === "/canvas.json") headers.set("access-control-allow-origin", "*");
 };
 
-const notFound = (pathname: string) => {
-  const response = new Response("Site not found", {
-    status: 404,
-    headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
+const plain = (pathname: string, status: number, body: string, headers: Record<string, string> = {}) => {
+  const response = new Response(body, {
+    status,
+    headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", ...headers },
   });
   cors(pathname, response.headers);
   return response;
 };
+
+const notFound = (pathname: string) => plain(pathname, 404, "Site not found");
 
 // One server per isolate, so its pointer cache lasts across requests.
 let server: SiteServer | undefined;
@@ -71,7 +73,15 @@ export default {
     const suffix = `.${env.SITE_DOMAIN}`;
     const slug = host.endsWith(suffix) ? host.slice(0, -suffix.length) : "";
     if (!SLUG_RE.test(slug)) return notFound(pathname);
-    const siteId = await siteIdFor(env.DB, slug, Date.now());
+    let siteId: string | null;
+    try {
+      siteId = await siteIdFor(env.DB, slug, Date.now());
+    } catch (error) {
+      // D1 failed: answer as SiteServer does when R2 fails, a 503 the share
+      // page can see and retry, not the runtime's error page.
+      console.error(error);
+      return plain(pathname, 503, "Temporarily unavailable", { "retry-after": "1" });
+    }
     if (!siteId) return notFound(pathname);
 
     if (pathname === "/") {
