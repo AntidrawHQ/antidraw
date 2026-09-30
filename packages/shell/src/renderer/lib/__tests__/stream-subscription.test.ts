@@ -18,7 +18,15 @@ vi.mock("../api", async (importOriginal) => {
   return { ...actual, subscribeToConversation: vi.fn() };
 });
 
+// Wrapped, not replaced: the real parser runs, and the spy counts how often.
+vi.mock("@/shared/utils/parse-partial-json", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/shared/utils/parse-partial-json")>();
+  return { ...actual, parsePartialJson: vi.fn(actual.parsePartialJson) };
+});
+
 const { subscribeToConversation } = await import("../api");
+const { parsePartialJson } = await import("@/shared/utils/parse-partial-json");
 const { StreamDisconnectedError } = await import("../api");
 const {
   subscribeToStream,
@@ -1161,35 +1169,272 @@ describe("the live block's writes", () => {
     releaseStream(id);
   });
 
-  test("a tool input is parsed once per write, and a bad chunk keeps the last good input", async () => {
+  // A stream the test feeds by hand, so deltas can land in separate frames.
+  // Hangs between pushes the way a live link does, and ends on release.
+  const liveStream = () => {
+    const queue: StreamEvent[] = [];
+    let wake: (() => void) | null = null;
+    mockSubscribe.mockImplementation(((
+      _conversationId: string,
+      _afterSeq?: number,
+      releaseSignal?: AbortSignal,
+    ) =>
+      (async function* () {
+        while (!releaseSignal?.aborted) {
+          const next = queue.shift();
+          if (next) {
+            yield next;
+            continue;
+          }
+          await new Promise<void>((resolve) => {
+            wake = resolve;
+            releaseSignal?.addEventListener("abort", () => resolve(), {
+              once: true,
+            });
+          });
+        }
+      })()) as typeof subscribeToConversation);
+    return async (...events: StreamEvent[]) => {
+      queue.push(...events);
+      wake?.();
+      wake = null;
+      await flush();
+    };
+  };
+  const inputOf = (id: string) =>
+    (liveOf(id)?.block as { input?: unknown }).input;
+
+  test("a tool input is parsed once per write, not once per delta", async () => {
     const id = freshId();
     seedCache(queryClient, id, []);
     scriptAttempts([
       {
         events: [
           start({ type: "tool_use", id: "t1", name: "Write", input: {} }),
-          jsonDelta('{"file_path":"/a.ts","content":"hi'),
+          ...['{"file_path"', ':"/a.ts"', ',"content"', ':"h', 'i"}'].map(
+            jsonDelta,
+          ),
         ],
         hangs: true,
       },
     ]);
+    vi.mocked(parsePartialJson).mockClear();
+
+    subscribeToStream(id, queryClient);
+    await flush();
+    // Five deltas folded, none parsed: the parse belongs to the write.
+    expect(parsePartialJson).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(50);
+    expect(parsePartialJson).toHaveBeenCalledTimes(1);
+    expect(inputOf(id)).toEqual({ file_path: "/a.ts", content: "hi" });
+
+    releaseStream(id);
+  });
+
+  test("a frame that ends mid-token keeps the input the last frame wrote", async () => {
+    const id = freshId();
+    seedCache(queryClient, id, []);
+    const push = liveStream();
+
+    subscribeToStream(id, queryClient);
+    await push(
+      start({ type: "tool_use", id: "t1", name: "Write", input: {} }),
+      jsonDelta('{"content":"hi'),
+    );
+    await vi.advanceTimersByTimeAsync(50);
+    expect(inputOf(id)).toEqual({ content: "hi" });
+
+    // Cut off inside an escape: the accumulated json does not parse. The next
+    // fold starts from what the cache holds, so the input it carries forward
+    // is the one already on screen, not the block's empty starting input.
+    await push(jsonDelta("\\u00"));
+    await vi.advanceTimersByTimeAsync(50);
+    expect(liveOf(id)?.partialJson).toBe('{"content":"hi\\u00');
+    expect(inputOf(id)).toEqual({ content: "hi" });
+
+    await push(jsonDelta('e9"}'));
+    await vi.advanceTimersByTimeAsync(50);
+    expect(inputOf(id)).toEqual({ content: "hi\u00e9" });
+
+    releaseStream(id);
+  });
+
+  test("a seed arriving behind pending deltas is not overwritten by them", async () => {
+    const id = freshId();
+    seedCache(queryClient, id, []);
+    // The route attaches live listeners before it reads the backlog and seeds,
+    // so on a reconnect partials can reach us ahead of the livePartial seed.
+    const seeded = {
+      index: 0,
+      block: { type: "text", text: "everything so far" },
+    } as unknown as LivePartial;
+    scriptAttempts([
+      {
+        events: [
+          start({ type: "text", text: "" }),
+          textDelta("stale"),
+          { type: "livePartial", livePartial: seeded },
+        ],
+        hangs: true,
+      },
+    ]);
+
     subscribeToStream(id, queryClient);
     await flush();
     await vi.advanceTimersByTimeAsync(50);
 
-    expect((liveOf(id)?.block as { input?: unknown }).input).toEqual({
-      file_path: "/a.ts",
-      content: "hi",
-    });
-    releaseStream(id);
+    expect(liveOf(id)).toEqual(seeded);
 
-    // A chunk that cannot be parsed yet must not blank what already rendered.
-    const { materializePartial } = await import("@/shared/utils/live-partial");
-    const good = liveOf(id)!;
-    const broken = { ...good, partialJson: "not json" };
-    expect(
-      (materializePartial(broken)?.block as { input?: unknown }).input,
-    ).toEqual({ file_path: "/a.ts", content: "hi" });
+    releaseStream(id);
+  });
+
+  test("a turn failing on the backend cancels the pending write", async () => {
+    const id = freshId();
+    seedCache(queryClient, id, []);
+    scriptAttempts([
+      {
+        events: [
+          start({ type: "text", text: "" }),
+          textDelta("partial"),
+          { type: "error", error: "spawn failed" } as unknown as StreamEvent,
+        ],
+      },
+    ]);
+
+    subscribeToStream(id, queryClient);
+    await settle(id);
+
+    // A flush after the clear would leave a dead block under the notice.
+    expect(liveOf(id)).toBeNull();
+    expect(detail(queryClient, id).streamStatus).toBe("error");
+  });
+
+  test("giving up on the link cancels the pending write", async () => {
+    const id = freshId();
+    seedCache(queryClient, id, []);
+    scriptAttempts([
+      {
+        events: [start({ type: "text", text: "" }), textDelta("partial")],
+        throws: new StreamDisconnectedError("gone", false),
+      },
+    ]);
+
+    subscribeToStream(id, queryClient);
+    await settle(id);
+
+    expect(liveOf(id)).toBeNull();
+    expect(detail(queryClient, id).streamStatus).toBe("error");
+  });
+
+  test("token deltas do not walk the transcript", async () => {
+    const id = freshId();
+    seedCache(queryClient, id, [message(1, "a"), message(2, "b")]);
+    const push = liveStream();
+    const detailReads = { count: 0 };
+    const getQueryData = queryClient.getQueryData.bind(queryClient);
+    vi.spyOn(queryClient, "getQueryData").mockImplementation(((
+      key: readonly unknown[],
+    ) => {
+      if (
+        JSON.stringify(key) ===
+        JSON.stringify(queryKeys.conversations.detail(id))
+      )
+        detailReads.count++;
+      return getQueryData(key);
+    }) as typeof queryClient.getQueryData);
+
+    subscribeToStream(id, queryClient);
+    await push(start({ type: "text", text: "" }));
+    const before = detailReads.count;
+
+    // The retry-budget check reads the whole transcript. Only a persisted row
+    // can move it, so a token must not pay for it.
+    await push(...Array.from({ length: 50 }, (_, i) => textDelta(String(i))));
+    expect(detailReads.count).toBe(before);
+
+    releaseStream(id);
+  });
+
+  describe("on requestAnimationFrame", () => {
+    // What the Electron renderer actually runs; the rest of this file has no
+    // rAF and takes the setTimeout fallback.
+    const frames = new Map<number, FrameRequestCallback>();
+    let nextHandle = 1;
+    const runFrames = () => {
+      const callbacks = [...frames.values()];
+      frames.clear();
+      for (const cb of callbacks) cb(0);
+    };
+
+    beforeEach(() => {
+      frames.clear();
+      vi.stubGlobal(
+        "requestAnimationFrame",
+        vi.fn((cb: FrameRequestCallback) => {
+          const handle = nextHandle++;
+          frames.set(handle, cb);
+          return handle;
+        }),
+      );
+      vi.stubGlobal(
+        "cancelAnimationFrame",
+        vi.fn((handle: number) => frames.delete(handle)),
+      );
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    test("a burst of deltas asks for one frame and writes on it", async () => {
+      const id = freshId();
+      seedCache(queryClient, id, []);
+      scriptAttempts([
+        {
+          events: [
+            start({ type: "text", text: "" }),
+            ...["a", "b", "c"].map(textDelta),
+          ],
+          hangs: true,
+        },
+      ]);
+
+      subscribeToStream(id, queryClient);
+      await flush();
+      expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
+      expect(liveOf(id)).toBeUndefined();
+
+      runFrames();
+      expect((liveOf(id)?.block as { text?: string }).text).toBe("abc");
+
+      releaseStream(id);
+    });
+
+    test("a clear cancels the frame it asked for", async () => {
+      const id = freshId();
+      seedCache(queryClient, id, []);
+      scriptAttempts([
+        {
+          events: [
+            start({ type: "text", text: "" }),
+            textDelta("partial"),
+            { type: "message", message: assistantRow(1) },
+          ],
+          hangs: true,
+        },
+      ]);
+
+      subscribeToStream(id, queryClient);
+      await flush();
+      const handle = vi.mocked(requestAnimationFrame).mock.results[0]!.value;
+      expect(cancelAnimationFrame).toHaveBeenCalledWith(handle);
+
+      runFrames();
+      expect(liveOf(id)).toBeNull();
+
+      releaseStream(id);
+    });
   });
 
   test("releasing drops a write that has not happened yet", async () => {

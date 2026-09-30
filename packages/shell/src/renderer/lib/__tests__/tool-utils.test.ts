@@ -58,4 +58,31 @@ describe("reuseToolParts", () => {
 
     expect(after.get("t1")).toBe(before.get("t1"));
   });
+
+  // State alone is not enough to call a tool unchanged: a memoized row keyed on
+  // the part's identity would go on showing the old input or result.
+  test("hands out a new object when the input changes and the state does not", () => {
+    const before = correlateTools([assistantWithTool("t1", { file_path: "/a" })]);
+    const after = reuseToolParts(
+      before,
+      correlateTools([assistantWithTool("t1", { file_path: "/b" })]),
+    );
+
+    expect(after.get("t1")?.state).toBe(before.get("t1")?.state);
+    expect(after.get("t1")).not.toBe(before.get("t1"));
+    expect(after.get("t1")?.input).toEqual({ file_path: "/b" });
+  });
+
+  test("hands out a new object when the result changes and the state does not", () => {
+    const a = assistantWithTool("t1", { file_path: "/a" });
+    const before = correlateTools([a, toolResult("t1", "first")]);
+    const after = reuseToolParts(
+      before,
+      correlateTools([a, toolResult("t1", "second")]),
+    );
+
+    expect(after.get("t1")?.state).toBe("output-available");
+    expect(after.get("t1")).not.toBe(before.get("t1"));
+    expect(after.get("t1")?.output?.result).toBe("second");
+  });
 });
