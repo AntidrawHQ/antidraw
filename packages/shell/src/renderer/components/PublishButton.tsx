@@ -82,24 +82,41 @@ export const PublishButton = ({
 }) => {
   const reduce = !!useReducedMotion();
   const [step, setStep] = useState<Step>("closed");
-  const [linked, setLinked] = useState(false); // brief green beat before the modal closes
+  const [linked, setLinkedState] = useState(false); // brief green beat before the modal closes
   const [copied, setCopied] = useState(false);
   const [link, setLink] = useState<string | null>(null);
-  const [failure, setFailure] = useState<Failure | null>(null);
+  const [failure, setFailureState] = useState<Failure | null>(null);
   // Counts failures, so the same message is announced again on a retry.
   const [attempt, setAttempt] = useState(0);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const publishButton = useRef<HTMLButtonElement>(null);
   const signInButton = useRef<HTMLButtonElement>(null);
-  // The current step for guards and callbacks, which can run from an old
-  // render (a mutation callback, or the panel's buttons while it animates
-  // out). Set together with the state, so a second click in the same frame
-  // already sees the first one's step.
+
+  // Live copies of the state, for guards and callbacks that run from an old
+  // render: a mutation callback, or the panel while it animates out (it keeps
+  // its last handlers and can still take a click, Enter or Escape). Each is
+  // set together with its state, so a second click in the same frame already
+  // sees the first.
   const stepRef = useRef(step);
+  const failureRef = useRef(failure);
+  const linkedRef = useRef(linked);
   const go = (next: Step) => {
     stepRef.current = next;
     setStep(next);
   };
+  const setFailure = (next: Failure | null) => {
+    failureRef.current = next;
+    setFailureState(next);
+  };
+  const setLinked = (next: boolean) => {
+    linkedRef.current = next;
+    setLinkedState(next);
+  };
+  // The workspace a click on Publish is for: the active one can change while
+  // the account is checked or the user signs in.
+  const target = useRef({ id: workspaceId, name: workspaceName });
+  // The latest account check; one the user walked away from is ignored.
+  const checkRun = useRef(0);
 
   const { refetch: refetchAccount } = useAccount();
   const signInMutation = useSignIn();
@@ -113,6 +130,19 @@ export const PublishButton = ({
   useEffect(() => clear, []);
   const later = (ms: number, fn: () => void) => timers.current.push(setTimeout(fn, ms));
 
+  // Whether the panel is up (a retry of the account check keeps it), and
+  // whether its Sign in / Try again button may act.
+  const panelIsUp = () => {
+    const now = stepRef.current;
+    return (
+      now === "signin" ||
+      now === "waiting" ||
+      now === "error" ||
+      (now === "checking" && failureRef.current?.retry === "publish")
+    );
+  };
+  const canAct = () => stepRef.current === "signin" || stepRef.current === "error";
+
   const fail = (next: Failure) => {
     setFailure(next);
     setAttempt((n) => n + 1);
@@ -122,7 +152,7 @@ export const PublishButton = ({
   const publish = () => {
     setLinked(false);
     go("publishing");
-    publishMutation.mutate(workspaceId, {
+    publishMutation.mutate(target.current.id, {
       onSuccess: ({ url }) => {
         setLink(url);
         go("published");
@@ -156,8 +186,9 @@ export const PublishButton = ({
     abandonSignIn();
     setLinked(false);
     go("checking");
+    const run = ++checkRun.current;
     const result = await refetchAccount();
-    if (stepRef.current !== "checking") return;
+    if (run !== checkRun.current || stepRef.current !== "checking") return;
     // By status: a failed refetch keeps the last account it loaded.
     if (result.isError)
       fail({
@@ -175,21 +206,18 @@ export const PublishButton = ({
 
   const onPublishClick = () => {
     if (stepRef.current === "publishing" || stepRef.current === "checking") return;
+    target.current = { id: workspaceId, name: workspaceName };
     setFailure(null);
     void checkThenPublish();
   };
 
-  // The panel's buttons only act while the panel is up: an animating-out
-  // panel keeps its old handlers and can still take a click or an Enter.
-  const panelIsUp = () => stepRef.current === "signin" || stepRef.current === "error";
-
   const retryPublish = () => {
-    if (panelIsUp()) void checkThenPublish();
+    if (canAct()) void checkThenPublish();
   };
 
   const signIn = () => {
     // aria-disabled, not disabled, while waiting: the button keeps focus.
-    if (!panelIsUp()) return;
+    if (!canAct()) return;
     clear();
     setFailure(null);
     go("waiting");
@@ -213,6 +241,7 @@ export const PublishButton = ({
   };
 
   const backToSignIn = () => {
+    if (stepRef.current !== "waiting") return;
     clear();
     abandonSignIn();
     setLinked(false);
@@ -221,12 +250,25 @@ export const PublishButton = ({
   };
 
   const close = () => {
+    if (!panelIsUp()) return;
     clear();
     abandonSignIn();
+    checkRun.current++;
     setLinked(false);
     setFailure(null);
     go("closed");
   };
+
+  // Keyboard focus stays on the panel's button: Cancel and the Connected
+  // beat take the control focus was on away, and the dialog itself has no
+  // visible focus.
+  useEffect(() => {
+    if (!panelIsUp()) return;
+    const focused = document.activeElement;
+    if (!focused || focused === document.body || focused.getAttribute("role") === "dialog") {
+      signInButton.current?.focus();
+    }
+  }, [step, linked]);
 
   useEffect(() => {
     if (!copied) return;
@@ -311,14 +353,22 @@ export const PublishButton = ({
                   publishButton.current?.focus();
                 }}
                 onEscapeKeyDown={(e) => {
-                  if (linked) e.preventDefault();
-                  else if (busy) {
+                  // Read live: a panel animating out keeps this handler.
+                  if (!panelIsUp() || linkedRef.current) e.preventDefault();
+                  else if (stepRef.current === "waiting") {
                     e.preventDefault();
                     backToSignIn();
                   }
                 }}
                 onPointerDownOutside={(e) => {
-                  if (busy || linked) e.preventDefault();
+                  if (!panelIsUp() || stepRef.current === "waiting" || linkedRef.current) {
+                    e.preventDefault();
+                    return;
+                  }
+                  // A second click of a double-click on Publish keeps the panel.
+                  const { clientX: x, clientY: y } = e.detail.originalEvent;
+                  const r = publishButton.current?.getBoundingClientRect();
+                  if (r && r.width > 0 && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) e.preventDefault();
                 }}
               >
                 <motion.div
@@ -348,8 +398,8 @@ export const PublishButton = ({
                     {busy
                       ? "Finish signing in with Google in your browser. We'll publish right after."
                       : retryingPublish
-                        ? `We couldn't check your account, so ${workspaceName} wasn't published.`
-                        : `Once you're signed in, ${workspaceName} goes live on a link you can share.`}
+                        ? `We couldn't check your account, so ${target.current.name} wasn't published.`
+                        : `Once you're signed in, ${target.current.name} goes live on a link you can share.`}
                   </p>
 
                   <button

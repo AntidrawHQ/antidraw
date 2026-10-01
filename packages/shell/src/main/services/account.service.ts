@@ -108,7 +108,13 @@ const clearToken = async () => {
 // Requests to the Worker go through Electron's net.fetch, which uses the
 // system proxy and certificate store as the browser does; Node's fetch
 // doesn't, so on a proxied network the browser would sign in and the app
-// couldn't.
+// couldn't. Unlike Node's fetch, net.fetch would share the default session's
+// cookies (workspace previews set those, and better-auth refuses a cookie
+// request without an Origin) and would keep the Authorization header on a
+// redirect to another host. The Worker never redirects and its API takes no
+// cookies, so both are turned off.
+const workerFetch = (url: string, init: RequestInit = {}) =>
+  net.fetch(url, { ...init, credentials: "omit", redirect: "error" });
 
 // A request to the Worker as the signed-in user. A 401 means the token is dead
 // (expired, or signed out elsewhere), so it's dropped and the caller gets
@@ -125,7 +131,7 @@ export const cloudFetch = async (
 
   let response: Response;
   try {
-    response = await net.fetch(`${SERVER_URL}${pathname}`, { ...init, headers });
+    response = await workerFetch(`${SERVER_URL}${pathname}`, { ...init, headers });
   } catch {
     return err(UNREACHABLE);
   }
@@ -154,9 +160,10 @@ export const getAccount = async (): Promise<
     const body = (await result.value.json()) as { user: Account };
     return ok(body.user);
   } catch (error) {
-    // A captive portal's page, or a body that outlasted the timeout.
+    // A captive portal's page, or a body that outlasted the timeout (an
+    // AbortError under net.fetch, a TimeoutError under Node's fetch).
     return err(
-      error instanceof Error && error.name === "TimeoutError"
+      error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")
         ? UNREACHABLE
         : accountError(502, "SERVER_ERROR", "Couldn't load the account"),
     );
@@ -166,7 +173,7 @@ export const getAccount = async (): Promise<
 // Best effort: ends a token's session on the server. Offline, the session
 // just expires there. better-auth refuses the request (415) without a JSON body.
 const revoke = async (value: string) => {
-  const response = await net.fetch(`${SERVER_URL}/api/auth/sign-out`, {
+  const response = await workerFetch(`${SERVER_URL}/api/auth/sign-out`, {
     method: "POST",
     headers: {
       authorization: `Bearer ${value}`,
@@ -210,7 +217,7 @@ export const signIn = async (): Promise<Result<Account, AccountError>> => {
     // A Worker that's down would otherwise leave the user on a browser error
     // page while the app waits out the whole flow. (A flow the server fails
     // later, on its own error page, still waits out the timeout, or Cancel.)
-    const reachable = await net.fetch(`${SERVER_URL}/api/health`, {
+    const reachable = await workerFetch(`${SERVER_URL}/api/health`, {
       signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5_000)]),
     }).then(
       (response) => response.ok,
@@ -247,7 +254,7 @@ const exchange = async (
 ): Promise<Result<Account, AccountError>> => {
   let body: { token: string; user: Account };
   try {
-    const response = await net.fetch(`${SERVER_URL}/api/auth/desktop/token`, {
+    const response = await workerFetch(`${SERVER_URL}/api/auth/desktop/token`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ code, code_verifier: verifier }),

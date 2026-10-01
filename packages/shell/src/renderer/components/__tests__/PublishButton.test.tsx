@@ -50,17 +50,19 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-const render = async () => {
+const render = async (workspace = { id: "w1", name: "Paper Shaders" }) => {
   const { PublishButton } = await import("../PublishButton");
   const client = new QueryClient();
   root = createRoot(document.body.appendChild(document.createElement("div")));
-  await act(async () =>
+  const show = (ws: typeof workspace) =>
     root!.render(
       <QueryClientProvider client={client}>
-        <PublishButton workspaceId="w1" workspaceName="Paper Shaders" />
+        <PublishButton workspaceId={ws.id} workspaceName={ws.name} />
       </QueryClientProvider>,
-    ),
-  );
+    );
+  await act(async () => show(workspace));
+  /** Switches the active workspace, as the titlebar does. */
+  return { switchTo: (ws: typeof workspace) => act(async () => show(ws)) };
 };
 
 const settle = () => act(async () => void (await new Promise((resolve) => setTimeout(resolve, 20))));
@@ -353,6 +355,65 @@ it("takes clicks outside the panel: closes it, but not while waiting for Google"
     {
       "afterOutsideClick": null,
       "waiting": "Finish signing in with Google in your browser. We'll publish right after.",
+    }
+  `);
+});
+
+it("forgets an account check the user walked away from", async () => {
+  api.getAccount.mockResolvedValue(failure(502, "SERVER_UNREACHABLE"));
+  api.publishWorkspace.mockResolvedValue(SHARE);
+  const app = await render({ id: "alpha", name: "Alpha" });
+  await click(/^Publish$/);
+  const check = deferred<unknown>();
+  api.getAccount.mockReturnValue(check.promise);
+  await click(/Try again/); // checking…
+  await key("Escape"); // …walked away
+  await app.switchTo({ id: "beta", name: "Beta" });
+  await click(/^Publish$/); // a new check, for Beta
+  await act(async () => check.resolve(ok(ADA)));
+  await settle();
+  expect(api.publishWorkspace.mock.calls).toMatchInlineSnapshot(`
+    [
+      [
+        "beta",
+      ],
+    ]
+  `);
+});
+
+it("ignores Escape on the panel while it animates out", async () => {
+  MotionGlobalConfig.skipAnimations = false;
+  try {
+    api.signIn.mockReturnValue(new Promise(() => {}));
+    await render();
+    await click(/^Publish$/);
+    await click(/Sign in with Google/);
+    await act(async () => button(/^Close$/).click());
+    await key("Escape"); // reaches the exiting panel
+    await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 400))));
+    expect(screen().dialog).toMatchInlineSnapshot(`null`);
+  } finally {
+    MotionGlobalConfig.skipAnimations = true;
+  }
+});
+
+it("puts focus on Try again when sign-in fails while focus is on Cancel", async () => {
+  const signedIn = deferred<unknown>();
+  api.signIn.mockReturnValue(signedIn.promise);
+  await render();
+  await click(/^Publish$/);
+  await click(/Sign in with Google/);
+  await act(async () => button(/^Cancel$/).focus());
+  await act(async () => signedIn.resolve(failure(408, "TIMED_OUT")));
+  await settle();
+  expect(screen()).toMatchInlineSnapshot(`
+    {
+      "alert": "Sign-in timed out. Try again.",
+      "dialog": [
+        "Sign in to publish",
+        "Once you're signed in, Paper Shaders goes live on a link you can share.",
+      ],
+      "focus": "Try again",
     }
   `);
 });

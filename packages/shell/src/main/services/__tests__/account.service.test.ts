@@ -15,6 +15,7 @@ const electron = vi.hoisted(() => ({
   encryption: true,
   // What the browser tab showed at the end of each sign-in.
   pages: [] as string[],
+  abortBody: false,
   openExternal: async (url: string) => {
     void url;
   },
@@ -28,8 +29,23 @@ vi.mock("electron", () => ({
     decryptString: (value: Buffer) => value.toString().replace(/^enc:/, ""),
   },
   shell: { openExternal: (url: string) => electron.openExternal(url) },
-  // Electron's fetch (system proxy and certificates); plain fetch here.
-  net: { fetch: (input: string, init?: RequestInit) => fetch(input, init) },
+  // Electron's fetch (system proxy and certificates), played by Node's. The
+  // real one would send the default session's cookies and keep the bearer
+  // token across a redirect, so every Worker request must turn both off.
+  net: {
+    fetch: (input: string, init?: RequestInit) => {
+      if (init?.credentials !== "omit" || init?.redirect !== "error") {
+        throw new Error(`net.fetch(${input}) without credentials: "omit" and redirect: "error"`);
+      }
+      if (electron.abortBody && input.endsWith("/api/me")) {
+        // net.fetch's body timeout: the body stream fails with an AbortError.
+        return Promise.resolve(
+          new Response(new ReadableStream({ start: (c) => c.error(new DOMException("aborted", "AbortError")) })),
+        );
+      }
+      return fetch(input, init);
+    },
+  },
 }));
 
 // ---- the stand-in Worker ---------------------------------------------------
@@ -41,7 +57,10 @@ const worker = {
   meBody: null as string | null,
   tokens: 0,
   exchange: { delayMs: 0, status: 200 },
-  me: { delayMs: 0 } as { delayMs: number },
+  // /api/me waits for this before answering, when set.
+  me: { hold: null as Promise<unknown> | null },
+  // Where /api/me redirects to, when set.
+  redirectTo: null as string | null,
   valid: new Set<string>(),
   log: [] as string[],
 };
@@ -76,7 +95,8 @@ beforeAll(async () => {
       res.writeHead(200).end("{}");
     } else if (url.pathname === "/api/me") {
       const token = bearer(req);
-      await sleep(worker.me.delayMs);
+      if (worker.redirectTo) return res.writeHead(302, { location: worker.redirectTo }).end();
+      await worker.me.hold;
       if (!worker.valid.has(token)) return res.writeHead(401).end();
       if (worker.meBody !== null) return res.writeHead(200, { "content-type": "text/html" }).end(worker.meBody);
       res.writeHead(200, { "content-type": "application/json" }).end(
@@ -103,6 +123,7 @@ const browse = async (url: string) => {
 beforeEach(() => {
   electron.userData = fs.mkdtempSync(path.join(os.tmpdir(), "antidraw-account-"));
   electron.encryption = true;
+  electron.abortBody = false;
   electron.pages = [];
   electron.openExternal = async (url) => {
     void browse(url);
@@ -113,7 +134,8 @@ beforeEach(() => {
     meBody: null,
     tokens: 0,
     exchange: { delayMs: 0, status: 200 },
-    me: { delayMs: 0 },
+    me: { hold: null },
+    redirectTo: null,
     log: [],
   });
   worker.valid.clear();
@@ -198,7 +220,9 @@ it("keeps nothing when cancelled while the code is being exchanged", async () =>
   const pending = signIn();
   await vi.waitFor(() => expect(worker.log).toContain("POST /api/auth/desktop/token"));
   cancelSignIn();
-  expect({ result: outcome(await pending), onDisk: tokenOnDisk(), page: await lastPage() }).toMatchInlineSnapshot(`
+  const result = outcome(await pending);
+  await sleep(350); // the Worker finishes the abandoned exchange before the next test
+  expect({ result, onDisk: tokenOnDisk(), page: await lastPage() }).toMatchInlineSnapshot(`
     {
       "onDisk": null,
       "page": "Sign-in was cancelled in AntiDraw. You can close this tab.",
@@ -234,11 +258,13 @@ it("drops only the token a 401 was for, not one saved meanwhile", async () => {
   // The server forgets token-1; a slow /api/me with it is still in flight
   // when the user signs in again.
   worker.valid.clear();
-  worker.me.delayMs = 200;
+  let answer!: () => void;
+  worker.me.hold = new Promise<void>((resolve) => (answer = resolve));
   const stale = first.getAccount();
   await vi.waitFor(() => expect(worker.log).toContain("GET /api/me as token-1"));
-  worker.me.delayMs = 0;
   await first.signIn();
+  worker.me.hold = null;
+  answer();
   expect({ stale: outcome(await stale), onDisk: tokenOnDisk(), now: outcome(await first.getAccount()) })
     .toMatchInlineSnapshot(`
       {
@@ -264,6 +290,8 @@ it("doesn't leave an earlier account's token on disk when it can't encrypt", asy
   electron.encryption = false;
   vi.resetModules();
   await (await service()).signIn();
+  // Its revoke of token-1 runs in the background; let it land in this test.
+  await vi.waitFor(() => expect(worker.log.some((line) => line.startsWith("POST /api/auth/sign-out"))).toBe(true));
   expect({ before, after: tokenOnDisk() }).toMatchInlineSnapshot(`
     {
       "after": null,
@@ -277,20 +305,71 @@ it("answers the account routes only with this launch's app key", async () => {
   // app's own requests, so the key is what tells them apart.
   const { accountController } = await import("../../api/controllers/account.controller");
   const { APP_KEY } = await import("../../lib/app-key");
-  const keys = { "this launch's key": APP_KEY, "another key": "x".repeat(APP_KEY.length), "a prefix of it": APP_KEY.slice(0, 10), none: undefined };
-  const answers = await Promise.all(
-    Object.entries(keys).map(async ([name, key]) => {
-      const res = await accountController.request("/", { headers: key === undefined ? {} : { "x-antidraw-app-key": key } });
-      return `${name} → ${res.status}`;
-    }),
+  const keys = { "another key": "x".repeat(APP_KEY.length), "a prefix of it": APP_KEY.slice(0, 10), none: undefined };
+  const routes = [["GET", "/"], ["POST", "/sign-in"], ["POST", "/sign-in/cancel"], ["POST", "/sign-out"]];
+  const refused = await Promise.all(
+    Object.entries(keys).flatMap(([name, key]) =>
+      routes.map(async ([method, route]) => {
+        const res = await accountController.request(route!, { method, headers: key === undefined ? {} : { "x-antidraw-app-key": key } });
+        return `${name}: ${method} ${route} → ${res.status}`;
+      }),
+    ),
   );
-  expect(answers).toMatchInlineSnapshot(`
-    [
-      "this launch's key → 200",
-      "another key → 403",
-      "a prefix of it → 403",
-      "none → 403",
-    ]
+  const withKey = (await accountController.request("/", { headers: { "x-antidraw-app-key": APP_KEY } })).status;
+  expect({ withKey, refused, workerLog: worker.log }).toMatchInlineSnapshot(`
+    {
+      "refused": [
+        "another key: GET / → 403",
+        "another key: POST /sign-in → 403",
+        "another key: POST /sign-in/cancel → 403",
+        "another key: POST /sign-out → 403",
+        "a prefix of it: GET / → 403",
+        "a prefix of it: POST /sign-in → 403",
+        "a prefix of it: POST /sign-in/cancel → 403",
+        "a prefix of it: POST /sign-out → 403",
+        "none: GET / → 403",
+        "none: POST /sign-in → 403",
+        "none: POST /sign-in/cancel → 403",
+        "none: POST /sign-out → 403",
+      ],
+      "withKey": 200,
+      "workerLog": [],
+    }
+  `);
+});
+
+it("never follows a redirect from the Worker, so the token goes nowhere else", async () => {
+  const elsewhere: string[] = [];
+  const other = createServer((req, res) => {
+    elsewhere.push(`${req.method} ${req.url} ${req.headers.authorization ? "with" : "without"} a token`);
+    res.writeHead(200).end("{}");
+  });
+  await new Promise<void>((resolve) => other.listen(0, "127.0.0.1", resolve));
+  try {
+    const { signIn, getAccount } = await service();
+    await signIn();
+    worker.redirectTo = `http://127.0.0.1:${(other.address() as AddressInfo).port}/api/me`;
+    expect({ account: outcome(await getAccount()), elsewhere }).toMatchInlineSnapshot(`
+      {
+        "account": {
+          "err": "SERVER_UNREACHABLE",
+        },
+        "elsewhere": [],
+      }
+    `);
+  } finally {
+    other.close();
+  }
+});
+
+it("counts an account body that never arrives as unreachable", async () => {
+  const { signIn, getAccount } = await service();
+  await signIn();
+  electron.abortBody = true;
+  expect(outcome(await getAccount())).toMatchInlineSnapshot(`
+    {
+      "err": "SERVER_UNREACHABLE",
+    }
   `);
 });
 
