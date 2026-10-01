@@ -18,7 +18,8 @@ const STRAGGLER_MS = 5 * 60 * 1000;
 // How long a plan or commit keeps its site busy if it never clears it (its
 // Worker died): the longest a new publish of the site then waits.
 const REQUEST_HOLD_MS = 60 * 1000;
-// How long a scheduled cleanup holds a site before another may try again.
+// How long a scheduled cleanup holds a site if it never releases it (its
+// Worker died); it releases it as soon as it finishes or fails.
 const CLEANUP_HOLD_MS = 10 * 60 * 1000;
 
 // url is the site's share page, the address to give out; its files are
@@ -274,6 +275,7 @@ export const cleanUpLeftovers = async (
         .where(and(eq(site.id, row.id), eq(site.cleanupAfter, row.cleanupAfter!), notBusy(now)))
         .returning({ id: site.id });
       if (!won) continue;
+      let done = true;
       try {
         const pointer = await store.readPointer(row.id);
         if (pointer) {
@@ -282,15 +284,22 @@ export const cleanUpLeftovers = async (
         }
         await store.cleanup(row.id);
       } catch (error) {
-        // The claim lapses and a later run tries again: cleanup_after is still past.
+        // Nothing runs any more, so publishes may start again; cleanup_after
+        // stays past, so the next run tries the site again.
+        console.error(error);
+        done = false;
+      }
+      try {
+        await db
+          .update(site)
+          .set({ lockPublishId: null, lockUntil: null, busyUntil: null, ...(done && { cleanupAfter: null }) })
+          .where(and(eq(site.id, row.id), eq(site.lockPublishId, claim)));
+      } catch (error) {
+        // The claim lapses after CLEANUP_HOLD_MS; carry on with the other sites.
         console.error(error);
         continue;
       }
-      await db
-        .update(site)
-        .set({ lockPublishId: null, lockUntil: null, busyUntil: null, cleanupAfter: null })
-        .where(and(eq(site.id, row.id), eq(site.lockPublishId, claim)));
-      cleaned.push(row.id);
+      if (done) cleaned.push(row.id);
     }
 
     if (rows.length < batch) return cleaned;

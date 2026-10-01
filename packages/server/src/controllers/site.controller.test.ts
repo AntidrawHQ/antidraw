@@ -636,6 +636,36 @@ describe("the cron trigger", () => {
     `);
   });
 
+  it("lets publishes start again right after a cleanup fails, and tries it again next run", async () => {
+    const user = await server.signIn();
+    const site = await createSite(user);
+    await startPublish(user, site.id);
+    await setSite(site.id, { lock_until: Date.now() - 2 * HOUR, cleanup_after: Date.now() - 1 });
+    // A pointer the store can't read makes the cleanup fail.
+    const pointer = `sites/${site.id}/current.json`;
+    await server.env.SITES.put(pointer, "not a pointer");
+    try {
+      await server.scheduled();
+      const row = (await siteRow(site.id))!;
+      const start = await post(user, `/api/sites/${site.id}/publishes`);
+      expect({
+        holder: row.holder,
+        busyUntil: row.busyUntil,
+        stillDue: row.cleanupAfter !== null && row.cleanupAfter <= Date.now(),
+        start: start.status,
+      }).toMatchInlineSnapshot(`
+        {
+          "busyUntil": null,
+          "holder": null,
+          "start": 201,
+          "stillDue": true,
+        }
+      `);
+    } finally {
+      await server.env.SITES.delete(pointer);
+    }
+  });
+
   it("records a commit that went live without being recorded", async () => {
     const user = await server.signIn();
     const site = await createSite(user);
