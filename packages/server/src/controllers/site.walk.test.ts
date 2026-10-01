@@ -133,6 +133,8 @@ class Walk {
   }
 
   committed(p: Publish) {
+    // The server also records the publish this one replaced as live.
+    if (this.live && this.live !== p) this.recorded.add(this.live.id);
     this.live = p;
     this.recorded.add(p.id);
     if (this.holder === p) this.holder = null;

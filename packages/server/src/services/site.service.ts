@@ -207,7 +207,14 @@ export const finishPublish = async (
     db
       .update(publish)
       .set({ status: "live", previous: result.previous, committedAt: new Date(committedAt) })
-      .where(and(eq(publish.id, result.publishId), ne(publish.status, "live"))),
+      .where(and(eq(publish.id, result.publishId), eq(publish.siteId, siteId), ne(publish.status, "live"))),
+    // The publish this one replaced went live (the pointer named it), even if
+    // its record never said so: its Worker stopped before recording it, and
+    // this publish superseded it before anything else could.
+    db
+      .update(publish)
+      .set({ status: "live" })
+      .where(and(eq(publish.id, result.previous ?? ""), eq(publish.siteId, siteId), ne(publish.status, "live"))),
     db
       .update(site)
       .set({ lockPublishId: null, lockUntil: null, busyUntil: null })

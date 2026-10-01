@@ -479,6 +479,34 @@ describe("publishing", () => {
     `);
   });
 
+  it("records a commit that went live without being recorded once a newer publish replaces it", async () => {
+    const user = await server.signIn();
+    const site = await createSite(user);
+    const lost = await startPublish(user, site.id);
+    await upload(user, lost.uploadUrl, await siteDir({ "index.html": "lost" }));
+    // As if the Worker stopped between the commit and finishPublish, and a
+    // new publish started before anyone retried it.
+    await server.env.DB.prepare("UPDATE publish SET status = 'open', committed_at = NULL WHERE id = ?")
+      .bind(lost.publishId)
+      .run();
+    await setSite(site.id, { lock_publish_id: lost.publishId, lock_until: Date.now() + HOUR });
+
+    const next = await startPublish(user, site.id);
+    const superseded = await statusOf(lost.publishId);
+    const { commit } = await upload(user, next.uploadUrl, await siteDir({ "index.html": "next" }));
+    const names = { [lost.publishId]: "<lost>", [next.publishId]: "<next>" };
+    expect(
+      readable({ superseded, previous: commit.previous, lost: await statusOf(lost.publishId), next: await statusOf(next.publishId) }, names),
+    ).toMatchInlineSnapshot(`
+      {
+        "lost": "live",
+        "next": "live",
+        "previous": "<lost>",
+        "superseded": "superseded",
+      }
+    `);
+  });
+
   it("records a commit that went live without being recorded when it's retried", async () => {
     const user = await server.signIn();
     const site = await createSite(user);
