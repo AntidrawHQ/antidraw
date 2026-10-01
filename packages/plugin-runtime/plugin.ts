@@ -218,6 +218,7 @@ export const loadComponent = (name) => {
 // paths.
 const siteBuild = (): Plugin => {
   let loadComponentFile: string
+  let loaderReplaced = false
 
   return {
     name: "antidraw:site-build",
@@ -249,8 +250,26 @@ const siteBuild = (): Plugin => {
         )
       }
     },
+    buildStart() {
+      loaderReplaced = false
+    },
     load(id) {
-      if (normalizePath(id) === loadComponentFile) return BUILD_LOAD_COMPONENT
+      if (normalizePath(id) !== loadComponentFile) return
+      loaderReplaced = true
+      return BUILD_LOAD_COMPONENT
+    },
+    // Without the swap the build still succeeds, but the site has no
+    // component chunks and every preview shows "not found". The loader's id
+    // differs from this plugin's copy when the Preview page comes from another
+    // copy of the runtime, or with resolve.preserveSymlinks.
+    buildEnd(error) {
+      if (error || loaderReplaced) return
+      this.error(
+        `The Preview page's component loader (${loadComponentFile}) was not ` +
+          "part of this build, so the site would load no components. Check that the " +
+          "page imports the router from this copy of @antidrawapp/runtime, and that " +
+          "resolve.preserveSymlinks is not set.",
+      )
     },
     generateBundle(_, bundle) {
       const page = bundle["index.html"]
