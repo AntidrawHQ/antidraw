@@ -159,6 +159,35 @@ describe("site worker", () => {
     `);
   });
 
+  it("lets the share page read canvas.json's 404 for a site with nothing published yet", async () => {
+    await env.DB.prepare("INSERT INTO site (id, owner_id, slug, title) VALUES ('site-empty', 'u1', 'empty', 'empty')").run();
+
+    expect({
+      canvas: await get("https://empty.sites.test/canvas.json"),
+      preview: await get("https://empty.sites.test/preview"),
+    }).toMatchInlineSnapshot(`
+      {
+        "canvas": {
+          "body": "Not found",
+          "headers": {
+            "access-control-allow-origin": "*",
+            "cache-control": "no-store",
+            "content-type": "text/plain; charset=utf-8",
+          },
+          "status": 404,
+        },
+        "preview": {
+          "body": "Not found",
+          "headers": {
+            "cache-control": "no-store",
+            "content-type": "text/plain; charset=utf-8",
+          },
+          "status": 404,
+        },
+      }
+    `);
+  });
+
   // Last: it breaks D1 for a moment.
   it("answers 503 when D1 fails, readable from any origin for canvas.json", async () => {
     await env.DB.prepare("ALTER TABLE site RENAME TO site_away").run();

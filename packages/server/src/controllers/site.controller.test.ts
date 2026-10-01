@@ -1,8 +1,12 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createHttpTransport, uploadSite } from "@antidraw/site-upload/client";
+import { SiteStore, type Bucket } from "@antidraw/site-upload/server";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { getDb } from "../db";
+import { cleanUpLeftovers } from "../services/site.service";
 import { startServer, type TestServer } from "../test/harness";
 
 // The publish flow end to end, against the real Worker with local D1 and R2:
@@ -83,6 +87,17 @@ const statusOf = async (publishId: string) =>
     ?.status;
 
 const HOUR = 60 * 60 * 1000;
+
+/**
+ * Stores a plan made two hours ago, past the library's plan TTL, which any
+ * cleanup of the site deletes (expired plans have no grace period). Returns
+ * whether it's still there.
+ */
+const plantStalePlan = async (siteId: string) => {
+  const key = `sites/${siteId}/m/stale.json`;
+  await server.env.SITES.put(key, "{}", { customMetadata: { createdAt: String(Date.now() - 2 * HOUR) } });
+  return async () => (await server.env.SITES.head(key)) !== null;
+};
 
 /** Status and JSON body, for snapshots. */
 // `any`: tests read fields off the body.
@@ -295,6 +310,37 @@ describe("publishing", () => {
           },
           "status": 200,
         },
+      }
+    `);
+  });
+
+  it("cleans up the site's storage when it commits", async () => {
+    const user = await server.signIn();
+    const site = await createSite(user);
+    const { publishId } = await startPublish(user, site.id);
+    const base = `/api/sites/${site.id}/publishes/${publishId}`;
+    const content = "<h1>hi</h1>";
+    const hash = createHash("sha256").update(content).digest("hex");
+    const planned = await post(user, `${base}/plan`, { v: 1, files: { "index.html": { h: hash, s: content.length } } });
+    // After the plan, which cleans up too: only the commit's cleanup can clear it.
+    const stale = await plantStalePlan(site.id);
+    const uploaded = await server.fetch(`${base}/files/${hash}`, {
+      method: "PUT",
+      headers: { authorization: user.authorization },
+      body: content,
+    });
+    const committed = await post(user, `${base}/commit`, {});
+    expect({
+      statuses: [planned.status, uploaded.status, committed.status],
+      stalePlanKept: await stale(),
+    }).toMatchInlineSnapshot(`
+      {
+        "stalePlanKept": false,
+        "statuses": [
+          200,
+          200,
+          200,
+        ],
       }
     `);
   });
@@ -630,6 +676,14 @@ describe("the cron trigger", () => {
     await setSite(abandoned.id, { ...past, lock_until: Date.now() - 2 * HOUR });
     // Another run's claim, still held.
     await setSite(claimed.id, { ...past, lock_publish_id: "cleanup-other", busy_until: Date.now() + 60_000 });
+    const stale: Record<string, () => Promise<boolean>> = Object.fromEntries(
+      await Promise.all(
+        Object.entries({ committed, abandoned, running, claimed }).map(async ([name, site]) => [
+          name,
+          await plantStalePlan(site.id),
+        ]),
+      ),
+    );
 
     await server.scheduled();
 
@@ -660,6 +714,18 @@ describe("the cron trigger", () => {
           "cleaned": false,
           "holder": "<running publish>",
         },
+      }
+    `);
+    // And it deleted what the sites it cleaned up left, and nothing of the others'.
+    const stalePlansKept = Object.fromEntries(
+      await Promise.all(Object.entries(stale).map(async ([name, kept]) => [name, await kept()])),
+    );
+    expect(stalePlansKept).toMatchInlineSnapshot(`
+      {
+        "abandoned": false,
+        "claimed": true,
+        "committed": false,
+        "running": true,
       }
     `);
   });
@@ -725,5 +791,55 @@ describe("the cron trigger", () => {
       .bind(...ids)
       .first<{ left: number }>())!;
     expect(left).toBe(0);
+  });
+});
+
+describe("the cron and a publish at once", () => {
+  // The cron runs here rather than through server.scheduled(), with the real
+  // store, but with this site's cleanup held open until the test lets it go.
+  it("keeps a publish from starting while it cleans, and leaves the lock of one that starts after its hold ran out", async () => {
+    const user = await server.signIn();
+    const site = await createSite(user);
+    await startPublish(user, site.id);
+    await setSite(site.id, { lock_until: Date.now() - 2 * HOUR, cleanup_after: Date.now() - 1 });
+
+    const store = new SiteStore({ bucket: server.env.SITES as unknown as Bucket });
+    let cleaning!: () => void;
+    const started = new Promise<void>((resolve) => (cleaning = resolve));
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => (finish = resolve));
+    const paused: SiteStore = Object.assign(Object.create(store) as SiteStore, {
+      async cleanup(id: string) {
+        if (id === site.id) {
+          cleaning();
+          await finished;
+        }
+        return store.cleanup(id);
+      },
+    });
+    const run = cleanUpLeftovers(getDb(server.env), paused);
+    await started;
+
+    const during = await answer(await post(user, `/api/sites/${site.id}/publishes`));
+    // The cron's hold runs out while it's still cleaning (its Worker is slow),
+    // and a publish starts.
+    await setSite(site.id, { busy_until: Date.now() - 1 });
+    const next = await startPublish(user, site.id);
+    finish();
+    await run;
+
+    const row = (await siteRow(site.id))!;
+    expect(
+      readable(
+        { during: `${during.status} ${during.body.error?.code}`, holder: row.holder, cleanupAfterKept: row.cleanupAfter !== null },
+        { [next.publishId]: "<next>" },
+      ),
+    ).toMatchInlineSnapshot(`
+      {
+        "cleanupAfterKept": true,
+        "during": "409 SITE_BUSY",
+        "holder": "<next>",
+      }
+    `);
   });
 });
