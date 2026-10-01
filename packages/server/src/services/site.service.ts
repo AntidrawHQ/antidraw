@@ -1,4 +1,4 @@
-import { and, eq, gt, gte, isNull, lte, ne, or } from "drizzle-orm";
+import { and, eq, gt, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { CommitResult, SiteStore } from "@antidraw/site-upload/server";
 import { err, ok, type Result } from "neverthrow";
 import type { Db } from "../db";
@@ -54,11 +54,12 @@ export const createSite = async (
 
 /**
  * Starts a publish: takes the site's lock for a new publish id, replacing any
- * publish still running. The replaced one's next request is refused, so its
- * plan, uploads and commit stop overlapping this one's (the library's orphan
- * grace period covers an upload of it already under way). Refused with
- * SITE_BUSY while a plan, commit or cleanup of the site is running: those
- * clean up, and a cleanup must not overlap another publish.
+ * publish still running. The replaced one is marked superseded and its next
+ * request is refused, so its plan, uploads and commit stop overlapping this
+ * one's (the library's orphan grace period covers an upload of it already
+ * under way). Refused with SITE_BUSY while a plan, commit or cleanup of the
+ * site is running: those clean up, and a cleanup must not overlap another
+ * publish.
  */
 export const startPublish = async (
   db: Db,
@@ -68,19 +69,35 @@ export const startPublish = async (
 ): Promise<Result<{ publishId: string }, ApiError>> => {
   const publishId = crypto.randomUUID();
   const lockUntil = now + PUBLISH_TTL_MS;
-  const [locked] = await db
-    .update(site)
-    .set({
-      lockPublishId: publishId,
-      lockUntil: new Date(lockUntil),
-      busyUntil: null,
-      // Whatever this publish and the ones before it leave is in a plan made
-      // before lockUntil or a file uploaded before it, so a cleanup then (plus
-      // the plan TTL or grace period) can clear all of it.
-      cleanupAfter: new Date(lockUntil + Math.max(PUBLISH_TTL_MS, ORPHAN_GRACE_MS) + STRAGGLER_MS),
-    })
-    .where(and(eq(site.id, siteId), eq(site.ownerId, ownerId), notBusy(now)))
-    .returning({ id: site.id });
+  const tookLock = sql`exists (select 1 from ${site} where ${site.id} = ${siteId} and ${site.lockPublishId} = ${publishId})`;
+  // One transaction, so two starts at once can't interleave: the one whose
+  // lock stands is the one that superseded the other.
+  const [[locked]] = await db.batch([
+    db
+      .update(site)
+      .set({
+        lockPublishId: publishId,
+        lockUntil: new Date(lockUntil),
+        busyUntil: null,
+        // Whatever this publish and the ones before it leave is in a plan made
+        // before lockUntil or a file uploaded before it, so a cleanup then (plus
+        // the plan TTL or grace period) can clear all of it.
+        cleanupAfter: new Date(lockUntil + Math.max(PUBLISH_TTL_MS, ORPHAN_GRACE_MS) + STRAGGLER_MS),
+      })
+      .where(and(eq(site.id, siteId), eq(site.ownerId, ownerId), notBusy(now)))
+      .returning({ id: site.id }),
+    // Only if the lock was taken: the publishes it replaces, then its record.
+    db
+      .update(publish)
+      .set({ status: "superseded" })
+      .where(and(eq(publish.siteId, siteId), eq(publish.status, "open"), tookLock)),
+    // Every column, in the table's order: id, site_id, status, previous, created_at, committed_at.
+    db
+      .insert(publish)
+      .select(
+        sql`select ${publishId}, ${siteId}, 'open', null, cast(unixepoch('subsecond') * 1000 as integer), null where ${tookLock}`,
+      ),
+  ]);
   if (!locked) {
     const [row] = await db
       .select({ id: site.id })
@@ -94,7 +111,6 @@ export const startPublish = async (
       retryAfter: 2,
     });
   }
-  await db.insert(publish).values({ id: publishId, siteId, status: "open" });
   return ok({ publishId });
 };
 
@@ -145,7 +161,7 @@ export const checkUpload = async (
   // after its lock was released), one that ran out of time or was replaced,
   // or none at all.
   const [record] = await db
-    .select({ status: publish.status, previous: publish.previous, createdAt: publish.createdAt })
+    .select({ status: publish.status, previous: publish.previous })
     .from(publish)
     .where(and(eq(publish.id, publishId), eq(publish.siteId, siteId)));
   if (!record) return err(notFound("publish"));
@@ -156,8 +172,8 @@ export const checkUpload = async (
     });
   }
 
-  // Recorded as open, but its commit may have gone live without being
-  // recorded (the Worker stopped before finishPublish): the pointer knows.
+  // Not recorded live, but its commit may have gone live anyway (the Worker
+  // stopped before finishPublish): the pointer knows.
   const pointer = await store.readPointer(siteId);
   if (pointer?.publishId === publishId) {
     const result = { publishId, previous: pointer.previous, alreadyCommitted: true };
@@ -165,20 +181,9 @@ export const checkUpload = async (
     return ok({ kind: "committed", result });
   }
 
-  const [newer] = holdsLock
-    ? []
-    : await db
-        .select({ id: publish.id })
-        .from(publish)
-        .where(
-          and(
-            eq(publish.siteId, siteId),
-            ne(publish.id, publishId),
-            gte(publish.createdAt, record.createdAt),
-          ),
-        )
-        .limit(1);
-  if (newer) return err(apiError(409, "SUPERSEDED", "A newer publish of this site replaced this one"));
+  if (record.status === "superseded") {
+    return err(apiError(409, "SUPERSEDED", "A newer publish of this site replaced this one"));
+  }
   return err(apiError(410, "PLAN_EXPIRED", "This publish ran out of time; start a new one"));
 };
 
@@ -201,7 +206,7 @@ export const finishPublish = async (
     db
       .update(publish)
       .set({ status: "live", previous: result.previous, committedAt: new Date(committedAt) })
-      .where(and(eq(publish.id, result.publishId), eq(publish.status, "open"))),
+      .where(and(eq(publish.id, result.publishId), ne(publish.status, "live"))),
     db
       .update(site)
       .set({ lockPublishId: null, lockUntil: null, busyUntil: null })

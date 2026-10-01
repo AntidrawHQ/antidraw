@@ -45,7 +45,8 @@ export const site = sqliteTable(
   ],
 );
 
-// One publish of a site: started, then live once its commit succeeds.
+// One publish of a site: open while it runs, then live once its commit
+// succeeds, or superseded when a newer publish takes the site's lock first.
 // `previous` is the publish it replaced, as the commit reported it.
 export const publish = sqliteTable(
   "publish",
@@ -54,7 +55,7 @@ export const publish = sqliteTable(
     siteId: text("site_id")
       .notNull()
       .references(() => site.id, { onDelete: "cascade" }),
-    status: text("status", { enum: ["open", "live"] }).notNull(),
+    status: text("status", { enum: ["open", "live", "superseded"] }).notNull(),
     previous: text("previous"),
     createdAt: integer("created_at", { mode: "timestamp_ms" })
       .default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
