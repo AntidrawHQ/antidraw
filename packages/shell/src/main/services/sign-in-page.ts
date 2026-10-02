@@ -1,9 +1,10 @@
 import antidrawIcon from "@/renderer/assets/antidraw-icon.svg?raw";
 
 // The page the browser tab shows when Google sign-in comes back to the app's
-// loopback server: the Publish button's sign-in panel (its card, logo and
-// type), saying how sign-in ended. Self-contained, with inline styles and the
-// logo inline, so it loads nothing; its headers forbid anything else.
+// loopback server: the AntiDraw logo, a title and a message in the middle of a
+// plain page, in the Publish button's sign-in panel's type and colours, saying
+// how sign-in ended. Self-contained, with inline styles and the logo inline,
+// so it loads nothing; its headers forbid anything else.
 
 export type SignInOutcome = "signed-in" | "cancelled" | "failed";
 
@@ -59,22 +60,18 @@ export const signInPage = (outcome: SignInOutcome) => {
   html, body { height: 100%; margin: 0; }
   body {
     display: grid; place-items: center; padding: 24px;
-    background: #1f1f1f; color: #e0e0e0;
+    background: #262626; color: #e0e0e0;
     font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
     -webkit-font-smoothing: antialiased;
   }
-  main {
-    width: 100%; max-width: 360px; padding: 28px;
-    background: #2c2c2c; border: 1px solid #2d2d2d; border-radius: 14px;
-    box-shadow: 0 24px 80px -20px rgba(0, 0, 0, 0.8);
-  }
-  .logo { position: relative; width: 48px; height: 48px; }
+  main { max-width: 360px; text-align: center; }
+  .logo { position: relative; width: 48px; height: 48px; margin: 0 auto; }
   .logo svg { display: block; width: 48px; height: 48px; }
   .mark {
     position: absolute; right: -6px; bottom: -6px;
     display: grid; place-items: center; width: 22px; height: 22px;
-    border-radius: 50%; box-shadow: 0 0 0 3px #2c2c2c;
-    background: color-mix(in oklch, ${color} 16%, #2c2c2c); color: ${color};
+    border-radius: 50%; box-shadow: 0 0 0 3px #262626;
+    background: color-mix(in oklch, ${color} 16%, #262626); color: ${color};
   }
   .mark svg { width: 12px; height: 12px; }
   h1 { margin: 20px 0 0; font-size: 18px; font-weight: 500; letter-spacing: -0.01em; color: #e0e0e0; }
