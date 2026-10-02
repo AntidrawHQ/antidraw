@@ -15,6 +15,11 @@ export const queryKeys = {
     // Renderer-only: userMessageIds sent mid-turn, not yet acked by the CLI.
     queuedMessageIds: (id: string | null) =>
       ["conversation", id, "queued-message-ids"] as const,
+    // Renderer-only: how each send from this window went out, by
+    // userMessageId — "queue" if made mid-turn, "direct" if not. See
+    // useSendIntents.
+    sendIntents: (id: string | null) =>
+      ["conversation", id, "send-intents"] as const,
     // userMessageIds the CLI never received, as the backend computes them.
     failedMessageIds: (id: string | null) =>
       ["conversation", id, "failed-message-ids"] as const,

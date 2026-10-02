@@ -65,6 +65,14 @@ export const messages = sqliteTable(
     // request (GET /chat/:id/undelivered), never written. Only user_prompt
     // rows use it; sdk_message rows stay null.
     deliveredAt: integer("delivered_at", { mode: "timestamp_ms" }),
+    // Where a queued prompt belongs in the transcript: the largest seq in the
+    // conversation when the CLI accepted it. seq is taken at send, so a
+    // prompt that waited behind a turn would otherwise sit above everything
+    // that turn wrote while it waited. The transcript sorts on
+    // coalesce(accepted_after_seq + 0.5, seq), then seq — just after that row,
+    // ahead of the reply to it. Null for every row that is not a prompt the
+    // CLI accepted from the queue; those keep their seq.
+    acceptedAfterSeq: integer("accepted_after_seq"),
   },
   (table) => [index("idx_messages_conv_seq").on(table.conversationId, table.seq)]
 );
