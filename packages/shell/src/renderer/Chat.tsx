@@ -21,10 +21,10 @@ import { cn } from "@/renderer/lib/utils";
 import { triggerClaudeLogin } from "@/renderer/lib/api";
 import { ArrowUp, ImageIcon, Paperclip, Square, X } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
+import type { ConversationWithMessages } from "@/main/api";
 import { retryStream } from "./lib/stream-subscription";
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
-  useCancelQueuedMessage,
   useCancelStream,
   useConversationMessages,
   useCreateConversation,
@@ -37,6 +37,7 @@ import {
 } from "./lib/claude-code-ops";
 import { Tool } from "@/renderer/components/ui/tool";
 import type { ToolPart } from "@/renderer/components/ui/tool";
+import { liveToolPart } from "./lib/tool-utils";
 import { AuthError } from "@/renderer/components/auth-error";
 import { StreamError } from "@/renderer/components/stream-error";
 import { useWorkspaceStore } from "./store/workspace";
@@ -44,6 +45,9 @@ import { ChatEmptyState } from "./components/ChatEmptyState";
 import ModelPicker from "@/renderer/components/ModelPicker";
 import EffortDropdown from "@/renderer/components/EffortDropdown";
 import { useComposerModel } from "@/renderer/hooks/use-composer-model";
+import { QueuedMessagesDeck } from "@/renderer/components/QueuedMessagesDeck";
+import { useQueueDeck } from "@/renderer/lib/use-queue-deck";
+import { SMOOTH } from "@/renderer/lib/motion";
 import {
   SUPPORTED_IMAGE_TYPES,
   type ImageAttachment,
@@ -78,207 +82,229 @@ const getToolTitle = (toolPart: ToolPart): string => {
   return type;
 };
 
-type MessageListProps = {
-  conversationId: string | null;
+type ChatMessage = ConversationWithMessages["messages"][number];
+
+// The tool_use ids a message renders, in the order it renders them.
+const toolUseIds = (msg: ChatMessage): string[] => {
+  const sdkMessage = msg.sdkMessage;
+  if (sdkMessage.type !== "user" && sdkMessage.type !== "assistant") return [];
+  const content = sdkMessage.message.content;
+  if (!Array.isArray(content)) return [];
+  const ids: string[] = [];
+  for (const block of content) {
+    if (block.type === "tool_use") ids.push(block.id);
+  }
+  return ids;
+};
+
+// A base64 data URL is rebuilt by concatenation, which makes a new multi-MB
+// string every time it is asked for; React then compares it against the last
+// one. Built once per block instead.
+const imageSrcs = new WeakMap<object, string>();
+const imageSrc = (block: Base64ImageBlock): string => {
+  let src = imageSrcs.get(block);
+  if (src === undefined) {
+    src = `data:${block.source.media_type};base64,${block.source.data}`;
+    imageSrcs.set(block, src);
+  }
+  return src;
+};
+
+const NO_TOOLS: readonly (ToolPart | undefined)[] = [];
+
+// A row's own tools, one per tool_use block in order. Handed over instead of
+// the whole map: a memoized row keeps the props of its last real render, so
+// each row holding the map would keep every generation of it alive.
+const rowTools = (
+  msg: ChatMessage,
+  toolMap: ReadonlyMap<string, ToolPart>,
+): readonly (ToolPart | undefined)[] => {
+  const ids = toolUseIds(msg);
+  return ids.length ? ids.map((id) => toolMap.get(id)) : NO_TOOLS;
+};
+
+type MessageRowProps = {
+  msg: ChatMessage;
+  // Parallel to the message's tool_use blocks (see rowTools).
+  tools: readonly (ToolPart | undefined)[];
+  // Persisted, never acked, and no live handle holds it: the CLI never
+  // received this prompt. The backend decides (see useFailedMessageIds);
+  // a live queued mark wins over a list that has not been refetched.
+  isFailed: boolean;
+  // The deck handed this prompt over this session: play its entrance.
+  revealed: boolean;
   onSignIn: () => void;
   onRetry: () => void;
 };
 
-const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProps) => {
-  const { data: conversation } = useConversationMessages(conversationId);
-  const { data: toolMap } = useToolMap(conversationId);
+// A row re-renders only when its own message, or a tool it shows, changed.
+// The transcript is the long part of a long session, and a new message at the
+// bottom has no business re-rendering the thousand above it.
+const rowPropsEqual = (a: MessageRowProps, b: MessageRowProps): boolean =>
+  a.msg === b.msg &&
+  a.isFailed === b.isFailed &&
+  a.revealed === b.revealed &&
+  a.onSignIn === b.onSignIn &&
+  a.onRetry === b.onRetry &&
+  a.tools.length === b.tools.length &&
+  a.tools.every((tool, i) => tool === b.tools[i]);
+
+const MessageRow = memo(
+  ({ msg, tools, isFailed, revealed, onSignIn, onRetry }: MessageRowProps) => {
+    const sdkMessage = msg.sdkMessage;
+    if (sdkMessage.type !== "user" && sdkMessage.type !== "assistant") {
+      return null;
+    }
+
+    if (
+      sdkMessage.type === "assistant" &&
+      "error" in sdkMessage &&
+      sdkMessage.error === "authentication_failed"
+    ) {
+      return <AuthError onSignIn={onSignIn} onRetry={onRetry} />;
+    }
+
+    const isAssistant = sdkMessage.type === "assistant";
+    const content = sdkMessage.message.content;
+    const blocks = Array.isArray(content)
+      ? content
+      : typeof content === "string"
+        ? [{ type: "text" as const, text: content }]
+        : [];
+
+    const imageBlocks = blocks.filter(
+      (b): b is Base64ImageBlock =>
+        b.type === "image" && "source" in b && b.source?.type === "base64"
+    );
+
+    const hasRenderableBlock = blocks.some(
+      (b) => b.type === "text" || b.type === "tool_use" || b.type === "image"
+    );
+    if (!hasRenderableBlock) {
+      return null;
+    }
+
+    const kind = blocks.some((b) => b.type === "text")
+      ? "text"
+      : blocks.some((b) => b.type === "tool_use" || b.type === "tool_result")
+        ? "tool"
+        : "text";
+
+    // Walks `tools` alongside the tool_use blocks below.
+    let toolIndex = 0;
+
+    return (
+      <Message
+        data-role={isAssistant ? "assistant" : "user"}
+        data-kind={kind}
+        className={cn(
+          isAssistant ? "justify-start" : "justify-end",
+          "[[data-kind=tool]+&[data-kind=tool]]:-mt-2",
+          revealed && cn("animate-in fade-in slide-in-from-bottom-2", SMOOTH)
+        )}
+      >
+        <div className="flex flex-col overflow-auto w-full">
+          {imageBlocks.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {imageBlocks.map((block, idx) => (
+                <img
+                  key={`img-${idx}`}
+                  src={imageSrc(block)}
+                  alt="Attached image"
+                  className="h-10 w-10 rounded object-cover border border-neutral-600"
+                />
+              ))}
+            </div>
+          )}
+          {blocks.map((block, idx) => {
+            if (block.type === "image") {
+              return null;
+            }
+
+            if (block.type === "text") {
+              return isAssistant ? (
+                <Markdown
+                  key={idx}
+                  className="bg-secondary text-foreground prose prose-sm prose-invert max-w-none rounded-lg"
+                >
+                  {block.text}
+                </Markdown>
+              ) : (
+                <MessageContent
+                  key={idx}
+                  className={cn(
+                    "bg-neutral-700 text-neutral-200 prose prose-sm prose-invert max-w-none",
+                    isFailed && "opacity-60"
+                  )}
+                >
+                  {block.text}
+                </MessageContent>
+              );
+            }
+
+            if (block.type === "tool_use") {
+              const toolPart = tools[toolIndex++];
+              if (toolPart) {
+                return (
+                  <Tool
+                    key={idx}
+                    toolPart={toolPart}
+                    title={getToolTitle(toolPart)}
+                    className="mt-1 w-full"
+                  />
+                );
+              }
+              return null;
+            }
+
+            return null;
+          })}
+          {isFailed && (
+            <div className="mt-0.5 self-end text-[10px] text-red-400">
+              Not delivered
+            </div>
+          )}
+        </div>
+      </Message>
+    );
+  },
+  rowPropsEqual
+);
+MessageRow.displayName = "MessageRow";
+
+type LiveTailProps = {
+  conversationId: string | null;
+  // The persisted tools: a live tool_use already in here has been persisted,
+  // and the row above shows it.
+  toolMap: ReadonlyMap<string, ToolPart>;
+  isStreaming: boolean;
+};
+
+// The block being produced right now. It is the only part of the transcript
+// that changes on every frame of a stream, so it is the only part that reads
+// the live partial: subscribed from the list, each token re-rendered every
+// row above it.
+//
+// Renders a fragment so its children stay direct children of the list's flex
+// column — spacing and the tool-adjacency selector on rows depend on it.
+const LiveTail = memo(({ conversationId, toolMap, isStreaming }: LiveTailProps) => {
   const { data: live } = useLivePartial(conversationId);
-  const { data: queuedMessageIds } = useQueuedMessageIds(conversationId);
-  const { data: failedMessageIds } = useFailedMessageIds(conversationId);
-  const cancelQueued = useCancelQueuedMessage();
-  const messages = conversation?.messages ?? [];
-  const isStreaming = conversation?.streamStatus === "streaming";
 
   const liveText =
     live?.block.type === "text" && live.block.text.length > 0
       ? live.block.text
       : null;
 
-  // For tool_use, MessageList's normal flow can't render the in-flight block —
-  // it only iterates persisted message content. Synthesize a Tool from the merged
-  // toolMap entry (state: "input-streaming") and render it after the messages list.
+  // For tool_use, the list's normal flow can't render the in-flight block —
+  // it only iterates persisted message content. Synthesize a Tool from the
+  // block (state: "input-streaming") and render it after the messages.
   const liveTool =
-    live?.block.type === "tool_use" ? toolMap?.get(live.block.id) ?? null : null;
+    live && live.block.type === "tool_use" && !toolMap.has(live.block.id)
+      ? liveToolPart(live)
+      : null;
 
   return (
-    <div className="flex flex-col gap-2">
-      {messages.map((msg) => {
-        const sdkMessage = msg.sdkMessage;
-        if (sdkMessage.type !== "user" && sdkMessage.type !== "assistant") {
-          return null;
-        }
-
-        if (
-          sdkMessage.type === "assistant" &&
-          "error" in sdkMessage &&
-          sdkMessage.error === "authentication_failed"
-        ) {
-          return (
-            <AuthError
-              key={msg.id}
-              onSignIn={onSignIn}
-              onRetry={onRetry}
-            />
-          );
-        }
-
-        const isAssistant = sdkMessage.type === "assistant";
-        const content = sdkMessage.message.content;
-        const blocks = Array.isArray(content)
-          ? content
-          : typeof content === "string"
-            ? [{ type: "text" as const, text: content }]
-            : [];
-
-        const imageBlocks = blocks.filter(
-          (b): b is Base64ImageBlock =>
-            b.type === "image" &&
-            "source" in b &&
-            b.source?.type === "base64"
-        );
-
-        const hasRenderableBlock = blocks.some(
-          (b) =>
-            b.type === "text" ||
-            b.type === "tool_use" ||
-            b.type === "image"
-        );
-        if (!hasRenderableBlock) {
-          return null;
-        }
-
-        const kind = blocks.some((b) => b.type === "text")
-          ? "text"
-          : blocks.some(
-                (b) => b.type === "tool_use" || b.type === "tool_result"
-              )
-            ? "tool"
-            : "text";
-
-        // Sent mid-turn and not yet folded into a turn by the CLI. Dimmed,
-        // labelled, and withdrawable until the ack lands.
-        const isQueued =
-          !isAssistant && (queuedMessageIds?.includes(msg.id) ?? false);
-        // Persisted, never acked, and no live handle holds it: the CLI never
-        // received this prompt. The backend decides (see useFailedMessageIds);
-        // a live Queued mark wins over a list that has not been refetched.
-        const isFailed =
-          !isAssistant &&
-          !isQueued &&
-          (failedMessageIds?.includes(msg.id) ?? false);
-
-        // Only the message whose cancel is in flight waits on it. The mutation
-        // is shared by every bubble, so reading isPending alone greyed out all
-        // of them for the duration of one DELETE — and that wait is unbounded
-        // by design (see cancelQueued in the conversation store).
-        const isCancelling =
-          isQueued &&
-          cancelQueued.isPending &&
-          cancelQueued.variables?.userMessageId === msg.id;
-
-        return (
-          <Message
-            key={msg.id}
-            data-role={isAssistant ? "assistant" : "user"}
-            data-kind={kind}
-            className={cn(
-              isAssistant ? "justify-start" : "justify-end",
-              "[[data-kind=tool]+&[data-kind=tool]]:-mt-2"
-            )}
-          >
-            <div className="flex flex-col overflow-auto w-full">
-              {imageBlocks.length > 0 && (
-                <div className="flex flex-wrap gap-1">
-                  {imageBlocks.map((block, idx) => (
-                    <img
-                      key={`img-${idx}`}
-                      src={`data:${block.source.media_type};base64,${block.source.data}`}
-                      alt="Attached image"
-                      className="h-10 w-10 rounded object-cover border border-neutral-600"
-                    />
-                  ))}
-                </div>
-              )}
-              {blocks.map((block, idx) => {
-                if (block.type === "image") {
-                  return null;
-                }
-
-                if (block.type === "text") {
-                  return isAssistant ? (
-                    <Markdown
-                      key={idx}
-                      className="bg-secondary text-foreground prose prose-sm prose-invert max-w-none rounded-lg"
-                    >
-                      {block.text}
-                    </Markdown>
-                  ) : (
-                    <MessageContent
-                      key={idx}
-                      className={cn(
-                        "bg-neutral-700 text-neutral-200 prose prose-sm prose-invert max-w-none",
-                        (isQueued || isFailed) && "opacity-60"
-                      )}
-                    >
-                      {block.text}
-                    </MessageContent>
-                  );
-                }
-
-                if (block.type === "tool_use") {
-                  const toolPart = toolMap?.get(block.id);
-                  if (toolPart) {
-                    return (
-                      <Tool
-                        key={idx}
-                        toolPart={toolPart}
-                        title={getToolTitle(toolPart)}
-                        className="mt-1 w-full"
-                      />
-                    );
-                  }
-                  return null;
-                }
-
-                if (block.type === "tool_result") {
-                  return null;
-                }
-
-                return null;
-              })}
-              {isQueued && conversationId && (
-                <div className="mt-0.5 flex items-center gap-1 self-end text-[10px] text-neutral-400">
-                  <span>{isCancelling ? "Cancelling" : "Queued"}</span>
-                  <button
-                    type="button"
-                    aria-label="Cancel queued message"
-                    className="rounded-full p-0.5 hover:bg-neutral-600 hover:text-neutral-200 disabled:opacity-50"
-                    disabled={isCancelling}
-                    onClick={() =>
-                      cancelQueued.mutate({
-                        conversationId,
-                        userMessageId: msg.id,
-                      })
-                    }
-                  >
-                    <X className="size-3" />
-                  </button>
-                </div>
-              )}
-              {isFailed && (
-                <div className="mt-0.5 self-end text-[10px] text-red-400">
-                  Not delivered
-                </div>
-              )}
-            </div>
-          </Message>
-        );
-      })}
+    <>
       {liveText && (
         <Message data-role="assistant" className="justify-start">
           <div className="flex flex-col overflow-auto w-full">
@@ -304,19 +330,131 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry }: MessageListProp
         </Message>
       )}
       {isStreaming && <MessageShimmer />}
+    </>
+  );
+});
+LiveTail.displayName = "LiveTail";
+
+type MessageListProps = {
+  conversationId: string | null;
+  onSignIn: () => void;
+  onRetry: () => void;
+  // Prompts the queued deck is showing instead (see useQueueDeck).
+  hiddenIds: ReadonlySet<string>;
+  // Prompts the deck handed over this session, which play its entrance.
+  revealedIds: ReadonlySet<string>;
+};
+
+// Reads only what changes when the transcript does. Nothing here subscribes
+// to the live partial, so a streamed token does not render this list.
+const MessageList = memo(({ conversationId, onSignIn, onRetry, hiddenIds, revealedIds }: MessageListProps) => {
+  const { data: conversation } = useConversationMessages(conversationId);
+  const { data: toolMap } = useToolMap(conversationId);
+  const { data: queuedMessageIds } = useQueuedMessageIds(conversationId);
+  const { data: failedMessageIds } = useFailedMessageIds(conversationId);
+  const messages = conversation?.messages ?? [];
+  const isStreaming = conversation?.streamStatus === "streaming";
+
+  return (
+    <div className="flex flex-col gap-2">
+      {messages.map((msg) => {
+        const sdkMessage = msg.sdkMessage;
+        if (sdkMessage.type !== "user" && sdkMessage.type !== "assistant") {
+          return null;
+        }
+
+        if (hiddenIds.has(msg.id)) {
+          return null;
+        }
+
+        const isFailed =
+          sdkMessage.type === "user" &&
+          !(queuedMessageIds?.includes(msg.id) ?? false) &&
+          (failedMessageIds?.includes(msg.id) ?? false);
+
+        return (
+          <MessageRow
+            key={msg.id}
+            msg={msg}
+            tools={rowTools(msg, toolMap)}
+            isFailed={isFailed}
+            revealed={revealedIds.has(msg.id)}
+            onSignIn={onSignIn}
+            onRetry={onRetry}
+          />
+        );
+      })}
+      <LiveTail
+        conversationId={conversationId}
+        toolMap={toolMap}
+        isStreaming={isStreaming}
+      />
     </div>
   );
 });
 MessageList.displayName = "MessageList";
 
-type AppChatProps = React.ComponentProps<"div">;
+const fileToBase64 = (
+  file: File
+): Promise<{ data: string; mediaType: SupportedImageMediaType }> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      // A data URL is "<metadata>,<base64>". Anything without the comma is
+      // not one, and resolving with an undefined payload would put a broken
+      // image on the wire rather than failing where the mistake happened.
+      const base64 = result.split(",")[1];
+      if (base64 === undefined) {
+        reject(new Error(`Could not read ${file.name} as a data URL`));
+        return;
+      }
+      resolve({ data: base64, mediaType: file.type as SupportedImageMediaType });
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+};
 
-export function AppChat({ className, ...props }: AppChatProps) {
-  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
-  const activeConversationId = useWorkspaceStore((s) => s.activeConversationId);
-  const setActiveConversationId = useWorkspaceStore((s) => s.setActiveConversationId);
+// Module level so its identity is stable: MessageList is memoized, and a
+// callback recreated on every AppChat render would defeat that.
+const handleSignIn = () => {
+  triggerClaudeLogin();
+};
+
+type ComposerProps = {
+  composer: ReturnType<typeof useComposerModel>;
+  isStreaming: boolean;
+  streamFailed: boolean;
+  isSendPending: boolean;
+  // A workspace is open to send into.
+  canSend: boolean;
+  onSend: (
+    prompt: string,
+    images: ImageAttachment[] | undefined
+  ) => Promise<void>;
+  onStop: () => void;
+  isStopPending: boolean;
+  onReconnect: () => void;
+};
+
+// Owns the draft (text and attached images) so a keystroke re-renders only
+// this, not the transcript above it. Nothing outside needs the draft: a send
+// hands the finished prompt up through onSend.
+function Composer({
+  composer,
+  isStreaming,
+  streamFailed,
+  isSendPending,
+  canSend,
+  onSend,
+  onStop,
+  isStopPending,
+  onReconnect,
+}: ComposerProps) {
   const [input, setInput] = useState("");
   const [attachedImages, setAttachedImages] = useState<File[]>([]);
+  const isLoading = isSendPending || isStreaming;
 
   const handleFilesAdded = (files: File[]) => {
     const imageFiles = files.filter((f) =>
@@ -352,6 +490,139 @@ export function AppChat({ className, ...props }: AppChatProps) {
     return () => imageUrls.forEach((url) => URL.revokeObjectURL(url));
   }, [imageUrls]);
 
+  const handleSubmit = async () => {
+    if (!canSend || !input.trim() || isSendPending) return;
+
+    const prompt = input.trim();
+
+    let imagesToSend: ImageAttachment[] | undefined;
+    try {
+      imagesToSend =
+        attachedImages.length > 0
+          ? await Promise.all(attachedImages.map(fileToBase64))
+          : undefined;
+    } catch (err) {
+      console.error("Failed to process images:", err);
+      // TODO: show toast if toast system exists
+      alert("Failed to process attached images. Please try again.");
+      return;
+    }
+
+    setInput("");
+    setAttachedImages([]);
+
+    await onSend(prompt, imagesToSend);
+  };
+
+  return (
+    <FileUpload onFilesAdded={handleFilesAdded} accept="image/*">
+      <div className="p-4 pt-2">
+        {streamFailed && <StreamError onReconnect={onReconnect} />}
+        <PromptInput
+          value={input}
+          onValueChange={setInput}
+          isLoading={isLoading}
+          onSubmit={handleSubmit}
+          className="bg-neutral-700 border-neutral-600"
+        >
+          {attachedImages.length > 0 && (
+            <div className="flex flex-wrap gap-2 p-2 pb-0">
+              {attachedImages.map((file, index) => (
+                <div key={index} className="relative group">
+                  <img
+                    src={imageUrls[index]}
+                    alt={file.name}
+                    className="h-16 w-16 rounded-lg object-cover border border-neutral-600"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => removeImage(index)}
+                    className="absolute -top-1.5 -right-1.5 bg-neutral-600 hover:bg-neutral-500 rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+                  >
+                    <X className="size-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <PromptInputTextarea
+            placeholder="Ask me anything..."
+            className="bg-transparent dark:bg-transparent"
+            onPaste={handlePaste}
+          />
+          <PromptInputActions className="justify-between pt-2">
+            <div className="flex items-center gap-2">
+              <ModelPicker
+                models={composer.models}
+                value={composer.selectedModelId}
+                onChange={composer.handleModelChange}
+              />
+              <EffortDropdown
+                levels={composer.effortLevels}
+                value={composer.effort}
+                onChange={composer.handleEffortChange}
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <PromptInputAction tooltip="Attach image">
+                <FileUploadTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 rounded-full"
+                  >
+                    <Paperclip className="size-4" />
+                  </Button>
+                </FileUploadTrigger>
+              </PromptInputAction>
+              {isStreaming && (
+                <PromptInputAction tooltip="Stop generation">
+                  <Button
+                    variant="secondary"
+                    size="icon"
+                    className="h-8 w-8 rounded-full"
+                    onClick={onStop}
+                    disabled={isStopPending}
+                  >
+                    <Square className="size-4 fill-current" />
+                  </Button>
+                </PromptInputAction>
+              )}
+              <PromptInputAction
+                tooltip={isStreaming ? "Queue message" : "Send message"}
+              >
+                <Button
+                  variant="default"
+                  size="icon"
+                  className="h-8 w-8 rounded-full"
+                  onClick={handleSubmit}
+                  disabled={!input.trim() || isSendPending}
+                >
+                  <ArrowUp className="size-4" />
+                </Button>
+              </PromptInputAction>
+            </div>
+          </PromptInputActions>
+        </PromptInput>
+      </div>
+
+      <FileUploadContent className="border-2 border-dashed border-neutral-500">
+        <div className="flex flex-col items-center gap-2 text-neutral-300">
+          <ImageIcon className="size-12" />
+          <p className="text-lg font-medium">Drop images here</p>
+        </div>
+      </FileUploadContent>
+    </FileUpload>
+  );
+}
+
+type AppChatProps = React.ComponentProps<"div">;
+
+export function AppChat({ className, ...props }: AppChatProps) {
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
+  const activeConversationId = useWorkspaceStore((s) => s.activeConversationId);
+  const setActiveConversationId = useWorkspaceStore((s) => s.setActiveConversationId);
+
   const createConversation = useCreateConversation();
   const sendMessage = useSendMessage();
   const generateTitle = useGenerateTitle();
@@ -371,6 +642,7 @@ export function AppChat({ className, ...props }: AppChatProps) {
   const isLoading = isSendPending || isStreaming;
 
   const composer = useComposerModel(activeConversationId, conversation);
+  const deck = useQueueDeck(activeConversationId);
 
   // Show the chat empty state whenever the active conversation has no messages
   // yet — not just when no conversation exists. Guard against the message fetch
@@ -378,45 +650,11 @@ export function AppChat({ className, ...props }: AppChatProps) {
   const hasMessages = (conversation?.messages?.length ?? 0) > 0;
   const showEmptyState = !hasMessages && !isLoading && !isConversationLoading;
 
-  const fileToBase64 = (
-    file: File
-  ): Promise<{ data: string; mediaType: SupportedImageMediaType }> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const result = reader.result as string;
-        // A data URL is "<metadata>,<base64>". Anything without the comma is
-        // not one, and resolving with an undefined payload would put a broken
-        // image on the wire rather than failing where the mistake happened.
-        const base64 = result.split(",")[1];
-        if (base64 === undefined) {
-          reject(new Error(`Could not read ${file.name} as a data URL`));
-          return;
-        }
-        resolve({ data: base64, mediaType: file.type as SupportedImageMediaType });
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
-  };
-
-  const handleSubmit = async () => {
-    if (!activeWorkspaceId || !input.trim() || isSendPending) return;
-
-    const prompt = input.trim();
-
-    let imagesToSend: ImageAttachment[] | undefined;
-    try {
-      imagesToSend =
-        attachedImages.length > 0
-          ? await Promise.all(attachedImages.map(fileToBase64))
-          : undefined;
-    } catch (err) {
-      console.error("Failed to process images:", err);
-      // TODO: show toast if toast system exists
-      alert("Failed to process attached images. Please try again.");
-      return;
-    }
+  const handleSend = async (
+    prompt: string,
+    imagesToSend: ImageAttachment[] | undefined
+  ) => {
+    if (!activeWorkspaceId) return;
 
     // Sending while disconnected would otherwise post into a conversation
     // nothing is watching: the owner effect is keyed on the conversation, and
@@ -424,9 +662,6 @@ export function AppChat({ className, ...props }: AppChatProps) {
     if (streamFailed && activeConversationId) {
       retryStream(activeConversationId, queryClient);
     }
-
-    setInput("");
-    setAttachedImages([]);
 
     // Generate userMessageId for dedup
     const userMessageId = crypto.randomUUID();
@@ -451,6 +686,9 @@ export function AppChat({ className, ...props }: AppChatProps) {
       images: imagesToSend,
       model: composer.selectedModelId,
       effort: composer.effort,
+      // This render's status, not the cache's: retryStream above has already
+      // written "streaming" into the cache when the stream had failed.
+      sentMidTurn: isStreaming,
     });
 
     // Fire-and-forget title generation if conversation has no title/summary yet
@@ -468,10 +706,6 @@ export function AppChat({ className, ...props }: AppChatProps) {
     if (activeConversationId) {
       cancelStream.mutate(activeConversationId);
     }
-  };
-
-  const handleSignIn = () => {
-    triggerClaudeLogin();
   };
 
   const handleReconnect = () => {
@@ -494,6 +728,17 @@ export function AppChat({ className, ...props }: AppChatProps) {
     });
   };
 
+  // The transcript's rows are memoized on their props, and this one is handed
+  // to every row. Read through a ref so its identity never changes: what it
+  // closes over (pending sends, the composer's model) moves on every send.
+  const handleRetryRef = useRef(handleRetry);
+  useLayoutEffect(() => {
+    handleRetryRef.current = handleRetry;
+  });
+  const onRetry = useCallback(() => {
+    void handleRetryRef.current();
+  }, []);
+
   return (
     <div
       className={cn(
@@ -512,109 +757,31 @@ export function AppChat({ className, ...props }: AppChatProps) {
           <MessageList
             conversationId={activeConversationId}
             onSignIn={handleSignIn}
-            onRetry={handleRetry}
+            onRetry={onRetry}
+            hiddenIds={deck.hiddenIds}
+            revealedIds={deck.revealedIds}
           />
         </ChatContainerContent>
       </ChatContainerRoot>
 
-      <FileUpload onFilesAdded={handleFilesAdded} accept="image/*">
-        <div className="p-4">
-          {streamFailed && <StreamError onReconnect={handleReconnect} />}
-          <PromptInput
-            value={input}
-            onValueChange={setInput}
-            isLoading={isLoading}
-            onSubmit={handleSubmit}
-            className="bg-neutral-700 border-neutral-600"
-          >
-            {attachedImages.length > 0 && (
-              <div className="flex flex-wrap gap-2 p-2 pb-0">
-                {attachedImages.map((file, index) => (
-                  <div key={index} className="relative group">
-                    <img
-                      src={imageUrls[index]}
-                      alt={file.name}
-                      className="h-16 w-16 rounded-lg object-cover border border-neutral-600"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => removeImage(index)}
-                      className="absolute -top-1.5 -right-1.5 bg-neutral-600 hover:bg-neutral-500 rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
-                    >
-                      <X className="size-3" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-            <PromptInputTextarea
-              placeholder="Ask me anything..."
-              className="bg-transparent dark:bg-transparent"
-              onPaste={handlePaste}
-            />
-            <PromptInputActions className="justify-between pt-2">
-              <div className="flex items-center gap-2">
-                <ModelPicker
-                  models={composer.models}
-                  value={composer.selectedModelId}
-                  onChange={composer.handleModelChange}
-                />
-                <EffortDropdown
-                  levels={composer.effortLevels}
-                  value={composer.effort}
-                  onChange={composer.handleEffortChange}
-                />
-              </div>
-              <div className="flex items-center gap-2">
-                <PromptInputAction tooltip="Attach image">
-                  <FileUploadTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 rounded-full"
-                    >
-                      <Paperclip className="size-4" />
-                    </Button>
-                  </FileUploadTrigger>
-                </PromptInputAction>
-                {isStreaming && (
-                  <PromptInputAction tooltip="Stop generation">
-                    <Button
-                      variant="secondary"
-                      size="icon"
-                      className="h-8 w-8 rounded-full"
-                      onClick={handleStop}
-                      disabled={cancelStream.isPending}
-                    >
-                      <Square className="size-4 fill-current" />
-                    </Button>
-                  </PromptInputAction>
-                )}
-                <PromptInputAction
-                  tooltip={isStreaming ? "Queue message" : "Send message"}
-                >
-                  <Button
-                    variant="default"
-                    size="icon"
-                    className="h-8 w-8 rounded-full"
-                    onClick={handleSubmit}
-                    disabled={!input.trim() || isSendPending}
-                  >
-                    <ArrowUp className="size-4" />
-                  </Button>
-                </PromptInputAction>
-              </div>
-            </PromptInputActions>
-          </PromptInput>
-        </div>
+      {activeConversationId && (
+        <QueuedMessagesDeck
+          conversationId={activeConversationId}
+          rows={deck.rows}
+        />
+      )}
 
-        <FileUploadContent className="border-2 border-dashed border-neutral-500">
-          <div className="flex flex-col items-center gap-2 text-neutral-300">
-            <ImageIcon className="size-12" />
-            <p className="text-lg font-medium">Drop images here</p>
-          </div>
-        </FileUploadContent>
-      </FileUpload>
+      <Composer
+        composer={composer}
+        isStreaming={isStreaming}
+        streamFailed={streamFailed}
+        isSendPending={isSendPending}
+        canSend={!!activeWorkspaceId}
+        onSend={handleSend}
+        onStop={handleStop}
+        isStopPending={cancelStream.isPending}
+        onReconnect={handleReconnect}
+      />
     </div>
   );
 }

@@ -26,7 +26,7 @@ const withStreamStatus = <T extends ConversationRow>(
 });
 import { createUserSDKMessage } from "@/shared/utils/message";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { eq, desc, and, gt, asc, isNull } from "drizzle-orm";
+import { eq, desc, and, gt, gte, or, asc, isNull, sql } from "drizzle-orm";
 import { ok, err } from "neverthrow";
 
 export const createConversation = async (
@@ -137,8 +137,14 @@ export const getConversation = async (
                 // seq, not createdAt: createdAt has second resolution, so a
                 // turn's messages share a timestamp and this ordering was a
                 // tie-break on nothing. Restored transcripts could disagree
-                // with what the renderer showed live.
-                orderBy: (messages, { asc }) => asc(messages.seq),
+                // with what the renderer showed live. A prompt accepted from
+                // the queue sorts just after the row it was accepted behind
+                // (see acceptedAfterSeq); transcriptOrder in the renderer is
+                // the same rule.
+                orderBy: (messages, { asc }) => [
+                  asc(sql`coalesce(${messages.acceptedAfterSeq} + 0.5, ${messages.seq})`),
+                  asc(messages.seq),
+                ],
               },
             },
           }
@@ -165,8 +171,14 @@ export const getConversation = async (
 
 // The transcript after a point, for a subscriber that is resuming. `afterSeq`
 // is exclusive: it is the last seq the caller already has, so a caller fully
-// caught up gets nothing back. Ordered by seq, and covered end to end by
-// idx_messages_conv_seq.
+// caught up gets nothing back. Ordered by seq.
+//
+// Plus every prompt placed since then. Placing rewrites a row the caller may
+// already hold, under a seq below its cursor, so seq alone would never resend
+// it. A placement the caller missed happened after its cursor row existed,
+// so its accepted_after_seq (the max seq at the time) is at least the cursor.
+// The converse is not exact — a placement it did see can come back too — and
+// that is harmless: the renderer replaces rows by id.
 //
 // A Result like its neighbours, and the caller depends on that: this is
 // awaited inside the SSE route ahead of every seed, where a rejection would
@@ -183,7 +195,7 @@ export const getMessagesAfterSeq = async (
       .where(
         and(
           eq(messages.conversationId, conversationId),
-          gt(messages.seq, afterSeq)
+          or(gt(messages.seq, afterSeq), gte(messages.acceptedAfterSeq, afterSeq))
         )
       )
       .orderBy(asc(messages.seq));
@@ -233,12 +245,36 @@ export const deleteMessage = async (messageId: string) => {
 // id (a resumed session replays its history) rewrites the same column. A uuid
 // we never stamped — the CLI replays its own internal reminders too — matches
 // no row and is a no-op.
-export const markDelivered = async (messageId: string) => {
+//
+// `place` is for a prompt the CLI just took off the queue: it also records
+// where the prompt now belongs (accepted_after_seq, see the model) and emits
+// the row, so an open transcript moves it. Only the caller knows the ack is
+// that one — a replayed history must not be placed again, or every old prompt
+// would sort to the bottom.
+export const markDelivered = async (
+  messageId: string,
+  place?: { conversationId: string }
+) => {
   try {
-    await db
+    if (!place) {
+      await db
+        .update(messages)
+        .set({ deliveredAt: new Date() })
+        .where(eq(messages.id, messageId));
+      return ok(undefined);
+    }
+
+    const [placed] = await db
       .update(messages)
-      .set({ deliveredAt: new Date() })
-      .where(eq(messages.id, messageId));
+      .set({
+        deliveredAt: new Date(),
+        acceptedAfterSeq: sql`(select max(${messages.seq}) from ${messages} where ${messages.conversationId} = ${place.conversationId})`,
+      })
+      .where(eq(messages.id, messageId))
+      .returning();
+    if (placed) {
+      conversationEvents.emit("message", place.conversationId, { message: placed });
+    }
     return ok(undefined);
   } catch (_e) {
     return err({
