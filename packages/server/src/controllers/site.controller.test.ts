@@ -380,6 +380,35 @@ describe("publishing", () => {
     `);
   });
 
+  it("refuses to commit, on another site, a publish started on this one", async () => {
+    const user = await server.signIn();
+    const started = await createSite(user, "started here");
+    const other = await createSite(user, "committed there");
+    const { publishId } = await startPublish(user, started.id);
+    await prepare(user, other.id, publishId, "x");
+    const names = { [publishId]: "<publish>", [other.id]: "<other>" };
+    expect(
+      readable({ commit: await commit(user, other.id, publishId), other: await liveOf(other.id) }, names),
+    ).toMatchInlineSnapshot(`
+      {
+        "commit": {
+          "body": {
+            "error": {
+              "code": "NOT_FOUND",
+              "message": "No publish <publish> was started for this site",
+            },
+          },
+          "status": 404,
+        },
+        "other": {
+          "live": null,
+          "previous": null,
+          "seq": 0,
+        },
+      }
+    `);
+  });
+
   it("refuses to commit a publish that was planned but never started", async () => {
     const user = await server.signIn();
     const site = await createSite(user);
@@ -407,8 +436,8 @@ describe("publishing", () => {
   it("deletes nothing, even files no version needs any more", async () => {
     const user = await server.signIn();
     const site = await createSite(user);
-    // A plan made two hours ago and never committed: past the library's plan
-    // TTL, so any cleanup would delete it at once.
+    // A plan made two hours ago and never committed: past cleanup's one-hour
+    // grace, so a cleanup not keeping it would delete it at once.
     const stale = `sites/${site.id}/m/stale.json`;
     await server.env.SITES.put(stale, "{}", { customMetadata: { createdAt: String(Date.now() - 2 * 60 * 60 * 1000) } });
     // Then two publishes, the second replacing the first's only file.

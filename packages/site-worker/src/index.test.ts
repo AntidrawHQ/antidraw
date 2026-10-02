@@ -30,24 +30,33 @@ beforeAll(async () => {
 afterAll(() => harness?.close());
 
 let sites = 0;
-async function publish(slug: string, contents: Record<string, string>) {
+async function publish(slug: string, contents: Record<string, string>, immutable: string[] = []) {
   const siteId = `site-${++sites}`;
   await env.DB.prepare("INSERT INTO site (id, owner_id, slug, title) VALUES (?, 'u1', ?, ?)")
     .bind(siteId, slug, slug)
     .run();
+  await republish(siteId, "p1", contents, immutable);
+  return siteId;
+}
+
+/** Uploads another version and records it live, as the server's commit does. */
+async function republish(siteId: string, publishId: string, contents: Record<string, string>, immutable: string[] = []) {
   const files: Files = Object.create(null);
   const bodies = new Map<string, Uint8Array>();
   for (const [path, content] of Object.entries(contents)) {
     const body = new TextEncoder().encode(content);
     const h = createHash("sha256").update(body).digest("hex");
-    files[path] = { h, s: body.length };
+    files[path] = { h, s: body.length, ...(immutable.includes(path) && { i: true as const }) };
     bodies.set(h, body);
   }
-  const { missing } = await store.plan(siteId, "p1", { v: 1, files });
-  for (const hash of missing) await store.putFile(siteId, "p1", hash, bodies.get(hash)!, bodies.get(hash)!.length);
-  await store.requireComplete(siteId, "p1");
-  await env.DB.prepare("UPDATE site SET live_publish_id = 'p1', seq = 1 WHERE id = ?").bind(siteId).run();
-  return siteId;
+  const { missing } = await store.plan(siteId, publishId, { v: 1, files });
+  for (const hash of missing) await store.putFile(siteId, publishId, hash, bodies.get(hash)!, bodies.get(hash)!.length);
+  await store.requireComplete(siteId, publishId);
+  await env.DB.prepare(
+    "UPDATE site SET previous_publish_id = live_publish_id, live_publish_id = ?, seq = seq + 1 WHERE id = ?",
+  )
+    .bind(publishId, siteId)
+    .run();
 }
 
 /** Status, the headers worth reviewing, and the body. */
@@ -84,6 +93,26 @@ describe("site worker", () => {
           "content-type": "text/javascript; charset=utf-8",
         },
         "status": 200,
+      }
+    `);
+  });
+
+  it("serves the version D1 records as live, and the previous one's hashed chunks", async () => {
+    const siteId = await publish("versions", { "preview.html": "v1", "assets/app-1.js": "js1" }, ["assets/app-1.js"]);
+    await republish(siteId, "p2", { "preview.html": "v2", "assets/app-2.js": "js2" }, ["assets/app-2.js"]);
+    const status = async (path: string) => {
+      const res = await get(`https://versions.sites.test${path}`);
+      return `${res.status} ${res.body}`;
+    };
+    expect({
+      page: await status("/preview"),
+      "live chunk": await status("/assets/app-2.js"),
+      "previous version's chunk": await status("/assets/app-1.js"),
+    }).toMatchInlineSnapshot(`
+      {
+        "live chunk": "200 js2",
+        "page": "200 v2",
+        "previous version's chunk": "200 js1",
       }
     `);
   });

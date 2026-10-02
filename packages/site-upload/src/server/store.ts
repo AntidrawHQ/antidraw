@@ -185,9 +185,8 @@ export class SiteStore {
   /** A publish's manifest, as served. Null if it never planned (or was cleaned up). */
   async readManifest(site: string, publishId: string): Promise<StoredManifest | null> {
     this.assertIds(site, publishId);
-    const object = await this.bucket.get(this.planKey(site, publishId));
-    if (!object || !hasBody(object)) return null;
-    return { files: parsePlan(await object.text()).files, bytes: object.size };
+    const plan = await this.readPlan(site, publishId);
+    return plan && { files: plan.files, bytes: plan.bytes };
   }
 
   async getFile(site: string, hash: string, range?: BucketRange): Promise<BucketObjectBody | null> {
@@ -270,10 +269,11 @@ export class SiteStore {
     this.cachedHashes -= sizes.size;
   }
 
-  private async readPlan(site: string, publishId: string): Promise<StoredPlan | null> {
+  /** A stored plan, with the size of its object. */
+  private async readPlan(site: string, publishId: string): Promise<(StoredPlan & { bytes: number }) | null> {
     const object = await this.bucket.get(this.planKey(site, publishId));
     if (!object || !hasBody(object)) return null;
-    return parsePlan(await object.text());
+    return { ...parsePlan(await object.text()), bytes: object.size };
   }
 
   /** The hashes of `files` the site doesn't have stored at the right size, sorted. */

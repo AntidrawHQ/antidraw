@@ -736,24 +736,6 @@ describe("current cache", () => {
     `);
   });
 
-  it("forget() drops a site's cached current", async () => {
-    await publish("p1", { "index.html": "v1" });
-    const s = server({ currentTtlMs: 60_000 });
-    const home = async () => (await get(s, "/")).text();
-    const seen = [await home()];
-    await publish("p2", { "index.html": "v2" });
-    seen.push(await home());
-    s.forget(site);
-    seen.push(await home());
-    expect(seen).toMatchInlineSnapshot(`
-      [
-        "v1",
-        "v1",
-        "v2",
-      ]
-    `);
-  });
-
   it("serves the previous version's hashed chunks, but nothing else from it", async () => {
     await publish("p1", { "index.html": "v1", "assets/app-1.js": "js1", "about.txt": "old page" }, ["assets/app-1.js"]);
     await publish("p2", { "index.html": "v2", "assets/app-2.js": "js2" }, ["assets/app-2.js"]);

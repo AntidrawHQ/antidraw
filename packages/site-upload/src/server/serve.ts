@@ -1,7 +1,7 @@
 import { isId, type FileEntry, type Files } from "../protocol/manifest";
 import { contentType, isDocument } from "./content-type";
 import { ifNoneMatchHits, ifRangeAllows, parseRange, type ByteRange } from "./http-conditions";
-import type { SiteStore } from "./store";
+import type { SiteStore, StoredManifest } from "./store";
 
 /**
  * Which of a site's publishes are live, from the caller's records: `live` is
@@ -65,7 +65,6 @@ export type SiteServerOptions = {
 };
 
 type CachedCurrent = Current & { fetchedAt: number };
-type CachedManifest = { files: Files; bytes: number };
 
 /** What a request is served from: the live files, and how to reach the previous version's. */
 type Version = { live: Files | null; previous: () => Promise<Files | null> };
@@ -115,8 +114,8 @@ export class SiteServer {
   private readonly maxCachedManifestBytes: number;
   private readonly currents = new Map<string, CachedCurrent>();
   private readonly loadingCurrent = new Map<string, Promise<CachedCurrent>>();
-  private readonly manifests = new Map<string, CachedManifest>();
-  private readonly loadingManifest = new Map<string, Promise<CachedManifest | null>>();
+  private readonly manifests = new Map<string, StoredManifest>();
+  private readonly loadingManifest = new Map<string, Promise<StoredManifest | null>>();
   private cachedManifestBytes = 0;
   private readonly cache: FileCache | null;
   private readonly filling = new Map<string, Promise<void>>();
@@ -172,11 +171,6 @@ export class SiteServer {
     } catch {
       return unavailable();
     }
-  }
-
-  /** Drops a site's cached `current`, e.g. right after committing from the same isolate. */
-  forget(site: string) {
-    this.currents.delete(site);
   }
 
   /** The response for a resolved path, or null if its file is missing from storage. */
@@ -349,7 +343,7 @@ export class SiteServer {
   }
 
   /** A publish's manifest from memory, or read once. It never changes, so it's kept until evicted. */
-  private async manifest(site: string, publishId: string): Promise<CachedManifest | null> {
+  private async manifest(site: string, publishId: string): Promise<StoredManifest | null> {
     const key = `${site}/${publishId}`;
     const hit = this.manifests.get(key);
     if (hit) {
@@ -371,7 +365,7 @@ export class SiteServer {
     return loading;
   }
 
-  private remember(key: string, manifest: CachedManifest) {
+  private remember(key: string, manifest: StoredManifest) {
     this.manifests.set(key, manifest);
     this.cachedManifestBytes += manifest.bytes;
     while (this.manifests.size > 1 && this.cachedManifestBytes > this.maxCachedManifestBytes) {

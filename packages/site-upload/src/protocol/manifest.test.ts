@@ -383,7 +383,7 @@ describe("parseManifest", () => {
       `);
   });
 
-  it("caps the file list's JSON size, so max-length paths can't build a huge pointer", () => {
+  it("caps the file list's JSON size, so max-length paths can't build a huge manifest", () => {
     // 3,000 files with 1,000-byte paths: within the file and path limits, but
     // about 3 MB of JSON. A quote costs two bytes once escaped.
     const long = Array.from({ length: 3000 }, (_, i) => `${String(i).padStart(4, "0")}${"x".repeat(996)}`);
