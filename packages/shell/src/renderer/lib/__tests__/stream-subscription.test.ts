@@ -18,7 +18,15 @@ vi.mock("../api", async (importOriginal) => {
   return { ...actual, subscribeToConversation: vi.fn() };
 });
 
+// Wrapped, not replaced: the real parser runs, and the spy counts how often.
+vi.mock("@/shared/utils/parse-partial-json", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/shared/utils/parse-partial-json")>();
+  return { ...actual, parsePartialJson: vi.fn(actual.parsePartialJson) };
+});
+
 const { subscribeToConversation } = await import("../api");
+const { parsePartialJson } = await import("@/shared/utils/parse-partial-json");
 const { StreamDisconnectedError } = await import("../api");
 const {
   subscribeToStream,
@@ -1043,5 +1051,417 @@ describe("a prompt accepted from the queue", () => {
         "just sent",
       ]
     `);
+  });
+});
+
+describe("the live block's writes", () => {
+  const liveKey = (id: string) => queryKeys.conversations.livePartial(id);
+  const liveOf = (id: string) =>
+    queryClient.getQueryData<LivePartial | null>(liveKey(id));
+  const streamEvent = (event: unknown) =>
+    ({ type: "partial", partial: { event } }) as unknown as StreamEvent;
+  const start = (block: unknown) =>
+    streamEvent({ type: "content_block_start", index: 0, content_block: block });
+  const textDelta = (text: string) =>
+    streamEvent({
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "text_delta", text },
+    });
+  const jsonDelta = (partial_json: string) =>
+    streamEvent({
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "input_json_delta", partial_json },
+    });
+  const assistantRow = (seq: number) =>
+    ({
+      ...message(seq, "unused"),
+      messageType: "assistant",
+      sdkMessage: { type: "assistant", message: { content: [] } },
+    }) as unknown as Message;
+
+  // Counts cache writes to the live key: the thing a render per token costs.
+  const countWrites = (id: string) => {
+    const writes = { count: 0 };
+    queryClient.getQueryCache().subscribe((e) => {
+      if (
+        e.type === "updated" &&
+        e.action.type === "success" &&
+        JSON.stringify(e.query.queryKey) === JSON.stringify(liveKey(id))
+      )
+        writes.count++;
+    });
+    return writes;
+  };
+
+  test("a burst of deltas is one write, carrying all of them", async () => {
+    const id = freshId();
+    seedCache(queryClient, id, []);
+    const writes = countWrites(id);
+    scriptAttempts([
+      {
+        events: [
+          start({ type: "text", text: "" }),
+          ...["a", "b", "c", "d", "e"].map(textDelta),
+        ],
+        hangs: true,
+      },
+    ]);
+
+    subscribeToStream(id, queryClient);
+    await flush();
+
+    // Folded, not yet written: nothing has been asked to render.
+    expect(writes.count).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(50);
+    expect(writes.count).toBe(1);
+    expect((liveOf(id)?.block as { text?: string }).text).toBe("abcde");
+
+    releaseStream(id);
+  });
+
+  test("a persisted assistant message cancels the pending write", async () => {
+    const id = freshId();
+    seedCache(queryClient, id, []);
+    scriptAttempts([
+      {
+        events: [
+          start({ type: "text", text: "" }),
+          textDelta("partial"),
+          { type: "message", message: assistantRow(1) },
+        ],
+        hangs: true,
+      },
+    ]);
+
+    subscribeToStream(id, queryClient);
+    await flush();
+    await vi.advanceTimersByTimeAsync(50);
+
+    // A flush landing after the clear would put the finished block back.
+    expect(liveOf(id)).toBeNull();
+
+    releaseStream(id);
+  });
+
+  test("going idle cancels the pending write", async () => {
+    const id = freshId();
+    seedCache(queryClient, id, []);
+    scriptAttempts([
+      {
+        events: [
+          start({ type: "text", text: "" }),
+          textDelta("partial"),
+          { type: "state", state: "idle" } as unknown as StreamEvent,
+        ],
+        hangs: true,
+      },
+    ]);
+
+    subscribeToStream(id, queryClient);
+    await flush();
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(liveOf(id)).toBeNull();
+
+    releaseStream(id);
+  });
+
+  // A stream the test feeds by hand, so deltas can land in separate frames.
+  // Hangs between pushes the way a live link does, and ends on release.
+  // push resolves once every event it was given has been handled, however
+  // many ticks that takes: a fixed tick budget would quietly under-deliver.
+  const liveStream = () => {
+    const queue: StreamEvent[] = [];
+    let wake: (() => void) | null = null;
+    let pushed = 0;
+    let handled = 0;
+    mockSubscribe.mockImplementation(((
+      _conversationId: string,
+      _afterSeq?: number,
+      releaseSignal?: AbortSignal,
+    ) =>
+      (async function* () {
+        while (!releaseSignal?.aborted) {
+          const next = queue.shift();
+          if (next) {
+            yield next;
+            // Resumed: the loop asked for the next event, so this one's
+            // handler has run.
+            handled++;
+            continue;
+          }
+          await new Promise<void>((resolve) => {
+            wake = resolve;
+            releaseSignal?.addEventListener("abort", () => resolve(), {
+              once: true,
+            });
+          });
+        }
+      })()) as typeof subscribeToConversation);
+    return async (...events: StreamEvent[]) => {
+      queue.push(...events);
+      pushed += events.length;
+      wake?.();
+      wake = null;
+      for (let i = 0; i < 10_000 && handled < pushed; i++)
+        await Promise.resolve();
+      expect(handled).toBe(pushed);
+    };
+  };
+  const inputOf = (id: string) =>
+    (liveOf(id)?.block as { input?: unknown }).input;
+
+  test("a tool input is parsed once per write, not once per delta", async () => {
+    const id = freshId();
+    seedCache(queryClient, id, []);
+    scriptAttempts([
+      {
+        events: [
+          start({ type: "tool_use", id: "t1", name: "Write", input: {} }),
+          ...['{"file_path"', ':"/a.ts"', ',"content"', ':"h', 'i"}'].map(
+            jsonDelta,
+          ),
+        ],
+        hangs: true,
+      },
+    ]);
+    vi.mocked(parsePartialJson).mockClear();
+
+    subscribeToStream(id, queryClient);
+    await flush();
+    // Five deltas folded, none parsed: the parse belongs to the write.
+    expect(parsePartialJson).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(50);
+    expect(parsePartialJson).toHaveBeenCalledTimes(1);
+    expect(inputOf(id)).toEqual({ file_path: "/a.ts", content: "hi" });
+
+    releaseStream(id);
+  });
+
+  test("a frame that ends mid-token keeps the input the last frame wrote", async () => {
+    const id = freshId();
+    seedCache(queryClient, id, []);
+    const push = liveStream();
+
+    subscribeToStream(id, queryClient);
+    await push(
+      start({ type: "tool_use", id: "t1", name: "Write", input: {} }),
+      jsonDelta('{"content":"hi'),
+    );
+    await vi.advanceTimersByTimeAsync(50);
+    expect(inputOf(id)).toEqual({ content: "hi" });
+
+    // Cut off inside an escape: the accumulated json does not parse. The next
+    // fold starts from what the cache holds, so the input it carries forward
+    // is the one already on screen, not the block's empty starting input.
+    await push(jsonDelta("\\u00"));
+    await vi.advanceTimersByTimeAsync(50);
+    expect(liveOf(id)?.partialJson).toBe('{"content":"hi\\u00');
+    expect(inputOf(id)).toEqual({ content: "hi" });
+
+    await push(jsonDelta('e9"}'));
+    await vi.advanceTimersByTimeAsync(50);
+    expect(inputOf(id)).toEqual({ content: "hi\u00e9" });
+
+    releaseStream(id);
+  });
+
+  test("a seed arriving behind pending deltas is not overwritten by them", async () => {
+    const id = freshId();
+    seedCache(queryClient, id, []);
+    // The route attaches live listeners before it reads the backlog and seeds,
+    // so on a reconnect partials can reach us ahead of the livePartial seed.
+    const seeded = {
+      index: 0,
+      block: { type: "text", text: "everything so far" },
+    } as unknown as LivePartial;
+    scriptAttempts([
+      {
+        events: [
+          start({ type: "text", text: "" }),
+          textDelta("stale"),
+          { type: "livePartial", livePartial: seeded },
+        ],
+        hangs: true,
+      },
+    ]);
+
+    subscribeToStream(id, queryClient);
+    await flush();
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(liveOf(id)).toEqual(seeded);
+
+    releaseStream(id);
+  });
+
+  test("a turn failing on the backend cancels the pending write", async () => {
+    const id = freshId();
+    seedCache(queryClient, id, []);
+    scriptAttempts([
+      {
+        events: [
+          start({ type: "text", text: "" }),
+          textDelta("partial"),
+          { type: "error", error: "spawn failed" } as unknown as StreamEvent,
+        ],
+      },
+    ]);
+
+    subscribeToStream(id, queryClient);
+    await settle(id);
+
+    // A flush after the clear would leave a dead block under the notice.
+    expect(liveOf(id)).toBeNull();
+    expect(detail(queryClient, id).streamStatus).toBe("error");
+  });
+
+  test("giving up on the link cancels the pending write", async () => {
+    const id = freshId();
+    seedCache(queryClient, id, []);
+    scriptAttempts([
+      {
+        events: [start({ type: "text", text: "" }), textDelta("partial")],
+        throws: new StreamDisconnectedError("gone", false),
+      },
+    ]);
+
+    subscribeToStream(id, queryClient);
+    await settle(id);
+
+    expect(liveOf(id)).toBeNull();
+    expect(detail(queryClient, id).streamStatus).toBe("error");
+  });
+
+  test("token deltas do not walk the transcript", async () => {
+    const id = freshId();
+    seedCache(queryClient, id, [message(1, "a"), message(2, "b")]);
+    const push = liveStream();
+    const detailReads = { count: 0 };
+    const getQueryData = queryClient.getQueryData.bind(queryClient);
+    vi.spyOn(queryClient, "getQueryData").mockImplementation(((
+      key: readonly unknown[],
+    ) => {
+      if (
+        JSON.stringify(key) ===
+        JSON.stringify(queryKeys.conversations.detail(id))
+      )
+        detailReads.count++;
+      return getQueryData(key);
+    }) as typeof queryClient.getQueryData);
+
+    subscribeToStream(id, queryClient);
+    await push(start({ type: "text", text: "" }));
+    const before = detailReads.count;
+
+    // The retry-budget check reads the whole transcript. Only a persisted row
+    // can move it, so a token must not pay for it.
+    await push(...Array.from({ length: 50 }, (_, i) => textDelta(String(i))));
+    expect(detailReads.count).toBe(before);
+
+    releaseStream(id);
+  });
+
+  describe("on requestAnimationFrame", () => {
+    // What the Electron renderer actually runs; the rest of this file has no
+    // rAF and takes the setTimeout fallback.
+    const frames = new Map<number, FrameRequestCallback>();
+    let nextHandle = 1;
+    const runFrames = () => {
+      const callbacks = [...frames.values()];
+      frames.clear();
+      for (const cb of callbacks) cb(0);
+    };
+
+    beforeEach(() => {
+      frames.clear();
+      vi.stubGlobal(
+        "requestAnimationFrame",
+        vi.fn((cb: FrameRequestCallback) => {
+          const handle = nextHandle++;
+          frames.set(handle, cb);
+          return handle;
+        }),
+      );
+      vi.stubGlobal(
+        "cancelAnimationFrame",
+        vi.fn((handle: number) => frames.delete(handle)),
+      );
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    test("a burst of deltas asks for one frame and writes on it", async () => {
+      const id = freshId();
+      seedCache(queryClient, id, []);
+      scriptAttempts([
+        {
+          events: [
+            start({ type: "text", text: "" }),
+            ...["a", "b", "c"].map(textDelta),
+          ],
+          hangs: true,
+        },
+      ]);
+
+      subscribeToStream(id, queryClient);
+      await flush();
+      expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
+      expect(liveOf(id)).toBeUndefined();
+
+      runFrames();
+      expect((liveOf(id)?.block as { text?: string }).text).toBe("abc");
+
+      releaseStream(id);
+    });
+
+    test("a clear cancels the frame it asked for", async () => {
+      const id = freshId();
+      seedCache(queryClient, id, []);
+      scriptAttempts([
+        {
+          events: [
+            start({ type: "text", text: "" }),
+            textDelta("partial"),
+            { type: "message", message: assistantRow(1) },
+          ],
+          hangs: true,
+        },
+      ]);
+
+      subscribeToStream(id, queryClient);
+      await flush();
+      const handle = vi.mocked(requestAnimationFrame).mock.results[0]!.value;
+      expect(cancelAnimationFrame).toHaveBeenCalledWith(handle);
+
+      runFrames();
+      expect(liveOf(id)).toBeNull();
+
+      releaseStream(id);
+    });
+  });
+
+  test("releasing drops a write that has not happened yet", async () => {
+    const id = freshId();
+    seedCache(queryClient, id, []);
+    scriptAttempts([
+      {
+        events: [start({ type: "text", text: "" }), textDelta("late")],
+        hangs: true,
+      },
+    ]);
+
+    subscribeToStream(id, queryClient);
+    await flush();
+    releaseStream(id);
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(liveOf(id)).toBeUndefined();
   });
 });

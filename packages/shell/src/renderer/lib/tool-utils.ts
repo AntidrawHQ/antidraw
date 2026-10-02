@@ -87,20 +87,41 @@ export function correlateTools(
   return toolMap;
 }
 
-export const selectToolMap = (
-  data: ConversationWithMessages,
-  live: LivePartial | null = null,
+const EMPTY_TOOL_MAP: Map<string, ToolPart> = new Map();
+export const emptyToolMap = (): Map<string, ToolPart> => EMPTY_TOOL_MAP;
+
+// correlateTools builds fresh ToolPart objects on every run, so on its own
+// every tool would look changed whenever any message arrived. Carrying over
+// the previous object where nothing about the tool differs keeps identities
+// stable, which is what lets a memoized row skip re-rendering.
+export const reuseToolParts = (
+  previous: ReadonlyMap<string, ToolPart>,
+  next: Map<string, ToolPart>,
 ): Map<string, ToolPart> => {
-  const map = correlateTools(data.messages);
-
-  // At most one in-flight block. Only merge it if it's a tool_use we don't yet have persisted.
-  if (live?.block.type === "tool_use" && !map.has(live.block.id)) {
-    map.set(live.block.id, {
-      type: live.block.name,
-      state: "input-streaming",
-      input: live.block.input as Record<string, unknown>,
-    });
+  for (const [id, part] of next) {
+    const old = previous.get(id);
+    if (
+      old &&
+      old.type === part.type &&
+      old.state === part.state &&
+      old.input === part.input &&
+      old.errorText === part.errorText &&
+      old.output?.result === part.output?.result
+    ) {
+      next.set(id, old);
+    }
   }
-
-  return map;
+  return next;
 };
+
+// The in-flight tool_use block, shaped for the Tool component. Not part of the
+// persisted map: it changes every frame while it streams, and folding it into
+// that map would hand every row a new map each time.
+export const liveToolPart = (live: LivePartial): ToolPart | null =>
+  live.block.type === "tool_use"
+    ? {
+        type: live.block.name,
+        state: "input-streaming",
+        input: live.block.input as Record<string, unknown>,
+      }
+    : null;
