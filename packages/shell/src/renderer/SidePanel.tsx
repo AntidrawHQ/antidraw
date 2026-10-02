@@ -234,7 +234,11 @@ export const SidePanel = ({ className }: SidePanelProps) => {
   const ActivePanel = panelMap[activeSidePanel];
 
   return (
-    <ResizablePanel className={cn("bg-neutral-800", className)}>
+    <ResizablePanel
+      className={cn("bg-neutral-800", className)}
+      defaultWidth={500}
+      maxWidth={800}
+    >
       <ActivePanel />
     </ResizablePanel>
   );
