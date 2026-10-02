@@ -1,10 +1,11 @@
 import antidrawIcon from "@/renderer/assets/antidraw-icon.svg?raw";
 
 // The page the browser tab shows when Google sign-in comes back to the app's
-// loopback server: the AntiDraw logo, a title and a message in the middle of a
-// plain page, in the Publish button's sign-in panel's type and colours, saying
-// how sign-in ended. Self-contained, with inline styles and the logo inline,
-// so it loads nothing; its headers forbid anything else.
+// loopback server: the AntiDraw logo, a title and a message, left-aligned in a
+// block in the middle of a plain page, in the Publish button's sign-in panel's
+// type and colours, saying how sign-in ended. Self-contained, with inline
+// styles and the logo inline, so it loads nothing; its headers forbid anything
+// else.
 
 export type SignInOutcome = "signed-in" | "cancelled" | "failed";
 
@@ -64,8 +65,8 @@ export const signInPage = (outcome: SignInOutcome) => {
     font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
     -webkit-font-smoothing: antialiased;
   }
-  main { max-width: 360px; text-align: center; }
-  .logo { position: relative; width: 48px; height: 48px; margin: 0 auto; }
+  main { width: 100%; max-width: 360px; }
+  .logo { position: relative; width: 48px; height: 48px; }
   .logo svg { display: block; width: 48px; height: 48px; }
   .mark {
     position: absolute; right: -6px; bottom: -6px;
