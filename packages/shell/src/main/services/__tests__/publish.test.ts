@@ -16,7 +16,10 @@ const runtimeFixture = path.join(packages, "plugin-runtime/test/fixture");
 // types. What this test uses of it:
 type TestServer = {
   url: URL;
-  env: { SITES: { get(key: string): Promise<{ json(): Promise<unknown>; text(): Promise<string> } | null> } };
+  env: {
+    DB: { prepare(query: string): { bind(...values: unknown[]): { first<T>(): Promise<T | null> } } };
+    SITES: { get(key: string): Promise<{ json(): Promise<unknown>; text(): Promise<string> } | null> };
+  };
   signIn(): Promise<{ userId: string; authorization: string }>;
   close(): Promise<void>;
 };
@@ -104,20 +107,24 @@ const readable = (value: unknown, names: Record<string, string>) => {
 
 /** What's live on the site: each file, and whether it's cached for good. */
 const liveFiles = async (siteId: string) => {
-  const pointer = (await (await server.env.SITES.get(`sites/${siteId}/current.json`))!.json()) as {
+  // D1 says which publish is live; R2 holds that publish's manifest.
+  const { live } = (await server.env.DB.prepare("SELECT live_publish_id AS live FROM site WHERE id = ?")
+    .bind(siteId)
+    .first<{ live: string }>())!;
+  const manifest = (await (await server.env.SITES.get(`sites/${siteId}/m/${live}.json`))!.json()) as {
     files: Record<string, { h: string; i?: true }>;
   };
   const files = Object.fromEntries(
-    Object.entries(pointer.files).map(([file, { i }]) => [file.replace(/-[\w-]{8}\.(js|css)$/, "-[hash].$1"), i ? "immutable" : "revalidate"]),
+    Object.entries(manifest.files).map(([file, { i }]) => [file.replace(/-[\w-]{8}\.(js|css)$/, "-[hash].$1"), i ? "immutable" : "revalidate"]),
   );
-  const read = async (file: string) => (await server.env.SITES.get(`sites/${siteId}/f/${pointer.files[file]!.h}`))!;
+  const read = async (file: string) => (await server.env.SITES.get(`sites/${siteId}/f/${manifest.files[file]!.h}`))!;
   const canvasFile = await (await read("canvas.json")).json();
   // React's development JSX, which only a development build ships.
-  const scripts = Object.keys(pointer.files).filter((file) => file.endsWith(".js"));
+  const scripts = Object.keys(manifest.files).filter((file) => file.endsWith(".js"));
   const development = (await Promise.all(scripts.map(async (file) => (await read(file)).text()))).some((code) =>
     code.includes("jsxDEV"),
   );
-  return { files, canvasFile, development, hashes: pointer.files };
+  return { files, canvasFile, development, hashes: manifest.files };
 };
 
 let first: PublishedSite;
