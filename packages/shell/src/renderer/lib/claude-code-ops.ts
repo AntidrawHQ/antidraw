@@ -8,7 +8,7 @@ import type { ImageAttachment } from "@/shared/utils/message";
 import { createUserSDKMessage } from "@/shared/utils/message";
 import { mutationOptions, queryOptions, useMutation, useQuery, useQueryClient, skipToken } from "@tanstack/react-query";
 import type { QueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
 import type { ToolPart } from "@/renderer/components/ui/tool";
 import { queryKeys } from "./query-keys";
@@ -31,7 +31,7 @@ import {
   subscribeToStream,
   type LivePartial,
 } from "./stream-subscription";
-import { selectToolMap } from "./tool-utils";
+import { correlateTools, emptyToolMap, reuseToolParts } from "./tool-utils";
 
 // Shared query options for conversation data. Exported so a test can build an
 // observer from the real thing: a hand-written mirror would pin its own copy of
@@ -124,16 +124,23 @@ export const useWorkspaceConversations = (workspaceId: string | null) => {
   });
 };
 
-// Returns Map<string, ToolPart> for tool correlation, including the in-flight tool_use
-// block (if any) merged with state: "input-streaming".
+// Returns Map<string, ToolPart> for tool correlation over the persisted
+// messages. The in-flight tool_use block is deliberately not in here (see
+// liveToolPart): this recomputes only when the conversation changes, never per
+// streamed token, and keeps the identity of each unchanged ToolPart.
 export const useToolMap = (conversationId: string | null) => {
   const conversation = useQuery(conversationQueryOpts(conversationId));
-  const { data: live } = useLivePartial(conversationId);
+  const previous = useRef<Map<string, ToolPart>>(emptyToolMap());
 
   const data = useMemo<Map<string, ToolPart>>(() => {
-    if (!conversation.data) return new Map();
-    return selectToolMap(conversation.data, live);
-  }, [conversation.data, live]);
+    if (!conversation.data) return emptyToolMap();
+    const next = reuseToolParts(
+      previous.current,
+      correlateTools(conversation.data.messages),
+    );
+    previous.current = next;
+    return next;
+  }, [conversation.data]);
 
   return { data };
 };

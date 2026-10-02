@@ -70,7 +70,11 @@ export const foldPartial = (
 // install it as the block's input. Folding lazily and then materializing
 // yields the same LivePartial an eager fold produces — and materializing an
 // eagerly-folded value is a no-op re-parse of the same string — so the two
-// sides stay interchangeable across the wire.
+// sides stay interchangeable across the wire. One exception: when the json
+// does not parse yet (it ends mid-escape), the eager fold keeps the last input
+// that did, while a lazy fold has only the block's starting input to keep. A
+// seed taken at that moment renders an empty input until the next delta that
+// parses.
 export const materializePartial = (
   partial: LivePartial | null,
 ): LivePartial | null => {
@@ -78,6 +82,8 @@ export const materializePartial = (
     return partial;
   }
   const parsed = parsePartialJson(partial.partialJson);
-  if (parsed === null) return partial;
+  // parsePartialJson reports failure as undefined. Keep the last input that
+  // did parse rather than wiping it on a chunk that ends mid-token.
+  if (parsed === undefined) return partial;
   return { ...partial, block: { ...partial.block, input: parsed } };
 };

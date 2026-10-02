@@ -115,6 +115,7 @@ export const subscribeToStream = (
     // release — React running a cleanup and then the effect again — starts a
     // new subscription instead of finding a dying one and no-oping onto it.
     vacate();
+    dropPendingLive(conversationId);
     // The signal reaches the live stream, which closes its iteration and
     // aborts the fetch. Electron does not turn that into a request abort —
     // protocol.handle builds the handler's Request without a signal, so the
@@ -167,9 +168,14 @@ export const subscribeToStream = (
             // loop's ++ lands on 0. No baseline, no refund: a cache that
             // appears mid-attempt is the detail query landing, not the link
             // producing.
-            const now = cursorFor(conversationId, queryClient);
-            if (attemptBase !== undefined && now !== undefined && now > attemptBase)
-              attempt = -1;
+            // Only a persisted row can move the cursor, so only `message`
+            // events are checked: cursorFor walks the whole transcript, and
+            // running it for every token delta bought nothing.
+            if (event.type === "message") {
+              const now = cursorFor(conversationId, queryClient);
+              if (attemptBase !== undefined && now !== undefined && now > attemptBase)
+                attempt = -1;
+            }
           }
           // Ended cleanly, which now means one of two things: the backend
           // sent a terminal event, or the owner released and the transport
@@ -257,11 +263,84 @@ export const retryStream = (
   subscribeToStream(conversationId, queryClient);
 };
 
-const clearLive = (conversationId: string, queryClient: QueryClient): void => {
+// Partial events arrive once per token. Writing each one to the cache renders
+// everything subscribed to the live block once per token, which is more often
+// than a screen can show. Deltas are folded into `state` as they arrive and
+// written once per frame instead; the fold is identical, only the write is
+// coalesced.
+type PendingLive = {
+  state: LivePartial | null;
+  handle: ReturnType<typeof setTimeout> | number;
+  queryClient: QueryClient;
+};
+const pendingLive = new Map<string, PendingLive>();
+
+const nextFrame = (cb: () => void): PendingLive["handle"] =>
+  typeof requestAnimationFrame === "function"
+    ? requestAnimationFrame(cb)
+    : setTimeout(cb, 16);
+
+const cancelFrame = (handle: PendingLive["handle"]): void => {
+  if (typeof cancelAnimationFrame === "function") {
+    cancelAnimationFrame(handle as number);
+  } else {
+    clearTimeout(handle as ReturnType<typeof setTimeout>);
+  }
+};
+
+// Drops folded-but-unwritten deltas. Everything that replaces the live block
+// must do this first: a flush landing after a clear would bring the block back.
+const dropPendingLive = (conversationId: string): void => {
+  const pending = pendingLive.get(conversationId);
+  if (!pending) return;
+  cancelFrame(pending.handle);
+  pendingLive.delete(conversationId);
+};
+
+const setLive = (
+  conversationId: string,
+  queryClient: QueryClient,
+  value: LivePartial | null,
+): void => {
+  dropPendingLive(conversationId);
   queryClient.setQueryData<LivePartial | null>(
     queryKeys.conversations.livePartial(conversationId),
-    null,
+    value,
   );
+};
+
+const foldLive = (
+  conversationId: string,
+  queryClient: QueryClient,
+  raw: Parameters<typeof foldPartial>[1],
+): void => {
+  const pending = pendingLive.get(conversationId);
+  const prev = pending
+    ? pending.state
+    : (queryClient.getQueryData<LivePartial | null>(
+        queryKeys.conversations.livePartial(conversationId),
+      ) ?? null);
+  // parse: false — the tool input is parsed once per frame at the flush, not
+  // once per delta.
+  const next = foldPartial(prev, raw, { parse: false });
+  if (next === prev) return;
+  if (pending) {
+    pending.state = next;
+    return;
+  }
+  const entry: PendingLive = { state: next, handle: 0, queryClient };
+  entry.handle = nextFrame(() => {
+    pendingLive.delete(conversationId);
+    queryClient.setQueryData<LivePartial | null>(
+      queryKeys.conversations.livePartial(conversationId),
+      materializePartial(entry.state),
+    );
+  });
+  pendingLive.set(conversationId, entry);
+};
+
+const clearLive = (conversationId: string, queryClient: QueryClient): void => {
+  setLive(conversationId, queryClient, null);
 };
 
 const handleStreamEvent = (
@@ -335,10 +414,7 @@ const handleStreamEvent = (
   }
 
   if (event.type === "partial") {
-    queryClient.setQueryData<LivePartial | null>(
-      queryKeys.conversations.livePartial(conversationId),
-      (prev) => foldPartial(prev ?? null, event.partial.event),
-    );
+    foldLive(conversationId, queryClient, event.partial.event);
     return;
   }
 
@@ -346,8 +422,9 @@ const handleStreamEvent = (
   // Assigned wholesale: it is the same fold this handler would have produced
   // had we been connected for every delta.
   if (event.type === "livePartial") {
-    queryClient.setQueryData<LivePartial | null>(
-      queryKeys.conversations.livePartial(conversationId),
+    setLive(
+      conversationId,
+      queryClient,
       // Main folds without parsing, so the seed carries raw accumulated
       // json. Parse it once here: a tool call must render its input on
       // attach, not on the next delta — which never comes for a block
