@@ -1,0 +1,66 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "antidraw-sites",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "observability": {
+    "enabled": true
+  },
+  // Pinned beside the server's (8799): sites at <slug>.localhost:8787, and an
+  // inspector port of its own so both run at once.
+  "dev": {
+    "port": 8787,
+    "inspector_port": 9230
+  },
+  // The same database and bucket as @antidraw/server, which owns the schema
+  // (its migrations are applied from there) and writes both; this Worker only
+  // reads them.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "antidraw",
+      // The id in packages/server/wrangler.jsonc (its README, Deploy step 1).
+      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      // The server's local state, as in its wrangler.jsonc.
+      "preview_database_id": "antidraw-local",
+      "migrations_dir": "../server/src/db/migrations"
+    }
+  ],
+  "r2_buckets": [{ "binding": "SITES", "bucket_name": "antidraw-sites" }],
+  "vars": {
+    // Sites are served at <slug>.<SITE_DOMAIN>: a domain of their own, apart
+    // from antidraw.com, so published code never shares an origin or cookies
+    // with the product.
+    "SITE_DOMAIN": "antidraw.app",
+    // Where / on a site sends visitors: its share page, * being its slug.
+    "SHARE_URL_PATTERN": "https://antidraw.com/s/*"
+  },
+  "routes": [
+    // Every first-level subdomain; the zone needs a proxied wildcard DNS record
+    // (* AAAA 100::) for requests to reach the route, and no other Worker may
+    // hold the route (see the server's README, Deploy).
+    { "pattern": "*.antidraw.app/*", "zone_name": "antidraw.app" }
+  ],
+  "env": {
+    // `npm run dev`: sites at <slug>.localhost:8787, which browsers resolve to
+    // this machine. No routes: with one, wrangler dev rewrites every request's
+    // host to the route's zone and the slug is lost. State is persisted with
+    // the server's `wrangler dev`, so sites published to it are served here.
+    "dev": {
+      "routes": [],
+      // The share page is the web canvas's dev server.
+      "vars": { "SITE_DOMAIN": "localhost", "SHARE_URL_PATTERN": "http://localhost:8786/s/*" },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "antidraw",
+          // Unused locally: preview_database_id names the local state.
+          "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+          "preview_database_id": "antidraw-local",
+          "migrations_dir": "../server/src/db/migrations"
+        }
+      ],
+      "r2_buckets": [{ "binding": "SITES", "bucket_name": "antidraw-sites" }]
+    }
+  }
+}

@@ -11,6 +11,8 @@
     "dev:shell": "npm run dev -w @antidraw/shell",
     "dev:server": "npm run dev -w @antidraw/server",
     "deploy:server": "npm run deploy -w @antidraw/server",
+    "dev:sites": "npm run dev -w @antidraw/site-worker",
+    "deploy:sites": "npm run deploy -w @antidraw/site-worker",
     "dev:template": "npm run dev -w antidraw-workspace",
     "build:shell": "npm run build -w @antidraw/shell",
     "build:template": "npm run build -w antidraw-workspace",
