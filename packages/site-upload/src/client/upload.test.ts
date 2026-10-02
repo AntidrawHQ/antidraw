@@ -13,6 +13,9 @@ let dir: string;
 let site: string;
 let store: SiteStore;
 let publishCount: number;
+/** The live and previous publish, as the server's records keep them. */
+let live: string | null;
+let previous: string | null;
 
 beforeAll(async () => {
   env = await startTestWorker();
@@ -24,6 +27,7 @@ beforeEach(async () => {
   site = uniqueSite();
   store = new SiteStore({ bucket: env.bucket });
   publishCount = 0;
+  live = previous = null;
 });
 afterEach(() => rm(dir, { recursive: true, force: true }));
 
@@ -78,7 +82,12 @@ function storeTransport(hooks: Hooks = {}) {
     async commit() {
       log.commits++;
       await hooks.beforeCommit?.(log.commits);
-      return store.commit(site, publishId);
+      // What the server does: check the files, then record the publish as live.
+      await store.requireComplete(site, publishId);
+      if (live === publishId) return { publishId, previous, alreadyCommitted: true };
+      previous = live;
+      live = publishId;
+      return { publishId, previous, alreadyCommitted: false };
     },
   };
   return { transport, log };
@@ -103,8 +112,8 @@ describe("uploadSite", () => {
     await write({ "index.html": "home", "a/copy.html": "home", "logo.png": "logo" });
     const { transport, log } = storeTransport();
     const result = await run(transport);
-    const pointer = await store.readPointer(site);
-    expect(readable({ result, log: counts(log), live: pointer?.files })).toMatchInlineSnapshot(`
+    const manifest = live ? await store.readManifest(site, live) : null;
+    expect(readable({ result, log: counts(log), live: manifest?.files })).toMatchInlineSnapshot(`
       {
         "live": {
           "a/copy.html": {

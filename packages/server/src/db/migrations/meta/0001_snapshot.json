@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "c5307800-7c13-4669-8bf4-6efa888f7bd7",
+  "id": "c544a166-823a-4f65-b8aa-62068e4d5639",
   "prevId": "6201c7d1-f763-4f0d-b895-5e86c5e9ba6b",
   "tables": {
     "account": {
@@ -373,18 +373,11 @@
           "notNull": true,
           "autoincrement": false
         },
-        "status": {
-          "name": "status",
-          "type": "text",
+        "base_seq": {
+          "name": "base_seq",
+          "type": "integer",
           "primaryKey": false,
           "notNull": true,
-          "autoincrement": false
-        },
-        "previous": {
-          "name": "previous",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
           "autoincrement": false
         },
         "created_at": {
@@ -462,33 +455,27 @@
           "notNull": true,
           "autoincrement": false
         },
-        "lock_publish_id": {
-          "name": "lock_publish_id",
+        "live_publish_id": {
+          "name": "live_publish_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
         },
-        "lock_until": {
-          "name": "lock_until",
-          "type": "integer",
+        "previous_publish_id": {
+          "name": "previous_publish_id",
+          "type": "text",
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
         },
-        "busy_until": {
-          "name": "busy_until",
+        "seq": {
+          "name": "seq",
           "type": "integer",
           "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "cleanup_after": {
-          "name": "cleanup_after",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
         },
         "created_at": {
           "name": "created_at",
@@ -511,13 +498,6 @@
           "name": "site_owner_id_idx",
           "columns": [
             "owner_id"
-          ],
-          "isUnique": false
-        },
-        "site_cleanup_after_idx": {
-          "name": "site_cleanup_after_idx",
-          "columns": [
-            "cleanup_after"
           ],
           "isUnique": false
         }

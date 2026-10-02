@@ -7,7 +7,8 @@ import type { Env } from "./index";
 
 // This Worker in workerd with local D1 (the server's migrations) and R2, via
 // Wrangler's test harness. Sites are published the way the server does it:
-// a site row in D1, then SiteStore's plan, upload and commit under its id.
+// a site row in D1, SiteStore's plan and upload under its id, then the row
+// records the publish as live.
 
 let harness: ReturnType<typeof createTestHarness>;
 let env: Env;
@@ -44,7 +45,8 @@ async function publish(slug: string, contents: Record<string, string>) {
   }
   const { missing } = await store.plan(siteId, "p1", { v: 1, files });
   for (const hash of missing) await store.putFile(siteId, "p1", hash, bodies.get(hash)!, bodies.get(hash)!.length);
-  await store.commit(siteId, "p1");
+  await store.requireComplete(siteId, "p1");
+  await env.DB.prepare("UPDATE site SET live_publish_id = 'p1', seq = 1 WHERE id = ?").bind(siteId).run();
   return siteId;
 }
 

@@ -14,8 +14,6 @@ export type TestServer = {
   /** The Worker's bindings, driven from Node: seed and inspect D1 and R2. */
   env: Bindings;
   fetch(path: string, init?: RequestInit): Promise<Response>;
-  /** Runs the Worker's cron trigger once. */
-  scheduled(): Promise<void>;
   /** A new user with a session; returns its Authorization header value. */
   signIn(name?: string): Promise<{ userId: string; authorization: string }>;
   close(): Promise<void>;
@@ -47,9 +45,6 @@ export async function startServer(): Promise<TestServer> {
     url,
     env,
     fetch: (path, init) => fetch(new URL(path, url), init),
-    async scheduled() {
-      await worker.scheduled({ cron: "17 * * * *" });
-    },
     async signIn(name = `user${++users}`) {
       // What better-auth writes when Google sign-in succeeds, and the signed
       // token /api/auth/desktop/token hands the app.

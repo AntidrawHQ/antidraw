@@ -1,7 +1,14 @@
-import { isId, type FileEntry } from "../protocol/manifest";
+import { isId, type FileEntry, type Files } from "../protocol/manifest";
 import { contentType, isDocument } from "./content-type";
 import { ifNoneMatchHits, ifRangeAllows, parseRange, type ByteRange } from "./http-conditions";
-import type { Pointer, SiteStore } from "./store";
+import type { SiteStore } from "./store";
+
+/**
+ * Which of a site's publishes are live, from the caller's records: `live` is
+ * served, and `previous` (the one live before it) lends its hashed chunks to
+ * pages opened before the switch. Null when there is none.
+ */
+export type Current = { live: string | null; previous: string | null };
 
 /**
  * "404-page": serve 404.html with status 404 when the site has one.
@@ -20,18 +27,23 @@ export type WaitUntil = { waitUntil(promise: Promise<unknown>): void };
 
 export type SiteServerOptions = {
   store: SiteStore;
+  /** Which publishes of `site` are live (see Current), usually a database read. */
+  current: (site: string) => Promise<Current>;
   /**
    * Where file bytes are cached, keyed by hash; usually `caches.default`.
    * Off unless given: the Cache API only works on a custom domain or route,
    * and elsewhere (workers.dev) each miss would cost an extra full R2 read.
    */
   cache?: FileCache | null;
-  /** How long an isolate reuses a site's pointer before reading it again. Default 5 s. */
-  pointerTtlMs?: number;
-  /** Pointers kept in memory, least recently used dropped first. Default 500. */
+  /** How long an isolate reuses a site's `current` before asking again. Default 5 s. */
+  currentTtlMs?: number;
+  /** Sites whose `current` is kept in memory, least recently used dropped first. Default 500. */
   maxCachedSites?: number;
-  /** Total stored size of the pointers kept in memory. Default 32 MiB. */
-  maxCachedPointerBytes?: number;
+  /**
+   * Total stored size of the manifests kept in memory, least recently used
+   * dropped first. They never change, so they're kept until evicted. Default 32 MiB.
+   */
+  maxCachedManifestBytes?: number;
   notFound?: NotFoundMode;
   /**
    * The Cache-Control for a file served with 200 (or 304). `immutable` is
@@ -52,15 +64,20 @@ export type SiteServerOptions = {
   now?: () => number;
 };
 
-type CachedPointer = { pointer: Pointer | null; fetchedAt: number; bytes: number };
+type CachedCurrent = Current & { fetchedAt: number };
+type CachedManifest = { files: Files; bytes: number };
+
+/** What a request is served from: the live files, and how to reach the previous version's. */
+type Version = { live: Files | null; previous: () => Promise<Files | null> };
 
 type Resolved =
   | { kind: "file"; path: string; entry: FileEntry }
   | { kind: "redirect" }
   | { kind: "miss" };
 
-// A miss re-reads a pointer older than this: a page from a just-published
-// version asks for files an isolate holding the old pointer doesn't know yet.
+// A miss asks for `current` again when what's held is older than this: a page
+// from a just-published version asks for files an isolate holding the old
+// version doesn't know yet.
 const MISS_REFRESH_MS = 1000;
 
 // Hashes filled into the cache by this isolate, so each is filled once.
@@ -68,7 +85,7 @@ const FILLED_MAX = 10_000;
 
 const IMMUTABLE = "public, max-age=31536000, immutable";
 // Cache keys name file content, not a site or path, so any site serving the
-// same bytes shares the entry. The pointer still decides what a site can reach.
+// same bytes shares the entry. The live manifest still decides what a site can reach.
 const CACHE_ORIGIN = "https://site-upload.cache";
 const REVALIDATE = "public, max-age=0, must-revalidate";
 
@@ -88,26 +105,30 @@ self.addEventListener("activate", (event) => {
 
 export class SiteServer {
   private readonly store: SiteStore;
-  private readonly pointerTtlMs: number;
+  private readonly currentOf: SiteServerOptions["current"];
+  private readonly currentTtlMs: number;
   private readonly maxCachedSites: number;
   private readonly notFound: NotFoundMode;
   private readonly now: () => number;
   private readonly cacheControl: NonNullable<SiteServerOptions["cacheControl"]>;
   private readonly serviceWorkers: (site: string) => boolean;
-  private readonly maxCachedPointerBytes: number;
-  private readonly pointers = new Map<string, CachedPointer>();
-  private readonly loading = new Map<string, Promise<CachedPointer>>();
-  private cachedPointerBytes = 0;
+  private readonly maxCachedManifestBytes: number;
+  private readonly currents = new Map<string, CachedCurrent>();
+  private readonly loadingCurrent = new Map<string, Promise<CachedCurrent>>();
+  private readonly manifests = new Map<string, CachedManifest>();
+  private readonly loadingManifest = new Map<string, Promise<CachedManifest | null>>();
+  private cachedManifestBytes = 0;
   private readonly cache: FileCache | null;
   private readonly filling = new Map<string, Promise<void>>();
   private readonly filled = new Set<string>();
 
   constructor(options: SiteServerOptions) {
     this.store = options.store;
+    this.currentOf = options.current;
     this.cache = options.cache ?? null;
-    this.pointerTtlMs = options.pointerTtlMs ?? 5000;
+    this.currentTtlMs = options.currentTtlMs ?? 5000;
     this.maxCachedSites = options.maxCachedSites ?? 500;
-    this.maxCachedPointerBytes = options.maxCachedPointerBytes ?? 32 * 1024 * 1024;
+    this.maxCachedManifestBytes = options.maxCachedManifestBytes ?? 32 * 1024 * 1024;
     this.notFound = options.notFound ?? "404-page";
     this.now = options.now ?? Date.now;
     this.cacheControl = options.cacheControl ?? (({ immutable }) => (immutable ? IMMUTABLE : REVALIDATE));
@@ -131,33 +152,31 @@ export class SiteServer {
     if (workerScript(request) && !this.serviceWorkers(site)) return unregisterWorker();
 
     try {
-      let cached = await this.pointer(site, false);
-      let resolved = resolve(cached.pointer, path);
-      if (resolved.kind === "miss" && this.now() - cached.fetchedAt >= MISS_REFRESH_MS) {
-        cached = await this.pointer(site, true);
-        resolved = resolve(cached.pointer, path);
+      let current = await this.current(site, false);
+      let version = await this.version(site, current);
+      let resolved = await resolve(version, path);
+      if (resolved.kind === "miss" && this.now() - current.fetchedAt >= MISS_REFRESH_MS) {
+        current = await this.current(site, true);
+        version = await this.version(site, current);
+        resolved = await resolve(version, path);
       }
-      const response = await this.respond(request, site, url, path, cached.pointer, resolved, ctx);
+      const response = await this.respond(request, site, url, path, version.live, resolved, ctx);
       if (response) return response;
 
-      // The file is gone from storage: cleanup ran after a newer version went
-      // live, so this pointer is out of date. Read it again and retry once.
-      cached = await this.pointer(site, true);
-      resolved = resolve(cached.pointer, path);
-      return (
-        (await this.respond(request, site, url, path, cached.pointer, resolved, ctx)) ?? unavailable()
-      );
+      // The file is gone from storage: a cleanup ran after a newer version
+      // went live, so what's held is out of date. Ask again and retry once.
+      current = await this.current(site, true);
+      version = await this.version(site, current);
+      resolved = await resolve(version, path);
+      return (await this.respond(request, site, url, path, version.live, resolved, ctx)) ?? unavailable();
     } catch {
       return unavailable();
     }
   }
 
-  /** Drops a cached pointer, e.g. right after committing from the same isolate. */
+  /** Drops a site's cached `current`, e.g. right after committing from the same isolate. */
   forget(site: string) {
-    const cached = this.pointers.get(site);
-    if (!cached) return;
-    this.pointers.delete(site);
-    this.cachedPointerBytes -= cached.bytes;
+    this.currents.delete(site);
   }
 
   /** The response for a resolved path, or null if its file is missing from storage. */
@@ -166,15 +185,15 @@ export class SiteServer {
     site: string,
     url: URL,
     path: string,
-    pointer: Pointer | null,
+    live: Files | null,
     resolved: Resolved,
     ctx: WaitUntil | undefined,
   ): Promise<Response | null> {
-    if (workerScript(request) && !(resolved.kind === "file" && pointer?.files[resolved.path] === resolved.entry)) {
-      // Not a live file (missing, a redirect, or a retained old version).
+    if (workerScript(request) && !(resolved.kind === "file" && live?.[resolved.path] === resolved.entry)) {
+      // Not a live file (missing, a redirect, or the previous version's).
       return unregisterWorker();
     }
-    if (!pointer) return text(404, "Not found");
+    if (!live) return text(404, "Not found");
     if (resolved.kind === "file") return this.serve(request, site, resolved.path, resolved.entry, 200, ctx);
     if (resolved.kind === "redirect") {
       return new Response(null, {
@@ -184,10 +203,10 @@ export class SiteServer {
     }
 
     if (this.notFound === "single-page-application" && !lastSegment(path).includes(".")) {
-      const index = pointer.files["index.html"];
+      const index = live["index.html"];
       if (index) return this.serve(request, site, "index.html", index, 200, ctx);
     }
-    const page = pointer.files["404.html"];
+    const page = live["404.html"];
     if (this.notFound === "404-page" && page) return this.serve(request, site, "404.html", page, 404, ctx);
     return text(404, "Not found");
   }
@@ -295,58 +314,93 @@ export class SiteServer {
     return filling;
   }
 
-  /** The site's pointer from memory, or read once however many requests ask at the same time. */
-  private async pointer(site: string, force: boolean): Promise<CachedPointer> {
-    const hit = this.pointers.get(site);
-    if (hit && !force && this.now() - hit.fetchedAt < this.pointerTtlMs) {
-      this.pointers.delete(site);
-      this.pointers.set(site, hit);
+  /** The site's `current` from memory, or asked once however many requests want it at the same time. */
+  private async current(site: string, force: boolean): Promise<CachedCurrent> {
+    const hit = this.currents.get(site);
+    if (hit && !force && this.now() - hit.fetchedAt < this.currentTtlMs) {
+      this.currents.delete(site);
+      this.currents.set(site, hit);
       return hit;
     }
-    let loading = this.loading.get(site);
+    let loading = this.loadingCurrent.get(site);
     if (!loading) {
-      loading = this.store
-        .readPointerSized(site)
-        .then(({ pointer, bytes }) => {
-          const fresh = { pointer, fetchedAt: this.now(), bytes };
-          this.remember(site, fresh);
+      loading = this.currentOf(site)
+        .then(({ live, previous }) => {
+          const fresh = { live, previous, fetchedAt: this.now() };
+          this.currents.delete(site);
+          this.currents.set(site, fresh);
+          while (this.currents.size > this.maxCachedSites) this.currents.delete(this.currents.keys().next().value!);
           return fresh;
         })
-        .finally(() => this.loading.delete(site));
-      this.loading.set(site, loading);
+        .finally(() => this.loadingCurrent.delete(site));
+      this.loadingCurrent.set(site, loading);
     }
     return loading;
   }
 
-  private remember(site: string, fresh: CachedPointer) {
-    this.forget(site);
-    this.pointers.set(site, fresh);
-    this.cachedPointerBytes += fresh.bytes;
-    while (
-      this.pointers.size > 1 &&
-      (this.pointers.size > this.maxCachedSites || this.cachedPointerBytes > this.maxCachedPointerBytes)
-    ) {
-      this.forget(this.pointers.keys().next().value!);
+  /** The live files, and the previous version's, read only if a path needs them. */
+  private async version(site: string, current: Current): Promise<Version> {
+    if (!current.live) return { live: null, previous: async () => null };
+    const live = await this.manifest(site, current.live);
+    // The caller says it's live, so its manifest must exist: fail, as storage does.
+    if (!live) throw new Error(`The manifest of live publish ${current.live} is missing`);
+    const previous = current.previous;
+    return { live: live.files, previous: async () => (previous ? (await this.manifest(site, previous))?.files ?? null : null) };
+  }
+
+  /** A publish's manifest from memory, or read once. It never changes, so it's kept until evicted. */
+  private async manifest(site: string, publishId: string): Promise<CachedManifest | null> {
+    const key = `${site}/${publishId}`;
+    const hit = this.manifests.get(key);
+    if (hit) {
+      this.manifests.delete(key);
+      this.manifests.set(key, hit);
+      return hit;
+    }
+    let loading = this.loadingManifest.get(key);
+    if (!loading) {
+      loading = this.store
+        .readManifest(site, publishId)
+        .then((manifest) => {
+          if (manifest) this.remember(key, manifest);
+          return manifest;
+        })
+        .finally(() => this.loadingManifest.delete(key));
+      this.loadingManifest.set(key, loading);
+    }
+    return loading;
+  }
+
+  private remember(key: string, manifest: CachedManifest) {
+    this.manifests.set(key, manifest);
+    this.cachedManifestBytes += manifest.bytes;
+    while (this.manifests.size > 1 && this.cachedManifestBytes > this.maxCachedManifestBytes) {
+      const oldest = this.manifests.keys().next().value!;
+      this.cachedManifestBytes -= this.manifests.get(oldest)!.bytes;
+      this.manifests.delete(oldest);
     }
   }
 }
 
-function resolve(pointer: Pointer | null, path: string): Resolved {
-  if (!pointer) return { kind: "miss" };
-  const files = pointer.files;
+async function resolve(version: Version, path: string): Promise<Resolved> {
+  const files = version.live;
+  if (!files) return { kind: "miss" };
   if (path === "" || path.endsWith("/")) {
     const index = `${path}index.html`;
     const entry = files[index];
     return entry ? { kind: "file", path: index, entry } : { kind: "miss" };
   }
-  // Retained entries are the previous version's hashed chunks, still asked
-  // for by pages opened before this version went live.
-  const entry = files[path] ?? pointer.retained[path];
+  const entry = files[path];
   if (entry) return { kind: "file", path, entry };
   // Clean URLs, as Cloudflare's static assets serve them: /preview is preview.html.
   const page = files[`${path}.html`];
   if (page) return { kind: "file", path: `${path}.html`, entry: page };
   if (files[`${path}/index.html`]) return { kind: "redirect" };
+  // The previous version's hashed chunks, still asked for by pages opened
+  // before this version went live. Never its pages: those URLs are this
+  // version's now, and a stale page would outlive the publish.
+  const old = (await version.previous())?.[path];
+  if (old?.i && !isDocument(contentType(path))) return { kind: "file", path, entry: old };
   return { kind: "miss" };
 }
 

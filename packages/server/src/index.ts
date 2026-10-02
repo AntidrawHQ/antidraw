@@ -5,9 +5,6 @@ import { respondError } from "./lib/respond";
 import { healthController } from "./controllers/health.controller";
 import { authController, meController } from "./controllers/auth.controller";
 import { siteController } from "./controllers/site.controller";
-import { getDb } from "./db";
-import { siteStore } from "./lib/site-store";
-import { cleanUpLeftovers } from "./services/site.service";
 
 // Built by a factory so tests can mount extra routes on a real app (with the
 // real fallbacks below) instead of asserting against a copy of them.
@@ -45,11 +42,5 @@ export const createApp = () => {
 
 const app = createApp();
 
-// Cloudflare Workers entrypoint: the app's fetch handler, plus the cron trigger
-// (wrangler.jsonc) that clears what publishes leave behind.
-export default {
-  fetch: app.fetch,
-  async scheduled(_controller, env) {
-    await cleanUpLeftovers(getDb(env), siteStore(env));
-  },
-} satisfies ExportedHandler<Bindings>;
+// Cloudflare Workers entrypoint.
+export default { fetch: app.fetch } satisfies ExportedHandler<Bindings>;

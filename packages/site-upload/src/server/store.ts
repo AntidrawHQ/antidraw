@@ -1,15 +1,6 @@
 import { SiteUploadError } from "../protocol/errors";
 import { resolveLimits, STORED_LIMITS, type Limits } from "../protocol/limits";
-import {
-  hashSizes,
-  isHash,
-  isId,
-  parseManifest,
-  sameFiles,
-  type CommitResult,
-  type Files,
-  type PlanResult,
-} from "../protocol/manifest";
+import { hashSizes, isHash, isId, parseManifest, sameFiles, type Files, type PlanResult } from "../protocol/manifest";
 import {
   deleteAll,
   hasBody,
@@ -19,26 +10,12 @@ import {
   type BucketObjectBody,
   type BucketRange,
 } from "./bucket";
-import { contentType, isDocument } from "./content-type";
 
-/** What a site serves: the committed files plus where it came from. */
-export type Pointer = {
-  v: 1;
-  /** Counts commits: 1 for the first, one more each time. Plans record the one they were based on. */
-  seq: number;
-  publishId: string;
-  previous: string | null;
-  committedAt: number;
-  files: Files;
-  /**
-   * Immutable files of the version before this one that this one dropped.
-   * Pages opened on that version keep loading their hashed chunks.
-   */
-  retained: Files;
-};
+/** One publish's manifest, written once when it plans and never changed. */
+type StoredPlan = { v: 1; publishId: string; createdAt: number; files: Files };
 
-/** base: the pointer's seq when the plan was made (0 before the first commit). */
-type StoredPlan = { v: 1; publishId: string; createdAt: number; base: number; files: Files };
+/** A publish's files, and the stored size of its manifest (SiteServer bounds its cache by it). */
+export type StoredManifest = { files: Files; bytes: number };
 
 export type CleanupResult = { deletedFiles: number; deletedPlans: number };
 
@@ -47,10 +24,8 @@ export type SiteStoreOptions = {
   /** Key prefix for every site. Default "sites". */
   prefix?: string;
   limits?: Partial<Limits>;
-  /** How long a plan can be uploaded to and committed. Default 1 hour. */
-  planTtlMs?: number;
-  /** Unreferenced files younger than this are never deleted. Default 1 hour. */
-  orphanGraceMs?: number;
+  /** cleanup() never deletes a plan or file younger than this. Default 1 hour. */
+  graceMs?: number;
   now?: () => number;
 };
 
@@ -59,23 +34,27 @@ const HOUR = 60 * 60 * 1000;
 // a few very large plans can't exhaust the isolate's memory.
 const PLAN_CACHE_MAX_HASHES = 50_000;
 
-type CachedPlan = { createdAt: number; sizes: Map<string, number> };
-
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 const internal = (message: string) => new SiteUploadError("INTERNAL", message);
 
 /**
- * Content-addressed site storage on R2:
+ * Content-addressed site storage on R2. Nothing here changes once written:
  *
- *   <prefix>/<site>/f/<sha256>        file bytes, shared by every version of the site
- *   <prefix>/<site>/m/<publishId>.json the manifest of one publish (its plan)
- *   <prefix>/<site>/current.json      the pointer: the live manifest, swapped in one write
+ *   <prefix>/<site>/f/<sha256>          file bytes, shared by every version of the site
+ *   <prefix>/<site>/m/<publishId>.json  one publish's manifest, written when it plans
  *
- * Contract: calls for one site must not overlap with its cleanup(). The caller
- * serializes them (a per-site lock). Plan expiry and the orphan grace period
- * keep a crashed lock holder from causing damage, but they don't replace it.
+ * A published version is one of those manifests. Which one is live is the
+ * caller's to record (a database row): commit by checking the plan is
+ * complete (requireComplete), then switching the caller's record to it, only
+ * if it still names the version this publish started from. Serving asks the
+ * caller the same thing (SiteServer's `current`).
+ *
+ * Publishes of one site may overlap freely. Nothing is deleted while
+ * publishing; cleanup() is the only delete, and must not overlap any other call
+ * for the site (a plan made during it can be told a file is stored that it
+ * then deletes).
  *
  * Create one SiteStore per isolate (at module scope), not per request, so its
  * plan cache is reused across a publish's uploads.
@@ -84,10 +63,9 @@ export class SiteStore {
   readonly bucket: Bucket;
   readonly limits: Limits;
   private readonly prefix: string;
-  private readonly planTtlMs: number;
-  private readonly orphanGraceMs: number;
+  private readonly graceMs: number;
   private readonly now: () => number;
-  private readonly planCache = new Map<string, CachedPlan>();
+  private readonly planCache = new Map<string, Map<string, number>>();
   private cachedHashes = 0;
 
   constructor(options: SiteStoreOptions) {
@@ -98,50 +76,31 @@ export class SiteStore {
     this.bucket = options.bucket;
     this.prefix = prefix;
     this.limits = resolveLimits(options.limits);
-    this.planTtlMs = options.planTtlMs ?? HOUR;
-    this.orphanGraceMs = options.orphanGraceMs ?? HOUR;
+    this.graceMs = options.graceMs ?? HOUR;
     this.now = options.now ?? Date.now;
   }
 
   /**
    * Records the manifest for `publishId` and returns the hashes the site
-   * doesn't have yet. Safe to repeat with the same manifest. Recording a new
-   * plan also runs cleanup() for the site.
+   * doesn't have yet. Safe to repeat with the same manifest; a different one
+   * for the same publish is refused.
    */
   async plan(site: string, publishId: string, input: unknown): Promise<PlanResult> {
     this.assertIds(site, publishId);
     const { files } = parseManifest(input, this.limits);
 
-    const current = await this.readPointer(site);
-    if (current?.publishId === publishId) {
-      if (!sameFiles(current.files, files)) throw planExists(publishId);
-      return { missing: [] };
-    }
-
     const existing = await this.readPlan(site, publishId);
     if (existing) {
       if (!sameFiles(existing.files, files)) throw planExists(publishId);
-      if (this.isExpired(existing)) throw planExpired(publishId);
     } else {
-      const plan: StoredPlan = { v: 1, publishId, createdAt: this.now(), base: current?.seq ?? 0, files };
+      const plan: StoredPlan = { v: 1, publishId, createdAt: this.now(), files };
       await this.bucket.put(this.planKey(site, publishId), JSON.stringify(plan), {
         httpMetadata: { contentType: "application/json" },
         // Lets cleanup see a plan's age from a listing, without reading it.
         customMetadata: { createdAt: String(plan.createdAt) },
       });
-      // Clears what earlier publishes left, including ones that uploaded but
-      // never committed, so a site's storage stays bounded even when the
-      // caller only cleans up after commits. Runs after the plan is written
-      // so this plan's files are kept. The caller's lock covers it.
-      await this.cleanup(site);
     }
-
-    const stored = await this.storedSizes(site);
-    const missing: string[] = [];
-    for (const [hash, size] of hashSizes(files)) {
-      if (stored.get(hash) !== size) missing.push(hash);
-    }
-    return { missing: missing.sort() };
+    return { missing: await this.missing(site, files) };
   }
 
   /**
@@ -159,7 +118,7 @@ export class SiteStore {
     if (!isHash(hash)) {
       throw new SiteUploadError("INVALID_REQUEST", "The file hash must be a lowercase sha256 hex digest");
     }
-    const { sizes } = await this.uploadPlan(site, publishId);
+    const sizes = await this.uploadPlan(site, publishId);
     const size = sizes.get(hash);
     if (size === undefined) {
       throw new SiteUploadError("NOT_IN_PLAN", `${hash} is not part of publish ${publishId}`, { hash });
@@ -205,121 +164,70 @@ export class SiteStore {
   }
 
   /**
-   * Makes `publishId` the live version once every file is stored. The pointer
-   * is one object, so viewers see the old version or the new one, never a mix.
-   *
-   * Repeating a commit is safe while it is still the latest: it returns
-   * `alreadyCommitted: true`. Once a newer publish has gone live, a replayed
-   * commit gets SUPERSEDED instead of rolling the site back.
+   * Checks `publishId` can go live: it planned, and every file of its plan is
+   * stored. The caller then records it as live. Nothing is deleted while
+   * publishing, so the files stay.
    */
-  async commit(site: string, publishId: string): Promise<CommitResult> {
+  async requireComplete(site: string, publishId: string): Promise<void> {
     this.assertIds(site, publishId);
-    const currentObject = await this.bucket.get(this.pointerKey(site));
-    const current = currentObject && hasBody(currentObject) ? parsePointer(await currentObject.text()) : null;
-    if (current?.publishId === publishId) {
-      return { publishId, previous: current.previous, alreadyCommitted: true };
-    }
-
     const plan = await this.readPlan(site, publishId);
     if (!plan) throw noPlan(publishId);
-    if (this.isExpired(plan)) throw planExpired(publishId);
-    // A plan may only go live on top of the version it was made against. If
-    // anything committed since, this is a stale retry (say, one whose first
-    // commit went through but whose reply was lost) and must not roll the
-    // site back. Compared by commit count, not time: clocks on different
-    // machines disagree, and two commits can share a millisecond.
-    if ((current?.seq ?? 0) !== plan.base) {
-      throw new SiteUploadError(
-        "SUPERSEDED",
-        `Publish ${current?.publishId ?? "(none)"} went live after ${publishId} was planned`,
-        { live: current?.publishId ?? null },
-      );
-    }
-
-    const stored = await this.storedSizes(site);
-    const missing: string[] = [];
-    for (const [hash, size] of hashSizes(plan.files)) {
-      if (stored.get(hash) !== size) missing.push(hash);
-    }
+    const missing = await this.missing(site, plan.files);
     if (missing.length > 0) {
       throw new SiteUploadError(
         "MISSING_FILES",
         `${missing.length} file${missing.length === 1 ? " is" : "s are"} not uploaded yet`,
-        { missing: missing.sort() },
+        { missing },
       );
     }
+  }
 
-    const previous = current?.publishId ?? null;
-    const retained: Files = Object.create(null);
-    if (current) {
-      for (const path in current.files) {
-        const entry = current.files[path]!;
-        if (entry.i && !(path in plan.files) && !isDocument(contentType(path))) retained[path] = entry;
-      }
-    }
-    const pointer: Pointer = {
-      v: 1,
-      seq: (current?.seq ?? 0) + 1,
-      publishId,
-      previous,
-      committedAt: this.now(),
-      files: plan.files,
-      retained,
-    };
-    const written = await this.bucket.put(this.pointerKey(site), JSON.stringify(pointer), {
-      httpMetadata: { contentType: "application/json" },
-      ...(currentObject ? { onlyIf: { etagMatches: currentObject.etag } } : {}),
-    });
-    if (written === null) {
-      // Lost the race; if the winner was this same publish (a retry racing
-      // its own first attempt), the commit did happen.
-      const winner = await this.readPointer(site);
-      if (winner?.publishId === publishId) {
-        return { publishId, previous: winner.previous, alreadyCommitted: true };
-      }
-      throw new SiteUploadError("CONFLICT", "Another publish of this site committed first");
-    }
-    this.forgetPlan(this.planKey(site, publishId));
-    return { publishId, previous, alreadyCommitted: false };
+  /** A publish's manifest, as served. Null if it never planned (or was cleaned up). */
+  async readManifest(site: string, publishId: string): Promise<StoredManifest | null> {
+    this.assertIds(site, publishId);
+    const object = await this.bucket.get(this.planKey(site, publishId));
+    if (!object || !hasBody(object)) return null;
+    return { files: parsePlan(await object.text()).files, bytes: object.size };
+  }
+
+  async getFile(site: string, hash: string, range?: BucketRange): Promise<BucketObjectBody | null> {
+    const object = await this.bucket.get(this.fileKey(site, hash), range ? { range } : undefined);
+    return hasBody(object) ? object : null;
   }
 
   /**
-   * Deletes files nothing can serve or commit any more: everything outside
-   * the live version, its retained files, and plans still inside their upload
-   * window. Expired plans are deleted too. Any failed read aborts the cleanup
-   * rather than risk deleting a needed file; the next run tries again.
+   * Deletes the plans of every publish not in `keep` (pass the live and
+   * previous ones, and any you may roll back to), and the files only they
+   * needed. Plans and files younger than the grace period are kept, in case a
+   * publish is under way. Any failed read aborts it rather than risk deleting
+   * a needed file.
+   *
+   * Must not overlap any other call for the site (see the class comment):
+   * run it by hand when nothing is publishing.
    */
-  async cleanup(site: string): Promise<CleanupResult> {
+  async cleanup(site: string, { keep }: { keep: string[] }): Promise<CleanupResult> {
     if (!isId(site)) throw invalidId("site");
     const now = this.now();
-    const current = await this.readPointer(site);
-    const keep = new Set<string>();
-    if (current) {
-      for (const hash of hashSizes(current.files).keys()) keep.add(hash);
-      for (const hash of hashSizes(current.retained).keys()) keep.add(hash);
-    }
+    const kept = new Set(keep);
+    const needed = new Set<string>();
 
-    // Expired plans are deleted without being read: a plan's age comes from
-    // the createdAt it was written with, returned by the listing itself, on
-    // the same clock plan() and commit() use.
     const planPrefix = `${this.siteRoot(site)}m/`;
     const stalePlans: string[] = [];
     for await (const object of listAll(this.bucket, planPrefix, ["customMetadata"])) {
       const id = object.key.slice(planPrefix.length).replace(/\.json$/, "");
-      if (id === current?.publishId) continue;
-      if (planCreatedAt(object) + this.planTtlMs <= now) {
+      if (!kept.has(id) && planCreatedAt(object) + this.graceMs <= now) {
         stalePlans.push(object.key);
         continue;
       }
       const plan = await this.readPlan(site, id);
-      if (plan) for (const hash of hashSizes(plan.files).keys()) keep.add(hash);
+      if (plan) for (const hash of hashSizes(plan.files).keys()) needed.add(hash);
     }
 
     const filePrefix = `${this.siteRoot(site)}f/`;
     const staleFiles: string[] = [];
     for await (const object of listAll(this.bucket, filePrefix)) {
-      if (keep.has(object.key.slice(filePrefix.length))) continue;
-      if (object.uploaded.getTime() + this.orphanGraceMs <= now) staleFiles.push(object.key);
+      if (needed.has(object.key.slice(filePrefix.length))) continue;
+      if (object.uploaded.getTime() + this.graceMs <= now) staleFiles.push(object.key);
     }
 
     await deleteAll(this.bucket, [...staleFiles, ...stalePlans]);
@@ -338,45 +246,28 @@ export class SiteStore {
     return keys.length;
   }
 
-  async readPointer(site: string): Promise<Pointer | null> {
-    return (await this.readPointerSized(site)).pointer;
-  }
-
-  /** The pointer and its stored size, which SiteServer uses to bound its cache. */
-  async readPointerSized(site: string): Promise<{ pointer: Pointer | null; bytes: number }> {
-    if (!isId(site)) throw invalidId("site");
-    const object = await this.bucket.get(this.pointerKey(site));
-    if (!object || !hasBody(object)) return { pointer: null, bytes: 0 };
-    return { pointer: parsePointer(await object.text()), bytes: object.size };
-  }
-
-  async getFile(site: string, hash: string, range?: BucketRange): Promise<BucketObjectBody | null> {
-    const object = await this.bucket.get(this.fileKey(site, hash), range ? { range } : undefined);
-    return hasBody(object) ? object : null;
-  }
-
-  private async uploadPlan(site: string, publishId: string): Promise<CachedPlan> {
+  /** The plan's hash → size map for uploads, cached: a publish sends many files. */
+  private async uploadPlan(site: string, publishId: string): Promise<Map<string, number>> {
     const key = this.planKey(site, publishId);
-    let cached = this.planCache.get(key);
-    if (!cached) {
+    let sizes = this.planCache.get(key);
+    if (!sizes) {
       const plan = await this.readPlan(site, publishId);
       if (!plan) throw noPlan(publishId);
-      cached = { createdAt: plan.createdAt, sizes: hashSizes(plan.files) };
-      this.planCache.set(key, cached);
-      this.cachedHashes += cached.sizes.size;
+      sizes = hashSizes(plan.files);
+      this.planCache.set(key, sizes);
+      this.cachedHashes += sizes.size;
       while (this.cachedHashes > PLAN_CACHE_MAX_HASHES && this.planCache.size > 1) {
         this.forgetPlan(this.planCache.keys().next().value!);
       }
     }
-    if (cached.createdAt + this.planTtlMs <= this.now()) throw planExpired(publishId);
-    return cached;
+    return sizes;
   }
 
   private forgetPlan(key: string) {
-    const cached = this.planCache.get(key);
-    if (!cached) return;
+    const sizes = this.planCache.get(key);
+    if (!sizes) return;
     this.planCache.delete(key);
-    this.cachedHashes -= cached.sizes.size;
+    this.cachedHashes -= sizes.size;
   }
 
   private async readPlan(site: string, publishId: string): Promise<StoredPlan | null> {
@@ -385,17 +276,18 @@ export class SiteStore {
     return parsePlan(await object.text());
   }
 
-  private async storedSizes(site: string): Promise<Map<string, number>> {
+  /** The hashes of `files` the site doesn't have stored at the right size, sorted. */
+  private async missing(site: string, files: Files): Promise<string[]> {
     const prefix = `${this.siteRoot(site)}f/`;
-    const sizes = new Map<string, number>();
+    const stored = new Map<string, number>();
     for await (const object of listAll(this.bucket, prefix)) {
-      sizes.set(object.key.slice(prefix.length), object.size);
+      stored.set(object.key.slice(prefix.length), object.size);
     }
-    return sizes;
-  }
-
-  private isExpired(plan: StoredPlan, now = this.now()) {
-    return plan.createdAt + this.planTtlMs <= now;
+    const missing: string[] = [];
+    for (const [hash, size] of hashSizes(files)) {
+      if (stored.get(hash) !== size) missing.push(hash);
+    }
+    return missing.sort();
   }
 
   private assertIds(site: string, publishId: string) {
@@ -404,7 +296,6 @@ export class SiteStore {
   }
 
   private siteRoot = (site: string) => `${this.prefix}/${site}/`;
-  private pointerKey = (site: string) => `${this.siteRoot(site)}current.json`;
   private planKey = (site: string, publishId: string) => `${this.siteRoot(site)}m/${publishId}.json`;
   private fileKey = (site: string, hash: string) => `${this.siteRoot(site)}f/${hash}`;
 }
@@ -416,40 +307,12 @@ function planCreatedAt(object: BucketObject): number {
   return Number.isSafeInteger(createdAt) ? createdAt : object.uploaded.getTime();
 }
 
-function parsePointer(text: string): Pointer {
-  const value = parseJson(text, "pointer");
-  if (
-    value.v !== 1 ||
-    !isId(value.publishId) ||
-    !(value.previous === null || isId(value.previous)) ||
-    typeof value.committedAt !== "number" ||
-    !Number.isSafeInteger(value.seq) ||
-    (value.seq as number) < 1
-  ) {
-    throw internal("The site pointer is malformed");
-  }
-  return {
-    v: 1,
-    seq: value.seq as number,
-    publishId: value.publishId,
-    previous: value.previous,
-    committedAt: value.committedAt,
-    files: parseStoredFiles(value.files, "pointer"),
-    retained:
-      isObject(value.retained) && Object.keys(value.retained).length > 0
-        ? parseStoredFiles(value.retained, "pointer")
-        : Object.create(null),
-  };
-}
-
 function parsePlan(text: string): StoredPlan {
   const value = parseJson(text, "plan");
   if (
     value.v !== 1 ||
     !isId(value.publishId) ||
-    typeof value.createdAt !== "number" ||
-    !Number.isSafeInteger(value.base) ||
-    (value.base as number) < 0
+    typeof value.createdAt !== "number"
   ) {
     throw internal("A stored plan is malformed");
   }
@@ -457,7 +320,6 @@ function parsePlan(text: string): StoredPlan {
     v: 1,
     publishId: value.publishId,
     createdAt: value.createdAt,
-    base: value.base as number,
     files: parseStoredFiles(value.files, "plan"),
   };
 }
@@ -492,7 +354,5 @@ const invalidId = (what: string) =>
   new SiteUploadError("INVALID_REQUEST", `Invalid ${what}: use 1-128 letters, digits, _ or -`);
 const noPlan = (publishId: string) =>
   new SiteUploadError("NO_PLAN", `No plan was recorded for publish ${publishId}`);
-const planExpired = (publishId: string) =>
-  new SiteUploadError("PLAN_EXPIRED", `Publish ${publishId} took too long; start a new one`);
 const planExists = (publishId: string) =>
   new SiteUploadError("PLAN_EXISTS", `Publish ${publishId} already has a different file list`);

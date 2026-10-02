@@ -20,7 +20,6 @@ export type BucketPutValue = ReadableStream | ArrayBuffer | ArrayBufferView | st
 
 export type BucketPutOptions = {
   sha256?: string;
-  onlyIf?: { etagMatches?: string };
   httpMetadata?: { contentType?: string };
   customMetadata?: Record<string, string>;
 };

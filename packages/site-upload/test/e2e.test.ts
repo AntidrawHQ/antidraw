@@ -171,8 +171,8 @@ describe("end to end", () => {
       {
         "chunk from two versions back, app-1.js": 404,
         "cleanupInTwoHours": {
-          "deletedFiles": 3,
-          "deletedPlans": 2,
+          "deletedFiles": 2,
+          "deletedPlans": 1,
         },
         "cleanupNow": {
           "deletedFiles": 0,

@@ -1,5 +1,6 @@
 import { ERROR_STATUS, SiteUploadError, type ErrorBody } from "../protocol/errors";
 import { MAX_PLAN_BODY_BYTES } from "../protocol/limits";
+import type { CommitResult } from "../protocol/manifest";
 import type { SiteStore } from "./store";
 
 export type UploadTarget = {
@@ -9,13 +10,23 @@ export type UploadTarget = {
   path: string;
 };
 
+export type UploadOptions = {
+  /**
+   * Makes the publish live in the caller's records, once its files are all
+   * stored: only if they still name the version it started from, else throw
+   * SUPERSEDED. A retry of a publish already live answers alreadyCommitted.
+   * Throw a SiteUploadError to answer with it.
+   */
+  commit: () => Promise<CommitResult>;
+};
+
 /**
  * Handles the upload API for one publish. The caller routes to it after
  * authenticating the request and checking the user owns `site`.
  *
  *   POST plan            body: manifest JSON → { missing: string[] }
  *   PUT  files/<sha256>  body: the file's bytes, with Content-Length → { ok: true }
- *   POST commit          → { publishId, previous, alreadyCommitted }
+ *   POST commit          → { publishId, previous, alreadyCommitted }, from options.commit
  *
  * Both POSTs must say Content-Type: application/json. That makes every route
  * a request a browser only sends cross-origin after a CORS preflight, so a web
@@ -25,6 +36,7 @@ export async function handleUpload(
   store: SiteStore,
   request: Request,
   { site, publishId, path }: UploadTarget,
+  options: UploadOptions,
 ): Promise<Response> {
   try {
     if (path === "plan") {
@@ -36,7 +48,8 @@ export async function handleUpload(
     if (path === "commit") {
       requireMethod(request, "POST");
       requireJsonType(request);
-      return json(200, await store.commit(site, publishId));
+      await store.requireComplete(site, publishId);
+      return json(200, await options.commit());
     }
     const file = /^files\/([^/]+)$/.exec(path);
     if (file) {

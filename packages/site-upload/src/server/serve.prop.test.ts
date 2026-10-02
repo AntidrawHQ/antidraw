@@ -43,9 +43,10 @@ describe("SiteServer properties", () => {
           const body = bytes(content);
           await store.putFile(site, `p${publishes}`, sha256(content), body, body.length);
         }
-        await store.commit(site, `p${publishes}`);
+        await store.requireComplete(site, `p${publishes}`);
 
-        const server = new SiteServer({ store });
+        const live = `p${publishes}`;
+        const server = new SiteServer({ store, current: async () => ({ live, previous: null }) });
         const failures: string[] = [];
         for (const path of ps) {
           for (const [how, spell] of Object.entries(REQUESTS)) {

@@ -8,13 +8,15 @@ import {
   uniqueSite,
   type TestWorker,
 } from "../../test/helpers";
-import { SiteServer, type FileCache, type SiteServerOptions } from "./serve";
+import { SiteServer, type Current, type FileCache, type SiteServerOptions } from "./serve";
 import { SiteStore } from "./store";
 
 let env: TestWorker;
 let clock: number;
 let store: SiteStore;
 let site: string;
+/** What the caller's database would say is live, per site. */
+let records: Map<string, Current>;
 
 beforeAll(async () => {
   env = await startTestWorker();
@@ -25,8 +27,12 @@ beforeEach(() => {
   clock = Date.now();
   store = new SiteStore({ bucket: env.bucket, now: () => clock });
   site = uniqueSite();
+  records = new Map();
 });
 
+const currentOf = async (key: string): Promise<Current> => records.get(key) ?? { live: null, previous: null };
+
+/** Plans, uploads, and records the publish as live, as a caller's commit does. */
 async function publish(publishId: string, contents: Record<string, string>, immutable: string[] = []) {
   const { missing } = await store.plan(site, publishId, manifestOf(contents, immutable));
   for (const content of new Set(Object.values(contents))) {
@@ -34,10 +40,12 @@ async function publish(publishId: string, contents: Record<string, string>, immu
     const body = bytes(content);
     await store.putFile(site, publishId, sha256(content), body, body.length);
   }
-  await store.commit(site, publishId);
+  await store.requireComplete(site, publishId);
+  records.set(site, { live: publishId, previous: records.get(site)?.live ?? null });
 }
 
-const server = (options: Partial<SiteServerOptions> = {}) => new SiteServer({ store, now: () => clock, ...options });
+const server = (options: Partial<SiteServerOptions> = {}) =>
+  new SiteServer({ store, current: currentOf, now: () => clock, ...options });
 
 const get = (s: SiteServer, path: string, init: RequestInit = {}) =>
   s.fetch(new Request(`https://example.test${path}`, init), site);
@@ -419,12 +427,12 @@ describe("service workers", () => {
     const live = await script(s, "/sw.js");
     clock += 10_000;
     // A teammate is removed and the site republished without their worker.
-    // It is flagged immutable, so it stays servable as a retained file.
+    // It is flagged immutable, so it stays servable from the previous version.
     await publish("p2", { "index.html": "home 2", "about/index.html": "about" });
     expect({
       live,
       "dropped by the next publish": await script(s, "/sw.js"),
-      "retained, as a plain request": (await get(s, "/sw.js")).status,
+      "previous version's, as a plain request": (await get(s, "/sw.js")).status,
       "never uploaded": await script(s, "/other-sw.js"),
       "a folder that redirects": await script(s, "/about"),
       "a site not allowed them": await script(s, "/sw.js", other),
@@ -455,7 +463,7 @@ describe("service workers", () => {
           "status": 200,
           "type": "text/javascript; charset=utf-8",
         },
-        "retained, as a plain request": 200,
+        "previous version's, as a plain request": 200,
       }
     `);
   });
@@ -634,12 +642,12 @@ describe("conditional requests and ranges", () => {
   });
 });
 
-describe("pointer cache", () => {
+describe("current cache", () => {
   const body = async (s: SiteServer, path = "/") => (await get(s, path)).text();
 
   it("keeps serving the cached version until the TTL passes", async () => {
     await publish("p1", { "index.html": "v1" });
-    const s = server({ pointerTtlMs: 5000 });
+    const s = server({ currentTtlMs: 5000 });
     const seen = [await body(s)];
     await publish("p2", { "index.html": "v2" });
     seen.push(await body(s));
@@ -657,9 +665,9 @@ describe("pointer cache", () => {
     `);
   });
 
-  it("re-reads the pointer on a miss, so new files are found right away", async () => {
+  it("asks again on a miss, so new files are found right away", async () => {
     await publish("p1", { "index.html": "v1" });
-    const s = server({ pointerTtlMs: 60_000 });
+    const s = server({ currentTtlMs: 60_000 });
     await get(s, "/");
     await publish("p2", { "index.html": "v2", "assets/new-chunk.js": "new" });
     clock += 1000;
@@ -679,16 +687,15 @@ describe("pointer cache", () => {
     `);
   });
 
-  it("re-reads at most once a second on misses", async () => {
+  it("asks again at most once a second on misses", async () => {
     await publish("p1", { "index.html": "v1" });
     let reads = 0;
-    const counting = new SiteStore({ bucket: env.bucket, now: () => clock });
-    const read = counting.readPointerSized.bind(counting);
-    counting.readPointerSized = (s) => {
-      reads++;
-      return read(s);
-    };
-    const s = new SiteServer({ store: counting, now: () => clock });
+    const s = server({
+      current: (key) => {
+        reads++;
+        return currentOf(key);
+      },
+    });
     await get(s, "/");
     for (let i = 0; i < 5; i++) await get(s, `/missing-${i}`);
     const withinASecond = reads;
@@ -710,7 +717,7 @@ describe("pointer cache", () => {
       await publish("p1", { "index.html": `${name} v1` });
     }
     const [a, b, c] = sites as [string, string, string];
-    const s = server({ maxCachedSites: 2, pointerTtlMs: 60_000 });
+    const s = server({ maxCachedSites: 2, currentTtlMs: 60_000 });
     const home = async (key: string) => (await s.fetch(new Request("https://x.test/"), key)).text();
     await home(a);
     await home(b);
@@ -729,9 +736,9 @@ describe("pointer cache", () => {
     `);
   });
 
-  it("forget() drops a site's cached pointer", async () => {
+  it("forget() drops a site's cached current", async () => {
     await publish("p1", { "index.html": "v1" });
-    const s = server({ pointerTtlMs: 60_000 });
+    const s = server({ currentTtlMs: 60_000 });
     const home = async () => (await get(s, "/")).text();
     const seen = [await home()];
     await publish("p2", { "index.html": "v2" });
@@ -786,26 +793,46 @@ describe("pointer cache", () => {
   });
 });
 
-describe("failures", () => {
-  it("answers 404 for an invalid site key and 503 when the pointer can't be read", async () => {
-    const failing = new SiteStore({ bucket: env.bucket, now: () => clock });
-    failing.readPointerSized = async () => {
-      throw new Error("R2 is down");
-    };
+describe("the previous version", () => {
+  it("never serves its pages or SVG, even when marked immutable, only its hashed chunks", async () => {
+    await publish(
+      "p1",
+      { "index.html": "v1", "old.html": "old page", "icon.svg": "<svg/>", "assets/app-1.js": "js1" },
+      ["old.html", "icon.svg", "assets/app-1.js"],
+    );
+    await publish("p2", { "index.html": "v2" });
+    const s = server();
+    const status = async (path: string) => (await get(s, path)).status;
     expect({
-      invalidSite: await summarize(await server().fetch(new Request("https://x.test/"), "../etc")),
-      readFails: await summarize(await new SiteServer({ store: failing }).fetch(new Request("https://x.test/"), site)),
+      "/old.html": await status("/old.html"),
+      "/icon.svg": await status("/icon.svg"),
+      "/assets/app-1.js": await status("/assets/app-1.js"),
     }).toMatchInlineSnapshot(`
       {
-        "invalidSite": {
-          "body": "Not found",
-          "headers": {
-            "cache-control": "no-store",
-            "content-type": "text/plain; charset=utf-8",
-          },
-          "status": 404,
-        },
-        "readFails": {
+        "/assets/app-1.js": 200,
+        "/icon.svg": 404,
+        "/old.html": 404,
+      }
+    `);
+  });
+});
+
+describe("failures", () => {
+  it("answers 404 for an invalid site key, and 503 when what's live can't be read", async () => {
+    const failing = server({
+      current: async () => {
+        throw new Error("D1 is down");
+      },
+    });
+    records.set(site, { live: "never-planned", previous: null });
+    const status = async (s: SiteServer) => (await s.fetch(new Request("https://x.test/"), site)).status;
+    expect({
+      invalidSite: await summarize(await server().fetch(new Request("https://x.test/"), "../etc")),
+      currentFails: await summarize(await failing.fetch(new Request("https://x.test/"), site)),
+      liveManifestMissing: await status(server()),
+    }).toMatchInlineSnapshot(`
+      {
+        "currentFails": {
           "body": "Temporarily unavailable",
           "headers": {
             "cache-control": "no-store",
@@ -814,18 +841,27 @@ describe("failures", () => {
           },
           "status": 503,
         },
+        "invalidSite": {
+          "body": "Not found",
+          "headers": {
+            "cache-control": "no-store",
+            "content-type": "text/plain; charset=utf-8",
+          },
+          "status": 404,
+        },
+        "liveManifestMissing": 503,
       }
     `);
   });
 
-  it("re-reads a stale pointer when its file is gone from storage", async () => {
+  it("asks again when a file of what it holds is gone from storage", async () => {
     await publish("p1", { "index.html": "v1" });
-    const s = server({ pointerTtlMs: 60 * 60 * 1000 });
+    const s = server({ currentTtlMs: 60 * 60 * 1000 });
     await (await get(s, "/")).text();
     await publish("p2", { "index.html": "v2" });
-    // v1 is deleted once it's past the grace period and no version uses it.
+    // v1 is deleted once it's past the grace period and only p2 is kept.
     const later = new SiteStore({ bucket: env.bucket, now: () => clock + 2 * 60 * 60 * 1000 });
-    const cleaned = await later.cleanup(site);
+    const cleaned = await later.cleanup(site, { keep: ["p2"] });
     expect({ cleaned, response: await summarize(await get(s, "/")) }).toMatchInlineSnapshot(`
       {
         "cleaned": {
@@ -849,46 +885,81 @@ describe("failures", () => {
   });
 });
 
-describe("pointer reads", () => {
-  it("shares one read between requests that arrive together", async () => {
+/** A store that counts manifest reads. */
+function countingStore() {
+  const counting = new SiteStore({ bucket: env.bucket, now: () => clock });
+  const read = counting.readManifest.bind(counting);
+  const counts = { manifests: 0 };
+  counting.readManifest = (key, publishId) => {
+    counts.manifests++;
+    return read(key, publishId);
+  };
+  return { counting, counts };
+}
+
+describe("reads", () => {
+  it("shares one read of current and of the manifest between requests that arrive together", async () => {
     await publish("p1", { "index.html": "v1" });
-    let reads = 0;
-    const counting = new SiteStore({ bucket: env.bucket, now: () => clock });
-    const read = counting.readPointerSized.bind(counting);
-    counting.readPointerSized = (s) => {
-      reads++;
-      return read(s);
-    };
-    const s = new SiteServer({ store: counting, now: () => clock });
+    const { counting, counts } = countingStore();
+    let currents = 0;
+    const s = server({
+      store: counting,
+      current: (key) => {
+        currents++;
+        return currentOf(key);
+      },
+    });
     const bodies = await Promise.all(Array.from({ length: 10 }, async () => (await get(s, "/")).text()));
-    expect({ reads, bodies: [...new Set(bodies)] }).toMatchInlineSnapshot(`
+    expect({ currents, manifests: counts.manifests, bodies: [...new Set(bodies)] }).toMatchInlineSnapshot(`
       {
         "bodies": [
           "v1",
         ],
-        "reads": 1,
+        "currents": 1,
+        "manifests": 1,
       }
     `);
   });
 
-  it("evicts pointers past the byte budget", async () => {
+  it("keeps a manifest after current expires, since it never changes", async () => {
+    await publish("p1", { "index.html": "v1" });
+    const { counting, counts } = countingStore();
+    const s = server({ store: counting, currentTtlMs: 1000 });
+    await get(s, "/");
+    clock += 10_000;
+    await get(s, "/");
+    expect(counts.manifests).toBe(1);
+  });
+
+  it("reads the previous version only for a path the live one doesn't have", async () => {
+    await publish("p1", { "index.html": "v1", "assets/app-1.js": "js1" }, ["assets/app-1.js"]);
+    await publish("p2", { "index.html": "v2" });
+    const { counting, counts } = countingStore();
+    const s = server({ store: counting });
+    await get(s, "/");
+    const live = counts.manifests;
+    await get(s, "/assets/app-1.js");
+    expect({ live, withPrevious: counts.manifests }).toMatchInlineSnapshot(`
+      {
+        "live": 1,
+        "withPrevious": 2,
+      }
+    `);
+  });
+
+  it("evicts manifests past the byte budget", async () => {
     await publish("p1", { "index.html": "first" });
     const first = site;
     site = uniqueSite();
     await publish("p1", { "index.html": "second" });
     const second = site;
 
-    let reads = 0;
-    const counting = new SiteStore({ bucket: env.bucket, now: () => clock });
-    const read = counting.readPointerSized.bind(counting);
-    counting.readPointerSized = (s) => {
-      reads++;
-      return read(s);
-    };
-    // Room for one small pointer, not two.
-    const s = new SiteServer({ store: counting, now: () => clock, pointerTtlMs: 60_000, maxCachedPointerBytes: 200 });
+    const { counting, counts } = countingStore();
+    // Room for one small manifest, not two.
+    const s = server({ store: counting, currentTtlMs: 60_000, maxCachedManifestBytes: 200 });
     const visit = async (key: string) => (await s.fetch(new Request("https://x.test/"), key)).text();
     const seen = [await visit(first), await visit(first), await visit(second), await visit(first)];
+    const reads = counts.manifests;
     expect({ seen, reads }).toMatchInlineSnapshot(`
       {
         "reads": 3,

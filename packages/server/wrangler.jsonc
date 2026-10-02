@@ -38,11 +38,5 @@
     // the site's components, which are served from <slug>.antidraw.app (see
     // @antidraw/site-worker). Overridden in .dev.vars for local development.
     "SHARE_URL_PATTERN": "https://antidraw.com/s/*"
-  },
-  "triggers": {
-    // Hourly: clears what publishes leave behind, uploads never committed and
-    // files the live version dropped (see cleanUpLeftovers in
-    // services/site.service.ts).
-    "crons": ["17 * * * *"]
   }
 }
