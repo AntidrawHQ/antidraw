@@ -193,8 +193,97 @@ const decodeReservedInSourcePaths = (): Plugin => ({
   },
 })
 
+// The Preview page's dev loader, which a build replaces (see siteBuild).
+const LOAD_COMPONENT_FILE = path.resolve(__dirname, "../src/load-component.ts")
+
+// What the Preview page loads components with in a build. There is no dev
+// server to fetch a file by name from, so every component file becomes its own
+// lazily loaded chunk, looked up by name. The glob path is from the workspace
+// root, not from this module. A name with no file rejects, as a failed import
+// does in dev, and the Preview page shows it as not found.
+const BUILD_LOAD_COMPONENT = `
+const components = import.meta.glob("/${USER_COMPONENTS_DIR}/*.tsx")
+export const loadComponent = (name) => {
+  const load = components["/${USER_COMPONENTS_DIR}/" + name + ".tsx"]
+  return load ? load() : Promise.reject(new Error("No component named " + JSON.stringify(name)))
+}
+`
+
+// `vite build` makes the workspace's site: the Preview page and every
+// component, served from the root of its own origin (components refer to
+// their public files by absolute path, "/clip.mp4"). The page is written as
+// preview.html, which the site serves at /preview, the runtime's only route.
+// The manifest (.vite/manifest.json) lists the content-hashed files, which a
+// host can cache for good. No source maps: they would publish this machine's
+// paths.
+const siteBuild = (): Plugin => {
+  let loadComponentFile: string
+  let loaderReplaced = false
+
+  return {
+    name: "antidraw:site-build",
+    apply: "build",
+    enforce: "post",
+    config: () => ({
+      base: "/",
+      build: {
+        assetsDir: "assets",
+        manifest: true,
+        sourcemap: false,
+        rollupOptions: {
+          // Chunks are named after their component files. Keep those names
+          // to characters a URL carries as they are ("Hero Card.tsx" would
+          // otherwise be served as assets/Hero Card-[hash].js).
+          output: { sanitizeFileName: (name) => name.replace(/[^\w.\/-]/g, "_") },
+        },
+      },
+    }),
+    configResolved(config) {
+      loadComponentFile = normalizePath(fs.realpathSync(LOAD_COMPONENT_FILE))
+      // NODE_ENV from a workspace .env wins over `vite build`'s own, and a
+      // development build ships React's development build and the path of
+      // every source file (plugin-react's jsxDEV).
+      if (!config.isProduction) {
+        config.logger.warn(
+          "[antidraw] NODE_ENV is not \"production\", so this is a development build. " +
+            "Run it with NODE_ENV=production to publish it.",
+        )
+      }
+    },
+    buildStart() {
+      loaderReplaced = false
+    },
+    load(id) {
+      if (normalizePath(id) !== loadComponentFile) return
+      loaderReplaced = true
+      return BUILD_LOAD_COMPONENT
+    },
+    // Without the swap the build still succeeds, but the site has no
+    // component chunks and every preview shows "not found". The loader's id
+    // differs from this plugin's copy when the Preview page comes from another
+    // copy of the runtime, or with resolve.preserveSymlinks.
+    buildEnd(error) {
+      if (error || loaderReplaced) return
+      this.error(
+        `The Preview page's component loader (${loadComponentFile}) was not ` +
+          "part of this build, so the site would load no components. Check that the " +
+          "page imports the router from this copy of @antidrawapp/runtime, and that " +
+          "resolve.preserveSymlinks is not set.",
+      )
+    },
+    generateBundle(_, bundle) {
+      const page = bundle["index.html"]
+      if (!page) return
+      delete bundle["index.html"]
+      page.fileName = "preview.html"
+      bundle["preview.html"] = page
+    },
+  }
+}
+
 export const antidraw = (): Plugin[] => {
   return [
+    siteBuild(),
     cssInvalidateOnFileAdd(),
     decodeReservedInSourcePaths(),
     tolerateUnresolvedImports(),
