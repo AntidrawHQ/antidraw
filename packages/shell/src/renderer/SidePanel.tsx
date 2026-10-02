@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ComponentType } from "react";
-import { ChevronsUpDown, Plus, Search } from "lucide-react";
+import { ArrowLeft, Plus, Search } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
 import { useWorkspaceStore } from "./store/workspace";
 import type { SidePanel as SidePanelId } from "./store/workspace";
@@ -63,6 +63,22 @@ const ConversationList = ({ onClose }: ConversationListProps) => {
       className="flex-1 flex flex-col overflow-hidden"
       onKeyDown={(e) => { if (e.key === "Escape") onClose(); }}
     >
+      {/* Header, matching the components panel */}
+      <div className="p-2 border-b border-[#333] flex items-center justify-between">
+        <span className="text-[13px] font-medium text-neutral-400 px-2.5 py-0.5">
+          Chats
+        </span>
+        <button
+          onClick={handleNewConversation}
+          disabled={createConversation.isPending}
+          className="flex items-center gap-1 px-2 py-0.5 rounded-md hover:bg-white/[0.06] text-[12px] text-neutral-500 hover:text-neutral-200 disabled:opacity-50 shrink-0"
+          title="New conversation"
+        >
+          <Plus className="w-3 h-3" />
+          New
+        </button>
+      </div>
+
       <div className="flex items-center gap-2 px-3 pt-2.5 pb-3">
         <Search
           className={cn(
@@ -77,15 +93,6 @@ const ConversationList = ({ onClose }: ConversationListProps) => {
           onValueChange={setSearch}
           className="placeholder:text-neutral-600"
         />
-        <button
-          onClick={handleNewConversation}
-          disabled={createConversation.isPending}
-          className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-white/[0.06] text-[12px] text-neutral-500 hover:text-neutral-200 disabled:opacity-50 shrink-0"
-          title="New conversation"
-        >
-          <Plus className="w-3 h-3" />
-          New
-        </button>
       </div>
 
       <CommandList className="flex-1 px-2 pb-2">
@@ -151,21 +158,30 @@ const ConversationView = ({ onShowList }: ConversationViewProps) => {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      {/* Conversation Selector Header */}
-      <div className="p-2 border-b border-[#2d2d2d] flex items-center gap-1">
-        <button
-          onClick={onShowList}
-          className="flex-1 flex items-center justify-between gap-1.5 py-1.5 px-2.5 bg-transparent border-none rounded-md cursor-pointer hover:bg-white/[0.06] min-w-0"
-        >
-          <span className="text-[13px] font-medium text-neutral-200 overflow-hidden text-ellipsis whitespace-nowrap">
+      {/* Breadcrumb Header: Chats / <title> */}
+      <div className="p-2 border-b border-[#333] flex items-center gap-1">
+        <nav className="flex-1 flex items-center gap-1 min-w-0 text-[13px] font-medium">
+          <button
+            onClick={onShowList}
+            className="flex items-center gap-1 h-6 pl-1.5 pr-2 rounded-md hover:bg-white/[0.06] text-neutral-500 hover:text-neutral-200 cursor-pointer shrink-0"
+            title="All conversations"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            Chats
+          </button>
+          <span className="text-neutral-600 shrink-0">/</span>
+          {/* pl-2 mirrors the button's pr-2 so the slash sits centered */}
+          <span
+            className="pl-2 text-neutral-400 overflow-hidden text-ellipsis whitespace-nowrap"
+            title={activeConversation?.title ?? undefined}
+          >
             {activeConversation?.title ?? "Untitled Conversation"}
           </span>
-          <ChevronsUpDown className="w-3.5 h-3.5 text-[#71717a] shrink-0" />
-        </button>
+        </nav>
         <button
           onClick={handleNewConversation}
           disabled={createConversation.isPending}
-          className="p-1.5 rounded-md hover:bg-white/[0.06] text-[#71717a] hover:text-neutral-200 disabled:opacity-50 shrink-0"
+          className="p-1 rounded-md hover:bg-white/[0.06] text-[#71717a] hover:text-neutral-200 disabled:opacity-50 shrink-0"
           title="New conversation"
         >
           <Plus className="w-4 h-4" />
