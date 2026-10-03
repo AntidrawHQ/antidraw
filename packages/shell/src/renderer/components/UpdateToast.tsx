@@ -85,22 +85,31 @@ const UpdateToastCard = ({
   </div>
 );
 
+// Stable id so re-showing replaces the existing toast rather than stacking
+// a second one (React StrictMode double-invokes effects in development).
+export const UPDATE_TOAST_ID = "update-available";
+
+type ShowUpdateToastOptions = {
+  version: string;
+  onRestart: () => void;
+  onDismiss: () => void;
+};
+
 // Fires the custom toast. Kept persistent (duration: Infinity) since an
-// update prompt shouldn't auto-dismiss out from under the user.
-export const showUpdateToast = (
-  { version = "1.2.0" }: { version?: string } = {},
-  onRestart?: () => void,
-) =>
+// update prompt shouldn't auto-dismiss out from under the user. Visibility is
+// owned by the caller — dismiss with toast.dismiss(UPDATE_TOAST_ID).
+export const showUpdateToast = ({
+  version,
+  onRestart,
+  onDismiss,
+}: ShowUpdateToastOptions) =>
   toast.custom(
-    (id) => (
+    () => (
       <UpdateToastCard
         version={version}
-        onRestart={() => {
-          onRestart?.();
-          toast.dismiss(id);
-        }}
-        onDismiss={() => toast.dismiss(id)}
+        onRestart={onRestart}
+        onDismiss={onDismiss}
       />
     ),
-    { duration: Infinity },
+    { id: UPDATE_TOAST_ID, duration: Infinity },
   );

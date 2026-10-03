@@ -29,4 +29,7 @@ export const queryKeys = {
     byWorkspace: (workspaceId: string | null) =>
       ["frameLayouts", workspaceId] as const,
   },
+  update: {
+    status: ["update", "status"] as const,
+  },
 } as const;

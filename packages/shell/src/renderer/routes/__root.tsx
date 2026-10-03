@@ -1,22 +1,19 @@
 import { createRootRouteWithContext, Outlet } from "@tanstack/react-router";
 import type { QueryClient } from "@tanstack/react-query";
-import { Toaster, toast } from "sonner";
+import { Toaster } from "sonner";
 import { TooltipProvider } from "@/renderer/components/ui/tooltip";
 import { Titlebar } from "@/renderer/components/titlebar";
-import { showUpdateToast } from "@/renderer/components/UpdateToast";
-import { useMountEffect } from "@/renderer/hooks/use-mount-effect";
+import { useUpdateSubscription } from "@/renderer/hooks/use-update-status";
+import { useUpdateToast } from "@/renderer/hooks/use-update-prompt";
 
 type RouterContext = {
   queryClient: QueryClient;
 };
 
 const RootComponent = () => {
-  // TODO: preview-only — fires the update toast on every launch so the design
-  // can be eyeballed. Remove once the toast is driven by real update status.
-  useMountEffect(() => {
-    const id = showUpdateToast({ version: "0.0.14-alpha" });
-    return () => toast.dismiss(id);
-  });
+  // Single "update-downloaded" subscription for the app, plus the toast it drives.
+  useUpdateSubscription();
+  useUpdateToast();
 
   return (
     <TooltipProvider>
