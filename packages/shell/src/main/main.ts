@@ -27,6 +27,7 @@ import { installNodeShim } from "./lib/node-shim";
 import { runMigrations } from "./db/migrate";
 import { shutdownPostHog } from "./lib/posthog";
 import { APP_KEY, APP_KEY_ARG } from "@/main/lib/app-key";
+import { verifyCertificate } from "@/main/lib/certificate-verify";
 
 // Keep the renderer responsive when the window is unfocused or occluded.
 // Without these, Chromium throttles rAF/timers/request scheduling in packaged
@@ -142,14 +143,9 @@ app.whenReady().then(async () => {
     return;
   }
 
-  // Trust self-signed certs for localhost (enables HTTPS dev servers without warnings)
-  session.defaultSession.setCertificateVerifyProc((request, callback) => {
-    if (request.hostname === "localhost" || request.hostname === "127.0.0.1") {
-      callback(0); // Trust
-    } else {
-      callback(-2); // Use default verification
-    }
-  });
+  // Trust self-signed certs for localhost (enables HTTPS dev servers without
+  // warnings); every other host gets Chromium's own verification.
+  session.defaultSession.setCertificateVerifyProc(verifyCertificate);
 
   protocol.handle("antidraw", (req) => {
     const url = new URL(req.url);
