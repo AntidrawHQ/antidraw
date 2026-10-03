@@ -13,8 +13,10 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vite
 const electron = vi.hoisted(() => ({
   userData: "",
   encryption: true,
-  // What the browser tab showed at the end of each sign-in.
+  // What the browser tab showed at the end of each sign-in: its title and message.
   pages: [] as string[],
+  // The headers it came with.
+  pageHeaders: [] as Record<string, string>[],
   abortBody: false,
   openExternal: async (url: string) => {
     void url;
@@ -117,7 +119,11 @@ afterAll(() => {
 // The browser: follows /desktop/start to the loopback and keeps the page it shows.
 const browse = async (url: string) => {
   const res = await fetch(url);
-  electron.pages.push(await res.text().then((html) => /<p>(.*)<\/p>/.exec(html)?.[1] ?? html));
+  const html = await res.text();
+  const title = /<h1>(.*)<\/h1>/.exec(html)?.[1];
+  const message = /<p>(.*)<\/p>/.exec(html)?.[1];
+  electron.pageHeaders.push(Object.fromEntries(res.headers));
+  electron.pages.push(title && message ? `${title}: ${message}` : html);
 };
 
 beforeEach(() => {
@@ -125,6 +131,7 @@ beforeEach(() => {
   electron.encryption = true;
   electron.abortBody = false;
   electron.pages = [];
+  electron.pageHeaders = [];
   electron.openExternal = async (url) => {
     void browse(url);
   };
@@ -167,7 +174,7 @@ it("signs in, keeps the token encrypted, and tells the browser tab only after", 
     .toMatchInlineSnapshot(`
       {
         "onDisk": "enc:token-1",
-        "page": "Signed in. You can close this tab and return to Antidraw.",
+        "page": "You're signed in: You can close this tab and return to Antidraw.",
         "requests": [
           "GET /api/health",
           "GET /api/auth/desktop/start",
@@ -183,6 +190,23 @@ it("signs in, keeps the token encrypted, and tells the browser tab only after", 
         },
       }
     `);
+});
+
+it("serves the tab's page so it loads nothing, sends no referrer and isn't cached", async () => {
+  const { signIn } = await service();
+  await signIn();
+  await lastPage();
+  const headers = electron.pageHeaders.at(-1)!;
+  const names = ["content-type", "content-security-policy", "referrer-policy", "cache-control", "x-content-type-options"];
+  expect(Object.fromEntries(names.map((name) => [name, headers[name]]))).toMatchInlineSnapshot(`
+    {
+      "cache-control": "no-store",
+      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
+      "content-type": "text/html; charset=utf-8",
+      "referrer-policy": "no-referrer",
+      "x-content-type-options": "nosniff",
+    }
+  `);
 });
 
 it("says the server is unreachable at once, without opening the browser", async () => {
@@ -206,7 +230,7 @@ it("keeps nothing, and says so in the tab, when the code can't be exchanged", as
   expect({ result: outcome(await signIn()), onDisk: tokenOnDisk(), page: await lastPage() }).toMatchInlineSnapshot(`
     {
       "onDisk": null,
-      "page": "Sign-in didn't complete. You can close this tab and try again in Antidraw.",
+      "page": "Sign-in didn't complete: You can close this tab and try again in Antidraw.",
       "result": {
         "err": "SIGN_IN_FAILED",
       },
@@ -225,7 +249,7 @@ it("keeps nothing when cancelled while the code is being exchanged", async () =>
   expect({ result, onDisk: tokenOnDisk(), page: await lastPage() }).toMatchInlineSnapshot(`
     {
       "onDisk": null,
-      "page": "Sign-in was cancelled in Antidraw. You can close this tab.",
+      "page": "Sign-in cancelled: Sign-in was cancelled in Antidraw. You can close this tab.",
       "result": {
         "err": "CANCELLED",
       },
