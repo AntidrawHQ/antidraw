@@ -1,11 +1,11 @@
 import antidrawIcon from "@/renderer/assets/antidraw-icon.svg?raw";
 
 // The page the browser tab shows when Google sign-in comes back to the app's
-// loopback server: the AntiDraw logo, a title and a message, left-aligned in a
-// block in the middle of a plain page, in the Publish button's sign-in panel's
-// type and colours, saying how sign-in ended. Self-contained, with inline
-// styles and the logo inline, so it loads nothing; its headers forbid anything
-// else.
+// loopback server: in the middle of a plain page, the AntiDraw logo with a
+// status mark, beside a title and a message saying how sign-in ended, in the
+// Publish button's sign-in panel's type and colours. Self-contained, with
+// inline styles and the logo inline, so it loads nothing; its headers forbid
+// anything else.
 
 export type SignInOutcome = "signed-in" | "cancelled" | "failed";
 
@@ -65,9 +65,9 @@ export const signInPage = (outcome: SignInOutcome) => {
     font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
     -webkit-font-smoothing: antialiased;
   }
-  main { width: 100%; max-width: 360px; }
-  .logo { position: relative; width: 48px; height: 48px; }
-  .logo svg { display: block; width: 48px; height: 48px; }
+  main { width: 100%; max-width: 420px; display: flex; gap: 16px; align-items: flex-start; }
+  .logo { position: relative; flex: none; width: 52px; height: 52px; }
+  .logo > svg { display: block; width: 52px; height: 52px; }
   .mark {
     position: absolute; right: -6px; bottom: -6px;
     display: grid; place-items: center; width: 22px; height: 22px;
@@ -75,15 +75,17 @@ export const signInPage = (outcome: SignInOutcome) => {
     background: color-mix(in oklch, ${color} 16%, #262626); color: ${color};
   }
   .mark svg { width: 12px; height: 12px; }
-  h1 { margin: 20px 0 0; font-size: 18px; font-weight: 500; letter-spacing: -0.01em; color: #e0e0e0; }
-  p { margin: 6px 0 0; font-size: 14px; line-height: 1.6; color: #9a9a9a; }
+  h1 { margin: 2px 0 0; font-size: 18px; font-weight: 500; letter-spacing: -0.01em; color: #e0e0e0; }
+  p { margin: 4px 0 0; font-size: 14px; line-height: 1.6; color: #9a9a9a; text-wrap: pretty; }
 </style>
 </head>
 <body>
 <main>
   <div class="logo">${antidrawIcon}<span class="mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">${mark}</svg></span></div>
-  <h1>${title}</h1>
-  <p>${message}</p>
+  <div>
+    <h1>${title}</h1>
+    <p>${message}</p>
+  </div>
 </main>
 </body>
 </html>`;
