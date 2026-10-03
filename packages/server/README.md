@@ -173,43 +173,47 @@ previous publishes.
 
 ## Deploy (needs a Cloudflare login)
 
-Two Workers: this API, and `@antidraw/site-worker`, which serves published
-sites at `<slug>.antidraw.app`. They share the D1 database and R2 bucket.
+Three Workers: this API at `api.antidraw.com`, `@antidraw/site-worker`, which
+serves published sites at `<slug>.antidraw.app`, and `@antidraw/share-page` at
+`antidraw.com/s/*`. The API and the site Worker share the D1 database
+`antidraw` (its id is in both `wrangler.jsonc` files) and the R2 bucket
+`antidraw-sites`. Everything below has been done once; it's here for a fresh
+account or a rebuild.
 
 ```sh
 npx wrangler login
 
-# 1. Create the D1 database, then paste the printed database_id into
-#    wrangler.jsonc (d1_databases[0].database_id) here and in
-#    packages/site-worker/wrangler.jsonc (the top-level one).
+# 1. The D1 database and the bucket. Put the printed database_id into
+#    wrangler.jsonc here and in packages/site-worker/wrangler.jsonc.
 npx wrangler d1 create antidraw
-
-# 2. Apply migrations, and create the bucket for published sites.
-npm run db:migrate            # remote D1
 npx wrangler r2 bucket create antidraw-sites
 
-# 3. Set production secrets.
-npx wrangler secret put BETTER_AUTH_SECRET
-npx wrangler secret put GOOGLE_CLIENT_ID
-npx wrangler secret put GOOGLE_CLIENT_SECRET
-# Required too: https://api.antidraw.com. An https URL here is what makes auth
-# cookies Secure. Either a secret or a plain var in wrangler.jsonc
-# ("vars": { "BETTER_AUTH_URL": ... }).
-npx wrangler secret put BETTER_AUTH_URL
+# 2. Apply migrations to the remote database (from packages/server).
+npm run db:migrate
 
-# 4. Ship the API (from the repo root).
-npm run deploy:server
+# 3. Ship the API with its secrets. The Worker checks BETTER_AUTH_SECRET at
+#    startup, and Cloudflare validates startup on deploy, so the first deploy
+#    must carry the secrets: a JSON or .env file with BETTER_AUTH_SECRET
+#    (openssl rand -base64 32), GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.
+#    Delete the file afterwards. Later deploys keep the secrets.
+npx wrangler deploy --secrets-file <file>
+#    BETTER_AUTH_URL (https://api.antidraw.com) is a plain var in
+#    wrangler.jsonc, and the deploy attaches the api.antidraw.com custom
+#    domain (its DNS record and certificate) from `routes`.
 
-# 5. Serve it at api.antidraw.com: in the dashboard, Workers & Pages →
-#    antidraw-server → Settings → Domains & Routes → add the custom domain.
-#    (Its own subdomain, not antidraw.com/api: the landing page and the share
-#    pages keep antidraw.com, and the API's auth cookies stay off them.)
+# 4. Google Cloud Console: add https://api.antidraw.com/api/auth/callback/google
+#    to the OAuth client's authorized redirect URIs.
 
-# 6. Serve sites. In the antidraw.app zone, add a proxied DNS record
-#    `* AAAA 100::` so every subdomain reaches Cloudflare. The Worker's
-#    `*.antidraw.app/*` route must be free: if another Worker holds it, remove
-#    that route first (the deploy refuses otherwise). Then:
+# 5. Serve sites. The antidraw.app zone needs a proxied wildcard DNS record
+#    (`* AAAA 100::`), and the `*.antidraw.app/*` route must be free: if
+#    another Worker holds it, remove that route first (the deploy refuses
+#    otherwise). Then, from the repo root:
 npm run deploy:sites
+
+# 6. Serve share pages. antidraw.com needs a proxied DNS record for the route
+#    to receive traffic (`antidraw.com AAAA 100::` while nothing else serves
+#    the apex). Then:
+npm run deploy -w @antidraw/share-page
 ```
 
 ## Next step
