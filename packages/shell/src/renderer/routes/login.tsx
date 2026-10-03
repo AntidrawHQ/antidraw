@@ -12,11 +12,11 @@ const LoginPage = () => {
   return (
     <div className="flex h-full w-full items-start justify-center bg-neutral-800 p-6 pt-16 cursor-default antialiased">
       <div className="flex flex-col max-w-[540px] w-full">
-        <img src={antidrawIcon} alt="AntiDraw" className="w-10 h-10 mb-5" />
+        <img src={antidrawIcon} alt="Antidraw" className="w-10 h-10 mb-5" />
         <h1 className="text-[28px] font-medium text-[#e0e0e0] m-0">
           Welcome to
           <br />
-          AntiDraw
+          Antidraw
         </h1>
         <p className="text-sm text-[#9a9a9a] mt-2.5 leading-relaxed">
           An infinite design canvas for your coding agents.
