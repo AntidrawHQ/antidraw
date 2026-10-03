@@ -1,6 +1,6 @@
 import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { ArrowRight } from "lucide-react";
-import antidrawLogo from "@/renderer/assets/antidraw-logo.png";
+import antidrawIcon from "@/renderer/assets/antidraw-icon.svg";
 
 const LoginPage = () => {
   const router = useRouter();
@@ -12,7 +12,7 @@ const LoginPage = () => {
   return (
     <div className="flex h-full w-full items-start justify-center bg-neutral-800 p-6 pt-16 cursor-default antialiased">
       <div className="flex flex-col max-w-[540px] w-full">
-        <img src={antidrawLogo} alt="Antidraw" className="w-10 h-10 rounded-lg mb-5" />
+        <img src={antidrawIcon} alt="AntiDraw" className="w-10 h-10 mb-5" />
         <h1 className="text-[28px] font-medium text-[#e0e0e0] m-0">
           Welcome to
           <br />
