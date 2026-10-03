@@ -7,7 +7,7 @@ import path from "node:path";
 import { err, ok, type Result } from "neverthrow";
 import { SIGN_IN_PAGE_HEADERS, signInPage, type SignInOutcome } from "./sign-in-page";
 
-// Sign-in to the AntiDraw cloud (@antidraw/server) for publish/sync. The
+// Sign-in to the Antidraw cloud (@antidraw/server) for publish/sync. The
 // session token never leaves the main process: the renderer asks for the
 // account and triggers sign-in/out through /api/account, and cloud calls go
 // through cloudFetch, which attaches the token here.
@@ -57,7 +57,7 @@ const CANCELLED = accountError(409, "CANCELLED", "Sign-in was cancelled");
 const UNREACHABLE = accountError(
   502,
   "SERVER_UNREACHABLE",
-  "Couldn't reach the AntiDraw server",
+  "Couldn't reach the Antidraw server",
 );
 
 // ============================================================================

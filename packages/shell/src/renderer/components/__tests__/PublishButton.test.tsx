@@ -186,7 +186,7 @@ it("doesn't offer sign-in when the account can't be checked, and retries on Try 
         "toast": "Publishedantidraw.com/s/paper-shadersCopy link",
       },
       "unreachable": {
-        "alert": "Couldn't reach AntiDraw. Check your connection and try again.",
+        "alert": "Couldn't reach Antidraw. Check your connection and try again.",
         "dialog": [
           "Couldn't publish",
           "We couldn't check your account, so Paper Shaders wasn't published.",
@@ -277,7 +277,7 @@ it("says it couldn't publish when the check fails after an earlier one succeeded
   await click(/^Publish$/);
   expect({ ...screen(), published: api.publishWorkspace.mock.calls.length }).toMatchInlineSnapshot(`
     {
-      "alert": "Couldn't reach AntiDraw. Check your connection and try again.",
+      "alert": "Couldn't reach Antidraw. Check your connection and try again.",
       "dialog": [
         "Couldn't publish",
         "We couldn't check your account, so Paper Shaders wasn't published.",
@@ -305,7 +305,7 @@ it("keeps the panel up while Try again checks, and publishes once for a double c
   expect({ checking, published: api.publishWorkspace.mock.calls.length }).toMatchInlineSnapshot(`
     {
       "checking": {
-        "alert": "Couldn't reach AntiDraw. Check your connection and try again.",
+        "alert": "Couldn't reach Antidraw. Check your connection and try again.",
         "ariaDisabled": "true",
         "dialog": [
           "Couldn't publish",

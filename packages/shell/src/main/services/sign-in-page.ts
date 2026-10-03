@@ -1,7 +1,7 @@
 import antidrawIcon from "@/renderer/assets/antidraw-icon.svg?raw";
 
 // The page the browser tab shows when Google sign-in comes back to the app's
-// loopback server: in the middle of a plain page, the AntiDraw logo with a
+// loopback server: in the middle of a plain page, the Antidraw logo with a
 // status mark, beside a title and a message saying how sign-in ended, in the
 // Publish button's sign-in panel's type and colours. Self-contained, with
 // inline styles and the logo inline, so it loads nothing; its headers forbid
@@ -19,19 +19,19 @@ const CROSS = `<path d="M18 6 6 18M6 6l12 12"/>`;
 const COPY: Record<SignInOutcome, { title: string; message: string; color: string; mark: string }> = {
   "signed-in": {
     title: "You're signed in",
-    message: "You can close this tab and return to AntiDraw.",
+    message: "You can close this tab and return to Antidraw.",
     color: GREEN,
     mark: CHECK,
   },
   cancelled: {
     title: "Sign-in cancelled",
-    message: "Sign-in was cancelled in AntiDraw. You can close this tab.",
+    message: "Sign-in was cancelled in Antidraw. You can close this tab.",
     color: RED,
     mark: CROSS,
   },
   failed: {
     title: "Sign-in didn't complete",
-    message: "You can close this tab and try again in AntiDraw.",
+    message: "You can close this tab and try again in Antidraw.",
     color: RED,
     mark: CROSS,
   },
@@ -55,7 +55,7 @@ export const signInPage = (outcome: SignInOutcome) => {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
-<title>${title} · AntiDraw</title>
+<title>${title} · Antidraw</title>
 <style>
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }

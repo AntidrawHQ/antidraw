@@ -14,7 +14,7 @@ import {
 
 /* ────────────────────────────────────────────────────────────
    Publish button for the titlebar. Signed out, it opens a minimal
-   sign-in panel anchored under the button: AntiDraw icon, one-line
+   sign-in panel anchored under the button: Antidraw icon, one-line
    title, a single "Sign in with Google" button that carries every
    state. On success the panel closes and publishing continues.
 
@@ -52,7 +52,7 @@ type Failure = { message: string; retry: "signin" | "publish" };
 const problem = (code: string) => {
   switch (code) {
     case "SERVER_UNREACHABLE":
-      return "Couldn't reach AntiDraw. Check your connection and try again.";
+      return "Couldn't reach Antidraw. Check your connection and try again.";
     case "TIMED_OUT":
       return "Sign-in timed out. Try again.";
     case "ACCESS_DENIED":
@@ -389,7 +389,7 @@ export const PublishButton = ({
                     <X size={14} />
                   </button>
 
-                  <img src={antidrawIcon} alt="AntiDraw" className="h-10 w-10" />
+                  <img src={antidrawIcon} alt="Antidraw" className="h-10 w-10" />
 
                   <h2 id="publish-handshake-title" className="mt-4 text-base font-medium tracking-[-0.01em] text-[#e0e0e0]">
                     {retryingPublish ? "Couldn't publish" : "Sign in to publish"}

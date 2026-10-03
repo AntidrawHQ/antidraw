@@ -174,7 +174,7 @@ it("signs in, keeps the token encrypted, and tells the browser tab only after", 
     .toMatchInlineSnapshot(`
       {
         "onDisk": "enc:token-1",
-        "page": "You're signed in: You can close this tab and return to AntiDraw.",
+        "page": "You're signed in: You can close this tab and return to Antidraw.",
         "requests": [
           "GET /api/health",
           "GET /api/auth/desktop/start",
@@ -230,7 +230,7 @@ it("keeps nothing, and says so in the tab, when the code can't be exchanged", as
   expect({ result: outcome(await signIn()), onDisk: tokenOnDisk(), page: await lastPage() }).toMatchInlineSnapshot(`
     {
       "onDisk": null,
-      "page": "Sign-in didn't complete: You can close this tab and try again in AntiDraw.",
+      "page": "Sign-in didn't complete: You can close this tab and try again in Antidraw.",
       "result": {
         "err": "SIGN_IN_FAILED",
       },
@@ -249,7 +249,7 @@ it("keeps nothing when cancelled while the code is being exchanged", async () =>
   expect({ result, onDisk: tokenOnDisk(), page: await lastPage() }).toMatchInlineSnapshot(`
     {
       "onDisk": null,
-      "page": "Sign-in cancelled: Sign-in was cancelled in AntiDraw. You can close this tab.",
+      "page": "Sign-in cancelled: Sign-in was cancelled in Antidraw. You can close this tab.",
       "result": {
         "err": "CANCELLED",
       },
