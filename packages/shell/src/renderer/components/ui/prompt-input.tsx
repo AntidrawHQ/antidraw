@@ -118,23 +118,9 @@ function PromptInputTextarea({
   const { value, setValue, maxHeight, onSubmit, disabled, textareaRef } =
     usePromptInput()
 
-  const adjustHeight = (el: HTMLTextAreaElement | null) => {
-    if (!el || disableAutosize) return
-
-    el.style.height = "auto"
-
-    if (typeof maxHeight === "number") {
-      el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`
-    } else {
-      el.style.height = `min(${el.scrollHeight}px, ${maxHeight})`
-    }
-  }
-
-  const handleRef = (el: HTMLTextAreaElement | null) => {
-    textareaRef.current = el
-    adjustHeight(el)
-  }
-
+  // Sizes to the content after every value change. This is the only place the
+  // height is measured: the value change is what triggers it, so the onChange
+  // and ref callbacks must not repeat it — each pass is a forced layout.
   useLayoutEffect(() => {
     if (!textareaRef.current || disableAutosize) return
 
@@ -150,7 +136,6 @@ function PromptInputTextarea({
   }, [value, maxHeight, disableAutosize])
 
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    adjustHeight(e.target)
     setValue(e.target.value)
   }
 
@@ -164,7 +149,7 @@ function PromptInputTextarea({
 
   return (
     <Textarea
-      ref={handleRef}
+      ref={textareaRef}
       value={value}
       onChange={handleChange}
       onKeyDown={handleKeyDown}

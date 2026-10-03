@@ -1,0 +1,23 @@
+{
+  "name": "@antidraw/site-worker",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "description": "Serves published sites at <slug>.antidraw.app from R2, through @antidraw/site-upload's SiteServer.",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --env dev --persist-to ../server/.wrangler/state",
+    "deploy": "wrangler deploy --env=\"\"",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260627.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.5",
+    "wrangler": "^4.142.0"
+  },
+  "dependencies": {
+    "@antidraw/site-upload": "^0.0.0"
+  }
+}

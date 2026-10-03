@@ -11,7 +11,7 @@ import {
   IconCircleXFilled,
 } from "@tabler/icons-react";
 import { ArrowUpRight, ChevronDown } from "lucide-react";
-import { useState } from "react";
+import { memo, useState } from "react";
 
 export type ToolPart = {
   type: string;
@@ -64,6 +64,44 @@ const getToolTitle = (toolPart: ToolPart): string => {
 
 /* ── Component ─────────────────────────────────────────────────────────── */
 
+// Its own component so the input/output stringification below only runs while
+// the panel is mounted. As inline JSX it ran on every render of a closed Tool,
+// and a streaming Write carries its whole file in `input`.
+const ToolBody = ({ toolPart }: { toolPart: ToolPart }) => {
+  const { input, output, state } = toolPart;
+
+  return (
+    <div className="bg-neutral-800 p-2.5 font-[ui-monospace,SFMono-Regular,Menlo,monospace] text-[11px]">
+      {input &&
+        Object.entries(input).map(([key, value]) => (
+          <div key={key}>
+            <span className="text-neutral-500">{key}:</span>{" "}
+            <span className="whitespace-pre-wrap break-all text-neutral-200">
+              {formatValue(value)}
+            </span>
+          </div>
+        ))}
+
+      {output &&
+        Object.entries(output).map(([key, value]) => (
+          <div key={key}>
+            <span className="text-neutral-500">{key}:</span>{" "}
+            <span className="whitespace-pre-wrap break-all text-neutral-200">
+              {formatValue(value)}
+            </span>
+          </div>
+        ))}
+
+      {state === "output-error" && toolPart.errorText && (
+        <div>
+          <span className="text-neutral-500">error:</span>{" "}
+          <span className="text-[#f06060]">{toolPart.errorText}</span>
+        </div>
+      )}
+    </div>
+  );
+};
+
 export type ToolProps = {
   toolPart: ToolPart;
   title?: string;
@@ -73,17 +111,17 @@ export type ToolProps = {
   className?: string;
 };
 
-export const Tool = ({
+export const Tool = memo(function Tool({
   toolPart,
   title,
   defaultOpen = false,
   onViewComponent,
   className,
-}: ToolProps) => {
+}: ToolProps) {
   const [isOpen, setIsOpen] = useState(defaultOpen);
   const cfg = stateConfig[toolPart.state];
   const StateIcon = cfg.icon;
-  const { input, output, state } = toolPart;
+  const { state } = toolPart;
 
   const component = onViewComponent ? viewableComponent(toolPart) : null;
   const spinning = state === "input-streaming" || state === "input-available";
@@ -145,36 +183,9 @@ export const Tool = ({
         </div>
 
         <CollapsibleContent className="overflow-hidden border-t border-[#444]">
-          <div className="bg-neutral-800 p-2.5 font-[ui-monospace,SFMono-Regular,Menlo,monospace] text-[11px]">
-            {input &&
-              Object.entries(input).map(([key, value]) => (
-                <div key={key}>
-                  <span className="text-neutral-500">{key}:</span>{" "}
-                  <span className="whitespace-pre-wrap break-all text-neutral-200">
-                    {formatValue(value)}
-                  </span>
-                </div>
-              ))}
-
-            {output &&
-              Object.entries(output).map(([key, value]) => (
-                <div key={key}>
-                  <span className="text-neutral-500">{key}:</span>{" "}
-                  <span className="whitespace-pre-wrap break-all text-neutral-200">
-                    {formatValue(value)}
-                  </span>
-                </div>
-              ))}
-
-            {state === "output-error" && toolPart.errorText && (
-              <div>
-                <span className="text-neutral-500">error:</span>{" "}
-                <span className="text-[#f06060]">{toolPart.errorText}</span>
-              </div>
-            )}
-          </div>
+          <ToolBody toolPart={toolPart} />
         </CollapsibleContent>
       </Collapsible>
     </div>
   );
-};
+});

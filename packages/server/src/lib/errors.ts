@@ -8,6 +8,8 @@ export type ApiError = {
   status: ContentfulStatusCode;
   code: string;
   message: string;
+  /** Seconds to wait before retrying, sent as `retry-after`. */
+  retryAfter?: number;
 };
 
 export const apiError = (

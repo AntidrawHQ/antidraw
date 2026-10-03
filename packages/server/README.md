@@ -58,6 +58,10 @@ npm test             # vitest
 npm run typecheck
 ```
 
+Tests that need storage run the real Worker in workerd with local D1 and R2
+(`src/test/harness.ts`, Wrangler's test harness); the rest call the Hono app
+directly.
+
 `GET /api/health` → `{ "status": "ok", "service": "antidraw-server" }`.
 
 For local secrets, copy `.dev.vars.example` to `.dev.vars` (gitignored).
@@ -136,33 +140,64 @@ In Google Cloud console → APIs & Services → Credentials, create an OAuth cli
 of type **Web application** with these authorized redirect URIs:
 
 - `http://localhost:8799/api/auth/callback/google` (local)
-- `https://<worker-host>/api/auth/callback/google` (production)
+- `https://api.antidraw.com/api/auth/callback/google` (production)
 
 Put its ID and secret in `.dev.vars` locally (see `.dev.vars.example`). While
 the consent screen is in "Testing", only its listed test users can sign in.
 
+## Publishing
+
+Signed-in users publish a workspace's built components and its `canvas.json`,
+served at `<slug>.antidraw.app` by a separate Worker (`@antidraw/site-worker`).
+People visit the site's share page, `antidraw.com/s/<slug>` (the `url`
+`POST /api/sites` returns): the canvas, which reads `canvas.json` from the site
+and shows each component in an iframe of its `/preview`. The site's own `/`
+redirects there. The routes are in `src/controllers/site.controller.ts`, and
+the upload protocol, storage and serving are `@antidraw/site-upload`'s. D1
+holds each site's owner, slug and lock (`src/models/site.model.ts`); R2 holds
+the files, keyed by the site's permanent id, never its slug. The routes take
+only a bearer token, never a cookie. An hourly cron clears what publishes
+leave behind: uploads never committed, and files the live version dropped.
+
 ## Deploy (needs a Cloudflare login)
+
+Two Workers: this API, and `@antidraw/site-worker`, which serves published
+sites at `<slug>.antidraw.app`. They share the D1 database and R2 bucket.
 
 ```sh
 npx wrangler login
 
 # 1. Create the D1 database, then paste the printed database_id into
-#    wrangler.jsonc (d1_databases[0].database_id).
+#    wrangler.jsonc (d1_databases[0].database_id) here and in
+#    packages/site-worker/wrangler.jsonc (the top-level one).
 npx wrangler d1 create antidraw
 
-# 2. Apply migrations.
+# 2. Apply migrations, and create the bucket for published sites.
 npm run db:migrate            # remote D1
+npx wrangler r2 bucket create antidraw-sites
 
 # 3. Set production secrets.
 npx wrangler secret put BETTER_AUTH_SECRET
 npx wrangler secret put GOOGLE_CLIENT_ID
 npx wrangler secret put GOOGLE_CLIENT_SECRET
-# Required too: an https URL here is what makes auth cookies Secure. Either a
-# secret or a plain var in wrangler.jsonc ("vars": { "BETTER_AUTH_URL": ... }).
+# Required too: https://api.antidraw.com. An https URL here is what makes auth
+# cookies Secure. Either a secret or a plain var in wrangler.jsonc
+# ("vars": { "BETTER_AUTH_URL": ... }).
 npx wrangler secret put BETTER_AUTH_URL
 
-# 4. Ship it.
-npm run deploy
+# 4. Ship the API (from the repo root).
+npm run deploy:server
+
+# 5. Serve it at api.antidraw.com: in the dashboard, Workers & Pages →
+#    antidraw-server → Settings → Domains & Routes → add the custom domain.
+#    (Its own subdomain, not antidraw.com/api: the landing page and the share
+#    pages keep antidraw.com, and the API's auth cookies stay off them.)
+
+# 6. Serve sites. In the antidraw.app zone, add a proxied DNS record
+#    `* AAAA 100::` so every subdomain reaches Cloudflare. The Worker's
+#    `*.antidraw.app/*` route must be free: if another Worker holds it, remove
+#    that route first (the deploy refuses otherwise). Then:
+npm run deploy:sites
 ```
 
 ## Next step

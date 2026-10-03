@@ -19,8 +19,30 @@
       "binding": "DB",
       "database_name": "antidraw",
       // Replace after running:  npx wrangler d1 create antidraw
+      // (and in @antidraw/site-worker's wrangler.jsonc, which shares it).
       "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      // Local state (wrangler dev, --local migrations, tests) is kept under
+      // this instead of database_id, so it doesn't move when the real id is
+      // filled in, and the site Worker's `npm run dev` finds it.
+      "preview_database_id": "antidraw-local",
       "migrations_dir": "src/db/migrations"
     }
-  ]
+  ],
+  "r2_buckets": [
+    // Published sites' files, under sites/<site id>/ (@antidraw/site-upload).
+    // The site-serving Worker binds the same bucket.
+    { "binding": "SITES", "bucket_name": "antidraw-sites" }
+  ],
+  "vars": {
+    // A published site's share page, * being its slug: the canvas that shows
+    // the site's components, which are served from <slug>.antidraw.app (see
+    // @antidraw/site-worker). Overridden in .dev.vars for local development.
+    "SHARE_URL_PATTERN": "https://antidraw.com/s/*"
+  },
+  "triggers": {
+    // Hourly: clears what publishes leave behind, uploads never committed and
+    // files the live version dropped (see cleanUpLeftovers in
+    // services/site.service.ts).
+    "crons": ["17 * * * *"]
+  }
 }

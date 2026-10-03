@@ -1,9 +1,13 @@
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
-import type { AppEnv } from "./lib/env";
+import type { AppEnv, Bindings } from "./lib/env";
 import { respondError } from "./lib/respond";
 import { healthController } from "./controllers/health.controller";
 import { authController, meController } from "./controllers/auth.controller";
+import { siteController } from "./controllers/site.controller";
+import { getDb } from "./db";
+import { siteStore } from "./lib/site-store";
+import { cleanUpLeftovers } from "./services/site.service";
 
 // Built by a factory so tests can mount extra routes on a real app (with the
 // real fallbacks below) instead of asserting against a copy of them.
@@ -15,6 +19,7 @@ export const createApp = () => {
   api.route("/health", healthController);
   api.route("/auth", authController); // better-auth: /api/auth/*
   api.route("/me", meController);
+  api.route("/sites", siteController);
 
   const app = new Hono<AppEnv>();
   app.route("/api", api);
@@ -38,5 +43,13 @@ export const createApp = () => {
   return app;
 };
 
-// Cloudflare Workers entrypoint — Hono exports a `fetch` handler.
-export default createApp();
+const app = createApp();
+
+// Cloudflare Workers entrypoint: the app's fetch handler, plus the cron trigger
+// (wrangler.jsonc) that clears what publishes leave behind.
+export default {
+  fetch: app.fetch,
+  async scheduled(_controller, env) {
+    await cleanUpLeftovers(getDb(env), siteStore(env));
+  },
+} satisfies ExportedHandler<Bindings>;
