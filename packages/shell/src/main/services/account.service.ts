@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { err, ok, type Result } from "neverthrow";
+import { SIGN_IN_PAGE_HEADERS, signInPage, type SignInOutcome } from "./sign-in-page";
 
 // Sign-in to the Antidraw cloud (@antidraw/server) for publish/sync. The
 // session token never leaves the main process: the renderer asks for the
@@ -232,13 +233,7 @@ export const signIn = async (): Promise<Result<Account, AccountError>> => {
     const { code, verifier, reply } = browser.value;
     const result = await exchange(code, verifier, controller.signal);
     // The browser tab says what actually happened, now that it's known.
-    reply(
-      result.isOk()
-        ? "Signed in. You can close this tab and return to Antidraw."
-        : result.error.code === "CANCELLED"
-          ? "Sign-in was cancelled in Antidraw. You can close this tab."
-          : "Sign-in didn't complete. You can close this tab and try again in Antidraw.",
-    );
+    reply(result.isOk() ? "signed-in" : result.error.code === "CANCELLED" ? "cancelled" : "failed");
     return result;
   } finally {
     if (pendingSignIn === controller) pendingSignIn = null;
@@ -284,16 +279,11 @@ const STATE_EXPIRED = new Set([
   "please_restart_the_process",
 ]);
 
-const CLOSE_TAB_PAGE = (message: string) =>
-  `<!doctype html><meta charset="utf-8"><title>Antidraw</title>` +
-  `<body style="font:14px system-ui;background:#262626;color:#e0e0e0;display:grid;place-items:center;height:100vh;margin:0">` +
-  `<p>${message}</p>`;
-
 type BrowserResult = {
   code: string;
   verifier: string;
   /** Answers the browser tab, which waits until the sign-in has finished. */
-  reply: (message: string) => void;
+  reply: (outcome: SignInOutcome) => void;
 };
 
 // Opens the system browser on the server's /desktop/start and waits for it to
@@ -330,10 +320,8 @@ const signInWithBrowser = (signal: AbortSignal) =>
 
         const code = url.searchParams.get("code");
         const error = url.searchParams.get("error");
-        const reply = (message: string) => {
-          res
-            .writeHead(200, { "content-type": "text/html; charset=utf-8" })
-            .end(CLOSE_TAB_PAGE(message));
+        const reply = (outcome: SignInOutcome) => {
+          res.writeHead(200, SIGN_IN_PAGE_HEADERS).end(signInPage(outcome));
           server.closeAllConnections();
         };
 
@@ -341,7 +329,7 @@ const signInWithBrowser = (signal: AbortSignal) =>
           finish(ok({ code, verifier, reply }));
           return;
         }
-        reply("Sign-in didn't complete. You can close this tab and try again in Antidraw.");
+        reply("failed");
         if (STATE_EXPIRED.has(error ?? ""))
           finish(err(accountError(408, "TIMED_OUT", "Sign-in took too long")));
         else if (error === "access_denied")
