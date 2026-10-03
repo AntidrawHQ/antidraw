@@ -14,7 +14,7 @@ import type {
 } from "@/main/api";
 import type { ImageAttachment } from "@/shared/utils/message";
 import { fetchEventSource } from "@microsoft/fetch-event-source";
-import { ok, err, type Result } from "neverthrow";
+import { ok, err } from "neverthrow";
 
 export type { StreamEvent, EffortLevel } from "@/main/api";
 
@@ -978,16 +978,31 @@ export const signOut = async () => {
   }
 };
 
-// TODO: publishing has no server side yet. Once the Worker has a publish
-// endpoint, main proxies it through cloudFetch (which answers SIGNED_OUT on a
-// dead token) and this calls that route.
-export const publishWorkspace = async (
-  _workspaceId: string,
-): Promise<
-  Result<{ url: string }, { status: 501; code: string; message: string }>
-> =>
-  err({
-    status: 501,
-    code: "NOT_IMPLEMENTED",
-    message: "Publishing isn't available yet",
-  });
+// Builds the workspace and publishes it; resolves with the share page's URL.
+// Takes as long as the build and upload do.
+export const publishWorkspace = async (workspaceId: string) => {
+  try {
+    const response = await fetch(
+      `antidraw://app/api/workspaces/${workspaceId}/publish`,
+      { method: "POST" },
+    );
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      return err({
+        status: response.status as 500,
+        code: (errorBody?.error?.code as string) ?? "FETCH_ERROR",
+        message: (errorBody?.error?.message as string) ?? response.statusText,
+      });
+    }
+
+    const data: { url: string } = await response.json();
+    return ok(data);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "NETWORK_ERROR",
+      message: "Failed to publish",
+    });
+  }
+};
