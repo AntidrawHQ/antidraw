@@ -1,0 +1,15 @@
+{
+  // The Worker (src/worker) and the tests, which run in Node.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+    "types": ["@cloudflare/workers-types", "node"],
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "isolatedModules": true
+  },
+  "include": ["src/worker", "src/site.ts", "src/*.test.ts", "test", "vitest.config.ts"]
+}
