@@ -150,7 +150,7 @@ const api = async (options: PublishOptions, pathname: string, body?: unknown) =>
       ...(body !== undefined && { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
     });
   } catch {
-    return fail(502, "SERVER_ERROR", "Couldn't reach the AntiDraw server");
+    return fail(502, "SERVER_ERROR", "Couldn't reach the Antidraw server");
   }
   if (response.status === 401) SIGNED_OUT();
   return response;
