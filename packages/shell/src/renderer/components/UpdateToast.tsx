@@ -96,8 +96,10 @@ type ShowUpdateToastOptions = {
 };
 
 // Fires the custom toast. Kept persistent (duration: Infinity) since an
-// update prompt shouldn't auto-dismiss out from under the user. Visibility is
-// owned by the caller — dismiss with toast.dismiss(UPDATE_TOAST_ID).
+// update prompt shouldn't auto-dismiss out from under the user, and not
+// swipeable (dismissible: false), since a swipe would hide it without
+// recording "Later". Visibility is owned by the caller — dismiss with
+// toast.dismiss(UPDATE_TOAST_ID).
 export const showUpdateToast = ({
   version,
   onRestart,
@@ -111,5 +113,5 @@ export const showUpdateToast = ({
         onDismiss={onDismiss}
       />
     ),
-    { id: UPDATE_TOAST_ID, duration: Infinity },
+    { id: UPDATE_TOAST_ID, duration: Infinity, dismissible: false },
   );

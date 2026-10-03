@@ -25,10 +25,6 @@ export const useUpdateStatus = () => {
 // Registers the single "update-downloaded" subscription and writes straight
 // into the cache. Mount once, at the root — the pull above covers the case
 // where the download finishes before the renderer subscribes.
-//
-// Main re-emits this on every update check (electron-updater re-dispatches
-// from its validated cache), so it fires repeatedly with the same version.
-// Writing the same value back is a no-op for readers.
 export const useUpdateSubscription = () => {
   const queryClient = useQueryClient();
 

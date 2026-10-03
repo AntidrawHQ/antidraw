@@ -211,11 +211,13 @@ pre.shiki {
 }
 
 [data-sonner-toast][data-x-position="right"][data-mounted="true"] {
-  animation: toast-slide-in-right 320ms cubic-bezier(0.21, 1.02, 0.73, 1)
-    forwards;
+  /* No fill: the last frame is the resting transform, and a held fill would
+     override sonner's swipe transform. */
+  animation: toast-slide-in-right 320ms cubic-bezier(0.21, 1.02, 0.73, 1);
 }
 
 [data-sonner-toast][data-x-position="right"][data-removed="true"] {
-  animation: toast-slide-out-right 240ms cubic-bezier(0.55, 0, 0.55, 0.2)
+  /* Within sonner's 200ms before it unmounts a removed toast. */
+  animation: toast-slide-out-right 200ms cubic-bezier(0.55, 0, 0.55, 0.2)
     forwards;
 }

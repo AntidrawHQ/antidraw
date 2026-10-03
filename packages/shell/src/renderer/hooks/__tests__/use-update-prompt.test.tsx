@@ -8,13 +8,15 @@ import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 // what "Later" does, how the titlebar reminder brings it back, and what a
 // newer version or a late first read does.
 
-// A toaster that keeps the toasts showing, by id, as sonner does.
+// A toaster that keeps the toasts showing, by id, as sonner does. Like
+// sonner, it applies a dismiss later, so one that comes before a re-show under
+// the same id still removes the re-shown toast.
 type Card = ReactElement<{ version: string; onRestart: () => void; onDismiss: () => void }>;
 const toaster = vi.hoisted(() => new Map<string, () => unknown>());
 vi.mock("sonner", () => ({
   toast: {
     custom: (render: () => unknown, { id }: { id: string }) => toaster.set(id, render),
-    dismiss: (id: string) => toaster.delete(id),
+    dismiss: (id: string) => setTimeout(() => toaster.delete(id)),
   },
 }));
 
@@ -113,6 +115,13 @@ it("prompts again for a newer version after Later", async () => {
   await render();
   await step(() => push("1.2.0"));
   await step(() => shownToast()!.onDismiss());
+  await step(() => push("1.3.0"));
+  expect({ toast: shownToast()?.version, reminder: reminder() }).toEqual({ toast: "1.3.0", reminder: null });
+});
+
+it("updates the showing toast to a newer version", async () => {
+  await render();
+  await step(() => push("1.2.0"));
   await step(() => push("1.3.0"));
   expect({ toast: shownToast()?.version, reminder: reminder() }).toEqual({ toast: "1.3.0", reminder: null });
 });

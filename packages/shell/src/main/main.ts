@@ -220,10 +220,23 @@ app.whenReady().then(async () => {
       }
     });
 
+    // Downloads are started here rather than by electron-updater, so a check
+    // that finds the version already downloaded does nothing. Left to
+    // autoDownload, every check would re-validate the cached update and, on
+    // macOS, have Squirrel stage it again.
+    autoUpdater.autoDownload = false;
+
     const checkForUpdates = () => {
-      autoUpdater.checkForUpdates().catch((err) => {
-        console.error("Auto-update check failed:", err);
-      });
+      autoUpdater
+        .checkForUpdates()
+        .then((result) => {
+          if (!result?.isUpdateAvailable) return;
+          if (result.updateInfo.version === pendingUpdateVersion) return;
+          return autoUpdater.downloadUpdate();
+        })
+        .catch((err) => {
+          console.error("Auto-update failed:", err);
+        });
     };
     checkForUpdates();
     setInterval(checkForUpdates, UPDATE_CHECK_INTERVAL_MS);
