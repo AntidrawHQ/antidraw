@@ -6,7 +6,7 @@ import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { err, ok, type Result } from "neverthrow";
 
-// Sign-in to the AntiDraw cloud (@antidraw/server) for publish/sync. The
+// Sign-in to the Antidraw cloud (@antidraw/server) for publish/sync. The
 // session token never leaves the main process: the renderer asks for the
 // account and triggers sign-in/out through /api/account, and cloud calls go
 // through cloudFetch, which attaches the token here.
@@ -56,7 +56,7 @@ const CANCELLED = accountError(409, "CANCELLED", "Sign-in was cancelled");
 const UNREACHABLE = accountError(
   502,
   "SERVER_UNREACHABLE",
-  "Couldn't reach the AntiDraw server",
+  "Couldn't reach the Antidraw server",
 );
 
 // ============================================================================
@@ -234,10 +234,10 @@ export const signIn = async (): Promise<Result<Account, AccountError>> => {
     // The browser tab says what actually happened, now that it's known.
     reply(
       result.isOk()
-        ? "Signed in. You can close this tab and return to AntiDraw."
+        ? "Signed in. You can close this tab and return to Antidraw."
         : result.error.code === "CANCELLED"
-          ? "Sign-in was cancelled in AntiDraw. You can close this tab."
-          : "Sign-in didn't complete. You can close this tab and try again in AntiDraw.",
+          ? "Sign-in was cancelled in Antidraw. You can close this tab."
+          : "Sign-in didn't complete. You can close this tab and try again in Antidraw.",
     );
     return result;
   } finally {
@@ -285,7 +285,7 @@ const STATE_EXPIRED = new Set([
 ]);
 
 const CLOSE_TAB_PAGE = (message: string) =>
-  `<!doctype html><meta charset="utf-8"><title>AntiDraw</title>` +
+  `<!doctype html><meta charset="utf-8"><title>Antidraw</title>` +
   `<body style="font:14px system-ui;background:#262626;color:#e0e0e0;display:grid;place-items:center;height:100vh;margin:0">` +
   `<p>${message}</p>`;
 
@@ -341,7 +341,7 @@ const signInWithBrowser = (signal: AbortSignal) =>
           finish(ok({ code, verifier, reply }));
           return;
         }
-        reply("Sign-in didn't complete. You can close this tab and try again in AntiDraw.");
+        reply("Sign-in didn't complete. You can close this tab and try again in Antidraw.");
         if (STATE_EXPIRED.has(error ?? ""))
           finish(err(accountError(408, "TIMED_OUT", "Sign-in took too long")));
         else if (error === "access_denied")

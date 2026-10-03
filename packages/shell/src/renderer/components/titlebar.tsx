@@ -18,7 +18,7 @@ export const Titlebar = () => {
       {/* Centered on the window, not between the side groups, which differ in
           width. Hidden where the right-hand group would cover it. */}
       <span className="pointer-events-none absolute inset-x-0 text-center text-[13px] font-medium text-neutral-400 max-[720px]:hidden">
-        AntiDraw
+        Antidraw
       </span>
       <div className="ml-auto flex min-w-0 items-center gap-2 pr-2 relative">
         <WorkspaceSwitcher />
