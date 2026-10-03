@@ -6,11 +6,14 @@ import { queryKeys } from "@/renderer/lib/query-keys";
 // Held in the query cache so the toast and the titlebar reminder read one
 // shared value instead of each keeping its own copy and its own subscription.
 export const useUpdateStatus = () => {
+  const queryClient = useQueryClient();
   const { data } = useQuery({
     queryKey: queryKeys.update.status,
     queryFn: async () => {
       const { pendingVersion } = await window.electronAPI.getUpdateStatus();
-      return pendingVersion;
+      // A push that landed while this read was in flight is newer than its
+      // answer; keep it. A version only ever replaces null, never the reverse.
+      return pendingVersion ?? queryClient.getQueryData<string | null>(queryKeys.update.status) ?? null;
     },
     // Only ever changes via the push below.
     staleTime: Infinity,
