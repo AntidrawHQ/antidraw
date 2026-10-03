@@ -64,7 +64,7 @@ describe("parseManifest properties", () => {
         const b = parseManifest(fromJson(reordered));
         expect(JSON.stringify(b)).toBe(JSON.stringify(a));
         expect(sameFiles(a.files, b.files)).toBe(true);
-        // Idempotent, both directly and after a trip through JSON (how pointers are stored).
+        // Idempotent, both directly and after a trip through JSON (how manifests are stored).
         expect(JSON.stringify(parseManifest(a))).toBe(JSON.stringify(a));
         expect(JSON.stringify(parseManifest(JSON.parse(JSON.stringify(a))))).toBe(JSON.stringify(a));
         // Unknown fields are dropped, and every path survives.

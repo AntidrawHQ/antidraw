@@ -14,9 +14,7 @@ export type ErrorCode =
   // Plans and commits
   | "NO_PLAN"
   | "PLAN_EXISTS"
-  | "PLAN_EXPIRED"
   | "MISSING_FILES"
-  | "CONFLICT"
   | "SUPERSEDED"
   // Client side only
   | "UNSUPPORTED_FILE"
@@ -40,9 +38,7 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   HASH_MISMATCH: 400,
   NO_PLAN: 404,
   PLAN_EXISTS: 409,
-  PLAN_EXPIRED: 410,
   MISSING_FILES: 409,
-  CONFLICT: 409,
   SUPERSEDED: 409,
   UNSUPPORTED_FILE: 400,
   FILE_CHANGED: 400,

@@ -6,22 +6,12 @@ import { user } from "./auth.model";
 // is its public name (<slug>.antidraw.app) and only points at the id, so a slug
 // that is ever freed and claimed again never reaches the old site's data.
 //
-// The lock serializes a site's publishes, which @antidraw/site-upload requires
-// (plan, uploads, commit and cleanup must not overlap). lock_publish_id is the
-// publish allowed to upload; starting a new one takes the lock over, and every
-// upload request checks it, so a replaced publish's requests are refused.
-// lock_until is when an unfinished publish is abandoned (its plan expires);
-// commit clears both.
-//
-// busy_until is set while a request that cleans up is running (a plan or a
-// commit, or the scheduled cleanup, whose claim is a `cleanup-` lock id): a
-// new publish can't take the lock until it's cleared or lapses, so a cleanup
-// never overlaps another publish's plan or commit.
-//
-// cleanup_after is when what the site's publishes left behind (uploads never
-// committed, files the live version dropped) is past the library's plan TTL
-// and orphan grace period, so the scheduled cleanup can clear it. Starting a
-// publish pushes it back; the cleanup clears it.
+// R2 holds what never changes: files by hash, and each publish's manifest
+// (@antidraw/site-upload). This row is the one thing that does: which publish
+// is live, the one live before it (its hashed chunks stay servable), and seq,
+// which counts commits. A commit switches them only if seq is still the
+// publish's base_seq, so two publishes can't both go live on the same version,
+// and an old one retried late can't roll the site back.
 export const site = sqliteTable(
   "site",
   {
@@ -31,23 +21,18 @@ export const site = sqliteTable(
       .references(() => user.id, { onDelete: "cascade" }),
     slug: text("slug").notNull().unique(),
     title: text("title").notNull(),
-    lockPublishId: text("lock_publish_id"),
-    lockUntil: integer("lock_until", { mode: "timestamp_ms" }),
-    busyUntil: integer("busy_until", { mode: "timestamp_ms" }),
-    cleanupAfter: integer("cleanup_after", { mode: "timestamp_ms" }),
+    livePublishId: text("live_publish_id"),
+    previousPublishId: text("previous_publish_id"),
+    seq: integer("seq").notNull().default(0),
     createdAt: integer("created_at", { mode: "timestamp_ms" })
       .default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
       .notNull(),
   },
-  (table) => [
-    index("site_owner_id_idx").on(table.ownerId),
-    index("site_cleanup_after_idx").on(table.cleanupAfter),
-  ],
+  (table) => [index("site_owner_id_idx").on(table.ownerId)],
 );
 
-// One publish of a site: open while it runs, then live once its commit
-// succeeds, or superseded when a newer publish takes the site's lock first.
-// `previous` is the publish it replaced, as the commit reported it.
+// One publish of a site. base_seq is the site's seq when it started: the
+// version it builds on. committed_at is set when it goes live.
 export const publish = sqliteTable(
   "publish",
   {
@@ -55,8 +40,7 @@ export const publish = sqliteTable(
     siteId: text("site_id")
       .notNull()
       .references(() => site.id, { onDelete: "cascade" }),
-    status: text("status", { enum: ["open", "live", "superseded"] }).notNull(),
-    previous: text("previous"),
+    baseSeq: integer("base_seq").notNull(),
     createdAt: integer("created_at", { mode: "timestamp_ms" })
       .default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
       .notNull(),

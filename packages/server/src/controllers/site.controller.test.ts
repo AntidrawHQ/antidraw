@@ -3,10 +3,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createHttpTransport, uploadSite } from "@antidraw/site-upload/client";
-import { SiteStore, type Bucket } from "@antidraw/site-upload/server";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { getDb } from "../db";
-import { cleanUpLeftovers } from "../services/site.service";
 import { startServer, type TestServer } from "../test/harness";
 
 // The publish flow end to end, against the real Worker with local D1 and R2:
@@ -63,41 +60,36 @@ const upload = (user: User, uploadUrl: string, dir: string) =>
     maxAttempts: 1,
   });
 
-const lockOf = (siteId: string) =>
-  server.env.DB.prepare("SELECT lock_publish_id AS publishId, lock_until AS until FROM site WHERE id = ?")
-    .bind(siteId)
-    .first<{ publishId: string | null; until: number | null }>();
-
-const siteRow = (siteId: string) =>
-  server.env.DB.prepare(
-    "SELECT lock_publish_id AS holder, busy_until AS busyUntil, cleanup_after AS cleanupAfter FROM site WHERE id = ?",
-  )
-    .bind(siteId)
-    .first<{ holder: string | null; busyUntil: number | null; cleanupAfter: number | null }>();
-
-const setSite = (siteId: string, columns: Record<string, string | number | null>) =>
-  server.env.DB.prepare(
-    `UPDATE site SET ${Object.keys(columns).map((column) => `${column} = ?`).join(", ")} WHERE id = ?`,
-  )
-    .bind(...Object.values(columns), siteId)
-    .run();
-
-const statusOf = async (publishId: string) =>
-  (await server.env.DB.prepare("SELECT status FROM publish WHERE id = ?").bind(publishId).first<{ status: string }>())
-    ?.status;
-
-const HOUR = 60 * 60 * 1000;
-
-/**
- * Stores a plan made two hours ago, past the library's plan TTL, which any
- * cleanup of the site deletes (expired plans have no grace period). Returns
- * whether it's still there.
- */
-const plantStalePlan = async (siteId: string) => {
-  const key = `sites/${siteId}/m/stale.json`;
-  await server.env.SITES.put(key, "{}", { customMetadata: { createdAt: String(Date.now() - 2 * HOUR) } });
-  return async () => (await server.env.SITES.head(key)) !== null;
+/** Every key stored for the site, relative to its root, files and plans by kind. */
+const stored = async (siteId: string) => {
+  const prefix = `sites/${siteId}/`;
+  const { objects } = await server.env.SITES.list({ prefix });
+  return objects.map((object) => object.key.slice(prefix.length).replace(/^(f|m)\/.*/, "$1/…")).sort();
 };
+
+const sha256 = (content: string) => createHash("sha256").update(content).digest("hex");
+
+/** What the site's row says is live. */
+const liveOf = (siteId: string) =>
+  server.env.DB.prepare("SELECT live_publish_id AS live, previous_publish_id AS previous, seq FROM site WHERE id = ?")
+    .bind(siteId)
+    .first<{ live: string | null; previous: string | null; seq: number }>();
+
+/** Plans one file for a publish and uploads it, without committing. */
+const prepare = async (user: User, siteId: string, publishId: string, content: string) => {
+  const base = `/api/sites/${siteId}/publishes/${publishId}`;
+  const planned = await post(user, `${base}/plan`, { v: 1, files: { "index.html": { h: sha256(content), s: content.length } } });
+  expect(planned.status).toBe(200);
+  const put = await server.fetch(`${base}/files/${sha256(content)}`, {
+    method: "PUT",
+    headers: { authorization: user.authorization },
+    body: content,
+  });
+  expect(put.status).toBe(200);
+};
+
+const commit = (user: User, siteId: string, publishId: string) =>
+  post(user, `/api/sites/${siteId}/publishes/${publishId}/commit`, {}).then(answer);
 
 /** Status and JSON body, for snapshots. */
 // `any`: tests read fields off the body.
@@ -224,7 +216,7 @@ describe("POST /api/sites", () => {
 });
 
 describe("publishing", () => {
-  it("uploads a folder with the app's client, goes live, and releases the lock", async () => {
+  it("uploads a folder with the app's client and goes live", async () => {
     const user = await server.signIn();
     const site = await createSite(user);
     const started = await answer(await post(user, `/api/sites/${site.id}/publishes`));
@@ -239,68 +231,23 @@ describe("publishing", () => {
         "status": 201,
       }
     `);
-    const lock = await lockOf(site.id);
-    const lockMinutes = Math.round((lock!.until! - Date.now()) / 60_000);
-    // The scheduled cleanup may clear what this publish leaves once its lock,
-    // then the library's plan TTL and grace period, have run out.
-    const cleanupMinutes = Math.round(((await siteRow(site.id))!.cleanupAfter! - Date.now()) / 60_000);
-    expect(readable({ holder: lock?.publishId, lockMinutes, cleanupMinutes }, names)).toMatchInlineSnapshot(`
-      {
-        "cleanupMinutes": 125,
-        "holder": "<publish>",
-        "lockMinutes": 60,
-      }
-    `);
 
     const dir = await siteDir({ "index.html": "<h1>hi</h1>", "assets/app.js": "console.log(1)" });
-    const { commit, uploadedFiles } = await upload(user, uploadUrl, dir);
-    const pointer = await server.env.SITES.get(`sites/${site.id}/current.json`);
-    const record = await server.env.DB.prepare("SELECT status, previous FROM publish WHERE id = ?")
-      .bind(publishId)
-      .first();
-    const after = {
-      commit,
-      uploadedFiles,
-      lock: await lockOf(site.id),
-      busyUntil: (await siteRow(site.id))?.busyUntil,
-      record,
-      live: ((await pointer?.json()) as { publishId: string }).publishId,
-    };
-    expect(readable(after, names)).toMatchInlineSnapshot(`
+    const { commit: committed, uploadedFiles } = await upload(user, uploadUrl, dir);
+    const live = await liveOf(site.id);
+    // The client lost the answer and retries: same result.
+    const retried = await commit(user, site.id, publishId);
+    expect(readable({ commit: committed, uploadedFiles, live, retried }, names)).toMatchInlineSnapshot(`
       {
-        "busyUntil": null,
         "commit": {
           "alreadyCommitted": false,
           "previous": null,
           "publishId": "<publish>",
         },
-        "live": "<publish>",
-        "lock": {
-          "publishId": null,
-          "until": null,
-        },
-        "record": {
+        "live": {
+          "live": "<publish>",
           "previous": null,
-          "status": "live",
-        },
-        "uploadedFiles": 2,
-      }
-    `);
-
-    // The client lost the answer and retries after the lock is gone: same
-    // result. Anything else for this publish is too late.
-    const retried = await post(user, `/api/sites/${site.id}/publishes/${publishId}/commit`, {});
-    const late = await post(user, `/api/sites/${site.id}/publishes/${publishId}/plan`, { v: 1, files: {} });
-    expect(readable({ retried: await answer(retried), late: await answer(late) }, names)).toMatchInlineSnapshot(`
-      {
-        "late": {
-          "body": {
-            "error": {
-              "code": "CONFLICT",
-              "message": "This publish is already live",
-            },
-          },
-          "status": 409,
+          "seq": 1,
         },
         "retried": {
           "body": {
@@ -310,37 +257,7 @@ describe("publishing", () => {
           },
           "status": 200,
         },
-      }
-    `);
-  });
-
-  it("cleans up the site's storage when it commits", async () => {
-    const user = await server.signIn();
-    const site = await createSite(user);
-    const { publishId } = await startPublish(user, site.id);
-    const base = `/api/sites/${site.id}/publishes/${publishId}`;
-    const content = "<h1>hi</h1>";
-    const hash = createHash("sha256").update(content).digest("hex");
-    const planned = await post(user, `${base}/plan`, { v: 1, files: { "index.html": { h: hash, s: content.length } } });
-    // After the plan, which cleans up too: only the commit's cleanup can clear it.
-    const stale = await plantStalePlan(site.id);
-    const uploaded = await server.fetch(`${base}/files/${hash}`, {
-      method: "PUT",
-      headers: { authorization: user.authorization },
-      body: content,
-    });
-    const committed = await post(user, `${base}/commit`, {});
-    expect({
-      statuses: [planned.status, uploaded.status, committed.status],
-      stalePlanKept: await stale(),
-    }).toMatchInlineSnapshot(`
-      {
-        "stalePlanKept": false,
-        "statuses": [
-          200,
-          200,
-          200,
-        ],
+        "uploadedFiles": 2,
       }
     `);
   });
@@ -366,223 +283,181 @@ describe("publishing", () => {
     `);
   });
 
-  it("lets a new publish replace a running one, whose requests are then refused", async () => {
+  it("lets publishes overlap: the first to commit goes live, and the other is refused", async () => {
     const user = await server.signIn();
     const site = await createSite(user);
-    const stale = await startPublish(user, site.id);
-    const fresh = await startPublish(user, site.id);
-
-    const refused = await upload(user, stale.uploadUrl, await siteDir({ "index.html": "old" })).catch((e) => e);
-    const result = await upload(user, fresh.uploadUrl, await siteDir({ "index.html": "new" }));
-    // Still, once the newer one has gone live and released the lock.
-    const late = await post(user, `/api/sites/${site.id}/publishes/${stale.publishId}/commit`, {});
-    const names = { [stale.publishId]: "<stale>", [fresh.publishId]: "<fresh>" };
-    expect(
-      readable(
-        { refused: `${refused.code}: ${refused.message}`, commit: result.commit, late: (await answer(late)).body },
-        names,
-      ),
-    ).toMatchInlineSnapshot(`
+    const slow = await startPublish(user, site.id);
+    const fast = await startPublish(user, site.id);
+    await prepare(user, site.id, slow.publishId, "slow");
+    const { commit: committed } = await upload(user, fast.uploadUrl, await siteDir({ "index.html": "fast" }));
+    const late = await commit(user, site.id, slow.publishId);
+    const names = { [slow.publishId]: "<slow>", [fast.publishId]: "<fast>" };
+    expect(readable({ committed, late, live: await liveOf(site.id) }, names)).toMatchInlineSnapshot(`
       {
-        "commit": {
+        "committed": {
           "alreadyCommitted": false,
           "previous": null,
-          "publishId": "<fresh>",
+          "publishId": "<fast>",
         },
         "late": {
-          "error": {
-            "code": "SUPERSEDED",
-            "message": "A newer publish of this site replaced this one",
+          "body": {
+            "error": {
+              "code": "SUPERSEDED",
+              "details": {
+                "live": "<fast>",
+              },
+              "message": "Publish <fast> went live after <slow> started",
+            },
           },
+          "status": 409,
         },
-        "refused": "SUPERSEDED: A newer publish of this site replaced this one",
+        "live": {
+          "live": "<fast>",
+          "previous": null,
+          "seq": 1,
+        },
       }
     `);
   });
 
-  it("refuses a publish whose time ran out", async () => {
+  it("lets exactly one of two commits at the same moment go live", async () => {
     const user = await server.signIn();
     const site = await createSite(user);
-    const { uploadUrl } = await startPublish(user, site.id);
-    await server.env.DB.prepare("UPDATE site SET lock_until = ? WHERE id = ?").bind(Date.now() - 1, site.id).run();
-
-    const refused = await upload(user, uploadUrl, await siteDir({ "index.html": "x" })).catch((e) => e);
-    expect(`${refused.code}: ${refused.message}`).toMatchInlineSnapshot(`"PLAN_EXPIRED: This publish ran out of time; start a new one"`);
-  });
-
-  it("still says a publish ran out of time after the cron has cleared its lock", async () => {
-    const user = await server.signIn();
-    const site = await createSite(user);
-    const { publishId, uploadUrl } = await startPublish(user, site.id);
-    await setSite(site.id, { lock_until: Date.now() - 2 * HOUR, cleanup_after: Date.now() - 1 });
-    await server.scheduled();
-    expect((await siteRow(site.id))?.holder).toBeNull();
-
-    const refused = await upload(user, uploadUrl, await siteDir({ "index.html": "x" })).catch((e) => e);
-    expect({ refused: `${refused.code}: ${refused.message}`, status: await statusOf(publishId) }).toMatchInlineSnapshot(`
+    const a = await startPublish(user, site.id);
+    const b = await startPublish(user, site.id);
+    await prepare(user, site.id, a.publishId, "a");
+    await prepare(user, site.id, b.publishId, "b");
+    const [ca, cb] = await Promise.all([commit(user, site.id, a.publishId), commit(user, site.id, b.publishId)]);
+    const winner = ca.status === 200 ? a.publishId : b.publishId;
+    const names = { [winner]: "<winner>", [winner === a.publishId ? b.publishId : a.publishId]: "<loser>" };
+    expect(
+      readable({ statuses: [ca.status, cb.status].sort(), live: await liveOf(site.id) }, names),
+    ).toMatchInlineSnapshot(`
       {
-        "refused": "PLAN_EXPIRED: This publish ran out of time; start a new one",
-        "status": "open",
-      }
-    `);
-  });
-
-  it("keeps a new publish out while a plan, commit or cleanup of the site runs", async () => {
-    const user = await server.signIn();
-    const site = await createSite(user);
-    await startPublish(user, site.id);
-    // What a plan or commit of the running publish sets while it runs.
-    await setSite(site.id, { busy_until: Date.now() + 60_000 });
-    const whileCommitting = await post(user, `/api/sites/${site.id}/publishes`);
-    // What the scheduled cleanup's claim sets.
-    await setSite(site.id, { lock_publish_id: "cleanup-x", busy_until: Date.now() + 60_000 });
-    const whileCleaning = await post(user, `/api/sites/${site.id}/publishes`);
-    const refusals = await Promise.all(
-      [whileCommitting, whileCleaning].map(async (res) => ({ ...(await answer(res)), retryAfter: res.headers.get("retry-after") })),
-    );
-
-    // A hold whose request died lapses.
-    await setSite(site.id, { busy_until: Date.now() - 1 });
-    const later = await post(user, `/api/sites/${site.id}/publishes`);
-    expect({ refusals, later: later.status }).toMatchInlineSnapshot(`
-      {
-        "later": 201,
-        "refusals": [
-          {
-            "body": {
-              "error": {
-                "code": "SITE_BUSY",
-                "message": "This site is finishing a publish or a cleanup; try again in a moment",
-              },
-            },
-            "retryAfter": "2",
-            "status": 409,
-          },
-          {
-            "body": {
-              "error": {
-                "code": "SITE_BUSY",
-                "message": "This site is finishing a publish or a cleanup; try again in a moment",
-              },
-            },
-            "retryAfter": "2",
-            "status": 409,
-          },
+        "live": {
+          "live": "<winner>",
+          "previous": null,
+          "seq": 1,
+        },
+        "statuses": [
+          200,
+          409,
         ],
       }
     `);
   });
 
-  it("holds the site for as long as a plan runs", async () => {
+  it("never lets a late retry roll the site back, and records the version before", async () => {
     const user = await server.signIn();
     const site = await createSite(user);
-    const { publishId } = await startPublish(user, site.id);
-    // A plan whose body arrives in two parts: it's running, reading, between them.
-    const manifest = JSON.stringify({ v: 1, files: { "index.html": { h: "b".repeat(64), s: 1 } } });
-    let finish!: () => void;
-    const body = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(new TextEncoder().encode(manifest.slice(0, 10)));
-        finish = () => {
-          controller.enqueue(new TextEncoder().encode(manifest.slice(10)));
-          controller.close();
-        };
-      },
-    });
-    const plan = server.fetch(`/api/sites/${site.id}/publishes/${publishId}/plan`, {
-      method: "POST",
-      headers: { authorization: user.authorization, "content-type": "application/json" },
-      body,
-      duplex: "half",
-    } as RequestInit);
-    // Until the request has reached the Worker.
-    for (let tries = 0; tries < 50 && !(await siteRow(site.id))?.busyUntil; tries++) {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    const during = await post(user, `/api/sites/${site.id}/publishes`);
-    finish();
-    const planned = await plan;
-    const after = await post(user, `/api/sites/${site.id}/publishes`);
-    expect({ during: during.status, planned: planned.status, after: after.status }).toMatchInlineSnapshot(`
+    const first = await startPublish(user, site.id);
+    await upload(user, first.uploadUrl, await siteDir({ "index.html": "v1" }));
+    const second = await startPublish(user, site.id);
+    await upload(user, second.uploadUrl, await siteDir({ "index.html": "v2" }));
+    // first's commit went through but its answer was lost; the client retries now.
+    const retried = await commit(user, site.id, first.publishId);
+    const names = { [first.publishId]: "<first>", [second.publishId]: "<second>" };
+    expect(readable({ retried, live: await liveOf(site.id) }, names)).toMatchInlineSnapshot(`
       {
-        "after": 201,
-        "during": 409,
-        "planned": 200,
-      }
-    `);
-  });
-
-  it("clears its hold on the site after a failed commit", async () => {
-    const user = await server.signIn();
-    const site = await createSite(user);
-    const { publishId } = await startPublish(user, site.id);
-    const res = await post(user, `/api/sites/${site.id}/publishes/${publishId}/commit`, {});
-    expect({ status: res.status, busyUntil: (await siteRow(site.id))?.busyUntil }).toMatchInlineSnapshot(`
-      {
-        "busyUntil": null,
-        "status": 404,
-      }
-    `);
-  });
-
-  it("records a commit that went live without being recorded once a newer publish replaces it", async () => {
-    const user = await server.signIn();
-    const site = await createSite(user);
-    const lost = await startPublish(user, site.id);
-    await upload(user, lost.uploadUrl, await siteDir({ "index.html": "lost" }));
-    // As if the Worker stopped between the commit and finishPublish, and a
-    // new publish started before anyone retried it.
-    await server.env.DB.prepare("UPDATE publish SET status = 'open', committed_at = NULL WHERE id = ?")
-      .bind(lost.publishId)
-      .run();
-    await setSite(site.id, { lock_publish_id: lost.publishId, lock_until: Date.now() + HOUR });
-
-    const next = await startPublish(user, site.id);
-    const superseded = await statusOf(lost.publishId);
-    const { commit } = await upload(user, next.uploadUrl, await siteDir({ "index.html": "next" }));
-    const names = { [lost.publishId]: "<lost>", [next.publishId]: "<next>" };
-    expect(
-      readable({ superseded, previous: commit.previous, lost: await statusOf(lost.publishId), next: await statusOf(next.publishId) }, names),
-    ).toMatchInlineSnapshot(`
-      {
-        "lost": "live",
-        "next": "live",
-        "previous": "<lost>",
-        "superseded": "superseded",
-      }
-    `);
-  });
-
-  it("records a commit that went live without being recorded when it's retried", async () => {
-    const user = await server.signIn();
-    const site = await createSite(user);
-    const { publishId, uploadUrl } = await startPublish(user, site.id);
-    await upload(user, uploadUrl, await siteDir({ "index.html": "x" }));
-    // As if the Worker stopped between the commit and finishPublish, and the
-    // client retries only after the lock ran out.
-    await server.env.DB.prepare("UPDATE publish SET status = 'open', committed_at = NULL WHERE id = ?").bind(publishId).run();
-    await setSite(site.id, { lock_publish_id: publishId, lock_until: Date.now() - 1 });
-
-    const retried = await post(user, `/api/sites/${site.id}/publishes/${publishId}/commit`, {});
-    expect(
-      readable(
-        { retried: await answer(retried), status: await statusOf(publishId), holder: (await siteRow(site.id))?.holder },
-        { [publishId]: "<publish>" },
-      ),
-    ).toMatchInlineSnapshot(`
-      {
-        "holder": null,
+        "live": {
+          "live": "<second>",
+          "previous": "<first>",
+          "seq": 2,
+        },
         "retried": {
           "body": {
-            "alreadyCommitted": true,
-            "previous": null,
-            "publishId": "<publish>",
+            "error": {
+              "code": "SUPERSEDED",
+              "details": {
+                "live": "<second>",
+              },
+              "message": "Publish <second> went live after <first> started",
+            },
           },
-          "status": 200,
+          "status": 409,
         },
-        "status": "live",
       }
     `);
+  });
+
+  it("refuses to commit, on another site, a publish started on this one", async () => {
+    const user = await server.signIn();
+    const started = await createSite(user, "started here");
+    const other = await createSite(user, "committed there");
+    const { publishId } = await startPublish(user, started.id);
+    await prepare(user, other.id, publishId, "x");
+    const names = { [publishId]: "<publish>", [other.id]: "<other>" };
+    expect(
+      readable({ commit: await commit(user, other.id, publishId), other: await liveOf(other.id) }, names),
+    ).toMatchInlineSnapshot(`
+      {
+        "commit": {
+          "body": {
+            "error": {
+              "code": "NOT_FOUND",
+              "message": "No publish <publish> was started for this site",
+            },
+          },
+          "status": 404,
+        },
+        "other": {
+          "live": null,
+          "previous": null,
+          "seq": 0,
+        },
+      }
+    `);
+  });
+
+  it("refuses to commit a publish that was planned but never started", async () => {
+    const user = await server.signIn();
+    const site = await createSite(user);
+    await prepare(user, site.id, "made-up", "x");
+    expect({ commit: await commit(user, site.id, "made-up"), live: await liveOf(site.id) }).toMatchInlineSnapshot(`
+      {
+        "commit": {
+          "body": {
+            "error": {
+              "code": "NOT_FOUND",
+              "message": "No publish made-up was started for this site",
+            },
+          },
+          "status": 404,
+        },
+        "live": {
+          "live": null,
+          "previous": null,
+          "seq": 0,
+        },
+      }
+    `);
+  });
+
+  it("deletes nothing, even files no version needs any more", async () => {
+    const user = await server.signIn();
+    const site = await createSite(user);
+    // A plan made two hours ago and never committed: past cleanup's one-hour
+    // grace, so a cleanup not keeping it would delete it at once.
+    const stale = `sites/${site.id}/m/stale.json`;
+    await server.env.SITES.put(stale, "{}", { customMetadata: { createdAt: String(Date.now() - 2 * 60 * 60 * 1000) } });
+    // Then two publishes, the second replacing the first's only file.
+    for (const version of ["v1", "v2"]) {
+      const { uploadUrl } = await startPublish(user, site.id);
+      await upload(user, uploadUrl, await siteDir({ "index.html": version }));
+    }
+    expect({ stalePlanKept: (await server.env.SITES.head(stale)) !== null, stored: await stored(site.id) })
+      .toMatchInlineSnapshot(`
+        {
+          "stalePlanKept": true,
+          "stored": [
+            "f/…",
+            "f/…",
+            "m/…",
+            "m/…",
+            "m/…",
+          ],
+        }
+      `);
   });
 
   it("hides one user's sites from another", async () => {
@@ -593,7 +468,7 @@ describe("publishing", () => {
 
     const start = await post(other, `/api/sites/${site.id}/publishes`);
     const plan = await post(other, `/api/sites/${site.id}/publishes/${publishId}/plan`, { v: 1, files: {} });
-    expect({ start: await answer(start), plan: await answer(plan) }).toMatchInlineSnapshot(`
+    expect({ start: await answer(start), plan: await answer(plan), stored: await stored(site.id) }).toMatchInlineSnapshot(`
       {
         "plan": {
           "body": {
@@ -613,18 +488,18 @@ describe("publishing", () => {
           },
           "status": 404,
         },
+        "stored": [],
       }
     `);
-    // Nor did the attempt take the owner's lock.
-    expect((await lockOf(site.id))?.publishId).toBe(publishId);
   });
 
-  it("answers unknown publishes and routes in the error envelope", async () => {
+  it("answers unknown sites, publishes and routes in the error envelope", async () => {
     const user = await server.signIn();
     const site = await createSite(user);
     const { publishId } = await startPublish(user, site.id);
     const base = `/api/sites/${site.id}/publishes`;
     const answers = {
+      unknownSite: await answer(await post(user, `/api/sites/nope/publishes`)),
       unknownPublish: await answer(await post(user, `${base}/nope/commit`, {})),
       unknownRoute: await answer(await post(user, `${base}/${publishId}/nope`, {})),
     };
@@ -633,8 +508,8 @@ describe("publishing", () => {
         "unknownPublish": {
           "body": {
             "error": {
-              "code": "NOT_FOUND",
-              "message": "No such publish",
+              "code": "NO_PLAN",
+              "message": "No plan was recorded for publish nope",
             },
           },
           "status": 404,
@@ -648,197 +523,15 @@ describe("publishing", () => {
           },
           "status": 404,
         },
-      }
-    `);
-  });
-});
-
-describe("the cron trigger", () => {
-  it("cleans up sites past their cleanup time, including ones a later publish committed, and only those", async () => {
-    const user = await server.signIn();
-    const [committed, abandoned, running, claimed] = await Promise.all(
-      ["committed", "abandoned", "running", "claimed"].map((title) => createSite(user, title)),
-    );
-    // A publish that uploaded and was replaced by one that committed.
-    const replaced = await startPublish(user, committed.id);
-    const planned = await post(user, `/api/sites/${committed.id}/publishes/${replaced.publishId}/plan`, {
-      v: 1,
-      files: { "index.html": { h: "a".repeat(64), s: 1 } },
-    });
-    expect(planned.status).toBe(200);
-    const winner = await startPublish(user, committed.id);
-    await upload(user, winner.uploadUrl, await siteDir({ "index.html": "x" }));
-    const gone = await startPublish(user, abandoned.id);
-    const live = await startPublish(user, running.id);
-    await startPublish(user, claimed.id);
-    const past = { cleanup_after: Date.now() - 1 };
-    await setSite(committed.id, past);
-    await setSite(abandoned.id, { ...past, lock_until: Date.now() - 2 * HOUR });
-    // Another run's claim, still held.
-    await setSite(claimed.id, { ...past, lock_publish_id: "cleanup-other", busy_until: Date.now() + 60_000 });
-    const stale: Record<string, () => Promise<boolean>> = Object.fromEntries(
-      await Promise.all(
-        Object.entries({ committed, abandoned, running, claimed }).map(async ([name, site]) => [
-          name,
-          await plantStalePlan(site.id),
-        ]),
-      ),
-    );
-
-    await server.scheduled();
-
-    const rows = Object.fromEntries(
-      await Promise.all(
-        Object.entries({ committed, abandoned, running, claimed }).map(async ([name, site]) => {
-          const row = (await siteRow(site.id))!;
-          return [name, { holder: row.holder, cleaned: row.cleanupAfter === null }];
-        }),
-      ),
-    );
-    const names = { [gone.publishId]: "<abandoned publish>", [live.publishId]: "<running publish>" };
-    expect(readable(rows, names)).toMatchInlineSnapshot(`
-      {
-        "abandoned": {
-          "cleaned": true,
-          "holder": null,
+        "unknownSite": {
+          "body": {
+            "error": {
+              "code": "NOT_FOUND",
+              "message": "No such site",
+            },
+          },
+          "status": 404,
         },
-        "claimed": {
-          "cleaned": false,
-          "holder": "cleanup-other",
-        },
-        "committed": {
-          "cleaned": true,
-          "holder": null,
-        },
-        "running": {
-          "cleaned": false,
-          "holder": "<running publish>",
-        },
-      }
-    `);
-    // And it deleted what the sites it cleaned up left, and nothing of the others'.
-    const stalePlansKept = Object.fromEntries(
-      await Promise.all(Object.entries(stale).map(async ([name, kept]) => [name, await kept()])),
-    );
-    expect(stalePlansKept).toMatchInlineSnapshot(`
-      {
-        "abandoned": false,
-        "claimed": true,
-        "committed": false,
-        "running": true,
-      }
-    `);
-  });
-
-  it("lets publishes start again right after a cleanup fails, and tries it again next run", async () => {
-    const user = await server.signIn();
-    const site = await createSite(user);
-    await startPublish(user, site.id);
-    await setSite(site.id, { lock_until: Date.now() - 2 * HOUR, cleanup_after: Date.now() - 1 });
-    // A pointer the store can't read makes the cleanup fail.
-    const pointer = `sites/${site.id}/current.json`;
-    await server.env.SITES.put(pointer, "not a pointer");
-    try {
-      await server.scheduled();
-      const row = (await siteRow(site.id))!;
-      const start = await post(user, `/api/sites/${site.id}/publishes`);
-      expect({
-        holder: row.holder,
-        busyUntil: row.busyUntil,
-        stillDue: row.cleanupAfter !== null && row.cleanupAfter <= Date.now(),
-        start: start.status,
-      }).toMatchInlineSnapshot(`
-        {
-          "busyUntil": null,
-          "holder": null,
-          "start": 201,
-          "stillDue": true,
-        }
-      `);
-    } finally {
-      await server.env.SITES.delete(pointer);
-    }
-  });
-
-  it("records a commit that went live without being recorded", async () => {
-    const user = await server.signIn();
-    const site = await createSite(user);
-    const { publishId, uploadUrl } = await startPublish(user, site.id);
-    await upload(user, uploadUrl, await siteDir({ "index.html": "x" }));
-    await server.env.DB.prepare("UPDATE publish SET status = 'open', committed_at = NULL WHERE id = ?").bind(publishId).run();
-    await setSite(site.id, { cleanup_after: Date.now() - 1 });
-
-    await server.scheduled();
-    expect(await statusOf(publishId)).toBe("live");
-  });
-
-  it("works through more sites than one query reads", async () => {
-    const user = await server.signIn();
-    const ids = Array.from({ length: 30 }, () => crypto.randomUUID());
-    await server.env.DB.batch(
-      ids.map((id, i) =>
-        server.env.DB.prepare(
-          "INSERT INTO site (id, owner_id, slug, title, cleanup_after) VALUES (?, ?, ?, 'x', ?)",
-        ).bind(id, user.userId, `many-${id}`, Date.now() - 1000 + i),
-      ),
-    );
-
-    await server.scheduled();
-
-    const { left } = (await server.env.DB.prepare(
-      `SELECT count(*) AS left FROM site WHERE cleanup_after IS NOT NULL AND id IN (${ids.map(() => "?").join(", ")})`,
-    )
-      .bind(...ids)
-      .first<{ left: number }>())!;
-    expect(left).toBe(0);
-  });
-});
-
-describe("the cron and a publish at once", () => {
-  // The cron runs here rather than through server.scheduled(), with the real
-  // store, but with this site's cleanup held open until the test lets it go.
-  it("keeps a publish from starting while it cleans, and leaves the lock of one that starts after its hold ran out", async () => {
-    const user = await server.signIn();
-    const site = await createSite(user);
-    await startPublish(user, site.id);
-    await setSite(site.id, { lock_until: Date.now() - 2 * HOUR, cleanup_after: Date.now() - 1 });
-
-    const store = new SiteStore({ bucket: server.env.SITES as unknown as Bucket });
-    let cleaning!: () => void;
-    const started = new Promise<void>((resolve) => (cleaning = resolve));
-    let finish!: () => void;
-    const finished = new Promise<void>((resolve) => (finish = resolve));
-    const paused: SiteStore = Object.assign(Object.create(store) as SiteStore, {
-      async cleanup(id: string) {
-        if (id === site.id) {
-          cleaning();
-          await finished;
-        }
-        return store.cleanup(id);
-      },
-    });
-    const run = cleanUpLeftovers(getDb(server.env), paused);
-    await started;
-
-    const during = await answer(await post(user, `/api/sites/${site.id}/publishes`));
-    // The cron's hold runs out while it's still cleaning (its Worker is slow),
-    // and a publish starts.
-    await setSite(site.id, { busy_until: Date.now() - 1 });
-    const next = await startPublish(user, site.id);
-    finish();
-    await run;
-
-    const row = (await siteRow(site.id))!;
-    expect(
-      readable(
-        { during: `${during.status} ${during.body.error?.code}`, holder: row.holder, cleanupAfterKept: row.cleanupAfter !== null },
-        { [next.publishId]: "<next>" },
-      ),
-    ).toMatchInlineSnapshot(`
-      {
-        "cleanupAfterKept": true,
-        "during": "409 SITE_BUSY",
-        "holder": "<next>",
       }
     `);
   });

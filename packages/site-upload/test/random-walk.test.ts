@@ -2,15 +2,18 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { SiteUploadError } from "../src/protocol/errors";
 import type { Files, Manifest } from "../src/protocol/manifest";
 import { contentType, isDocument } from "../src/server/content-type";
-import { SiteServer } from "../src/server/serve";
-import { SiteStore, type Pointer } from "../src/server/store";
+import { SiteServer, type Current } from "../src/server/serve";
+import { SiteStore } from "../src/server/store";
 import { bytes, manifestOf, sha256, startTestWorker, uniqueSite, type TestWorker } from "./helpers";
 
-// A seeded random walk over the store's operations against real (local) R2.
-// Requests run one at a time, as the caller's per-site lock guarantees, but two
-// publishes may be interleaved and old commits are replayed, as happens when a
-// lock expires or a client retries late. After every step the live site must
-// be intact; at the end of each walk every live path must actually be served.
+// A seeded random walk over the store's operations against real (local) R2,
+// with the caller's record of what's live kept here as a server keeps it in
+// its database: a commit goes live only if the record still shows the version
+// its publish started from. Publishes interleave, old commits are replayed (a
+// client retrying late), and cleanup runs between steps keeping the live and
+// previous publishes. After every step the live version and the previous one's
+// hashed chunks must all be stored; at the end of each walk every one of them
+// must actually be served.
 
 const SEEDS = [1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233];
 const STEPS = 60;
@@ -34,7 +37,8 @@ function random(seed: number) {
   };
 }
 
-type Publish = { id: string; manifest: Manifest; contents: Map<string, string> };
+/** base: the record's seq when the publish started. */
+type Publish = { id: string; manifest: Manifest; contents: Map<string, string>; base: number };
 type Stats = Record<string, number>;
 
 async function walk(seed: number, stats: Stats): Promise<string[]> {
@@ -49,9 +53,10 @@ async function walk(seed: number, stats: Stats): Promise<string[]> {
   const violations: string[] = [];
   const open: Publish[] = [];
   const committed: Publish[] = [];
+  const manifests = new Map<string, Manifest>();
   let publishes = 0;
-  // A holder, so TypeScript doesn't narrow it to null across the async helper.
-  const state: { live: Pointer | null } = { live: null };
+  // The caller's record.
+  const record: Current & { seq: number } = { live: null, previous: null, seq: 0 };
 
   const newPublish = (): Publish => {
     const version = Math.floor(rand() * 6) + 1;
@@ -67,21 +72,37 @@ async function walk(seed: number, stats: Stats): Promise<string[]> {
     // Mark hashed build output immutable, plus the SVG, which the server must still treat as a page.
     const immutable = Object.keys(files).filter((path) => path.startsWith("assets/") || path.endsWith(".svg"));
     const contents = new Map(Object.values(files).map((content) => [sha256(content), content]));
-    return { id: `s${seed}p${++publishes}`, manifest: manifestOf(files, immutable), contents };
+    const id = `s${seed}p${++publishes}`;
+    const manifest = manifestOf(files, immutable);
+    manifests.set(id, manifest);
+    return { id, manifest, contents, base: record.seq };
+  };
+
+  /** The caller's commit: requireComplete, then switch the record if it's unchanged. */
+  const commit = async (publish: Publish): Promise<string> => {
+    await store.requireComplete(site, publish.id);
+    if (record.live === publish.id) return "already live";
+    if (record.seq !== publish.base) return "superseded";
+    record.previous = record.live;
+    record.live = publish.id;
+    record.seq++;
+    return "went live";
   };
 
   const code = (err: unknown) => (err instanceof SiteUploadError ? err.code : `THREW ${String(err)}`);
 
-  const checkLive = async (step: string) => {
-    const pointer = await store.readPointer(site);
-    if (pointer && state.live && pointer.publishId !== state.live.publishId) {
-      // The pointer changed; the new one must come from a plan made after the old one went live.
-      const plan = committed.find((p) => p.id === pointer.publishId);
-      if (!plan) violations.push(`${step}: pointer names ${pointer.publishId}, which never committed`);
+  /** Paths a viewer can reach: the live files, and the previous version's hashed chunks. */
+  const servable = (): Files => {
+    const live = record.live ? manifests.get(record.live)!.files : {};
+    const out: Files = { ...live };
+    for (const [path, entry] of Object.entries(record.previous ? manifests.get(record.previous)!.files : {})) {
+      if (entry.i && !(path in live) && !isDocument(contentType(path))) out[path] = entry;
     }
-    state.live = pointer;
-    if (!pointer) return;
-    if (Object.keys(pointer.retained).length) count("steps with retained files live");
+    return out;
+  };
+
+  const checkLive = async (step: string) => {
+    if (!record.live) return;
     const stored = new Map<string, number>();
     let cursor: string | undefined;
     do {
@@ -89,14 +110,8 @@ async function walk(seed: number, stats: Stats): Promise<string[]> {
       for (const object of page.objects) stored.set(object.key.split("/").at(-1)!, object.size);
       cursor = page.truncated ? page.cursor : undefined;
     } while (cursor);
-    for (const [label, files] of [["live", pointer.files], ["retained", pointer.retained]] as [string, Files][]) {
-      for (const [path, entry] of Object.entries(files)) {
-        if (stored.get(entry.h) !== entry.s) violations.push(`${step}: ${label} ${path} is not stored`);
-      }
-    }
-    for (const [path, entry] of Object.entries(pointer.retained)) {
-      if (!entry.i || isDocument(contentType(path))) violations.push(`${step}: retained ${path} is not a hashed asset`);
-      if (path in pointer.files) violations.push(`${step}: retained ${path} is also live`);
+    for (const [path, entry] of Object.entries(servable())) {
+      if (stored.get(entry.h) !== entry.s) violations.push(`${step}: ${path} is not stored`);
     }
   };
 
@@ -119,36 +134,38 @@ async function walk(seed: number, stats: Stats): Promise<string[]> {
         count("upload");
       } else if (roll < 0.66 && open.length) {
         const publish = pick(open);
-        const before = state.live;
         try {
-          const result = await store.commit(site, publish.id);
-          count(result.alreadyCommitted ? "commit: already committed" : "commit: went live");
-          if (before && result.previous !== before.publishId) {
-            violations.push(`${label}: ${publish.id} went live on top of ${result.previous}, not ${before.publishId}`);
-          }
-          committed.push(publish);
+          const outcome = await commit(publish);
+          count(`commit: ${outcome}`);
           open.splice(open.indexOf(publish), 1);
+          if (outcome === "went live") committed.push(publish);
         } catch (err) {
           count(`commit: ${code(err)}`);
-          if (["SUPERSEDED", "PLAN_EXPIRED", "NO_PLAN"].includes(code(err))) open.splice(open.indexOf(publish), 1);
+          if (code(err) !== "MISSING_FILES") violations.push(`${label}: commit of ${publish.id}: unexpected ${code(err)}`);
         }
       } else if (roll < 0.72 && committed.length) {
         // A late retry of an old commit must never change what's live.
         const publish = pick(committed);
-        const before = await store.readPointer(site);
+        const before = record.live;
         try {
-          await store.commit(site, publish.id);
-          count("replay: accepted");
+          count(`replay: ${await commit(publish)}`);
         } catch (err) {
+          // Its plan was cleaned up: it was neither live nor previous any more.
           count(`replay: ${code(err)}`);
+          if (code(err) !== "NO_PLAN") violations.push(`${label}: replaying ${publish.id}: unexpected ${code(err)}`);
         }
-        const after = await store.readPointer(site);
-        if (before?.publishId !== after?.publishId && after?.publishId === publish.id) {
-          violations.push(`${label}: replaying ${publish.id} rolled the site back`);
-        }
+        if (record.live !== before) violations.push(`${label}: replaying ${publish.id} changed what's live`);
       } else if (roll < 0.82) {
-        const result = await store.cleanup(site);
+        const keep = [record.live, record.previous].filter((id): id is string => id !== null);
+        const result = await store.cleanup(site, { keep });
         count(result.deletedFiles ? "cleanup: deleted files" : "cleanup: nothing to delete");
+        // Plans cleaned up can no longer be uploaded to or committed.
+        for (const publish of [...open]) {
+          if (!keep.includes(publish.id) && !(await store.readManifest(site, publish.id))) {
+            open.splice(open.indexOf(publish), 1);
+            count("cleanup: removed an open plan");
+          }
+        }
       } else if (roll < 0.85 && open.length) {
         open.splice(open.indexOf(pick(open)), 1);
         count("abandon");
@@ -157,28 +174,18 @@ async function walk(seed: number, stats: Stats): Promise<string[]> {
         count("clock");
       }
     } catch (err) {
-      const c = code(err);
-      // Uploads to a plan that expired or was cleaned up are refused, which is correct.
-      if (c === "PLAN_EXPIRED" || c === "NO_PLAN") {
-        count(`refused: ${c}`);
-        open.splice(0, open.length, ...open.filter((p) => !(err instanceof SiteUploadError) || !err.message.includes(p.id)));
-      } else {
-        violations.push(`${label}: unexpected ${c}`);
-      }
+      violations.push(`${label}: unexpected ${code(err)}`);
     }
     await checkLive(label);
   }
 
-  // Every live and retained path must actually be served, not just stored.
-  if (state.live) {
-    const server = new SiteServer({ store, now: () => clock });
-    const pointer = state.live;
-    for (const path of [...Object.keys(pointer.files), ...Object.keys(pointer.retained)]) {
-      const res = await server.fetch(new Request(`https://walk.test/${path}`), site);
-      await res.arrayBuffer();
-      if (res.status !== 200) violations.push(`seed ${seed} end: GET /${path} → ${res.status}`);
-      count("served at end");
-    }
+  // Every servable path must actually be served, not just stored.
+  const server = new SiteServer({ store, current: async () => record, now: () => clock });
+  for (const path of Object.keys(servable())) {
+    const res = await server.fetch(new Request(`https://walk.test/${path}`), site);
+    await res.arrayBuffer();
+    if (res.status !== 200) violations.push(`seed ${seed} end: GET /${path} → ${res.status}`);
+    count("served at end");
   }
   return violations;
 }
@@ -192,25 +199,20 @@ describe("random walk", () => {
     // What the walks exercised, so a change that makes them trivial shows up here.
     expect(Object.fromEntries(Object.entries(stats).sort(([a], [b]) => a.localeCompare(b)))).toMatchInlineSnapshot(`
       {
-        "abandon": 12,
-        "cleanup: deleted files": 10,
-        "cleanup: nothing to delete": 105,
-        "clock": 105,
-        "commit: MISSING_FILES": 34,
-        "commit: NO_PLAN": 3,
-        "commit: PLAN_EXPIRED": 6,
-        "commit: SUPERSEDED": 9,
-        "commit: went live": 36,
-        "plan": 91,
-        "refused: NO_PLAN": 2,
-        "refused: PLAN_EXPIRED": 9,
-        "replay: NO_PLAN": 25,
-        "replay: PLAN_EXPIRED": 10,
-        "replay: SUPERSEDED": 12,
-        "replay: accepted": 75,
-        "served at end": 70,
-        "steps with retained files live": 287,
-        "upload": 176,
+        "abandon": 14,
+        "cleanup: deleted files": 14,
+        "cleanup: nothing to delete": 110,
+        "cleanup: removed an open plan": 8,
+        "clock": 113,
+        "commit: MISSING_FILES": 41,
+        "commit: superseded": 13,
+        "commit: went live": 40,
+        "plan": 88,
+        "replay: NO_PLAN": 3,
+        "replay: already live": 54,
+        "replay: superseded": 37,
+        "served at end": 65,
+        "upload": 193,
       }
     `);
   });

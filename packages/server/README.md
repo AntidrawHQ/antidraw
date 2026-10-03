@@ -150,11 +150,23 @@ People visit the site's share page, `antidraw.com/s/<slug>` (the `url`
 `POST /api/sites` returns): the canvas, which reads `canvas.json` from the site
 and shows each component in an iframe of its `/preview`. The site's own `/`
 redirects there. The routes are in `src/controllers/site.controller.ts`, and
-the upload protocol, storage and serving are `@antidraw/site-upload`'s. D1
-holds each site's owner, slug and lock (`src/models/site.model.ts`); R2 holds
-the files, keyed by the site's permanent id, never its slug. The routes take
-only a bearer token, never a cookie. An hourly cron clears what publishes
-leave behind: uploads never committed, and files the live version dropped.
+the upload protocol, storage and serving are `@antidraw/site-upload`'s. R2
+holds what never changes, keyed by the site's permanent id, never its slug:
+files by hash, and each publish's manifest. D1 (`src/models/site.model.ts`)
+holds what does: each site's owner, slug, and which publish is live, plus a
+row per publish. The routes take only a bearer token, never a cookie.
+
+A commit is one D1 update: the site's live publish switches to this one only
+if the site's `seq` is still the one the publish started from. So publishes may
+overlap; the first to commit goes live, and the others get `SUPERSEDED` and
+start again. A retried commit of the live publish gets the same answer, and an
+old one retried late can't roll the site back. Rolling back is the same switch
+to an older publish id.
+
+Nothing is deleted while publishing, so a site keeps every file and manifest
+it was ever sent. To reclaim space, run `SiteStore.cleanup(siteId, { keep })`
+by hand while nothing publishes to that site, keeping at least its live and
+previous publishes.
 
 ## Deploy (needs a Cloudflare login)
 

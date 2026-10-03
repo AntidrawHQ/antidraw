@@ -1,5 +1,6 @@
 // Serves published sites: <slug>.<SITE_DOMAIN>/<path>. The slug names a site
-// in D1, whose permanent id keys its files in R2, and SiteServer does the rest
+// in D1, whose row also says which publish is live; its permanent id keys its
+// files and manifests in R2, and SiteServer does the rest
 // (@antidraw/site-upload). @antidraw/server writes both; this Worker only reads.
 //
 // A site is a workspace's built components (preview.html and its assets) and
@@ -14,7 +15,7 @@
 // Public Suffix List, sibling subdomains are same-site, and a site can set a
 // cookie on .antidraw.app that every other site receives. Sites are static
 // and read no cookies, so nothing served here acts on one.
-import { SiteServer, SiteStore, type FileCache } from "@antidraw/site-upload/server";
+import { SiteServer, SiteStore, type Current, type FileCache } from "@antidraw/site-upload/server";
 
 export interface Env {
   DB: D1Database;
@@ -64,7 +65,16 @@ const plain = (pathname: string, status: number, body: string, headers: Record<s
 
 const notFound = (pathname: string) => plain(pathname, 404, "Site not found");
 
-// One server per isolate, so its pointer cache lasts across requests.
+// Which publishes are live: SiteServer asks at most every 5 s per site.
+const currentOf = async (db: D1Database, siteId: string): Promise<Current> => {
+  const row = await db
+    .prepare("SELECT live_publish_id AS live, previous_publish_id AS previous FROM site WHERE id = ?")
+    .bind(siteId)
+    .first<Current>();
+  return row ?? { live: null, previous: null };
+};
+
+// One server per isolate, so its caches last across requests.
 let server: SiteServer | undefined;
 
 export default {
@@ -94,6 +104,7 @@ export default {
 
     server ??= new SiteServer({
       store: new SiteStore({ bucket: env.SITES }),
+      current: (id) => currentOf(env.DB, id),
       cache: (caches as unknown as { default: FileCache }).default,
     });
     const response = await server.fetch(request, siteId, ctx);

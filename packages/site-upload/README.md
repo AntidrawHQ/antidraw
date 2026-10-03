@@ -3,16 +3,17 @@
 Publishes a static-site folder (a build's `dist`) to R2 and serves it. Modelled
 on how `wrangler deploy` uploads Workers static assets: hash every file, ask
 the server which hashes it lacks, upload only those, then switch the site over
-in one write.
+to the new version in one write to the caller's own records.
 
 ```
 client (Node)                         server (Worker + R2)
 ─────────────                         ────────────────────
-buildManifest(dir)   ── POST plan ──▶ store.plan      → { missing }
-upload missing       ── PUT files/h ▶ store.putFile   R2 checks sha256 on write
-                     ── POST commit ▶ store.commit    one pointer write
-                                      store.cleanup   drop unneeded files
-                                      SiteServer      serve GET / HEAD / Range
+buildManifest(dir)   ── POST plan ──▶ store.plan             → { missing }
+upload missing       ── PUT files/h ▶ store.putFile          R2 checks sha256 on write
+                     ── POST commit ▶ store.requireComplete,
+                                      then the caller's commit  one database write
+                                      store.cleanup          drop unneeded files (by hand)
+                                      SiteServer             serve GET / HEAD / Range
 ```
 
 ## Entry points
@@ -29,32 +30,38 @@ The package ships TypeScript source; consumers bundle it (wrangler, Vite).
 
 ```
 <prefix>/<site>/f/<sha256>          file bytes, shared by every version of the site
-<prefix>/<site>/m/<publishId>.json  one publish's manifest (its plan)
-<prefix>/<site>/current.json        the live manifest; swapping it publishes
+<prefix>/<site>/m/<publishId>.json  one publish's manifest, written when it plans
 ```
+
+Nothing here changes once written. A version of the site is a manifest;
+which one is live is the caller's to record, usually a database row with the
+live and previous publish ids.
+
+**Committing.** `handleUpload`'s commit checks the plan's files are all stored
+(`store.requireComplete`), then calls the caller's `commit`, which records the
+publish as live. Record it only if nothing went live since the publish started
+(say, a commit counter compared and bumped in one update), and throw
+`SUPERSEDED` otherwise: then two overlapping publishes can't both go live on
+the same version, and an old commit retried late can't roll the site back. A
+retry of the publish already live answers `alreadyCommitted: true`. Rolling
+back is recording an older publish id.
 
 **What stays servable.** The live version, plus the previous version's
 immutable files (`i: true`, i.e. hashed build output) that the live version
 dropped, so a page opened before a publish can still load its chunks. Nothing
-older, and never a page: HTML, SVG and other XML documents are not carried
-over or cached as immutable, whatever the uploader marks. Cleanup keeps exactly these files,
-plus those of any plan still inside its 1-hour upload window.
-
-**Commit retries.** Repeating a commit is safe while it's still the latest one:
-it returns `alreadyCommitted: true`. Once a newer publish has gone live, a
-replayed commit gets `SUPERSEDED` instead of rolling the site back. The pointer
-counts commits (`seq`) and each plan records the count it was made against; a
-commit only goes live on top of that version. No clocks are compared, so skew
-between machines can't reorder publishes.
+older, and never a page: HTML, SVG and other XML documents are not served from
+the previous version or cached as immutable, whatever the uploader marks.
 
 ## Serving and caching
 
-`SiteServer` reads a site's `current.json` (kept in memory for 5 s, one read
-shared by concurrent requests, 32 MiB of pointers at most; a pointer is under
-4 MiB at the default limits, so at least 8 fit), maps the URL to a
-file (`/a` is `a`, else `a.html`, else a redirect to `/a/` for
-`a/index.html`), and answers ETag/304 and single-range requests itself. It never throws:
-storage failures become a 503 with `retry-after`.
+`SiteServer` asks the caller's `current(site)` which publishes are live (kept
+in memory for 5 s, one call shared by concurrent requests, asked again on a
+miss at most once a second), reads their manifests (never changing, so kept
+until evicted, 32 MiB at most), maps the URL to a file (`/a` is `a`, else
+`a.html`, else a redirect to `/a/` for `a/index.html`, else the previous
+version's hashed chunk), and answers ETag/304 and single-range requests
+itself. It reads the previous manifest only for a path the live one doesn't
+have. It never throws: failures become a 503 with `retry-after`.
 
 Pass `cache: caches.default` to read file bytes through the Workers Cache API,
 keyed by hash so an entry never goes stale; a miss fills it once per isolate
@@ -91,17 +98,16 @@ per request, so their caches last.
   any upload request without a preflight, but a cookie that reaches these
   routes is still one misconfigured CORS header away from letting any page
   re-point a user's site.
-- **One publish per site at a time.** Plan, upload, commit and cleanup for one
-  site must not overlap: hold a per-site lock, and hold it until the publish's
-  commit has succeeded (including the client's retries). Plan expiry (1 h) and the orphan
-  grace period (1 h) limit the damage if a lock holder dies, but don't replace
-  the lock.
-- **Calling cleanup** after each commit, still holding the lock. Recording a
-  new plan also runs it, so publishes that were uploaded but never committed
-  are cleared by the site's next plan. A site that stops publishing keeps its
-  last abandoned upload until then; a scheduled cleanup (under the lock) clears
-  those too.
-- **Site keys that aren't reused.** A site's R2 data (files, plans, pointer)
+- **Which version is live.** The `commit` passed to `handleUpload`, and the
+  `current` passed to `SiteServer` (see *Committing* above).
+- **Deleting old files, if ever.** The store never deletes while publishing,
+  so a site keeps every file and manifest it was ever sent.
+  `cleanup(site, { keep })` deletes the manifests not in `keep` (pass at least
+  the live and previous publishes) and the files only they needed, sparing
+  anything under an hour old. It must not overlap any other call for the site
+  (a plan made during it can be told a file is stored that it then deletes):
+  run it by hand when nothing is publishing.
+- **Site keys that aren't reused.** A site's R2 data (files and manifests)
   is keyed by `site`. Use a permanent internal id as the key and map public
   slugs to it, so a slug that is freed and claimed by someone else never
   reaches the old owner's data. Browsers still keep the old owner's flagged
@@ -113,10 +119,10 @@ per request, so their caches last.
   can also send `Clear-Site-Data: "storage"` on the new owner's first pages.
 - **Rate limits and quotas.** Built-in limits are per publish: 10,000 files,
   95 MiB per file (under the Workers 100 MB request-body limit), 500 MiB total,
-  2 MiB of file-list JSON. A site holds its live version, retained chunks and
-  any plans from the last hour, so storage per site is bounded by how many
-  publishes an hour the caller allows; meter PUT `Content-Length` for a byte
-  quota per user. Rate-limit the site Worker per IP as well.
+  2 MiB of file-list JSON. Until a cleanup, a site holds every file and
+  manifest it was ever sent, so storage grows with every change published; meter PUT
+  `Content-Length` for a byte quota per user. Rate-limit the site Worker per IP
+  as well.
 
 ## Tests
 

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { startTestWorker, manifestOf, sha256, summarize, uniqueSite, type TestWorker } from "../../test/helpers";
 import { SiteUploadError } from "../protocol/errors";
 import { MAX_PLAN_BODY_BYTES } from "../protocol/limits";
+import type { CommitResult } from "../protocol/manifest";
 import { errorResponse, handleUpload } from "./http";
 import { SiteStore } from "./store";
 
@@ -11,6 +12,9 @@ import { SiteStore } from "./store";
 let env: TestWorker;
 let store: SiteStore;
 let site: string;
+/** The caller's commit, recording each call: what handleUpload asks for once the files are all there. */
+let commits: string[];
+let commit: () => Promise<CommitResult>;
 
 beforeAll(async () => {
   env = await startTestWorker();
@@ -20,19 +24,27 @@ afterAll(() => env.close());
 beforeEach(() => {
   store = new SiteStore({ bucket: env.bucket });
   site = uniqueSite();
+  commits = [];
+  commit = async () => {
+    commits.push("p1");
+    return { publishId: "p1", previous: null, alreadyCommitted: false };
+  };
 });
 
 const call = async (path: string, init: RequestInit = {}) =>
-  summarize(await handleUpload(store, new Request(`https://api.test/u/${path}`, init), { site, publishId: "p1", path }));
+  summarize(
+    await handleUpload(store, new Request(`https://api.test/u/${path}`, init), { site, publishId: "p1", path }, { commit: () => commit() }),
+  );
 
 const post = (path: string, body?: string) =>
   call(path, { method: "POST", body, headers: { "content-type": "application/json" } });
 
 describe("handleUpload", () => {
-  it("plans, then reports missing files on commit", async () => {
+  it("plans, then reports missing files on commit without asking the caller to commit", async () => {
     expect({
       plan: await post("plan", JSON.stringify(manifestOf({ "index.html": "x", "a.txt": "a" }))),
       commit: await post("commit"),
+      commits,
     }).toMatchInlineSnapshot(`
       {
         "commit": {
@@ -54,6 +66,7 @@ describe("handleUpload", () => {
           },
           "status": 409,
         },
+        "commits": [],
         "plan": {
           "body": {
             "missing": [
@@ -318,16 +331,57 @@ describe("handleUpload boundaries", () => {
     for (const method of ["GET", "PUT", "DELETE"]) {
       statuses[method] = (await call("commit", { method, headers: { "content-type": "application/json" } })).status;
     }
-    const pointer = await store.readPointer(site);
+    const committedByOthers = commits.length;
     const posted = await call("commit", { method: "POST", headers: { "content-type": "application/json" } });
-    expect({ statuses, liveAfterOthers: pointer?.publishId ?? null, post: posted.status }).toMatchInlineSnapshot(`
+    expect({ statuses, committedByOthers, post: posted.status }).toMatchInlineSnapshot(`
       {
-        "liveAfterOthers": null,
+        "committedByOthers": 0,
         "post": 200,
         "statuses": {
           "DELETE": 405,
           "GET": 405,
           "PUT": 405,
+        },
+      }
+    `);
+  });
+
+  it("answers with the caller's commit result, or its error", async () => {
+    await post("plan", manifestBody);
+    await store.putFile(site, "p1", sha256("x"), new TextEncoder().encode("x"), 1);
+    const ok = await post("commit");
+    commit = async () => {
+      throw new SiteUploadError("SUPERSEDED", "Publish p2 went live after p1 started", { live: "p2" });
+    };
+    expect({ ok, refused: await post("commit") }).toMatchInlineSnapshot(`
+      {
+        "ok": {
+          "body": {
+            "alreadyCommitted": false,
+            "previous": null,
+            "publishId": "p1",
+          },
+          "headers": {
+            "cache-control": "no-store",
+            "content-type": "application/json; charset=utf-8",
+          },
+          "status": 200,
+        },
+        "refused": {
+          "body": {
+            "error": {
+              "code": "SUPERSEDED",
+              "details": {
+                "live": "p2",
+              },
+              "message": "Publish p2 went live after p1 started",
+            },
+          },
+          "headers": {
+            "cache-control": "no-store",
+            "content-type": "application/json; charset=utf-8",
+          },
+          "status": 409,
         },
       }
     `);
@@ -377,14 +431,14 @@ describe("errorResponse", () => {
   it("hides unexpected errors and maps codes to statuses", async () => {
     expect({
       unexpected: await summarize(errorResponse(new Error("secret internals"))),
-      planExpired: (await summarize(errorResponse(new SiteUploadError("PLAN_EXPIRED", "x")))).status,
+      superseded: (await summarize(errorResponse(new SiteUploadError("SUPERSEDED", "x")))).status,
       hashMismatch: (await summarize(errorResponse(new SiteUploadError("HASH_MISMATCH", "x")))).status,
       lengthRequired: (await summarize(errorResponse(new SiteUploadError("LENGTH_REQUIRED", "x")))).status,
     }).toMatchInlineSnapshot(`
       {
         "hashMismatch": 400,
         "lengthRequired": 411,
-        "planExpired": 410,
+        "superseded": 409,
         "unexpected": {
           "body": {
             "error": {

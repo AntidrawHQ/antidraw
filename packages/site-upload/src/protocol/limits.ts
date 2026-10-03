@@ -4,8 +4,8 @@ export type Limits = {
   maxTotalBytes: number;
   maxPathBytes: number;
   /**
-   * The file list's JSON size (paths plus entries). Bounds what a plan, and a
-   * site's pointer, cost to store, read and parse on every serving isolate.
+   * The file list's JSON size (paths plus entries). Bounds what a manifest
+   * costs to store, read and parse on every serving isolate.
    */
   maxManifestBytes: number;
 };
@@ -19,12 +19,11 @@ export const DEFAULT_LIMITS: Limits = {
   maxFileBytes: 95 * MiB,
   maxTotalBytes: 500 * MiB,
   maxPathBytes: 1024,
-  // About 200 bytes a file at the file limit. A pointer holds the live list
-  // plus retained entries (part of the previous list), so it stays under 4 MiB.
+  // About 200 bytes a file at the file limit.
   maxManifestBytes: 2 * MiB,
 };
 
-// Stored plans and pointers were checked against the limits in force when they
+// Stored manifests were checked against the limits in force when they
 // were written. Re-reading them must not break a live site if limits shrink.
 export const STORED_LIMITS: Limits = {
   maxFiles: Number.MAX_SAFE_INTEGER,
