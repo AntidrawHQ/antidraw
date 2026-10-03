@@ -1,17 +1,40 @@
+import type { UUID } from "node:crypto";
 import {
   conversations,
   messages,
-  type StreamStatus,
+  type Conversation,
+  type ConversationRow,
+  type Message,
 } from "@/main/api/models/chat.model";
+import type { EffortLevel } from "@anthropic-ai/claude-agent-sdk";
 import { db } from "@/main/db";
 import type { ImageAttachment } from "@/shared/utils/message";
-import { streamEvents } from "@/main/lib/stream-manager";
+import {
+  getStreamStatus,
+  conversationEvents,
+} from "@/main/lib/conversation-store";
+
+// Every conversation that leaves the service carries its live stream status,
+// read from memory at that moment. The status is not a column (see
+// StreamStatus in chat.model) — attaching it here is what keeps every read
+// path (load, list, create, resolve) current by construction.
+const withStreamStatus = <T extends ConversationRow>(
+  row: T
+): T & Pick<Conversation, "streamStatus"> => ({
+  ...row,
+  streamStatus: getStreamStatus(row.id),
+});
 import { createUserSDKMessage } from "@/shared/utils/message";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, and, gt, gte, or, asc, isNull, sql } from "drizzle-orm";
 import { ok, err } from "neverthrow";
 
-export const createConversation = async (workspaceId: string, title?: string) => {
+export const createConversation = async (
+  workspaceId: string,
+  options?: {
+    title?: string;
+  }
+) => {
   try {
     const id = crypto.randomUUID();
     const [conversation] = await db
@@ -19,16 +42,49 @@ export const createConversation = async (workspaceId: string, title?: string) =>
       .values({
         id,
         workspaceId,
-        title: title ?? null,
+        title: options?.title ?? null,
       })
       .returning();
 
-    return ok(conversation);
+    return ok(withStreamStatus(conversation!));
   } catch (_e) {
     return err({
       status: 500 as const,
       code: "DB_ERROR",
       message: "Failed to create conversation",
+    });
+  }
+};
+
+// The send-time options snapshot — the ONLY writer of these columns; the
+// renderer reads them back (via the conversation row) as the picker's
+// default. The two fields deliberately differ:
+// - selectedModel: full overwrite, null included. Absent model is a real
+//   choice — the picker's "Default" row means "CLI default".
+// - selectedEffort: preserved when absent. Effort-capable models always
+//   resolve a level (clampEffort falls back to the default), so an absent
+//   effort only ever means "the sent model takes no effort level" — and an
+//   inapplicable turn must not erase the user's last applicable choice.
+export const setConversationOptions = async (
+  conversationId: string,
+  options: { selectedModel: string | null; selectedEffort?: EffortLevel }
+) => {
+  try {
+    await db
+      .update(conversations)
+      .set({
+        selectedModel: options.selectedModel,
+        ...(options.selectedEffort !== undefined
+          ? { selectedEffort: options.selectedEffort }
+          : {}),
+      })
+      .where(eq(conversations.id, conversationId));
+    return ok(undefined);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "DB_ERROR",
+      message: "Failed to set conversation options",
     });
   }
 };
@@ -39,9 +95,11 @@ export const listConversations = async (workspaceId: string) => {
       .select()
       .from(conversations)
       .where(eq(conversations.workspaceId, workspaceId))
-      .orderBy(desc(conversations.updatedAt));
+      // Newest first, and fixed: activity never reorders the list. createdAt
+      // has second resolution, so rowid (insertion order) breaks the ties.
+      .orderBy(desc(conversations.createdAt), desc(sql`rowid`));
 
-    return ok(result);
+    return ok(result.map(withStreamStatus));
   } catch (_e) {
     return err({
       status: 500 as const,
@@ -78,7 +136,17 @@ export const getConversation = async (
         ? {
             with: {
               messages: {
-                orderBy: (messages, { asc }) => asc(messages.createdAt),
+                // seq, not createdAt: createdAt has second resolution, so a
+                // turn's messages share a timestamp and this ordering was a
+                // tie-break on nothing. Restored transcripts could disagree
+                // with what the renderer showed live. A prompt accepted from
+                // the queue sorts just after the row it was accepted behind
+                // (see acceptedAfterSeq); transcriptOrder in the renderer is
+                // the same rule.
+                orderBy: (messages, { asc }) => [
+                  asc(sql`coalesce(${messages.acceptedAfterSeq} + 0.5, ${messages.seq})`),
+                  asc(messages.seq),
+                ],
               },
             },
           }
@@ -93,7 +161,7 @@ export const getConversation = async (
       });
     }
 
-    return ok(res);
+    return ok(withStreamStatus(res));
   } catch (_e) {
     return err({
       status: 500 as const,
@@ -103,15 +171,162 @@ export const getConversation = async (
   }
 };
 
+// The transcript after a point, for a subscriber that is resuming. `afterSeq`
+// is exclusive: it is the last seq the caller already has, so a caller fully
+// caught up gets nothing back. Ordered by seq.
+//
+// Plus every prompt placed since then. Placing rewrites a row the caller may
+// already hold, under a seq below its cursor, so seq alone would never resend
+// it. A placement the caller missed happened after its cursor row existed,
+// so its accepted_after_seq (the max seq at the time) is at least the cursor.
+// The converse is not exact — a placement it did see can come back too — and
+// that is harmless: the renderer replaces rows by id.
+//
+// A Result like its neighbours, and the caller depends on that: this is
+// awaited inside the SSE route ahead of every seed, where a rejection would
+// unwind the handler and strand the subscriber it just attached. An err lets
+// the route skip the replay and stay live instead.
+export const getMessagesAfterSeq = async (
+  conversationId: string,
+  afterSeq: number
+) => {
+  try {
+    const rows = await db
+      .select()
+      .from(messages)
+      .where(
+        and(
+          eq(messages.conversationId, conversationId),
+          or(gt(messages.seq, afterSeq), gte(messages.acceptedAfterSeq, afterSeq))
+        )
+      )
+      .orderBy(asc(messages.seq));
+    return ok(rows);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "DB_ERROR",
+      message: "Failed to read the transcript after the cursor",
+    });
+  }
+};
+
+// The persisted copy of a user prompt carries the frontend's userMessageId as
+// its SDK uuid — the same uuid stamped on the message pushed to the CLI, so
+// the row, the optimistic renderer bubble, and the CLI's replay ack all name
+// one message.
 export const convertUserPromptToSDKMessage = (
   prompt: string,
+  userMessageId: UUID,
   images?: ImageAttachment[]
 ) => {
   return createUserSDKMessage({
     text: prompt,
-    uuid: crypto.randomUUID(),
+    uuid: userMessageId,
     images,
   });
+};
+
+// Removes a message row. Used when a queued (not yet accepted) user prompt
+// is withdrawn from the CLI's queue: the send-time user_prompt row is the
+// only copy, and a message that never ran must not survive in history.
+export const deleteMessage = async (messageId: string) => {
+  try {
+    await db.delete(messages).where(eq(messages.id, messageId));
+    return ok(undefined);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "DB_ERROR",
+      message: "Failed to delete message",
+    });
+  }
+};
+
+// The CLI's replay ack, made durable. Idempotent: a second ack for the same
+// id (a resumed session replays its history) rewrites the same column. A uuid
+// we never stamped — the CLI replays its own internal reminders too — matches
+// no row and is a no-op.
+//
+// `place` is for a prompt the CLI just took off the queue: it also records
+// where the prompt now belongs (accepted_after_seq, see the model) and emits
+// the row, so an open transcript moves it. Only the caller knows the ack is
+// that one — a replayed history must not be placed again, or every old prompt
+// would sort to the bottom.
+export const markDelivered = async (
+  messageId: string,
+  place?: { conversationId: string }
+) => {
+  try {
+    if (!place) {
+      await db
+        .update(messages)
+        .set({ deliveredAt: new Date() })
+        .where(eq(messages.id, messageId));
+      return ok(undefined);
+    }
+
+    const [placed] = await db
+      .update(messages)
+      .set({
+        deliveredAt: new Date(),
+        acceptedAfterSeq: sql`(select max(${messages.seq}) from ${messages} where ${messages.conversationId} = ${place.conversationId})`,
+      })
+      .where(eq(messages.id, messageId))
+      .returning();
+    if (placed) {
+      conversationEvents.emit("message", place.conversationId, { message: placed });
+    }
+    return ok(undefined);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "DB_ERROR",
+      message: "Failed to mark message delivered",
+    });
+  }
+};
+
+// Prompts with no ack on record. Whether each one is still queued or has
+// failed is the caller's question — it needs the live pending set to answer.
+export const getUndeliveredPromptIds = async (conversationId: string) => {
+  try {
+    const rows = await db
+      .select({ id: messages.id })
+      .from(messages)
+      .where(
+        and(
+          eq(messages.conversationId, conversationId),
+          eq(messages.messageType, "user_prompt"),
+          isNull(messages.deliveredAt)
+        )
+      )
+      .orderBy(asc(messages.seq));
+    return ok(rows.map((r) => r.id));
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "DB_ERROR",
+      message: "Failed to read undelivered prompts",
+    });
+  }
+};
+
+// A duplicate message id. id is a UNIQUE column rather than the primary key
+// (seq took that role), so this is the constraint libsql reports — and it is
+// the only unique constraint on the table.
+//
+// Read through the cause chain rather than matching on e.message: drizzle
+// wraps driver errors in a DrizzleQueryError whose own message is only
+// "Failed query: ...". The driver error, with the constraint name on it, is
+// the cause.
+const isUniqueViolation = (e: unknown): boolean => {
+  for (let cause: unknown = e; cause instanceof Error; cause = cause.cause) {
+    if ((cause as { code?: string }).code === "SQLITE_CONSTRAINT_UNIQUE") {
+      return true;
+    }
+  }
+  return false;
 };
 
 export const addMessage = async (params: {
@@ -123,7 +338,7 @@ export const addMessage = async (params: {
   const id = params.id ?? crypto.randomUUID();
 
   try {
-    const [message] = await db
+    const [inserted] = await db
       .insert(messages)
       .values({
         id,
@@ -132,17 +347,35 @@ export const addMessage = async (params: {
         sdkMessage: params.sdkMessage,
       })
       .returning();
+    // An insert of one row returns that row. Asserted here rather than at each
+    // use so the ok() below does not hand callers a `Message | undefined`.
+    const message = inserted!;
+
+    // A user prompt is what marks a conversation active: the sidebar shows
+    // updatedAt as its last-activity time, and only the user's own input
+    // counts — a reply leaves the time the prompt set.
+    // It lives here, next to the insert every prompt passes through, so a
+    // rework of the send path cannot drop it the way removing the status
+    // write did. Its own try: a failed bump must not turn a persisted prompt
+    // into a reported failure.
+    if (params.messageType === "user_prompt") {
+      try {
+        await db
+          .update(conversations)
+          .set({ updatedAt: new Date() })
+          .where(eq(conversations.id, params.conversationId));
+      } catch (e) {
+        console.error("Failed to bump the conversation's updatedAt:", e);
+      }
+    }
 
     // Emit after insert - automatic, can't forget
-    streamEvents.emit("message", params.conversationId, message);
+    conversationEvents.emit("message", params.conversationId, { message });
 
     return ok(message);
   } catch (e) {
     // Handle duplicate ID (essentially impossible with UUID v4, but be safe)
-    if (
-      e instanceof Error &&
-      e.message.includes("SQLITE_CONSTRAINT_PRIMARYKEY")
-    ) {
+    if (isUniqueViolation(e)) {
       return err({
         status: 409 as const,
         code: "DUPLICATE_ID",
@@ -172,46 +405,6 @@ export const updateConversationSession = async (
       status: 500 as const,
       code: "DB_ERROR",
       message: "Failed to update session",
-    });
-  }
-};
-
-// Crash recovery: any conversation left at "streaming" can only mean the
-// previous app session crashed mid-turn (in-memory activeStreams is gone on
-// boot). Reset to "idle" so the UI doesn't render a phantom shimmer for a
-// stream that no longer exists. (Legacy "completed" rows are handled once by
-// migration 0001_normalize_completed_stream_status, not here.)
-export const resetStreamingConversations = async () => {
-  try {
-    await db
-      .update(conversations)
-      .set({ streamStatus: "idle" })
-      .where(eq(conversations.streamStatus, "streaming"));
-    return ok(undefined);
-  } catch (_e) {
-    return err({
-      status: 500 as const,
-      code: "DB_ERROR",
-      message: "Failed to reset streaming conversations",
-    });
-  }
-};
-
-export const updateConversationStatus = async (
-  conversationId: string,
-  status: StreamStatus
-) => {
-  try {
-    await db
-      .update(conversations)
-      .set({ streamStatus: status, updatedAt: new Date() })
-      .where(eq(conversations.id, conversationId));
-    return ok(undefined);
-  } catch (_e) {
-    return err({
-      status: 500 as const,
-      code: "DB_ERROR",
-      message: "Failed to update conversation status",
     });
   }
 };

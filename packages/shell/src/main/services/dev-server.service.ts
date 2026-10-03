@@ -2,7 +2,15 @@ import { exec, type ChildProcess, execSync } from "child_process";
 import { access } from "fs/promises";
 import getPort from "get-port";
 import { ok, err, type Result } from "neverthrow";
-import { getWorkspaceSourcePath } from "@/main/api/init";
+import {
+  getWorkspaceDevServerLogPath,
+  getWorkspaceSourcePath,
+} from "@/main/api/init";
+import {
+  logMarker,
+  openDevServerLog,
+  type DevServerLog,
+} from "@/main/services/dev-server-log";
 import { devServerStore, type DevServerState } from "@/main/lib/runtime-store";
 import { spawnNpm } from "@/main/lib/package-manager";
 import {
@@ -12,6 +20,9 @@ import {
 
 // In-memory map for ChildProcess handles (can't be serialized to electron-store)
 const runningProcesses = new Map<string, ChildProcess>();
+
+// Open run logs, keyed like runningProcesses
+const runningLogs = new Map<string, DevServerLog>();
 
 // Status response includes runtime check
 export type DevServerInfo = DevServerState & {
@@ -34,6 +45,15 @@ type DevServerError = {
   code: DevServerErrorCode;
   message: string;
 };
+
+const spawnFailed = (cause: unknown) =>
+  err({
+    status: 500,
+    code: DevServerErrorCode.SPAWN_FAILED,
+    message: `Failed to start dev server: ${
+      cause instanceof Error ? cause.message : String(cause)
+    }`,
+  } satisfies DevServerError);
 
 const killProcessTree = (pid: number): void => {
   try {
@@ -97,23 +117,41 @@ export const startDevServer = async (
     } satisfies DevServerError);
   }
 
-  const port = await getPort();
+  let port: number;
+  let proc: ChildProcess;
 
-  const proc = spawnNpm(
-    ["run", "dev", "--", "--port", port.toString()],
-    workspacePath,
-    {
-      detached: process.platform !== "win32",
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
+  try {
+    port = await getPort();
+    proc = spawnNpm(
+      ["run", "dev", "--", "--port", port.toString()],
+      workspacePath,
+      {
+        detached: process.platform !== "win32",
+        stdio: ["ignore", "pipe", "pipe"],
+        // Output goes to a log file, not a terminal; keep colour codes out of
+        // it even if the user's shell exports FORCE_COLOR.
+        env: { NO_COLOR: "1" },
+      },
+    );
+  } catch (error) {
+    return spawnFailed(error);
+  }
+
+  // A spawn that fails asynchronously (missing or non-executable binary)
+  // reports through an `error` event, which is an uncaught exception in the
+  // main process if nothing listens.
+  const spawnError = new Promise<Error>((resolve) => {
+    proc.on("error", (error) => {
+      console.error(`Dev server process error for ${workspaceId}:`, error);
+      resolve(error);
+    });
+  });
 
   if (!proc.pid) {
-    return err({
-      status: 500,
-      code: DevServerErrorCode.SPAWN_FAILED,
-      message: "Failed to start dev server: no PID assigned",
-    } satisfies DevServerError);
+    const noPid = new Promise<string>((resolve) =>
+      setTimeout(() => resolve("no PID assigned"), 1000),
+    );
+    return spawnFailed(await Promise.race([spawnError, noPid]));
   }
 
   const state = {
@@ -128,6 +166,22 @@ export const startDevServer = async (
 
   // Persist for crash recovery
   devServerStore.set(state);
+
+  // Append-only run log; the agent reads it via the path from
+  // get_dev_server_info. Raw output, bracketed by start/exit markers.
+  // A previous run whose `close` hasn't fired yet still holds the file;
+  // end it first so a rotation can't carry its output off into `.1`.
+  void runningLogs
+    .get(workspaceId)
+    ?.end(logMarker("dev server log superseded by a new run"));
+  const log = openDevServerLog(getWorkspaceDevServerLogPath(workspaceId));
+  runningLogs.set(workspaceId, log);
+  log.write(logMarker(`dev server started pid=${proc.pid} port=${port}`));
+  // Written from `data` listeners rather than pipe(): a pipe pauses its
+  // source when the destination errors, which would stall the ready check
+  // below and leave the child's output undrained.
+  proc.stdout!.on("data", (data: Buffer) => log.write(data));
+  proc.stderr!.on("data", (data: Buffer) => log.write(data));
 
   // Wait for Vite to signal it's ready via stdout
   const readyPromise = new Promise<boolean>((resolve) => {
@@ -158,6 +212,16 @@ export const startDevServer = async (
   });
 
   // Cleanup on exit (after ready check)
+  // `close` (not `exit`): it fires once stdout/stderr have drained, so the
+  // exit marker lands after the last output line and nothing is written to
+  // an already-ended log stream.
+  proc.on("close", (code) => {
+    void log.end(logMarker(`dev server exited code=${code}`));
+    if (runningLogs.get(workspaceId) === log) {
+      runningLogs.delete(workspaceId);
+    }
+  });
+
   proc.on("exit", (code) => {
     console.log(`Dev server for ${workspaceId} exited with code ${code}`);
     runningProcesses.delete(workspaceId);
@@ -253,6 +317,13 @@ export const stopAllDevServers = (): void => {
       console.error(`Failed to stop component watcher for ${workspaceId}:`, error);
     });
   }
+
+  // This runs on app quit: the process is gone before the children's
+  // `close` events fire, so their exit markers would never be written.
+  for (const log of runningLogs.values()) {
+    log.endSync(logMarker("dev server stopped (app quit)"));
+  }
+  runningLogs.clear();
 
   devServerStore.clear();
 };

@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { getShimmedSpawnEnv } from "@/main/lib/node-shim";
+import { getNodeElectronPath, getShimmedSpawnEnv } from "@/main/lib/node-shim";
 
 export type NpmOutput =
   | { type: "stdout"; data: string }
@@ -16,12 +16,12 @@ const npmCli = join(npmDir, "bin", "npm-cli.js");
 export const spawnNpm = (
   args: string[],
   cwd: string,
-  options: Omit<SpawnOptions, "cwd" | "env"> = {},
+  options: Omit<SpawnOptions, "cwd" | "env"> & { env?: NodeJS.ProcessEnv } = {},
 ): ChildProcess =>
-  spawn(process.execPath, [npmCli, ...args], {
+  spawn(getNodeElectronPath(), [npmCli, ...args], {
     ...options,
     cwd,
-    env: getShimmedSpawnEnv(),
+    env: getShimmedSpawnEnv(options.env),
   });
 
 export async function* runNpm(args: string[], cwd: string): AsyncGenerator<NpmOutput> {
@@ -59,10 +59,14 @@ export async function* runNpm(args: string[], cwd: string): AsyncGenerator<NpmOu
   }
 }
 
-export const npmInstall = (cwd: string) => runNpm(["install"], cwd);
+// --loglevel info makes npm stream per-request fetch lines and lifecycle
+// events (extract, postinstall scripts); without it, npm install is silent
+// until the final summary and the UI looks frozen
+export const npmInstall = (cwd: string) =>
+  runNpm(["install", "--loglevel", "info"], cwd);
 
 export const npmCreate = (template: string, name: string, cwd: string) =>
-  runNpm(["create", `${template}@latest`, name, "--yes"], cwd);
+  runNpm(["create", `${template}@latest`, name, "--yes", "--loglevel", "info"], cwd);
 
 export const npmUpdate = (cwd: string, pkg?: string) =>
   runNpm(pkg ? ["update", pkg] : ["update"], cwd);

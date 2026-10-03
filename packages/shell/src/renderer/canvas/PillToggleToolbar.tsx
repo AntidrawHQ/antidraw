@@ -1,7 +1,6 @@
 import { motion, AnimatePresence, LayoutGroup } from "motion/react";
 import { Code, RefreshCw, Maximize2 } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
-import { useWorkspaceStore } from "../store/workspace";
 
 const spring = { type: "spring" as const, stiffness: 800, damping: 40, mass: 0.4 };
 const springGentle = { type: "spring" as const, stiffness: 700, damping: 35, mass: 0.35 };
@@ -47,11 +46,11 @@ type PillToggleToolbarProps = {
   selected?: boolean;
   onRefresh?: () => void;
   onFullscreen?: () => void;
+  // Without it, the See Code button is left out.
+  onSeeCode?: () => void;
 };
 
-export const PillToggleToolbar = ({ componentName, nodeId, selected, onRefresh, onFullscreen }: PillToggleToolbarProps) => {
-  const setCodePanelComponentName = useWorkspaceStore((s) => s.setCodePanelComponentName);
-
+export const PillToggleToolbar = ({ componentName, nodeId, selected, onRefresh, onFullscreen, onSeeCode }: PillToggleToolbarProps) => {
   return (
     <LayoutGroup id={nodeId}>
       <div>
@@ -97,8 +96,12 @@ export const PillToggleToolbar = ({ componentName, nodeId, selected, onRefresh, 
                   >
                     <div className="flex items-center whitespace-nowrap w-max">
                       <Divider className="mx-2" />
-                      <IconBtn icon={<Code size={14} />} label="See Code" size={26} onClick={() => setCodePanelComponentName(componentName)} />
-                      <Divider className="mx-1.5" />
+                      {onSeeCode && (
+                        <>
+                          <IconBtn icon={<Code size={14} />} label="See Code" size={26} onClick={onSeeCode} />
+                          <Divider className="mx-1.5" />
+                        </>
+                      )}
                       <IconBtn icon={<RefreshCw size={14} />} size={26} onClick={onRefresh} />
                       <IconBtn icon={<Maximize2 size={14} />} size={26} onClick={onFullscreen} />
                     </div>

@@ -198,7 +198,7 @@ export const useAutoSelectWorkspace = () => {
     if (activeWorkspaceId || !workspaces?.length || isPrefPending) return;
 
     const exists = !!savedId && workspaces.some((ws) => ws.id === savedId);
-    const targetId = exists ? savedId! : workspaces[0].id;
+    const targetId = exists ? savedId! : workspaces[0]!.id;
 
     setActiveWorkspaceId(targetId);
     if (!exists) setPreference("activeWorkspaceId", targetId);

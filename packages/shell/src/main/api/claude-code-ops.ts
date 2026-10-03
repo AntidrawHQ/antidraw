@@ -1,11 +1,23 @@
 import { createRequire } from "node:module";
 import path from "node:path";
-import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { UUID } from "node:crypto";
+import type {
+  EffortLevel,
+  HookInput,
+  ModelInfo,
+  SDKUserMessage,
+} from "@anthropic-ai/claude-agent-sdk";
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import { ok, err } from "neverthrow";
+
+export type { EffortLevel, ModelInfo };
+import { ok, err, type Result } from "neverthrow";
 import { z } from "zod/v3";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { getWorkspaceSourcePath } from "@/main/api/init";
+import {
+  DEV_SERVER_MCP_SERVER_NAME,
+  createDevServerMcpServer,
+} from "@/main/api/tools";
 import type { ImageAttachment } from "@/shared/utils/message";
 import { createUserSDKMessage } from "@/shared/utils/message";
 
@@ -15,7 +27,7 @@ import { createUserSDKMessage } from "@/shared/utils/message";
 // through Electron's asar layer, so the kernel returns ENOTDIR. Resolve once
 // and rewrite to the .unpacked sibling directory where the binary actually
 // lives. In dev (no asar in the path), the replace is a no-op.
-const claudeCodeExecutablePath = ((): string | undefined => {
+export const claudeCodeExecutablePath = ((): string | undefined => {
   const requireFromHere = createRequire(import.meta.url);
   const { platform, arch } = process;
   const ext = platform === "win32" ? ".exe" : "";
@@ -42,15 +54,32 @@ const claudeCodeExecutablePath = ((): string | undefined => {
   return undefined;
 })();
 
+export type PromptPushOptions = {
+  // Stamped onto the SDKUserMessage as its uuid. With --replay-user-messages
+  // the CLI echoes it back (isReplay: true) when the message is folded into
+  // a turn — that echo is the acceptance ack the queueing UX correlates on,
+  // so callers pass the frontend's userMessageId here.
+  uuid?: UUID;
+  images?: ImageAttachment[];
+};
+
+// STREAM_CLOSED: end() has run. ENQUEUE_FAILED: the SDK errored the
+// underlying controller. Either way the message never reaches the CLI, so it
+// will never be acked — the caller must stop tracking it as queued.
+export type PushError = "STREAM_CLOSED" | "ENQUEUE_FAILED";
+
 export type PromptStream = {
   prompt: AsyncIterable<SDKUserMessage>;
-  push: (message: string, images?: ImageAttachment[]) => void;
+  push: (
+    message: string,
+    options?: PromptPushOptions
+  ) => Result<void, PushError>;
   end: () => void;
 };
 
 export const buildPrompt = (
   message: string,
-  images?: ImageAttachment[]
+  options?: PromptPushOptions
 ): PromptStream => {
   let closed = false;
   let controller!: ReadableStreamDefaultController<SDKUserMessage>;
@@ -58,18 +87,31 @@ export const buildPrompt = (
     start: (c) => (controller = c),
   });
 
-  const push = (text: string, imgs?: ImageAttachment[]) => {
-    if (closed) return;
-    controller.enqueue(
-      createUserSDKMessage({
-        text,
-        uuid: crypto.randomUUID(),
-        images: imgs,
-      })
-    );
+  // Reports failure instead of swallowing it: a push that does not reach the
+  // CLI is never acked, so a silent no-op would leave the message marked
+  // queued forever.
+  const push = (
+    text: string,
+    opts?: PromptPushOptions
+  ): Result<void, PushError> => {
+    if (closed) return err("STREAM_CLOSED" as const);
+    try {
+      controller.enqueue(
+        createUserSDKMessage({
+          text,
+          uuid: opts?.uuid ?? crypto.randomUUID(),
+          images: opts?.images,
+        })
+      );
+      return ok(undefined);
+    } catch (e) {
+      console.error("Failed to enqueue prompt:", e);
+      return err("ENQUEUE_FAILED" as const);
+    }
   };
 
-  push(message, images);
+  // Cannot fail: the stream was created two lines up and is not closed.
+  push(message, options);
 
   return {
     prompt,
@@ -134,14 +176,70 @@ User's first message:
   }
 };
 
+// The CLI's model catalog, fetched once per session. supportedModels()
+// resolves from the initialize handshake — the throwaway query below never
+// starts a turn (its prompt stream never yields) and is aborted the moment
+// the handshake lands, so this costs one short-lived CLI spawn and zero
+// tokens. Cached for the process lifetime: the catalog is pinned to the
+// bundled CLI binary, which can only change across an app update/restart.
+let modelCatalog: Promise<ModelInfo[]> | null = null;
+
+export const getSupportedModels = (): Promise<ModelInfo[]> => {
+  if (modelCatalog) return modelCatalog;
+  const fetching = (async () => {
+    const abortController = new AbortController();
+    const never = (async function* (): AsyncGenerator<SDKUserMessage> {
+      await new Promise(() => {});
+    })();
+    const q = query({
+      prompt: never,
+      options: {
+        pathToClaudeCodeExecutable: claudeCodeExecutablePath,
+        persistSession: false,
+        abortController,
+      },
+    });
+    try {
+      return await q.supportedModels();
+    } finally {
+      abortController.abort();
+    }
+  })();
+  modelCatalog = fetching;
+  // A failed spawn must not poison the session cache — let the next request
+  // retry. (The renderer falls back to its placeholder catalog meanwhile.)
+  fetching.catch(() => {
+    if (modelCatalog === fetching) modelCatalog = null;
+  });
+  return fetching;
+};
+
 export const sendMessage = (params: {
   // message: string;
   promptStream: PromptStream;
   workspaceId: string;
   claudeCodeSessionID?: string;
+  model?: string;
+  effort?: EffortLevel;
+  /**
+   * Echo of the ACTUAL effort the CLI ran the turn with (after any silent
+   * downgrade for the selected model). Fired from a Stop hook; main-thread
+   * turns only — subagent hook invocations are filtered out. Nothing
+   * persists or displays this today: it is kept wired as the signal for
+   * future product feedback when the CLI deviates from the user's
+   * selection.
+   */
+  onEffortLevel?: (level: string) => void;
 }) => {
   try {
-    const { promptStream, workspaceId, claudeCodeSessionID } = params;
+    const {
+      promptStream,
+      workspaceId,
+      claudeCodeSessionID,
+      model,
+      effort,
+      onEffortLevel,
+    } = params;
     const workspacePath = getWorkspaceSourcePath(workspaceId);
 
     const res = query({
@@ -150,12 +248,39 @@ export const sendMessage = (params: {
         pathToClaudeCodeExecutable: claudeCodeExecutablePath,
         cwd: workspacePath,
         resume: claudeCodeSessionID,
+        model,
+        effort,
+        mcpServers: {
+          [DEV_SERVER_MCP_SERVER_NAME]: createDevServerMcpServer(workspaceId),
+        },
+        hooks: onEffortLevel
+          ? {
+              Stop: [
+                {
+                  hooks: [
+                    async (input: HookInput) => {
+                      // agent_id present = hook fired inside a subagent;
+                      // its effort must not be mirrored onto the main UI.
+                      if (
+                        input.hook_event_name === "Stop" &&
+                        !("agent_id" in input && input.agent_id) &&
+                        input.effort?.level
+                      ) {
+                        onEffortLevel(input.effort.level);
+                      }
+                      return {};
+                    },
+                  ],
+                },
+              ],
+            }
+          : undefined,
         systemPrompt: {
           preset: "claude_code",
           type: "preset",
           append: `You are a design agent named antidraw powered by claude code. Your goal is to vibe code react components from instructions of designers.
 
-You have access to a vite project.
+You have access to a vite project. antidraw runs its dev server; the mcp__workspace_dev_server__get_dev_server_info tool reports its status, URL and log file.
 
 IMPORTANT RULES:
 - Create components ONLY in src/components/user-components/ directory
@@ -168,6 +293,21 @@ Current workspace directory: ${workspacePath}
         },
         permissionMode: "bypassPermissions",
         includePartialMessages: true,
+        // Ask the CLI to re-emit each stdin user message once it is folded
+        // into a turn ({type:"user", isReplay:true, uuid}). That replay is the
+        // only acceptance signal there is for a pushed message — the SDK's
+        // streamInput just writes to stdin. Not a first-class SDK option,
+        // only the CLI flag (verified live: without it, no ack ever comes).
+        extraArgs: { "replay-user-messages": null },
+        // Make the CLI report its session state ({type:"system",
+        // subtype:"session_state_changed", state:"running"|"idle"|
+        // "requires_action"}). `idle` fires only when the turn AND the CLI's
+        // command queue are fully drained, which is the end-of-turn signal
+        // the stream lifecycle keys on — `result` is not one (a queued
+        // follow-up runs after it with no idle in between). Gated behind an
+        // env var rather than an option; the SDK merges this into the child
+        // env. Verified live against the pinned CLI.
+        env: { ...process.env, CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1" },
       },
     });
 

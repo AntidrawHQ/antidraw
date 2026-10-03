@@ -17,7 +17,8 @@ const ArrowRightIcon = () => (
 
 const CreateWorkspacePage = () => {
   const router = useRouter();
-  const { status, isCreating, start } = useCreateWorkspaceFlow();
+  const { status, npmLines, failedStep, errorMessage, start } =
+    useCreateWorkspaceFlow();
   const startedRef = useRef(false);
 
   useEffect(() => {
@@ -54,10 +55,16 @@ const CreateWorkspacePage = () => {
           )}
         </p>
 
-        {(isCreating || status === "done") && (
+        {status !== "idle" && (
           <div className="flex items-end gap-4 mt-6 animate-[onb-fadein_0.3s_ease]">
             <div className="flex flex-col flex-1 min-w-0">
-              <CreateWorkspaceProgress status={status} />
+              <CreateWorkspaceProgress
+                status={status}
+                lines={npmLines}
+                failedStep={failedStep}
+                errorMessage={errorMessage}
+                onRetry={() => start("Default Workspace")}
+              />
 
               <button
                 onClick={handleOpenWorkspace}

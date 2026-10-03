@@ -2,7 +2,7 @@ import { toast } from "sonner";
 import { ArrowRight, X } from "lucide-react";
 import BoringAvatar from "boring-avatars";
 
-// Square + a blue ramp sampled from the AntiDraw app logo (the paper-cut
+// Square + a blue ramp sampled from the Antidraw app logo (the paper-cut
 // waves), so the update toast is marked with the version's own generated icon.
 const AVATAR_COLORS = ["#0e4e8a", "#2b72b5", "#5293cc", "#79b0dc", "#a9cbe8"];
 

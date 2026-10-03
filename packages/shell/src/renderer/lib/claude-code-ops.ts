@@ -1,23 +1,42 @@
-import type { Conversation, ConversationWithMessages, Message } from "@/main/api";
+import type {
+  Conversation,
+  ConversationWithMessages,
+  EffortLevel,
+  Message,
+} from "@/main/api";
 import type { ImageAttachment } from "@/shared/utils/message";
 import { createUserSDKMessage } from "@/shared/utils/message";
-import { queryOptions, useMutation, useQuery, useQueryClient, skipToken } from "@tanstack/react-query";
-import { useEffect, useMemo } from "react";
+import { mutationOptions, queryOptions, useMutation, useQuery, useQueryClient, skipToken } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef } from "react";
+import { useWorkspaceStore } from "@/renderer/store/workspace";
 import type { ToolPart } from "@/renderer/components/ui/tool";
 import { queryKeys } from "./query-keys";
 import {
   cancelConversationStream,
+  cancelQueuedMessage,
   createConversation,
   generateConversationTitle,
   getConversationWithMessages,
+  getFailedMessageIds,
+  getSupportedModels,
   listWorkspaceConversations,
   sendMessage,
 } from "./api";
-import { subscribeToStream, type LivePartial } from "./stream-subscription";
-import { selectToolMap } from "./tool-utils";
+import { DEFAULT_MODELS } from "@/renderer/components/modelPickerShared";
+import {
+  PENDING_SEQ,
+  SEND_MESSAGE_MUTATION_KEY,
+  releaseStream,
+  subscribeToStream,
+  type LivePartial,
+} from "./stream-subscription";
+import { correlateTools, emptyToolMap, reuseToolParts } from "./tool-utils";
 
-// Shared query options for conversation data
-const conversationQueryOpts = (conversationId: string | null) =>
+// Shared query options for conversation data. Exported so a test can build an
+// observer from the real thing: a hand-written mirror would pin its own copy of
+// staleTime and the queryFn shape, and go on passing after production changed.
+export const conversationQueryOpts = (conversationId: string | null) =>
   queryOptions({
     queryKey: queryKeys.conversations.detail(conversationId),
     queryFn: conversationId
@@ -36,25 +55,61 @@ export const useConversationMessages = (conversationId: string | null) => {
   return useQuery(conversationQueryOpts(conversationId));
 };
 
-// Hook that subscribes to stream events when conversation is streaming
-export const useConversationWithStream = (conversationId: string | null) => {
+// Owns the subscription for whichever conversation is open. Mounted once, at
+// the app root, because that is the only place with the right lifetime: the
+// subscription belongs to the open conversation, and no component that renders
+// the conversation lives exactly that long. AppChat is the cautionary case —
+// opening the conversation list or switching to the Components panel unmounts
+// it while the very same conversation is still open, and an owner that lets go
+// there drops a subscription on a conversation the user is still in.
+export const useConversationSubscription = () => {
+  const conversationId = useWorkspaceStore((s) => s.activeConversationId);
   const queryClient = useQueryClient();
 
-  // Main data query
-  const query = useQuery(conversationQueryOpts(conversationId));
-
-  const isStreaming = query.data?.streamStatus === "streaming";
-
-  // SSE subscription - fire and forget, runs until server terminates
-  useEffect(() => {
-    if (!conversationId || !isStreaming) return;
-    subscribeToStream(conversationId, queryClient);
-    // No cleanup - subscription runs until server sends terminal event
-  }, [conversationId, isStreaming, queryClient]);
-
-  return query;
+  // One effect, because acquiring and releasing now share a lifetime: this is
+  // held because the conversation is open, not because a turn is running in
+  // it. Gating acquisition on streamStatus was the asymmetry — release ran on
+  // any close, but re-acquisition asked a status that is allowed to lie. The
+  // CLI reports idle while a message we handed it is still un-acked, so a
+  // conversation can read idle with its events still coming; a gate reading
+  // that declines to re-watch it, and with staleTime Infinity nothing refetches
+  // to correct the answer. Unconditional here, the status stops being an input
+  // at all, and the backend's `state` seed on attach is what fixes one that
+  // went stale while away.
+  //
+  // Re-attaching costs only what the gap contained, since the stream resumes
+  // from a cursor.
+  useEffect(
+    () => openConversationSubscription(conversationId, queryClient),
+    [conversationId, queryClient],
+  );
 };
 
+// The effect body, lifted out of the hook so the ownership contract is
+// reachable without a renderer — the same move sendMessageMutationOptions
+// makes below. React supplies the sequence (run, cleanup, run again on a
+// changed id); this is what it runs at each step.
+export const openConversationSubscription = (
+  conversationId: string | null,
+  queryClient: QueryClient,
+): (() => void) | undefined => {
+  if (!conversationId) return;
+  // Once per open. Anything can have happened while away or before launch,
+  // and the answer lives in the DB, not in the rows this cache holds.
+  queryClient.invalidateQueries({
+    queryKey: queryKeys.conversations.failedMessageIds(conversationId),
+  });
+  subscribeToStream(conversationId, queryClient);
+  return () => releaseStream(conversationId);
+};
+
+// No staleTime on purpose. The list view mounts only when the user opens it
+// (SidePanel swaps it in for the chat), and that mount is what refetches the
+// last-activity time a prompt changed in the meantime — addMessage bumps
+// updatedAt on every user prompt. The order itself never changes (newest
+// created first). Nothing mirrors the bump into this cache from the
+// stream; it does not need to, since the list is never on screen while a
+// prompt is sent.
 export const useWorkspaceConversations = (workspaceId: string | null) => {
   return useQuery({
     queryKey: queryKeys.conversations.byWorkspace(workspaceId),
@@ -70,16 +125,23 @@ export const useWorkspaceConversations = (workspaceId: string | null) => {
   });
 };
 
-// Returns Map<string, ToolPart> for tool correlation, including the in-flight tool_use
-// block (if any) merged with state: "input-streaming".
+// Returns Map<string, ToolPart> for tool correlation over the persisted
+// messages. The in-flight tool_use block is deliberately not in here (see
+// liveToolPart): this recomputes only when the conversation changes, never per
+// streamed token, and keeps the identity of each unchanged ToolPart.
 export const useToolMap = (conversationId: string | null) => {
   const conversation = useQuery(conversationQueryOpts(conversationId));
-  const { data: live } = useLivePartial(conversationId);
+  const previous = useRef<Map<string, ToolPart>>(emptyToolMap());
 
   const data = useMemo<Map<string, ToolPart>>(() => {
-    if (!conversation.data) return new Map();
-    return selectToolMap(conversation.data, live);
-  }, [conversation.data, live]);
+    if (!conversation.data) return emptyToolMap();
+    const next = reuseToolParts(
+      previous.current,
+      correlateTools(conversation.data.messages),
+    );
+    previous.current = next;
+    return next;
+  }, [conversation.data]);
 
   return { data };
 };
@@ -87,11 +149,90 @@ export const useToolMap = (conversationId: string | null) => {
 // Reads the live in-flight content block from the cache.
 // Populated imperatively by stream-subscription's reducer; queryFn is a noop.
 export const useLivePartial = (conversationId: string | null) => {
-  return useQuery<LivePartial>({
+  return useQuery<LivePartial | null>({
     queryKey: queryKeys.conversations.livePartial(conversationId),
     queryFn: () => null,
     enabled: false,
-    initialData: null as LivePartial,
+    initialData: null,
+    staleTime: Infinity,
+  });
+};
+
+// The CLI's live model catalog. One fetch per session, cached forever:
+// the catalog is pinned to the bundled CLI binary, which can only change
+// across an app update/restart (main also caches it for the session, so a
+// refetch would be a no-op anyway). DEFAULT_MODELS covers the gap while the
+// first fetch resolves — and remains the working set if it fails, since
+// placeholderData is returned whenever the cache is empty.
+export const useSupportedModels = () => {
+  return useQuery({
+    queryKey: queryKeys.models.catalog,
+    queryFn: async () => {
+      const result = await getSupportedModels();
+      if (result.isErr()) throw new Error(result.error.message);
+      return result.value;
+    },
+    staleTime: Infinity,
+    placeholderData: DEFAULT_MODELS,
+  });
+};
+
+// userMessageIds the backend has handed the CLI but the CLI has not acked.
+// Mirror-only: the sole writer is stream-subscription applying the backend's
+// `queue` snapshots. Nothing is persisted; a refetch clears it.
+export const useQueuedMessageIds = (conversationId: string | null) => {
+  return useQuery<string[]>({
+    queryKey: queryKeys.conversations.queuedMessageIds(conversationId),
+    queryFn: () => [],
+    enabled: false,
+    initialData: [],
+    staleTime: Infinity,
+  });
+};
+
+export type SendIntent = "queue" | "direct";
+
+// How each send from this window went out, by userMessageId: "queue" if the
+// conversation was streaming when it was made, "direct" if not. Written by the
+// send's onMutate, dropped by its onError; nothing is persisted.
+//
+// The queued deck needs it because queuedMessageIds cannot say it alone. A
+// mid-turn send exists as a bubble before the backend's `queue` event names
+// it, and the deck must hold it from the start. And every follow-up to a live
+// CLI passes through the queue, idle or not — an idle send is listed for the
+// few milliseconds its ack takes, and must not flash through the deck.
+export const useSendIntents = (conversationId: string | null) => {
+  return useQuery<Record<string, SendIntent>>({
+    queryKey: queryKeys.conversations.sendIntents(conversationId),
+    queryFn: () => ({}),
+    enabled: false,
+    initialData: {},
+    staleTime: Infinity,
+  });
+};
+
+// userMessageIds the CLI never received: persisted, never acked, and not held
+// pending by a live handle. The backend computes it on request, because the
+// renderer cannot: rows here are append-only — the detail query never goes
+// stale and a reattach catches up by seq — so a column that changes after
+// insert is invisible to a cache already holding the row.
+//
+// The set only grows, and only when the CLI fails. So it is fetched once per
+// open (openConversationSubscription) and again on `error`
+// (stream-subscription) — never on `queue`, which fires twice per message and
+// cannot tell an ack from a failure anyway.
+export const useFailedMessageIds = (conversationId: string | null) => {
+  return useQuery({
+    queryKey: queryKeys.conversations.failedMessageIds(conversationId),
+    queryFn: conversationId
+      ? async () => {
+          const result = await getFailedMessageIds(conversationId);
+          if (result.isErr()) {
+            throw new Error(result.error.message);
+          }
+          return result.value;
+        }
+      : skipToken,
     staleTime: Infinity,
   });
 };
@@ -100,8 +241,8 @@ export const useCreateConversation = () => {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (workspaceId: string) => {
-      const result = await createConversation(workspaceId);
+    mutationFn: async (params: { workspaceId: string }) => {
+      const result = await createConversation(params.workspaceId);
 
       if (result.isErr()) {
         throw new Error(result.error.message);
@@ -124,19 +265,35 @@ export const useCreateConversation = () => {
   });
 };
 
-// Send mutation with optimistic update
-export const useSendMessage = () => {
-  const queryClient = useQueryClient();
+// Re-exported from its definition next to the cursor that has to skip it.
+export { PENDING_SEQ } from "./stream-subscription";
 
-  return useMutation({
+// Send mutation with optimistic update
+// The send's whole optimistic protocol, lifted out of the hook so it can be
+// executed without a renderer. Mirrors conversationQueryOpts above: the hook
+// becomes the React binding, and the behaviour is a plain value that a test
+// can build and run through the mutation cache.
+export const sendMessageMutationOptions = (queryClient: QueryClient) =>
+  mutationOptions({
+    mutationKey: [SEND_MESSAGE_MUTATION_KEY],
     mutationFn: async (params: {
       message: string;
       workspaceId: string;
       conversationId: string;
       userMessageId: string; // Frontend generates this
       images?: ImageAttachment[];
+      // Composer selection snapshot — rides the message; the only way
+      // options are ever set.
+      model?: string;
+      effort?: EffortLevel;
+      // Whether the conversation was streaming when the user sent, as the
+      // caller saw it. Overrides the cache read in onMutate: a send from the
+      // error state reopens the stream first, and that writes "streaming"
+      // before onMutate runs — an idle send would be recorded mid-turn.
+      sentMidTurn?: boolean;
     }) => {
-      const result = await sendMessage(params);
+      const { sentMidTurn: _renderOnly, ...request } = params;
+      const result = await sendMessage(request);
 
       if (result.isErr()) {
         throw new Error(result.error.message);
@@ -145,7 +302,7 @@ export const useSendMessage = () => {
       return result.value;
     },
 
-onMutate: async ({ message, conversationId, userMessageId, images }) => {
+onMutate: async ({ message, conversationId, userMessageId, images, sentMidTurn }) => {
       // Cancel any outgoing refetches
       await queryClient.cancelQueries({
         queryKey: queryKeys.conversations.detail(conversationId),
@@ -174,28 +331,152 @@ onMutate: async ({ message, conversationId, userMessageId, images }) => {
         conversationId,
         messageType: "user_prompt",
         sdkMessage,
+        seq: PENDING_SEQ,
         createdAt: new Date(),
+        // Nothing reads this on the renderer side — delivery is asked of the
+        // backend (useFailedMessageIds). It is here because the row has it.
+        deliveredAt: null,
+        // Set by the backend when the CLI accepts it; the persisted row
+        // replaces this one then.
+        acceptedAfterSeq: null,
       };
 
+      // Recorded before the bubble goes in, so the first render that has the
+      // bubble already knows whether the queued deck owns it.
+      queryClient.setQueryData<Record<string, SendIntent>>(
+        queryKeys.conversations.sendIntents(conversationId),
+        (prev) => ({
+          ...prev,
+          [userMessageId]:
+            (sentMidTurn ?? previousChat.streamStatus === "streaming")
+              ? "queue"
+              : "direct",
+        }),
+      );
+
+      // The bubble goes in now; the status does not. A bubble carries the id
+      // the backend will persist under, so the stream's `message` event
+      // replaces it in place and a failure can take back exactly it. A
+      // status written now has no such handle: once "streaming" is in the
+      // cache, nothing can tell a send's guess from the CLI's own `running`,
+      // and a rollback that restores a snapshot over it erases whatever the
+      // stream wrote in between. onSuccess writes it, after the 202, when it
+      // is no longer a guess.
       queryClient.setQueryData<ConversationWithMessages>(
         queryKeys.conversations.detail(conversationId),
         {
           ...previousChat,
-          streamStatus: "streaming",
           messages: [...previousChat.messages, userMessage],
         },
       );
 
-      return { previousChat };
+      return { optimisticMessage: userMessage };
     },
 
-    onError: (_err, { conversationId }, context) => {
-      if (context?.previousChat) {
-        queryClient.setQueryData(
-          queryKeys.conversations.detail(conversationId),
-          context.previousChat,
-        );
+    // The 202 means the backend has claimed the slot and registered this
+    // send. The backend does not write streamStatus on send (the CLI's
+    // `running` does, a moment later), so this is the one place a send says
+    // "streaming" — after the backend has accepted it, which is what makes
+    // it true rather than a guess, and what means it never needs rolling
+    // back. It covers the spawn gap before `running`, and restores what a
+    // crossing `complete` + refetch may have undone, so the shimmer and Stop
+    // survive it. It no longer has anything to do with subscribing: the
+    // subscription is held for whichever conversation is open, so one is
+    // already running before this send was made. Opening one from here would
+    // also be wrong — it could acquire a subscription for a conversation that
+    // is no longer open, which nothing would then release.
+    onSuccess: (_data, { conversationId, userMessageId }, context) => {
+      queryClient.setQueryData<ConversationWithMessages>(
+        queryKeys.conversations.detail(conversationId),
+        (old) => {
+          if (!old) return old;
+          const optimistic = context?.optimisticMessage;
+          const hasBubble = old.messages.some((m) => m.id === userMessageId);
+          return {
+            ...old,
+            streamStatus: "streaming",
+            messages:
+              hasBubble || !optimistic
+                ? old.messages
+                : [...old.messages, optimistic],
+          };
+        },
+      );
+    },
+
+    // Undo this send, not the interval. Sends land mid-turn now, so by the
+    // time this runs the entry may hold rows the running turn streamed after
+    // onMutate — restoring a snapshot would wipe them until the next refetch.
+    // Take out exactly the bubble onMutate put in. The status is not touched:
+    // onMutate never wrote one, and whatever is there now is the stream's.
+    onError: (_err, { conversationId, userMessageId }) => {
+      queryClient.setQueryData<ConversationWithMessages>(
+        queryKeys.conversations.detail(conversationId),
+        (old) =>
+          old
+            ? {
+                ...old,
+                messages: old.messages.filter((m) => m.id !== userMessageId),
+              }
+            : old,
+      );
+      queryClient.setQueryData<string[]>(
+        queryKeys.conversations.queuedMessageIds(conversationId),
+        (prev) => prev?.filter((id) => id !== userMessageId) ?? [],
+      );
+      queryClient.setQueryData<Record<string, SendIntent>>(
+        queryKeys.conversations.sendIntents(conversationId),
+        (prev) => {
+          const { [userMessageId]: _dropped, ...rest } = prev ?? {};
+          return rest;
+        },
+      );
+    },
+  });
+
+export const useSendMessage = () =>
+  useMutation(sendMessageMutationOptions(useQueryClient()));
+
+// Withdraw a queued message. The backend relays the CLI's verdict:
+// cancelled=true → it never runs; drop the optimistic bubble and the mark.
+// cancelled=false → it already entered a turn (ack imminent) or never
+// reached the CLI; it will run, so keep the bubble and drop only the mark.
+export const useCancelQueuedMessage = () => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      conversationId,
+      userMessageId,
+    }: {
+      conversationId: string;
+      userMessageId: string;
+    }) => {
+      const result = await cancelQueuedMessage(conversationId, userMessageId);
+      if (result.isErr()) {
+        throw new Error(result.error.message);
       }
+      return result.value;
+    },
+    onSuccess: ({ cancelled }, { conversationId, userMessageId }) => {
+      // Nothing to write on a failed cancel: the backend still holds the
+      // message as pending, and its queue event owns that cache — filtering
+      // here would un-dim a bubble that is, in fact, still queued.
+      if (!cancelled) return;
+      queryClient.setQueryData<string[]>(
+        queryKeys.conversations.queuedMessageIds(conversationId),
+        (prev) => prev?.filter((id) => id !== userMessageId) ?? [],
+      );
+      queryClient.setQueryData<ConversationWithMessages>(
+        queryKeys.conversations.detail(conversationId),
+        (old) =>
+          old
+            ? {
+                ...old,
+                messages: old.messages.filter((m) => m.id !== userMessageId),
+              }
+            : old,
+      );
     },
   });
 };

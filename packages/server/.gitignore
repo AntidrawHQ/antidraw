@@ -1,0 +1,5 @@
+# wrangler reads .dev.vars and environment-scoped .dev.vars.<env> files
+.dev.vars*
+!.dev.vars.example
+.wrangler/
+dist/

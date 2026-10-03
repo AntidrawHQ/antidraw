@@ -1,0 +1,13 @@
+# Local secrets for `wrangler dev`. Copy to `.dev.vars` (gitignored) and fill in.
+# In production these are set with `wrangler secret put <NAME>` instead.
+
+# Signs session tokens — generate with: openssl rand -base64 32
+BETTER_AUTH_SECRET=""
+BETTER_AUTH_URL="http://localhost:8799"
+# A Google OAuth "Web application" client whose authorized redirect URIs include
+# http://localhost:8799/api/auth/callback/google (see README → Auth).
+GOOGLE_CLIENT_ID=""
+GOOGLE_CLIENT_SECRET=""
+
+# A published site's share page: the web canvas's dev server.
+SHARE_URL_PATTERN="http://localhost:8786/s/*"

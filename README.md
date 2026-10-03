@@ -31,7 +31,10 @@ npm install
 npm run dev:shell
 ```
 
-That launches the Electron shell in dev mode with HMR. To produce an installable build:
+That launches the Electron shell in dev mode with HMR. `npm run dev:server`
+runs the cloud Worker locally instead (see `packages/server/README.md`).
+
+To produce an installable build:
 
 ```sh
 npm run build:unpack -w @antidraw/shell    # unpacked .app at packages/shell/release/<version>/mac-<arch>/
@@ -45,11 +48,15 @@ Releases are cut by pushing a `v*.*.*` tag — the workflow in `.github/workflow
 ```
 packages/
   shell/              Electron app (main + preload + renderer)
+  server/             Cloudflare Worker cloud API (Hono + D1)
   create-workspace/   `npm create @antidrawapp/create-workspace` scaffolder
   plugin-runtime/     Runtime imported by user workspaces
 ```
 
-The shell is the actual app. `create-workspace` and `plugin-runtime` are the npm packages users consume from their own design workspaces.
+The shell is the actual app. `server` is the network-exposed cloud API that
+gates publish/sync — distinct from the shell's in-Electron API, which is not
+network-exposed. `create-workspace` and `plugin-runtime` are the npm packages
+users consume from their own design workspaces.
 
 ## License
 
