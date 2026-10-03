@@ -36,6 +36,7 @@ export const queryKeys = {
   models: {
     catalog: ["model-catalog"] as const,
   },
+  account: ["account"] as const,
   frameLayouts: {
     byWorkspace: (workspaceId: string | null) =>
       ["frameLayouts", workspaceId] as const,

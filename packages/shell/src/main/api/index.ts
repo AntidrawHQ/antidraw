@@ -12,6 +12,7 @@ export type { CreateWorkspaceStatusCode } from "./services/workspace.service";
 export type { DevServerState } from "@/main/lib/runtime-store";
 export type { DevServerInfo } from "@/main/services/dev-server.service";
 export type { EffortLevel, ModelInfo } from "./claude-code-ops";
+export type { Account, AccountError } from "@/main/services/account.service";
 export type {
   ComponentListItem,
   ComponentSource,
@@ -51,12 +52,14 @@ import { runTurn } from "./turn";
 import { workspaceController } from "./controllers/workspace.controller";
 import { preferenceController } from "./controllers/preference.controller";
 import { claudeCliInteractionsController } from "./controllers/claude-cli-interactions.controller";
+import { accountController } from "./controllers/account.controller";
 
 const api = new Hono();
 
 api.route("/workspaces", workspaceController);
 api.route("/preferences", preferenceController);
 api.route("/claude-cli", claudeCliInteractionsController);
+api.route("/account", accountController);
 
 const imageAttachmentSchema = z.object({
   data: z.string(),

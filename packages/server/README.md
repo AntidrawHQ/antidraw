@@ -124,12 +124,15 @@ lives in `src/services/auth.service.ts`.
    of its own, independent of any browser.
 
 Flow state lives in better-auth's `verification` table and is consumed
-atomically, so each hop is single-use. To try it end to end without the app:
+atomically, so each hop is single-use. To try it end to end, run `npm run dev`
+here (with real Google creds in `.dev.vars`) and the shell alongside it, then
+click Publish in the app while signed out.
 
-```sh
-npm run dev                                     # with real Google creds in .dev.vars
-node scripts/desktop-auth-smoke.mjs             # opens the browser, prints /api/me
-```
+The client side lives in `@antidraw/shell`: `src/main/services/account.service.ts`
+runs the loopback server and PKCE pair in the main process, keeps the token
+with `safeStorage` (OS keychain), and makes Worker calls from main with
+`Authorization: Bearer`. The renderer never sees the token. The shell points at
+`http://localhost:8799` unless `ANTIDRAW_SERVER_URL` is set.
 
 ### Google OAuth client
 
@@ -211,7 +214,5 @@ npm run deploy:sites
 
 ## Next step
 
-The Electron side of desktop sign-in in `@antidraw/shell`: the loopback server
-and PKCE pair in the main process, the token kept with `safeStorage` (OS
-keychain), and Worker calls made from main with `Authorization: Bearer`.
-`scripts/desktop-auth-smoke.mjs` is the reference for the client's steps.
+Publishing: a Worker endpoint behind `requireSession` that the shell's Publish
+button calls through main.

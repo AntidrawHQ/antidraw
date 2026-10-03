@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, net, protocol, session } from "electron";
+import { app, BrowserWindow, ipcMain, net, protocol, session, shell } from "electron";
 import electronUpdater from "electron-updater";
 
 const { autoUpdater } = electronUpdater;
@@ -26,6 +26,7 @@ import {
 import { installNodeShim } from "./lib/node-shim";
 import { runMigrations } from "./db/migrate";
 import { shutdownPostHog } from "./lib/posthog";
+import { APP_KEY, APP_KEY_ARG } from "@/main/lib/app-key";
 
 // Keep the renderer responsive when the window is unfocused or occluded.
 // Without these, Chromium throttles rAF/timers/request scheduling in packaged
@@ -58,11 +59,14 @@ const createWindow = () => {
   const mainWindow = new BrowserWindow({
     width: 900,
     height: 670,
+    // The titlebar's workspace switcher and Publish button need the room.
+    minWidth: 480,
     titleBarStyle: "hidden",
     trafficLightPosition: { x: 12, y: 13 },
     backgroundColor: "#0a0a0a",
     webPreferences: {
       preload: path.join(__dirname, "../preload/preload.cjs"),
+      additionalArguments: [`${APP_KEY_ARG}${APP_KEY}`],
       contextIsolation: true,
       nodeIntegration: false,
       backgroundThrottling: false,
@@ -74,6 +78,23 @@ const createWindow = () => {
   } else {
     mainWindow.loadURL("antidraw://app/");
   }
+
+  // The window stays on the app: its preload hands out the account key
+  // (lib/app-key.ts), and a page that replaced the app would get it. Web
+  // links (an assistant reply's markdown, say) open in the browser instead.
+  const appPage = process.env.NODE_ENV === "development" ? "http://localhost:5173/" : "antidraw://app/";
+  const openInBrowser = (url: string) => {
+    if (/^https?:\/\//.test(url)) shell.openExternal(url).catch(() => {});
+  };
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    if (url.startsWith(appPage)) return;
+    event.preventDefault();
+    openInBrowser(url);
+  });
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    openInBrowser(url);
+    return { action: "deny" };
+  });
 };
 
 // Serve renderer assets out of dist/renderer with an SPA fallback to index.html
