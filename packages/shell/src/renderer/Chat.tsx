@@ -245,7 +245,9 @@ const MessageRow = memo(
             <MessageContent
               key={idx}
               className={cn(
-                "bg-neutral-700 text-neutral-200 prose prose-sm prose-invert max-w-none",
+                // Hugs its text up to 85% of the panel, against the right
+                // edge, like the queued deck that hands prompts over.
+                "self-end max-w-[85%] bg-neutral-700 text-neutral-200 prose prose-sm prose-invert",
                 isFailed && "opacity-60"
               )}
             >
@@ -270,7 +272,7 @@ const MessageRow = memo(
       >
         <div className="flex flex-col overflow-auto w-full">
           {imageBlocks.length > 0 && (
-            <div className="flex flex-wrap gap-1">
+            <div className={cn("flex flex-wrap gap-1", !isAssistant && "justify-end")}>
               {imageBlocks.map((block, idx) => (
                 <img
                   key={`img-${idx}`}
