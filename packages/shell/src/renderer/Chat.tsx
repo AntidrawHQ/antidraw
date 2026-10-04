@@ -768,15 +768,14 @@ export function AppChat({ className, ...props }: AppChatProps) {
             hiddenIds={deck.hiddenIds}
             revealedIds={deck.revealedIds}
           />
+          {activeConversationId && (
+            <QueuedMessagesDeck
+              conversationId={activeConversationId}
+              rows={deck.rows}
+            />
+          )}
         </ChatContainerContent>
       </ChatContainerRoot>
-
-      {activeConversationId && (
-        <QueuedMessagesDeck
-          conversationId={activeConversationId}
-          rows={deck.rows}
-        />
-      )}
 
       <Composer
         composer={composer}

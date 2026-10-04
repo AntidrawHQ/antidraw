@@ -6,8 +6,8 @@ import { SMOOTH, collapseHeight } from "@/renderer/lib/motion";
 import type { DeckRow } from "@/renderer/lib/use-queue-deck";
 import { useCancelQueuedMessage } from "@/renderer/lib/claude-code-ops";
 
-// Messages sent mid-turn, waiting on the CLI, between the transcript and the
-// composer. Built from the QueueGhostWithSelection design: square hairline
+// Messages sent mid-turn, waiting on the CLI, at the end of the transcript.
+// Built from the QueueGhostWithSelection design: square hairline
 // container hugging the right edge, centered "Queued Messages" title,
 // right-aligned dimmed bubbles with the × inside. A row leaves by collapsing
 // its measured height — up when accepted (the transcript takes it), right
@@ -59,9 +59,8 @@ const QueuedRow = ({ row, cancelling, onCancel }: QueuedRowProps) => {
         {/* Dimmed against sent messages (neutral-700 / neutral-200):
             same bubble, lower opacity, quieter text. */}
         <div className="relative max-w-full rounded-lg bg-neutral-700 py-1.5 pl-2.5 pr-8 opacity-70 transition-colors duration-200">
-          {/* Clamped, and wrapped anywhere: the deck sits outside the
-              scrolling transcript, so a pasted log must not grow it without
-              bound. The full text shows once the transcript takes it. */}
+          {/* Clamped, and wrapped anywhere: a pasted log stays a short
+              preview. The full text shows once the transcript takes it. */}
           <p className="line-clamp-3 text-[13px] leading-snug text-neutral-400 [overflow-wrap:anywhere]">
             {promptText(row.message)}
           </p>
@@ -97,7 +96,7 @@ export const QueuedMessagesDeck = ({
   if (rows.length === 0) return null;
 
   return (
-    <div className="shrink-0 px-4 pt-2">
+    <div className="pt-2">
       {/* Hugs the right edge like the user bubbles it holds, instead of
           spanning the panel. */}
       <div className="ml-auto w-fit min-w-[240px] max-w-[85%] border border-[#2d2d2d] p-2 transition-colors duration-200">
@@ -106,9 +105,7 @@ export const QueuedMessagesDeck = ({
             Queued Messages
           </span>
         </div>
-        {/* Many queued rows scroll here rather than push the composer and
-            its Stop button out of the panel. */}
-        <div className="max-h-60 overflow-y-auto">
+        <div>
           {rows.map((row) => (
             <QueuedRow
               key={row.message.id}
