@@ -1,15 +1,5 @@
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/renderer/components/ui/collapsible";
 import { viewableComponent } from "@/renderer/lib/tool-utils";
 import { cn } from "@/renderer/lib/utils";
-import {
-  IconCircleCheckFilled,
-  IconCircleHalf2,
-  IconCircleXFilled,
-} from "@tabler/icons-react";
 import { ArrowUpRight, ChevronDown } from "lucide-react";
 import { memo, useState } from "react";
 
@@ -24,15 +14,6 @@ export type ToolPart = {
   output?: Record<string, unknown>;
   errorText?: string;
 };
-
-/* ── State config ──────────────────────────────────────────────────────── */
-
-const stateConfig = {
-  "input-streaming": { icon: IconCircleHalf2, color: "#e8a040" },
-  "input-available": { icon: IconCircleHalf2, color: "#e8a040" },
-  "output-available": { icon: IconCircleCheckFilled, color: "#7c6cd6" },
-  "output-error": { icon: IconCircleXFilled, color: "#f06060" },
-} satisfies Record<string, { icon: typeof IconCircleHalf2; color: string }>;
 
 /* ── Helpers ────────────────────────────────────────────────────────────── */
 
@@ -62,41 +43,91 @@ const getToolTitle = (toolPart: ToolPart): string => {
   return type;
 };
 
+/* ── Icons ─────────────────────────────────────────────────────────────── */
+
+// Monochrome status, from the ToolCallsMono "Ghost" design: a grey arc
+// spinning while running, an outline ring with a check or × once settled.
+// The spin is a transform, so it stays on the compositor.
+const Spinner = () => (
+  <svg
+    width={16}
+    height={16}
+    viewBox="0 0 24 24"
+    fill="none"
+    className="animate-spin text-neutral-400"
+  >
+    <circle
+      cx="12"
+      cy="12"
+      r="8.5"
+      stroke="currentColor"
+      strokeOpacity=".2"
+      strokeWidth="1.75"
+    />
+    <path
+      d="M12 3.5a8.5 8.5 0 0 1 8.5 8.5"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+    />
+  </svg>
+);
+
+const Ring = ({ failed }: { failed: boolean }) => (
+  <svg
+    width={16}
+    height={16}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.75"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <circle cx="12" cy="12" r="8.5" strokeOpacity=".55" />
+    {failed ? (
+      <path d="m9.5 9.5 5 5m0-5-5 5" />
+    ) : (
+      <path d="m8.75 12.25 2.25 2.25 4.25-4.75" />
+    )}
+  </svg>
+);
+
 /* ── Component ─────────────────────────────────────────────────────────── */
 
 // Its own component so the input/output stringification below only runs while
 // the panel is mounted. As inline JSX it ran on every render of a closed Tool,
 // and a streaming Write carries its whole file in `input`.
+//
+// Sits in the group under a hairline, like the row's View edge.
 const ToolBody = ({ toolPart }: { toolPart: ToolPart }) => {
   const { input, output, state } = toolPart;
 
   return (
-    <div className="bg-neutral-800 p-2.5 font-[ui-monospace,SFMono-Regular,Menlo,monospace] text-[11px]">
-      {input &&
-        Object.entries(input).map(([key, value]) => (
-          <div key={key}>
-            <span className="text-neutral-500">{key}:</span>{" "}
-            <span className="whitespace-pre-wrap break-all text-neutral-200">
+    <div className="whitespace-pre-wrap break-all border-t border-white/[0.06] px-2.5 py-2 font-mono text-[11px] leading-[1.6]">
+      {input && (
+        <div className="text-neutral-300">
+          {Object.entries(input).map(([key, value]) => (
+            <div key={key}>
+              <span className="text-neutral-500">{key}:</span>{" "}
               {formatValue(value)}
-            </span>
-          </div>
-        ))}
+            </div>
+          ))}
+        </div>
+      )}
 
-      {output &&
-        Object.entries(output).map(([key, value]) => (
-          <div key={key}>
-            <span className="text-neutral-500">{key}:</span>{" "}
-            <span className="whitespace-pre-wrap break-all text-neutral-200">
-              {formatValue(value)}
-            </span>
-          </div>
-        ))}
+      {output && (
+        <div className="mt-1 text-neutral-500">
+          {Object.entries(output).map(([key, value]) => (
+            <div key={key}>
+              {key}: {formatValue(value)}
+            </div>
+          ))}
+        </div>
+      )}
 
       {state === "output-error" && toolPart.errorText && (
-        <div>
-          <span className="text-neutral-500">error:</span>{" "}
-          <span className="text-[#f06060]">{toolPart.errorText}</span>
-        </div>
+        <div className="mt-1 text-red-300/70">{toolPart.errorText}</div>
       )}
     </div>
   );
@@ -111,6 +142,9 @@ export type ToolProps = {
   className?: string;
 };
 
+// One row of a grouped list (ToolCallsMono design): the caller's group draws
+// the card and the hairlines between calls. The hover fill and colours switch
+// without a transition, so hovering costs one repaint and no animation frames.
 export const Tool = memo(function Tool({
   toolPart,
   title,
@@ -119,73 +153,59 @@ export const Tool = memo(function Tool({
   className,
 }: ToolProps) {
   const [isOpen, setIsOpen] = useState(defaultOpen);
-  const cfg = stateConfig[toolPart.state];
-  const StateIcon = cfg.icon;
   const { state } = toolPart;
 
   const component = onViewComponent ? viewableComponent(toolPart) : null;
-  const spinning = state === "input-streaming" || state === "input-available";
+  const running = state === "input-streaming" || state === "input-available";
+  const failed = state === "output-error";
 
   return (
-    <div
-      className={cn(
-        "overflow-hidden rounded-sm border border-[#444] bg-[#333]",
-        className,
-      )}
-    >
-      <Collapsible open={isOpen} onOpenChange={setIsOpen}>
-        {/* items-stretch so the rail runs the row's full height */}
-        <div className="flex w-full items-stretch">
-          <CollapsibleTrigger asChild>
-            <button
-              type="button"
-              className="flex min-w-0 flex-1 cursor-pointer items-center gap-[6px] px-2.5 py-2 transition-colors hover:bg-[#3d3d3d]"
-            >
-              <div
-                className={cn(
-                  "flex shrink-0 items-center",
-                  spinning && "animate-spin",
-                )}
-              >
-                <StateIcon size={18} strokeWidth={1.75} color={cfg.color} />
-              </div>
-              <p className="m-0 min-w-0 flex-1 truncate text-left text-[13px] font-medium text-neutral-200">
-                {title ?? getToolTitle(toolPart)}
-              </p>
-              {/* Inside the trigger so it shares the hover fill and expands on click */}
-              <ChevronDown
-                className={cn(
-                  "ml-1 size-3.5 shrink-0 text-[#888] transition-transform",
-                  isOpen && "rotate-180",
-                )}
-              />
-            </button>
-          </CollapsibleTrigger>
-
-          {/* Sibling of the trigger, never a child — a nested button is invalid
-              and would swallow the expand click on the way out. */}
-          <div className="flex shrink-0 items-stretch">
-            {component && (
-              // Fills with the row's own #333 and hovers to the trigger's
-              // #3d3d3d: no surface of its own, only an edge, so both halves
-              // of the row lift identically.
-              <button
-                type="button"
-                onClick={() => onViewComponent?.(component)}
-                title={`View ${component}`}
-                className="flex shrink-0 cursor-pointer items-center gap-1.5 self-stretch whitespace-nowrap border-l border-[#444] bg-[#333] px-2.5 text-[13px] font-medium text-neutral-400 transition-colors hover:bg-[#3d3d3d] hover:text-white"
-              >
-                <ArrowUpRight className="size-3.5" />
-                View
-              </button>
+    <div className={className}>
+      <div className="flex items-stretch">
+        <button
+          type="button"
+          aria-expanded={isOpen}
+          onClick={() => setIsOpen((o) => !o)}
+          className="group flex min-w-0 flex-1 cursor-pointer items-center gap-2 px-2.5 py-2 hover:bg-white/[0.025]"
+        >
+          <span className="grid w-4 shrink-0 place-items-center text-neutral-500">
+            {running ? <Spinner /> : <Ring failed={failed} />}
+          </span>
+          <span
+            className={cn(
+              "min-w-0 flex-1 truncate text-left text-[13px] text-neutral-300",
+              running && "tool-shimmer",
             )}
-          </div>
-        </div>
+          >
+            {title ?? getToolTitle(toolPart)}
+          </span>
+          {failed && (
+            <span className="shrink-0 text-[12px] text-red-300/70">Failed</span>
+          )}
+          <ChevronDown
+            className={cn(
+              "ml-1 size-3.5 shrink-0 text-neutral-600 transition-transform group-hover:text-neutral-400",
+              isOpen && "rotate-180",
+            )}
+          />
+        </button>
 
-        <CollapsibleContent className="overflow-hidden border-t border-[#444]">
-          <ToolBody toolPart={toolPart} />
-        </CollapsibleContent>
-      </Collapsible>
+        {/* Sibling of the trigger, never a child — a nested button is invalid
+            and would swallow the expand click on the way out. */}
+        {component && (
+          <button
+            type="button"
+            onClick={() => onViewComponent?.(component)}
+            title={`View ${component}`}
+            className="flex shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap border-l border-white/[0.06] px-2.5 text-[13px] font-medium text-neutral-500 hover:bg-white/[0.025] hover:text-neutral-100"
+          >
+            <ArrowUpRight className="size-3.5" />
+            View
+          </button>
+        )}
+      </div>
+
+      {isOpen && <ToolBody toolPart={toolPart} />}
     </div>
   );
 });

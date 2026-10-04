@@ -129,9 +129,24 @@
   to { opacity: 1; transform: translateY(0); }
 }
 
+/* A running tool call's title (ToolCallsMono design). Declared once here
+   rather than as a <style> per Tool. */
+@keyframes tool-shimmer {
+  from { background-position: 150% 0; }
+  to { background-position: -50% 0; }
+}
+
 @layer utilities {
   .drag-region {
     -webkit-app-region: drag;
+  }
+  .tool-shimmer {
+    background: linear-gradient(90deg, #737373 0%, #737373 40%, #e5e5e5 50%, #737373 60%, #737373 100%);
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: tool-shimmer 1.8s linear infinite;
   }
 }
 
