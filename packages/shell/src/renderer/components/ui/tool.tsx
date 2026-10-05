@@ -1,4 +1,5 @@
 import { HighlightedCode } from "@/renderer/components/ui/highlighted-code";
+import { MultiFileDiff } from "@pierre/diffs/react";
 import {
   langForPath,
   parseNumberedLines,
@@ -123,15 +124,75 @@ const ShellCommand = ({ command }: { command: string }) => {
   );
 };
 
+const EDIT_DIFF_OPTIONS = {
+  theme: "houston",
+  diffStyle: "unified",
+  diffIndicators: "classic",
+  lineDiffType: "word",
+  overflow: "wrap",
+  disableFileHeader: true,
+  // Numbers would count from the snippet's first line, not the file's.
+  disableLineNumbers: true,
+  // The strings are the context Claude chose; show all of it.
+  expandUnchanged: true,
+  // The theme sets its own background inline; lines and their tints mix
+  // with the chat's instead.
+  unsafeCSS: `pre { --diffs-bg: #262626 !important; } :host, pre, code, [data-file], [data-code] { background: transparent !important; }`,
+} as const;
+
+// The same type as the rest of the body.
+const EDIT_DIFF_STYLE = {
+  "--diffs-font-family": "var(--font-mono)",
+  "--diffs-font-size": "11px",
+  "--diffs-line-height": "1.6",
+  whiteSpace: "normal",
+} as React.CSSProperties;
+
+// The strings are snippets, so a missing final newline isn't worth the diff's
+// "No newline at end of file" row.
+const asFile = (s: string) => (s === "" || s.endsWith("\n") ? s : `${s}\n`);
+
+// A settled Edit as a line diff with word-level changes, coloured like the
+// code side panel. @pierre/diffs highlights asynchronously, so while the
+// input streams the strings render as two tinted blocks instead.
+const EditDiff = ({
+  name,
+  oldString,
+  newString,
+}: {
+  name: string;
+  oldString: string;
+  newString: string;
+}) => {
+  const oldFile = useMemo(
+    () => ({ name, contents: asFile(oldString) }),
+    [name, oldString],
+  );
+  const newFile = useMemo(
+    () => ({ name, contents: asFile(newString) }),
+    [name, newString],
+  );
+  return (
+    <MultiFileDiff
+      oldFile={oldFile}
+      newFile={newFile}
+      options={EDIT_DIFF_OPTIONS}
+      style={EDIT_DIFF_STYLE}
+    />
+  );
+};
+
 // The tools whose input is mostly code get it coloured; everything else lists
 // its fields. Each branch reads the input defensively: while it streams, the
 // partial JSON only holds the fields that have arrived so far.
 const ToolInput = ({
   type,
   input,
+  streaming,
 }: {
   type: string;
   input: Record<string, unknown>;
+  streaming: boolean;
 }) => {
   const filePath = str(input.file_path);
   const lang = filePath ? langForPath(filePath) : null;
@@ -171,21 +232,31 @@ const ToolInput = ({
         {input.replace_all === true && (
           <Field name="replace_all" value={true} />
         )}
-        {/* The tints run to the body's edges, past its padding. */}
-        <div className="-mx-2.5 mt-1 [&>div>div]:px-2.5">
-          <HighlightedCode
-            code={oldString}
-            lang={lang}
-            lineClassName="bg-red-400/[0.07]"
-          />
-          {newString !== null && (
-            <HighlightedCode
-              code={newString}
-              lang={lang}
-              lineClassName="bg-emerald-400/[0.07]"
+        {!streaming && newString !== null ? (
+          <div className="-mx-2.5 mt-1">
+            <EditDiff
+              name={filePath?.split("/").pop() || "file"}
+              oldString={oldString}
+              newString={newString}
             />
-          )}
-        </div>
+          </div>
+        ) : (
+          /* The tints run to the body's edges, past its padding. */
+          <div className="-mx-2.5 mt-1 [&>div>div]:px-2.5">
+            <HighlightedCode
+              code={oldString}
+              lang={lang}
+              lineClassName="bg-red-400/[0.07]"
+            />
+            {newString !== null && (
+              <HighlightedCode
+                code={newString}
+                lang={lang}
+                lineClassName="bg-emerald-400/[0.07]"
+              />
+            )}
+          </div>
+        )}
       </>
     );
   }
@@ -266,7 +337,11 @@ const ToolBody = ({ toolPart }: { toolPart: ToolPart }) => {
     <div className="whitespace-pre-wrap break-all border-t border-white/[0.06] px-2.5 py-2 font-mono text-[11px] leading-[1.6]">
       {input && (
         <div className="text-neutral-300">
-          <ToolInput type={toolPart.type} input={input} />
+          <ToolInput
+            type={toolPart.type}
+            input={input}
+            streaming={state === "input-streaming"}
+          />
         </div>
       )}
 
