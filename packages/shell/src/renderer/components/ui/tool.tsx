@@ -141,7 +141,20 @@ const ToolInput = ({
   const newString = str(input.new_string);
 
   if (type === "Bash" && command !== null) {
-    return <ShellCommand command={command} />;
+    // The description is the row's title. The rest (timeout,
+    // run_in_background, dangerouslyDisableSandbox) follow the command.
+    return (
+      <>
+        <ShellCommand command={command} />
+        {Object.entries(input).map(
+          ([key, value]) =>
+            key !== "command" &&
+            key !== "description" && (
+              <Field key={key} name={key} value={value} />
+            ),
+        )}
+      </>
+    );
   }
   if (type === "Write" && content !== null) {
     return (
@@ -155,7 +168,9 @@ const ToolInput = ({
     return (
       <>
         {filePath && <Field name="file_path" value={filePath} />}
-        {input.replace_all === true && <Field name="replace_all" value={true} />}
+        {input.replace_all === true && (
+          <Field name="replace_all" value={true} />
+        )}
         {/* The tints run to the body's edges, past its padding. */}
         <div className="-mx-2.5 mt-1 [&>div>div]:px-2.5">
           <HighlightedCode

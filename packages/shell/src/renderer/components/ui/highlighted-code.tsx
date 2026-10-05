@@ -1,4 +1,8 @@
-import { highlight, type Lang, type ThemedToken } from "@/renderer/lib/highlight";
+import {
+  highlight,
+  type Lang,
+  type ThemedToken,
+} from "@/renderer/lib/highlight";
 import { cn } from "@/renderer/lib/utils";
 import { memo, useMemo } from "react";
 
@@ -44,20 +48,24 @@ const Line = memo(
         </span>
       )}
       <span className="min-w-0 flex-1">
-        {tokens
-          ? tokens.map((t, i) => (
-              <span
-                key={i}
-                style={{
-                  color: t.color,
-                  fontStyle: t.fontStyle! & ITALIC ? "italic" : undefined,
-                  fontWeight: t.fontStyle! & BOLD ? 600 : undefined,
-                }}
-              >
-                {t.content}
-              </span>
-            ))
-          : text}
+        {/* Chromium copies an empty row as nothing, so copied code would lose
+            its blank lines. A newline in the row keeps them. */}
+        {text === ""
+          ? "\n"
+          : tokens
+            ? tokens.map((t, i) => (
+                <span
+                  key={i}
+                  style={{
+                    color: t.color,
+                    fontStyle: t.fontStyle! & ITALIC ? "italic" : undefined,
+                    fontWeight: t.fontStyle! & BOLD ? 600 : undefined,
+                  }}
+                >
+                  {t.content}
+                </span>
+              ))
+            : text}
       </span>
     </div>
   ),
