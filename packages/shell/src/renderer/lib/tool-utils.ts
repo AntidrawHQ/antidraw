@@ -26,15 +26,36 @@ function isToolResultBlock(block: AnyContentBlock): block is ToolResultBlock {
   return "tool_use_id" in block;
 }
 
-// Extract string content from various result formats
-function extractResultContent(content: unknown): string {
-  if (typeof content === "string") {
-    return content;
+export type ToolImage = { mediaType: string; data: string };
+
+const isBase64Image = (
+  block: unknown,
+): block is { type: "image"; source: { type: "base64"; media_type: string; data: string } } =>
+  typeof block === "object" &&
+  block !== null &&
+  (block as { type?: unknown }).type === "image" &&
+  (block as { source?: { type?: unknown } }).source?.type === "base64";
+
+// A result's text, with its images (a Read of a screenshot) split out. As
+// JSON they were the base64 of every screenshot, stringified again on every
+// correlate and dumped into the row as text.
+function extractResult(content: unknown): { text: string; images: ToolImage[] } {
+  if (typeof content === "string") return { text: content, images: [] };
+  if (!Array.isArray(content)) {
+    return { text: content != null ? JSON.stringify(content, null, 2) : "", images: [] };
   }
-  if (content != null) {
-    return JSON.stringify(content, null, 2);
+  const text: string[] = [];
+  const images: ToolImage[] = [];
+  for (const block of content) {
+    if (isBase64Image(block)) {
+      images.push({ mediaType: block.source.media_type, data: block.source.data });
+    } else if (block?.type === "text" && typeof block.text === "string") {
+      text.push(block.text);
+    } else {
+      text.push(JSON.stringify(block, null, 2));
+    }
   }
-  return "";
+  return { text: text.join("\n"), images };
 }
 
 export function correlateTools(
@@ -73,11 +94,11 @@ export function correlateTools(
           const isError = "is_error" in block && block.is_error === true;
           existing.state = isError ? "output-error" : "output-available";
 
-          const resultContent = extractResultContent(block.content);
-          existing.output = { result: resultContent };
+          const { text, images } = extractResult(block.content);
+          existing.output = images.length ? { result: text, images } : { result: text };
 
           if (isError) {
-            existing.errorText = resultContent;
+            existing.errorText = text;
           }
         }
       }
