@@ -10,16 +10,16 @@ const DIFFS_OPTIONS = {
   theme: "houston" as const,
   overflow: "scroll" as const,
   disableFileHeader: true,
-  unsafeCSS: `:host, pre,code, [data-file], [data-code] { background-color: #262626 !important; background: #262626 !important; }`,
+  unsafeCSS: `:host, pre,code, [data-file], [data-code] { background-color: #2A2A2A !important; background: #2A2A2A !important; }`,
 };
 
 const DIFFS_STYLE = {
   height: "100%",
   overflow: "auto",
-  backgroundColor: "#262626",
-  "--diffs-bg": "#262626",
-  "--diffs-dark-bg": "#262626",
-  "--diffs-light-bg": "#262626",
+  backgroundColor: "#2A2A2A",
+  "--diffs-bg": "#2A2A2A",
+  "--diffs-dark-bg": "#2A2A2A",
+  "--diffs-light-bg": "#2A2A2A",
 } as React.CSSProperties;
 
 const Sidebar = ({
@@ -48,7 +48,7 @@ const Sidebar = ({
   return (
     <div
       className={cn(
-        "fixed top-[38px] right-0 bottom-0 w-[420px] flex flex-col bg-[#262626] border-l border-[#2d2d2d] z-[100] transition-transform duration-[320ms] ease-[cubic-bezier(0.16,1,0.3,1)]",
+        "fixed top-[38px] right-0 bottom-0 w-[420px] flex flex-col bg-[#2A2A2A] border-l border-[#2d2d2d] z-[100] transition-transform duration-[320ms] ease-[cubic-bezier(0.16,1,0.3,1)]",
         isOpen
           ? "translate-x-0 pointer-events-auto"
           : "translate-x-full pointer-events-none"

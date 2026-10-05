@@ -235,7 +235,7 @@ export const SidePanel = ({ className }: SidePanelProps) => {
 
   return (
     <ResizablePanel
-      className={cn("bg-neutral-800", className)}
+      className={cn("bg-[#2A2A2A]", className)}
       defaultWidth={500}
       maxWidth={800}
     >

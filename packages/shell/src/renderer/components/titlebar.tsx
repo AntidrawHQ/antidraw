@@ -13,7 +13,7 @@ export const Titlebar = () => {
   return (
     <div
       // pl-20 keeps the right-hand group clear of the traffic lights.
-      className="relative h-[38px] flex items-center w-full shrink-0 bg-neutral-800 border-b border-[#333] drag-region pl-20"
+      className="relative h-[38px] flex items-center w-full shrink-0 bg-[#2A2A2A] border-b border-[#333] drag-region pl-20"
     >
       {/* Centered on the window, not between the side groups, which differ in
           width. Hidden where the right-hand group would cover it. */}
