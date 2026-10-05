@@ -269,19 +269,6 @@ type CanvasComponent = {
   name: string;
 };
 
-// Grid pattern background component
-const gridPatternStyle = {
-  backgroundImage: "radial-gradient(#2d2d2d 1px, transparent 1px)",
-  backgroundSize: "20px 20px",
-} as const;
-
-export const GridPattern = () => (
-  <div
-    className="absolute inset-0 opacity-50 pointer-events-none"
-    style={gridPatternStyle}
-  />
-);
-
 // Zero-area nodes match every selection box (xyflow's containment check is
 // overlappingArea >= width * height, trivially true when the area is 0), so
 // dimensions must never collapse to 0. Matches NodeResizer's default minimum.
@@ -504,7 +491,6 @@ export const Canvas = ({
   return (
     <FrameActionsContext.Provider value={frameActions}>
       <div className={cn("h-full w-full bg-neutral-800 relative", className)}>
-        <GridPattern />
         <ReactFlow
           nodes={nodes}
           onNodesChange={handleNodesChange}

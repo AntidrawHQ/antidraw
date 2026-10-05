@@ -6,7 +6,7 @@ import { useDevServerStatus, useAutoStartDevServer } from "./lib/workspace-ops";
 import { useFrameLayouts } from "./lib/frame-layout-ops";
 import { saveFrameLayouts, type FrameLayoutData } from "./lib/api";
 import { cn } from "./lib/utils";
-import { Canvas, GridPattern, useFocusComponent, type FrameLayout } from "./canvas/Canvas";
+import { Canvas, useFocusComponent, type FrameLayout } from "./canvas/Canvas";
 import { EmptyState } from "./components/EmptyState";
 
 // Focus on component when clicked in ComponentPanel
@@ -79,7 +79,6 @@ type CanvasPlaceholderProps = {
 
 const CanvasPlaceholder = ({ subtitle, className }: CanvasPlaceholderProps) => (
   <div className={cn("flex-1 flex items-center justify-center bg-neutral-800 relative", className)}>
-    <GridPattern />
     <div className="text-center z-10">
       <div className="text-sm text-[#71717a]">Canvas</div>
       <div className="text-[11px] text-neutral-600">{subtitle}</div>
@@ -134,7 +133,6 @@ export const AppCanvas = ({ className }: AppCanvasProps) => {
   if (userComponents.length === 0) {
     return (
       <div className={cn("flex-1 flex items-center justify-center bg-neutral-800 relative", className)}>
-        <GridPattern />
         <EmptyState className="z-10" />
       </div>
     );
