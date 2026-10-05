@@ -1,7 +1,13 @@
-import { viewableComponent } from "@/renderer/lib/tool-utils";
+import { HighlightedCode } from "@/renderer/components/ui/highlighted-code";
+import {
+  langForPath,
+  parseNumberedLines,
+  splitShellCommand,
+} from "@/renderer/lib/highlight";
+import { viewableComponent, type ToolImage } from "@/renderer/lib/tool-utils";
 import { cn } from "@/renderer/lib/utils";
 import { ArrowUpRight, ChevronDown } from "lucide-react";
-import { memo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 
 export type ToolPart = {
   type: string;
@@ -95,6 +101,144 @@ const Ring = ({ failed }: { failed: boolean }) => (
 
 /* ── Component ─────────────────────────────────────────────────────────── */
 
+const Field = ({ name, value }: { name: string; value: unknown }) => (
+  <div>
+    <span className="text-neutral-500">{name}:</span> {formatValue(value)}
+  </div>
+);
+
+const str = (value: unknown): string | null =>
+  typeof value === "string" ? value : null;
+
+// Bash, with each heredoc body in the language of whatever reads it: the
+// python3 script or the file a `cat >` writes, rather than one bash string.
+const ShellCommand = ({ command }: { command: string }) => {
+  const segments = useMemo(() => splitShellCommand(command), [command]);
+  return (
+    <>
+      {segments.map((segment, i) => (
+        <HighlightedCode key={i} code={segment.code} lang={segment.lang} />
+      ))}
+    </>
+  );
+};
+
+// The tools whose input is mostly code get it coloured; everything else lists
+// its fields. Each branch reads the input defensively: while it streams, the
+// partial JSON only holds the fields that have arrived so far.
+const ToolInput = ({
+  type,
+  input,
+}: {
+  type: string;
+  input: Record<string, unknown>;
+}) => {
+  const filePath = str(input.file_path);
+  const lang = filePath ? langForPath(filePath) : null;
+  const command = str(input.command);
+  const content = str(input.content);
+  const oldString = str(input.old_string);
+  const newString = str(input.new_string);
+
+  if (type === "Bash" && command !== null) {
+    return <ShellCommand command={command} />;
+  }
+  if (type === "Write" && content !== null) {
+    return (
+      <>
+        {filePath && <Field name="file_path" value={filePath} />}
+        <HighlightedCode code={content} lang={lang} className="mt-1" />
+      </>
+    );
+  }
+  if (type === "Edit" && oldString !== null) {
+    return (
+      <>
+        {filePath && <Field name="file_path" value={filePath} />}
+        {input.replace_all === true && <Field name="replace_all" value={true} />}
+        {/* The tints run to the body's edges, past its padding. */}
+        <div className="-mx-2.5 mt-1 [&>div>div]:px-2.5">
+          <HighlightedCode
+            code={oldString}
+            lang={lang}
+            lineClassName="bg-red-400/[0.07]"
+          />
+          {newString !== null && (
+            <HighlightedCode
+              code={newString}
+              lang={lang}
+              lineClassName="bg-emerald-400/[0.07]"
+            />
+          )}
+        </div>
+      </>
+    );
+  }
+  return (
+    <>
+      {Object.entries(input).map(([key, value]) => (
+        <Field key={key} name={key} value={value} />
+      ))}
+    </>
+  );
+};
+
+const ToolImages = ({ images }: { images: ToolImage[] }) => (
+  <div className="mt-1 flex flex-col gap-2">
+    {images.map((image, i) => (
+      <img
+        key={i}
+        src={`data:${image.mediaType};base64,${image.data}`}
+        alt=""
+        decoding="async"
+        className="max-h-80 max-w-full self-start rounded border border-white/[0.06]"
+      />
+    ))}
+  </div>
+);
+
+// A Read result is the file with a line number on each line: coloured as the
+// file, with the numbers in a gutter. A Read of an image shows the image.
+// Other results stay plain text.
+const ToolOutput = ({ toolPart }: { toolPart: ToolPart }) => {
+  const result = str(toolPart.output?.result);
+  const images = toolPart.output?.images as ToolImage[] | undefined;
+  const filePath = str(toolPart.input?.file_path);
+  const numbered =
+    toolPart.type === "Read" && toolPart.state === "output-available" && result
+      ? parseNumberedLines(result)
+      : null;
+
+  if (numbered) {
+    return (
+      <>
+        <HighlightedCode
+          code={numbered.code}
+          lang={filePath ? langForPath(filePath) : null}
+          lineNumbers={numbered.numbers}
+          className="text-neutral-300"
+        />
+        {numbered.rest && <div className="mt-1">{numbered.rest}</div>}
+      </>
+    );
+  }
+  return (
+    <>
+      {Object.entries(toolPart.output ?? {}).map(
+        ([key, value]) =>
+          key !== "images" &&
+          // An image's result has no text beside it.
+          !(images && value === "") && (
+            <div key={key}>
+              {key}: {formatValue(value)}
+            </div>
+          ),
+      )}
+      {images && <ToolImages images={images} />}
+    </>
+  );
+};
+
 // Its own component so the input/output stringification below only runs while
 // the panel is mounted. As inline JSX it ran on every render of a closed Tool,
 // and a streaming Write carries its whole file in `input`.
@@ -107,22 +251,13 @@ const ToolBody = ({ toolPart }: { toolPart: ToolPart }) => {
     <div className="whitespace-pre-wrap break-all border-t border-white/[0.06] px-2.5 py-2 font-mono text-[11px] leading-[1.6]">
       {input && (
         <div className="text-neutral-300">
-          {Object.entries(input).map(([key, value]) => (
-            <div key={key}>
-              <span className="text-neutral-500">{key}:</span>{" "}
-              {formatValue(value)}
-            </div>
-          ))}
+          <ToolInput type={toolPart.type} input={input} />
         </div>
       )}
 
       {output && (
         <div className="mt-1 text-neutral-500">
-          {Object.entries(output).map(([key, value]) => (
-            <div key={key}>
-              {key}: {formatValue(value)}
-            </div>
-          ))}
+          <ToolOutput toolPart={toolPart} />
         </div>
       )}
 
