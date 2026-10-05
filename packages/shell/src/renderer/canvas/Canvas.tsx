@@ -490,7 +490,7 @@ export const Canvas = ({
 
   return (
     <FrameActionsContext.Provider value={frameActions}>
-      <div className={cn("h-full w-full bg-neutral-800 relative", className)}>
+      <div className={cn("h-full w-full bg-[#282828] relative", className)}>
         <ReactFlow
           nodes={nodes}
           onNodesChange={handleNodesChange}

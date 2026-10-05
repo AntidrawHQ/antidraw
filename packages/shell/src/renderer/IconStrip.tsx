@@ -17,7 +17,7 @@ export const IconStrip = () => {
   const setActiveSidePanel = useWorkspaceStore((s) => s.setActiveSidePanel);
 
   return (
-    <div className="w-12 shrink-0 bg-[#282828] flex flex-col items-stretch border-r border-[#333]">
+    <div className="w-12 shrink-0 bg-[#2A2A2A] flex flex-col items-stretch border-r border-[#333]">
       {tabs.map((tab) => {
         const isActive = activeSidePanel === tab.id;
         return (

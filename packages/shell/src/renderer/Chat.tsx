@@ -749,7 +749,7 @@ export function AppChat({ className, ...props }: AppChatProps) {
   return (
     <div
       className={cn(
-        "flex w-full flex-col overflow-hidden bg-[#282828] h-full",
+        "flex w-full flex-col overflow-hidden bg-[#2A2A2A] h-full",
         className
       )}
       {...props}
