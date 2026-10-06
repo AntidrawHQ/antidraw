@@ -237,7 +237,7 @@ const MessageRow = memo(
           isAssistant ? (
             <Markdown
               key={idx}
-              className="bg-secondary text-foreground prose prose-sm prose-invert max-w-none rounded-lg"
+              className="bg-transparent text-foreground prose prose-sm prose-invert max-w-none rounded-lg"
             >
               {block.text}
             </Markdown>
@@ -333,7 +333,7 @@ const LiveTail = memo(({ conversationId, toolMap, isStreaming }: LiveTailProps) 
       {liveText && (
         <Message data-role="assistant" className="justify-start">
           <div className="flex flex-col overflow-auto w-full">
-            <Markdown className="bg-secondary text-foreground prose prose-sm prose-invert max-w-none rounded-lg">
+            <Markdown className="bg-transparent text-foreground prose prose-sm prose-invert max-w-none rounded-lg">
               {liveText}
             </Markdown>
           </div>
@@ -783,7 +783,7 @@ export function AppChat({ className, ...props }: AppChatProps) {
   return (
     <div
       className={cn(
-        "flex w-full flex-col overflow-hidden bg-neutral-800 h-full",
+        "flex w-full flex-col overflow-hidden bg-[#2A2A2A] h-full",
         className
       )}
       {...props}

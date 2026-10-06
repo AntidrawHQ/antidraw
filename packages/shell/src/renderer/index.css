@@ -142,7 +142,7 @@
   .drag-region {
     -webkit-app-region: drag;
   }
-  /* The base stop is neutral-400: 6:1 on the chat's #262626. */
+  /* The base stop is neutral-400: 5.7:1 on the chat's #2A2A2A. */
   [data-streaming] .tool-shimmer {
     background: linear-gradient(90deg, #a3a3a3 0%, #a3a3a3 40%, #fafafa 50%, #a3a3a3 60%, #a3a3a3 100%);
     background-size: 200% 100%;

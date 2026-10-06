@@ -142,7 +142,7 @@ const EDIT_DIFF_OPTIONS = {
   expandUnchanged: true,
   // The theme sets its own background inline; lines and their tints mix
   // with the chat's instead.
-  unsafeCSS: `pre { --diffs-bg: #262626 !important; } :host, pre, code, [data-file], [data-code] { background: transparent !important; }`,
+  unsafeCSS: `pre { --diffs-bg: #2A2A2A !important; } :host, pre, code, [data-file], [data-code] { background: transparent !important; }`,
 } as const;
 
 // The same type as the rest of the body.
