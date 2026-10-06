@@ -23,7 +23,7 @@ import { ArrowUp, ImageIcon, Paperclip, Square, X } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { ConversationWithMessages } from "@/main/api";
 import { retryStream } from "./lib/stream-subscription";
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   useCancelStream,
   useConversationMessages,
@@ -108,6 +108,23 @@ const rowTools = (
 type ViewComponent = (componentName: string) => void;
 const NO_VIEWS: readonly (ViewComponent | undefined)[] = [];
 
+// A tool-call row. The list's gap-2 plus my-1 puts 12px between a burst of
+// calls and prose; between consecutive tool rows -mt-3 cancels the gap and
+// both margins, so their groups touch.
+const TOOL_ROW = "my-1 [[data-kind=tool]+&[data-kind=tool]]:-mt-3";
+
+// One burst of calls in one outlined card, divided by hairlines ("Grouped
+// list" with the faint border, from the ToolCallsMono design). A burst
+// usually spans several rows, one call each, so touching groups join in CSS
+// instead of being regrouped in React, which would undo the row memos: the
+// upper loses its bottom edge and corners, the lower's top edge becomes the
+// divider. `group` is each row's wrapper: Message > div > group.
+const TOOL_GROUP = cn(
+  "overflow-hidden rounded-md border border-white/[0.05] divide-y divide-white/[0.06]",
+  "[[data-kind=tool]:has(+[data-kind=tool])>div>&]:rounded-b-none [[data-kind=tool]:has(+[data-kind=tool])>div>&]:border-b-0",
+  "[[data-kind=tool]+[data-kind=tool]>div>&]:rounded-t-none [[data-kind=tool]+[data-kind=tool]>div>&]:border-t-white/[0.06]"
+);
+
 type MessageRowProps = {
   msg: ChatMessage;
   // Parallel to the message's tool_use blocks (see rowTools).
@@ -181,8 +198,67 @@ const MessageRow = memo(
         ? "tool"
         : "text";
 
-    // Walks `tools` alongside the tool_use blocks below.
-    let toolIndex = 0;
+    // Text in order, with each run of consecutive tool calls in one group.
+    const renderBlocks = () => {
+      const nodes: ReactNode[] = [];
+      let run: ReactNode[] = [];
+      // Walks `tools` alongside the tool_use blocks.
+      let toolIndex = 0;
+      const flush = () => {
+        if (run.length === 0) return;
+        nodes.push(
+          <div key={`tools-${nodes.length}`} className={TOOL_GROUP}>
+            {run}
+          </div>
+        );
+        run = [];
+      };
+
+      blocks.forEach((block, idx) => {
+        if (block.type === "tool_use") {
+          const toolPart = tools[toolIndex];
+          const onViewComponent = views[toolIndex];
+          toolIndex++;
+          if (toolPart) {
+            run.push(
+              <Tool
+                key={idx}
+                toolPart={toolPart}
+                onViewComponent={onViewComponent}
+              />
+            );
+          }
+          return;
+        }
+
+        if (block.type !== "text") return;
+        flush();
+        nodes.push(
+          isAssistant ? (
+            <Markdown
+              key={idx}
+              className="bg-transparent text-foreground prose prose-sm prose-invert max-w-none rounded-lg"
+            >
+              {block.text}
+            </Markdown>
+          ) : (
+            <MessageContent
+              key={idx}
+              className={cn(
+                // Hugs its text up to 85% of the panel, against the right
+                // edge, like the queued deck that hands prompts over.
+                "self-end max-w-[85%] bg-neutral-700 text-neutral-200 prose prose-sm prose-invert",
+                isFailed && "opacity-60"
+              )}
+            >
+              {block.text}
+            </MessageContent>
+          )
+        );
+      });
+      flush();
+      return nodes;
+    };
 
     return (
       <Message
@@ -190,13 +266,13 @@ const MessageRow = memo(
         data-kind={kind}
         className={cn(
           isAssistant ? "justify-start" : "justify-end",
-          "[[data-kind=tool]+&[data-kind=tool]]:-mt-2",
+          kind === "tool" && TOOL_ROW,
           revealed && cn("animate-in fade-in slide-in-from-bottom-2", SMOOTH)
         )}
       >
         <div className="flex flex-col overflow-auto w-full">
           {imageBlocks.length > 0 && (
-            <div className="flex flex-wrap gap-1">
+            <div className={cn("flex flex-wrap gap-1", !isAssistant && "justify-end")}>
               {imageBlocks.map((block, idx) => (
                 <img
                   key={`img-${idx}`}
@@ -207,51 +283,7 @@ const MessageRow = memo(
               ))}
             </div>
           )}
-          {blocks.map((block, idx) => {
-            if (block.type === "image") {
-              return null;
-            }
-
-            if (block.type === "text") {
-              return isAssistant ? (
-                <Markdown
-                  key={idx}
-                  className="bg-secondary text-foreground prose prose-sm prose-invert max-w-none rounded-lg"
-                >
-                  {block.text}
-                </Markdown>
-              ) : (
-                <MessageContent
-                  key={idx}
-                  className={cn(
-                    "bg-neutral-700 text-neutral-200 prose prose-sm prose-invert max-w-none",
-                    isFailed && "opacity-60"
-                  )}
-                >
-                  {block.text}
-                </MessageContent>
-              );
-            }
-
-            if (block.type === "tool_use") {
-              const toolPart = tools[toolIndex];
-              const onViewComponent = views[toolIndex];
-              toolIndex++;
-              if (toolPart) {
-                return (
-                  <Tool
-                    key={idx}
-                    toolPart={toolPart}
-                    onViewComponent={onViewComponent}
-                    className="mt-1 w-full"
-                  />
-                );
-              }
-              return null;
-            }
-
-            return null;
-          })}
+          {renderBlocks()}
           {isFailed && (
             <div className="mt-0.5 self-end text-[10px] text-red-400">
               Not delivered
@@ -301,7 +333,7 @@ const LiveTail = memo(({ conversationId, toolMap, isStreaming }: LiveTailProps) 
       {liveText && (
         <Message data-role="assistant" className="justify-start">
           <div className="flex flex-col overflow-auto w-full">
-            <Markdown className="bg-secondary text-foreground prose prose-sm prose-invert max-w-none rounded-lg">
+            <Markdown className="bg-transparent text-foreground prose prose-sm prose-invert max-w-none rounded-lg">
               {liveText}
             </Markdown>
           </div>
@@ -311,13 +343,12 @@ const LiveTail = memo(({ conversationId, toolMap, isStreaming }: LiveTailProps) 
         <Message
           data-role="assistant"
           data-kind="tool"
-          className="justify-start [[data-kind=tool]+&[data-kind=tool]]:-mt-2"
+          className={cn("justify-start", TOOL_ROW)}
         >
           <div className="flex flex-col overflow-auto w-full">
-            <Tool
-              toolPart={liveTool}
-              className="mt-1 w-full"
-            />
+            <div className={TOOL_GROUP}>
+              <Tool toolPart={liveTool} />
+            </div>
           </div>
         </Message>
       )}
@@ -360,8 +391,11 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry, hiddenIds, reveal
     return onCanvas ? setFocusComponentName : undefined;
   };
 
+  // While the turn runs, its tool rows shimmer (see .tool-shimmer). A call
+  // that never got a result, from a turn that died, stays "running" and
+  // must not animate for the rest of the session.
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-2" data-streaming={isStreaming || undefined}>
       {messages.map((msg) => {
         const sdkMessage = msg.sdkMessage;
         if (sdkMessage.type !== "user" && sdkMessage.type !== "assistant") {
@@ -749,7 +783,7 @@ export function AppChat({ className, ...props }: AppChatProps) {
   return (
     <div
       className={cn(
-        "flex w-full flex-col overflow-hidden bg-neutral-800 h-full",
+        "flex w-full flex-col overflow-hidden bg-[#2A2A2A] h-full",
         className
       )}
       {...props}
@@ -768,15 +802,14 @@ export function AppChat({ className, ...props }: AppChatProps) {
             hiddenIds={deck.hiddenIds}
             revealedIds={deck.revealedIds}
           />
+          {activeConversationId && (
+            <QueuedMessagesDeck
+              conversationId={activeConversationId}
+              rows={deck.rows}
+            />
+          )}
         </ChatContainerContent>
       </ChatContainerRoot>
-
-      {activeConversationId && (
-        <QueuedMessagesDeck
-          conversationId={activeConversationId}
-          rows={deck.rows}
-        />
-      )}
 
       <Composer
         composer={composer}

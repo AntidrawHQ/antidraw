@@ -129,9 +129,34 @@
   to { opacity: 1; transform: translateY(0); }
 }
 
+/* A running tool call's title (ToolCallsMono design). Declared once here
+   rather than as a <style> per Tool. Background-position can't run on the
+   compositor, so it only animates while the transcript is streaming
+   ([data-streaming] on the message list); otherwise the title stays still. */
+@keyframes tool-shimmer {
+  from { background-position: 150% 0; }
+  to { background-position: -50% 0; }
+}
+
 @layer utilities {
   .drag-region {
     -webkit-app-region: drag;
+  }
+  /* The base stop is neutral-400: 5.7:1 on the chat's #2A2A2A. */
+  [data-streaming] .tool-shimmer {
+    background: linear-gradient(90deg, #a3a3a3 0%, #a3a3a3 40%, #fafafa 50%, #a3a3a3 60%, #a3a3a3 100%);
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: tool-shimmer 1.8s linear infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    [data-streaming] .tool-shimmer {
+      animation: none;
+      background: none;
+      color: #a3a3a3;
+    }
   }
 }
 
