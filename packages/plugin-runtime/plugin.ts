@@ -1,8 +1,11 @@
 import fs from "fs"
 import path from "path"
 import { fileURLToPath } from "url"
+import { parse } from "@babel/parser"
+import MagicString from "magic-string"
 import { normalizePath, transformWithEsbuild } from "vite"
 import type { Plugin, ResolvedConfig, ViteDevServer } from "vite"
+import { SOURCE_ATTRIBUTE } from "./src/inspector/protocol"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const certsDir = path.resolve(__dirname, "../certs")
@@ -11,6 +14,7 @@ const SOURCE_FILE_RE = /\.(ts|tsx|js|jsx|html)$/
 const SCANNABLE_FILE_RE = /\.(m?[jt]s|[jt]sx)$/
 const USER_COMPONENTS_DIR = "src/components/user-components"
 const BARE_IMPORT_RE = /^[\w@][^:]/
+const JSX_FILE_RE = /\.[jt]sx$/
 
 // Tailwind v4 compiles CSS lazily inside the transform of index.css, and Vite
 // caches that transform in its module graph. Files scanned during the last
@@ -171,6 +175,66 @@ const tolerateUnparsableSource = (): Plugin => {
   }
 }
 
+// Stamps each element in the workspace's JSX with where it is written, for
+// the canvas's inspector: <div className="card"> becomes
+// <div data-ad-loc="src/components/user-components/Card.tsx:12:5" className="card">.
+// Only elements that render a DOM node are stamped (<div>, <motion.div>);
+// on a component (<Card>) the attribute would be just another prop. Dev
+// server only: a build would publish this machine's file layout.
+const tagSource = (): Plugin => {
+  let root: string
+
+  type Node = { type: string; start: number; end: number; [key: string]: unknown }
+  const isNode = (v: unknown): v is Node => !!v && typeof v === "object" && typeof (v as Node).type === "string"
+  const visit = (node: Node, fn: (node: Node) => void) => {
+    fn(node)
+    for (const [key, value] of Object.entries(node)) {
+      if (key === "loc" || !value || typeof value !== "object") continue
+      if (Array.isArray(value)) value.forEach((child) => isNode(child) && visit(child, fn))
+      else if (isNode(value)) visit(value, fn)
+    }
+  }
+  const rendersDomNode = (name: Node): boolean =>
+    name.type === "JSXIdentifier"
+      ? /^[a-z]/.test(name.name as string)
+      : name.type === "JSXMemberExpression" && rendersDomNode(name.property as Node)
+
+  return {
+    name: "antidraw:tag-source",
+    apply: "serve",
+    // Ahead of plugin-react, on the file as written.
+    enforce: "pre",
+    configResolved(config) {
+      root = config.root
+    },
+    transform(code, id) {
+      const file = id.split("?")[0]!
+      if (!JSX_FILE_RE.test(file) || !isWorkspaceSource(root, file)) return null
+      let ast
+      try {
+        ast = parse(code, { sourceType: "module", plugins: ["jsx", "typescript"], errorRecovery: true })
+      } catch {
+        // plugin-react reports the syntax error.
+        return null
+      }
+      const relative = normalizePath(path.relative(root, file))
+      const s = new MagicString(code)
+      visit(ast.program as unknown as Node, (node) => {
+        if (node.type !== "JSXOpeningElement" || !rendersDomNode(node.name as Node)) return
+        const attributes = node.attributes as Node[]
+        const named = (a: Node) => a.type === "JSXAttribute" && (a.name as Node & { name: unknown }).name === SOURCE_ATTRIBUTE
+        if (attributes.some(named)) return
+        const { line, column } = (node.loc as { start: { line: number; column: number } }).start
+        // After the name and any type arguments (<motion.div<Props>>).
+        const after = ((node.typeArguments ?? node.typeParameters ?? node.name) as Node).end
+        s.appendLeft(after, ` ${SOURCE_ATTRIBUTE}={${JSON.stringify(`${relative}:${line}:${column + 1}`)}}`)
+      })
+      if (!s.hasChanged()) return null
+      return { code: s.toString(), map: s.generateMap({ hires: "boundary", source: file, includeContent: true }) }
+    },
+  }
+}
+
 // Vite decodes request paths with decodeURI, which leaves URL-reserved
 // characters (& ; : @ = + $ ,) percent-encoded, so a source file whose name
 // contains one cannot be requested: the lookup misses and the SPA fallback
@@ -284,6 +348,7 @@ const siteBuild = (): Plugin => {
 export const antidraw = (): Plugin[] => {
   return [
     siteBuild(),
+    tagSource(),
     cssInvalidateOnFileAdd(),
     decodeReservedInSourcePaths(),
     tolerateUnresolvedImports(),

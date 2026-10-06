@@ -8,6 +8,8 @@ import { saveFrameLayouts, type FrameLayoutData } from "./lib/api";
 import { cn } from "./lib/utils";
 import { Canvas, useFocusComponent, type FrameLayout } from "./canvas/Canvas";
 import { EmptyState } from "./components/EmptyState";
+import { renderFrameInspector } from "./inspector/FrameInspector";
+import { InspectorControls } from "./inspector/InspectorControls";
 
 // Focus on component when clicked in ComponentPanel
 const FocusRequestedComponent = () => {
@@ -65,9 +67,11 @@ const WorkspaceCanvas = ({
       onLayoutsChange={saveLayouts}
       onFullscreen={openFullscreen}
       onSeeCode={setCodePanelComponentName}
+      frameLayer={renderFrameInspector}
       className={className}
     >
       <FocusRequestedComponent />
+      <InspectorControls />
     </Canvas>
   );
 };

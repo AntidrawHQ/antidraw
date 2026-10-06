@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { ReactFlowProvider } from "@xyflow/react";
 import { afterEach, beforeAll, expect, it, vi } from "vitest";
-import type { FrameLayout } from "../Canvas";
+import type { FrameLayer, FrameLayout } from "../Canvas";
 
 // The shared canvas in jsdom, as the shell and the share page render it: what
 // each frame loads, which messages may size a frame, and where layout changes go.
@@ -38,7 +38,7 @@ const SITE = "https://paper-shaders.sites.test";
 const frameUrl = (componentName: string) =>
   `${SITE}/preview?componentName=${encodeURIComponent(componentName)}`;
 
-async function renderCanvas(onLayoutsChange?: (layouts: FrameLayout[]) => void) {
+async function renderCanvas(onLayoutsChange?: (layouts: FrameLayout[]) => void, frameLayer?: FrameLayer) {
   const { Canvas } = await import("../Canvas");
   const container = document.body.appendChild(document.createElement("div"));
   const render = (onChange: typeof onLayoutsChange) =>
@@ -51,6 +51,7 @@ async function renderCanvas(onLayoutsChange?: (layouts: FrameLayout[]) => void) 
             frameUrl={frameUrl}
             onLayoutsChange={onChange}
             onFullscreen={() => {}}
+            frameLayer={frameLayer}
           />
         </div>
       </ReactFlowProvider>,
@@ -146,4 +147,26 @@ it("saves a change with the callback given when it happened", async () => {
   } finally {
     vi.useRealTimers();
   }
+});
+
+it("draws a host's layer over each frame, handing it the frame's iframe", async () => {
+  await renderCanvas(undefined, ({ componentName, iframe }) => (
+    <i data-layer={componentName} data-src={iframe?.getAttribute("src") ?? ""} />
+  ));
+  // The iframe appears once a load slot is free, after the first render.
+  await act(async () => {});
+  expect(
+    [...document.querySelectorAll<HTMLElement>("[data-layer]")].map((el) => ({ ...el.dataset })),
+  ).toMatchInlineSnapshot(`
+    [
+      {
+        "layer": "Card",
+        "src": "https://paper-shaders.sites.test/preview?componentName=Card",
+      },
+      {
+        "layer": "Hero Card",
+        "src": "https://paper-shaders.sites.test/preview?componentName=Hero%20Card",
+      },
+    ]
+  `);
 });

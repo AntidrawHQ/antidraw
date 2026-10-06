@@ -1,0 +1,177 @@
+import {
+  INSPECTOR_NS,
+  INSPECTOR_PROTOCOL,
+  type ElementRef,
+  type Envelope,
+  type FromFrame,
+  type ToFrame,
+  type WalkDirection,
+} from "@antidrawapp/runtime/inspector";
+import { useInspectorStore, type Picked } from "./store";
+
+// The canvas side of the inspector protocol (@antidrawapp/runtime/inspector):
+// which iframe is which frame, requests and their answers, and the frames'
+// own news (ready, selection moved or gone) written into the store.
+
+type Request = ToFrame extends infer T ? (T extends ToFrame ? Omit<T, "id"> : never) : never;
+type Reply = Extract<FromFrame, { id?: number }>;
+
+const store = useInspectorStore;
+const iframes = new Map<string, HTMLIFrameElement>();
+const pending = new Map<number, { frame: string; resolve: (msg: Reply | null) => void }>();
+const latestHit = new Map<string, number>();
+let nextId = 1;
+
+const originOf = (iframe: HTMLIFrameElement) => {
+  try {
+    return new URL(iframe.src).origin;
+  } catch {
+    return null;
+  }
+};
+
+function post(frame: string, msg: ToFrame) {
+  const iframe = iframes.get(frame);
+  const target = iframe?.contentWindow;
+  const origin = iframe && originOf(iframe);
+  if (!target || !origin) return false;
+  target.postMessage({ ns: INSPECTOR_NS, ...msg } satisfies Envelope<ToFrame>, origin);
+  return true;
+}
+
+// Asks a frame and waits for its answer, or null if it doesn't come.
+function request(frame: string, msg: Request, timeout = 1000): Promise<Reply | null> {
+  const id = nextId++;
+  return new Promise((resolve) => {
+    if (!post(frame, { ...msg, id } as ToFrame)) return resolve(null);
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      resolve(null);
+    }, timeout);
+    pending.set(id, {
+      frame,
+      resolve: (reply) => {
+        clearTimeout(timer);
+        resolve(reply);
+      },
+    });
+  });
+}
+
+function onMessage(event: MessageEvent) {
+  const data = event.data as Envelope<FromFrame> | undefined;
+  if (data?.ns !== INSPECTOR_NS) return;
+  // Only a registered frame, from its own origin.
+  let frame: string | undefined;
+  for (const [name, iframe] of iframes)
+    if (iframe.contentWindow === event.source && originOf(iframe) === event.origin) frame = name;
+  if (!frame) return;
+
+  if ("id" in data && data.id !== undefined) {
+    const waiting = pending.get(data.id);
+    if (waiting?.frame === frame) {
+      pending.delete(data.id);
+      waiting.resolve(data);
+    }
+  }
+
+  const s = store.getState();
+  switch (data.type) {
+    case "ready": {
+      if (data.protocol !== INSPECTOR_PROTOCOL) return;
+      s.setFrame(frame, { ready: true, tagged: data.tagged });
+      // A reload lost the frame's selection; give it back.
+      if (s.selection?.frame === frame) void select(frame, s.selection.info.ref);
+      return;
+    }
+    case "selection-changed":
+      if (s.selection?.frame === frame) s.setSelection({ frame, info: data.info });
+      return;
+    case "selection-lost":
+      if (s.selection?.frame === frame) s.setSelection(null);
+      return;
+  }
+}
+
+let listening = false;
+
+// The canvas calls this for each frame's iframe. Returns the unregister.
+export function registerFrame(frame: string, iframe: HTMLIFrameElement) {
+  if (!listening) {
+    window.addEventListener("message", onMessage);
+    listening = true;
+  }
+  iframes.set(frame, iframe);
+  // A frame that started before we listened says so in answer.
+  const hello = () => void request(frame, { type: "hello" });
+  hello();
+  iframe.addEventListener("load", hello);
+  return () => {
+    iframe.removeEventListener("load", hello);
+    if (iframes.get(frame) !== iframe) return;
+    iframes.delete(frame);
+    const s = store.getState();
+    s.setFrame(frame, null);
+    if (s.hover?.frame === frame) s.setHover(null);
+  };
+}
+
+// ── What the canvas asks ─────────────────────────────────────────────────
+
+// Hover at a point in the frame's CSS pixels. Answers that arrive after a
+// later hover are dropped.
+export async function hoverAt(frame: string, x: number, y: number) {
+  // The id request() is about to use.
+  const id = nextId;
+  latestHit.set(frame, id);
+  const reply = await request(frame, { type: "hit", x, y });
+  if (reply?.type !== "hover" || latestHit.get(frame) !== id) return;
+  if (!store.getState().active) return;
+  store.getState().setHover(reply.info && { frame, info: reply.info });
+}
+
+export const clearHover = (frame: string) => {
+  latestHit.set(frame, nextId++);
+  if (store.getState().hover?.frame === frame) store.getState().setHover(null);
+};
+
+async function applySelection(frame: string, reply: Reply | null) {
+  if (reply?.type !== "selected") return;
+  store.getState().setSelection(reply.info && { frame, info: reply.info });
+}
+
+export const selectAt = async (frame: string, x: number, y: number) =>
+  applySelection(frame, await request(frame, { type: "select-at", x, y }));
+
+export const select = async (frame: string, ref: ElementRef | null) =>
+  applySelection(frame, await request(frame, { type: "select", ref }));
+
+export async function walk(dir: WalkDirection) {
+  const selection = store.getState().selection;
+  if (selection) await applySelection(selection.frame, await request(selection.frame, { type: "walk", dir }));
+}
+
+export function clearSelection() {
+  const selection = store.getState().selection;
+  if (selection) post(selection.frame, { type: "select", id: nextId++, ref: null });
+  store.getState().setSelection(null);
+}
+
+// The picks as their frames see them now (an edit may have moved them);
+// one that a frame can't find, or doesn't answer for, stays as it was.
+export async function refresh(picks: Picked[]): Promise<Picked[]> {
+  const byFrame = new Map<string, Picked[]>();
+  for (const p of picks) byFrame.set(p.frame, [...(byFrame.get(p.frame) ?? []), p]);
+  const fresh = new Map<Picked, Picked>();
+  await Promise.all(
+    [...byFrame].map(async ([frame, group]) => {
+      const reply = await request(frame, { type: "resolve", refs: group.map((p) => p.info.ref) }, 500);
+      if (reply?.type !== "resolved") return;
+      group.forEach((p, i) => {
+        const info = reply.infos[i];
+        if (info) fresh.set(p, { frame, info });
+      });
+    }),
+  );
+  return picks.map((p) => fresh.get(p) ?? p);
+}

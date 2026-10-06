@@ -161,10 +161,13 @@ describe("the site a build writes", () => {
       localPaths: containing(fixture, runtimeRoot, os.homedir()),
       // plugin-react's development JSX, which carries each source file's path.
       developmentJsx: containing("jsxDEV"),
+      // The dev server's data-ad-loc stamps, which name each source file.
+      sourceLocations: containing("user-components/Card.tsx:"),
     }).toMatchInlineSnapshot(`
       {
         "developmentJsx": [],
         "localPaths": [],
+        "sourceLocations": [],
         "sourceMaps": [],
       }
     `)

@@ -49,6 +49,8 @@ import { useComposerModel } from "@/renderer/hooks/use-composer-model";
 import { QueuedMessagesDeck } from "@/renderer/components/QueuedMessagesDeck";
 import { useQueueDeck } from "@/renderer/lib/use-queue-deck";
 import { SMOOTH } from "@/renderer/lib/motion";
+import { TagChips } from "@/renderer/inspector/TagChips";
+import { takeTags } from "@/renderer/inspector/tags";
 import {
   SUPPORTED_IMAGE_TYPES,
   type ImageAttachment,
@@ -534,7 +536,9 @@ function Composer({
   const handleSubmit = async () => {
     if (!canSend || !input.trim() || isSendPending) return;
 
-    const prompt = input.trim();
+    // Elements tagged on the canvas lead the message.
+    const tagged = await takeTags();
+    const prompt = tagged ? `${tagged}\n\n${input.trim()}` : input.trim();
 
     let imagesToSend: ImageAttachment[] | undefined;
     try {
@@ -566,6 +570,7 @@ function Composer({
           onSubmit={handleSubmit}
           className="bg-neutral-700 border-neutral-600"
         >
+          <TagChips />
           {attachedImages.length > 0 && (
             <div className="flex flex-wrap gap-2 p-2 pb-0">
               {attachedImages.map((file, index) => (
