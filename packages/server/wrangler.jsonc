@@ -18,9 +18,9 @@
     {
       "binding": "DB",
       "database_name": "antidraw",
-      // Replace after running:  npx wrangler d1 create antidraw
-      // (and in @antidraw/site-worker's wrangler.jsonc, which shares it).
-      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      // From `npx wrangler d1 create antidraw` (also in
+      // @antidraw/site-worker's wrangler.jsonc, which shares it).
+      "database_id": "0f1a9297-6b12-4031-8c3a-f2a7bf64f71e",
       // Local state (wrangler dev, --local migrations, tests) is kept under
       // this instead of database_id, so it doesn't move when the real id is
       // filled in, and the site Worker's `npm run dev` finds it.
@@ -37,6 +37,14 @@
     // A published site's share page, * being its slug: the canvas that shows
     // the site's components, which are served from <slug>.antidraw.app (see
     // @antidraw/site-worker). Overridden in .dev.vars for local development.
-    "SHARE_URL_PATTERN": "https://antidraw.com/s/*"
-  }
+    "SHARE_URL_PATTERN": "https://antidraw.com/s/*",
+    // The API's public origin, which makes auth cookies Secure. Overridden in
+    // .dev.vars for local development.
+    "BETTER_AUTH_URL": "https://api.antidraw.com"
+  },
+  "routes": [
+    // Its own subdomain, not antidraw.com/api: the landing page and the share
+    // pages keep antidraw.com, and the API's auth cookies stay off them.
+    { "pattern": "api.antidraw.com", "custom_domain": true }
+  ]
 }
