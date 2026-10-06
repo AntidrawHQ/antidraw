@@ -1,8 +1,10 @@
 import fc from "fast-check";
-import { isSupportedLanguage } from "@pierre/highlights";
+import { codeToTokens, isSupportedLanguage, LiveTokenizer } from "@pierre/highlights";
+import houston from "@pierre/highlights/themes/houston";
 import { describe, expect, it } from "vitest";
 import {
   highlight,
+  LineHighlighter,
   langForPath,
   parseNumberedLines,
   splitShellCommand,
@@ -50,8 +52,7 @@ describe("highlight properties", () => {
   it("colours a streamed prefix's lines as the full text does, once both settle", () => {
     // Not line by line: the lexer looks ahead, so a line can recolour when a
     // later one arrives (an identifier becomes a parameter once a `=>` follows
-    // on the next line). HighlightedCode compares tokens by value for that
-    // reason. What does hold: feeding the rest of the text gets back exactly
+    // on the next line). What does hold: feeding the rest of the text gets back exactly
     // the full text's colours, so nothing stale survives the stream.
     fc.assert(
       fc.property(code, fc.nat(), fc.constantFrom(...LANGS), (text, cut, lang) => {
@@ -68,6 +69,86 @@ describe("highlight properties", () => {
         );
       }),
       { numRuns: 500 },
+    );
+  });
+});
+
+describe("LineHighlighter properties", () => {
+  // A streaming input: the text in chunks, each render seeing one more.
+  const chunked = fc
+    .tuple(code, fc.array(fc.nat(), { maxLength: 12 }))
+    .map(([text, cuts]) => {
+      const points = [...new Set(cuts.map((c) => c % (text.length + 1)))].sort((a, b) => a - b);
+      return [...points.map((p) => text.slice(0, p)), text];
+    });
+
+  // The colours a fresh LiveTokenizer gives each line. It lexes line by line,
+  // so where codeToTokens looks ahead across a line end (`f` before a `(` on
+  // the next line is a call) it can differ; a stream may show either.
+  const fg = codeToTokens("x", { lang: "plain", theme: houston }).fg;
+  const liveStyle = (code: string, lang: Lang, prefix: string) => {
+    const live = new LiveTokenizer({
+      lang,
+      theme: houston,
+      tokenizeMaxLineLength: 1000,
+      code: prefix ? `${prefix}\n${code}` : code,
+    });
+    const lines = [];
+    for (let i = prefix ? 1 : 0; i < live.lineCount; i++) {
+      lines.push(
+        style(live.getLineTokens(i).tokens.map((t) => ({ ...t, color: t.color === fg ? undefined : t.color }))),
+      );
+    }
+    live.dispose();
+    return lines;
+  };
+
+  it("colours every line as one of the tokenizers would, at every step of a stream", () => {
+    fc.assert(
+      fc.property(
+        chunked,
+        fc.constantFrom(...LANGS),
+        fc.constantFrom("", '"$(', "cat <<'EOF'"),
+        (snapshots, lang, prefix) => {
+          const highlighter = new LineHighlighter();
+          for (const snapshot of snapshots) {
+            const { lines, tokens } = highlighter.update(snapshot, lang, prefix);
+            expect(lines).toEqual(snapshot.split("\n"));
+            const whole = highlight(snapshot, lang, prefix);
+            expect(tokens === null).toBe(whole === null);
+            if (!tokens || !whole) continue;
+            const live = snapshot.includes("\r") ? whole.map(style) : liveStyle(snapshot, lang, prefix);
+            tokens.forEach((line, i) => expect([style(whole[i]!), live[i]]).toContainEqual(style(line)));
+          }
+          highlighter.dispose();
+        },
+      ),
+      { numRuns: 500 },
+    );
+  });
+
+  it("keeps the arrays of lines an append leaves alone", () => {
+    fc.assert(
+      // A \r sends every update down the full re-highlight, which keeps nothing.
+      fc.property(chunked.filter((s) => !s.at(-1)!.includes("\r")), fc.constantFrom(...LANGS), (snapshots, lang) => {
+        const highlighter = new LineHighlighter();
+        let prev = highlighter.update(snapshots[0]!, lang);
+        for (const snapshot of snapshots.slice(1)) {
+          const next = highlighter.update(snapshot, lang);
+          if (prev.tokens && next.tokens) {
+            next.tokens.forEach((line, i) => {
+              if (line !== prev.tokens![i] && i < prev.lines.length - 1) {
+                // Only a lexer lookahead may replace a settled line's array,
+                // and then its colours really changed.
+                expect(style(line)).not.toEqual(style(prev.tokens![i]!));
+              }
+            });
+          }
+          prev = next;
+        }
+        highlighter.dispose();
+      }),
+      { numRuns: 300 },
     );
   });
 });
@@ -100,19 +181,24 @@ describe("langForPath properties", () => {
 const linesOf = (segments: CodeSegment[]) =>
   segments.flatMap((s) => s.code.split("\n").map((line) => ({ line, lang: s.lang })));
 
-// A line that opens no heredoc: anything, as long as no `<<` is followed by
-// a delimiter (`<<<`, the here-string, is fine).
+// A line that opens no heredoc and leaves no quote or substitution open:
+// unquoted text in which no `<<` is followed by a delimiter (`<<<`, the
+// here-string, is fine), and whole quoted or arithmetic pieces whose `<<word`
+// isn't a heredoc either.
 const OPENER = /(^|[^<])<<-?\s*['"]?[A-Za-z_]/;
+const CLOSED = [
+  "'<<EOF'", '"<<EOF"', '"use node"', "$((1 << i))", "(( x <<= n ))", '"$(echo hi)"', "'it''s'", "$(ls)",
+];
 const shellLine = fc
   .array(
     fc.oneof(
-      fc.constantFrom("ls -la", " ", "&&", "|", "'", '"', "$x", "echo", "<", ">", "a.tsx", ";", "\t", "#", "<<< word", "<<", "1 << 2"),
-      fc.string({ maxLength: 3, unit: "grapheme" }),
+      fc.constantFrom("ls -la", " ", "&&", "|", "$x", "echo", "<", ">", "a.tsx", ";", "\t", "<<< word", "<<", "1 << 2", ...CLOSED),
+      fc.string({ maxLength: 3, unit: "grapheme" }).filter((s) => !/['"`\\()#$]/.test(s)),
     ),
     { maxLength: 8 },
   )
-  .map((parts) => parts.join("").replace(/\n/g, ""))
-  .filter((line) => !OPENER.test(line));
+  .filter((parts) => !OPENER.test(parts.map((p) => (CLOSED.includes(p) ? "x" : p)).join("")))
+  .map((parts) => parts.join("").replace(/\n/g, ""));
 
 // The command opening a heredoc, and the language its body is in.
 const OPENERS: [before: string, after: string, lang: Lang | null][] = [
@@ -129,6 +215,16 @@ const OPENERS: [before: string, after: string, lang: Lang | null][] = [
   ["cat >> styles.css", "", "css"],
   ["pbcopy", "", null],
   ["bash", "", "bash"],
+  // An interpreter's name only counts as the program.
+  ["cat", " > server/node/config.json", "json"],
+  ["cat > src/lib/python-runner.ts", "", "ts"],
+  ["tee src/config.json > /dev/null", "", "json"],
+  ["cat", " 2>&1 > out.md", "md"],
+  ['git commit -m "Bump node" && cat > a.css', "", "css"],
+  ["cat", " | python3", "python"],
+  ["FOO=1 sudo -E python3 -", "", "python"],
+  ["uv run python -", "", "python"],
+  ["docker exec -i db psql -U app", "", "sql"],
 ];
 
 type Block =
@@ -236,7 +332,8 @@ describe("splitShellCommand properties", () => {
   it("splits heredocs out in the language of whatever reads them", () => {
     fc.assert(
       fc.property(blocks, (bs) => {
-        expect(splitShellCommand(render(bs))).toEqual(expected(bs));
+        const segments = splitShellCommand(render(bs)).map(({ code, lang }) => ({ code, lang }));
+        expect(segments).toEqual(expected(bs));
       }),
       { numRuns: 1000 },
     );

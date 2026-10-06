@@ -1,5 +1,10 @@
 import { describe, test, expect } from "vitest";
-import { highlight, langForPath, parseNumberedLines } from "../highlight";
+import {
+  highlight,
+  langForPath,
+  parseNumberedLines,
+  splitShellCommand,
+} from "../highlight";
 
 describe("langForPath", () => {
   test("extensions highlights knows", () => {
@@ -40,6 +45,57 @@ describe("highlight", () => {
   test("plain when there is no language or nothing to colour", () => {
     expect(highlight("const a = 1", null)).toBeNull();
     expect(highlight("", "ts")).toBeNull();
+  });
+});
+
+describe("splitShellCommand", () => {
+  const colours = (code: string, prefix?: string) =>
+    highlight(code, "bash", prefix)!.map((line) => line.map((t) => [t.content, t.color]));
+
+  test("the command after a heredoc in a quoted substitution colours as bash", () => {
+    const command = [
+      `git commit -m "$(cat <<'EOF'`,
+      "feat: don't stop",
+      "EOF",
+      `)" && git push origin main`,
+      "git log --oneline -1",
+    ].join("\n");
+    const segments = splitShellCommand(command);
+    expect(segments).toEqual([
+      { code: `git commit -m "$(cat <<'EOF'`, lang: "bash" },
+      { code: "feat: don't stop", lang: null },
+      {
+        code: `EOF\n)" && git push origin main\ngit log --oneline -1`,
+        lang: "bash",
+        prefix: `"$(cat <<'EOF'`,
+      },
+    ]);
+    // Coloured as the whole command lexed at once colours those lines.
+    const tail = segments[2]!;
+    expect(colours(tail.code, tail.prefix)).toEqual(colours(command).slice(2));
+  });
+
+  test("an interpreter named in a quoted title isn't the reader", () => {
+    const segments = splitShellCommand(
+      `gh pr create --title "Bump node to 22" --body "$(cat <<'EOF'\n## Summary\nEOF\n)"`,
+    );
+    expect(segments[1]).toEqual({ code: "## Summary", lang: null });
+  });
+
+  test("<< in arithmetic, quotes or a comment opens no heredoc", () => {
+    for (const line of ["echo $((1 << i))", `grep -rn "<<EOF" scripts/ | head`, "# then cat <<EOF", "(( x << 2 ))"]) {
+      const command = `${line}\ncat > a.json <<'EOF'\n{}\nEOF\nnpm test`;
+      expect(splitShellCommand(command).map((s) => s.lang)).toEqual(["bash", "json", "bash"]);
+    }
+  });
+
+  test("a heredoc in a loop body after arithmetic keeps its language", () => {
+    const command = "for i in 0 1; do\n  echo $((1 << i))\ndone\ncat > src/A.tsx <<'EOF'\nconst a = 1\nEOF";
+    expect(splitShellCommand(command)).toEqual([
+      { code: "for i in 0 1; do\n  echo $((1 << i))\ndone\ncat > src/A.tsx <<'EOF'", lang: "bash" },
+      { code: "const a = 1", lang: "tsx" },
+      { code: "EOF", lang: "bash", prefix: "cat <<'EOF'" },
+    ]);
   });
 });
 

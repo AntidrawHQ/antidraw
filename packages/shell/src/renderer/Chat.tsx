@@ -391,8 +391,11 @@ const MessageList = memo(({ conversationId, onSignIn, onRetry, hiddenIds, reveal
     return onCanvas ? setFocusComponentName : undefined;
   };
 
+  // While the turn runs, its tool rows shimmer (see .tool-shimmer). A call
+  // that never got a result, from a turn that died, stays "running" and
+  // must not animate for the rest of the session.
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-2" data-streaming={isStreaming || undefined}>
       {messages.map((msg) => {
         const sdkMessage = msg.sdkMessage;
         if (sdkMessage.type !== "user" && sdkMessage.type !== "assistant") {

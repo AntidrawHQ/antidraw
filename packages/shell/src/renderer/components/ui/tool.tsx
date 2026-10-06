@@ -118,7 +118,12 @@ const ShellCommand = ({ command }: { command: string }) => {
   return (
     <>
       {segments.map((segment, i) => (
-        <HighlightedCode key={i} code={segment.code} lang={segment.lang} />
+        <HighlightedCode
+          key={i}
+          code={segment.code}
+          lang={segment.lang}
+          prefix={segment.prefix}
+        />
       ))}
     </>
   );
@@ -316,7 +321,8 @@ const ToolOutput = ({ toolPart }: { toolPart: ToolPart }) => {
           // An image's result has no text beside it.
           !(images && value === "") && (
             <div key={key}>
-              {key}: {formatValue(value)}
+              <span className="text-neutral-500">{key}:</span>{" "}
+              {formatValue(value)}
             </div>
           ),
       )}
@@ -346,7 +352,7 @@ const ToolBody = ({ toolPart }: { toolPart: ToolPart }) => {
       )}
 
       {output && (
-        <div className="mt-1 text-neutral-500">
+        <div className="mt-1 text-neutral-400">
           <ToolOutput toolPart={toolPart} />
         </div>
       )}
@@ -409,7 +415,7 @@ export const Tool = memo(function Tool({
           )}
           <ChevronDown
             className={cn(
-              "ml-1 size-3.5 shrink-0 text-neutral-600 transition-transform group-hover:text-neutral-400",
+              "ml-1 size-3.5 shrink-0 text-neutral-500 transition-transform group-hover:text-neutral-300 group-focus-visible:text-neutral-300",
               isOpen && "rotate-180",
             )}
           />
@@ -422,7 +428,7 @@ export const Tool = memo(function Tool({
             type="button"
             onClick={() => onViewComponent?.(component)}
             title={`View ${component}`}
-            className="flex shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap border-l border-white/[0.06] px-2.5 text-[13px] font-medium text-neutral-500 hover:bg-white/[0.025] hover:text-neutral-100"
+            className="flex shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap border-l border-white/[0.06] px-2.5 text-[13px] font-medium text-neutral-400 hover:bg-white/[0.025] hover:text-neutral-100 focus-visible:text-neutral-100"
           >
             <ArrowUpRight className="size-3.5" />
             View
