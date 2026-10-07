@@ -16,7 +16,12 @@ export const TagChips = () => {
           className="inline-flex items-center gap-1 rounded-md border border-neutral-600 bg-neutral-800 px-2 py-0.5 font-mono text-[11px] text-neutral-200"
         >
           {tag.frame} · {elementName(tag.info)}
-          <button type="button" onClick={() => removeTag(tag)} className="text-neutral-400 hover:text-white">
+          <button
+            type="button"
+            aria-label={`Remove ${tag.frame} · ${elementName(tag.info)}`}
+            onClick={() => removeTag(tag)}
+            className="text-neutral-400 hover:text-white"
+          >
             <X className="size-3" />
           </button>
         </span>

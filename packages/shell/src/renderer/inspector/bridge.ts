@@ -21,6 +21,9 @@ const store = useInspectorStore;
 const iframes = new Map<string, HTMLIFrameElement>();
 const pending = new Map<number, { frame: string; resolve: (msg: Reply | null) => void }>();
 const latestHit = new Map<string, number>();
+// The selection request whose answer counts: a later one, or a clear, makes
+// an earlier one's answer stale.
+let latestSelect = 0;
 let nextId = 1;
 
 const originOf = (iframe: HTMLIFrameElement) => {
@@ -139,23 +142,30 @@ export const clearHover = (frame: string) => {
   if (store.getState().hover?.frame === frame) store.getState().setHover(null);
 };
 
-async function applySelection(frame: string, reply: Reply | null) {
-  if (reply?.type !== "selected") return;
+// Asks a frame to select, and takes its answer unless a later selection or
+// a clear came first. A frame the selection leaves stops following it.
+async function selecting(frame: string, msg: Request) {
+  // The id request() is about to use.
+  const id = nextId;
+  latestSelect = id;
+  const reply = await request(frame, msg);
+  if (reply?.type !== "selected" || latestSelect !== id) return;
+  const previous = store.getState().selection;
+  if (previous && previous.frame !== frame) post(previous.frame, { type: "select", id: nextId++, ref: null });
   store.getState().setSelection(reply.info && { frame, info: reply.info });
 }
 
-export const selectAt = async (frame: string, x: number, y: number) =>
-  applySelection(frame, await request(frame, { type: "select-at", x, y }));
+export const selectAt = (frame: string, x: number, y: number) => selecting(frame, { type: "select-at", x, y });
 
-export const select = async (frame: string, ref: ElementRef | null) =>
-  applySelection(frame, await request(frame, { type: "select", ref }));
+export const select = (frame: string, ref: ElementRef | null) => selecting(frame, { type: "select", ref });
 
 export async function walk(dir: WalkDirection) {
   const selection = store.getState().selection;
-  if (selection) await applySelection(selection.frame, await request(selection.frame, { type: "walk", dir }));
+  if (selection) await selecting(selection.frame, { type: "walk", dir });
 }
 
 export function clearSelection() {
+  latestSelect = nextId++;
   const selection = store.getState().selection;
   if (selection) post(selection.frame, { type: "select", id: nextId++, ref: null });
   store.getState().setSelection(null);

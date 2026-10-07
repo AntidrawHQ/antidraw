@@ -38,8 +38,12 @@ const Sidebar = ({
   useEffect(() => {
     if (!isOpen) return;
     const handler = (e: KeyboardEvent) => {
-      // Not an Escape a layer above already handled (the Publish panel).
-      if (e.key === "Escape" && !e.defaultPrevented) onClose();
+      // Not an Escape a layer above already handled (the Publish panel), and
+      // handled once closed: the canvas inspector leaves it alone.
+      if (e.key === "Escape" && !e.defaultPrevented) {
+        e.preventDefault();
+        onClose();
+      }
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
