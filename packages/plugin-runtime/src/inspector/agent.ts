@@ -2,6 +2,7 @@ import {
   INSPECTOR_NS,
   INSPECTOR_PROTOCOL,
   SOURCE_ATTRIBUTE,
+  type ElementContext,
   type ElementInfo,
   type ElementRef,
   type Envelope,
@@ -10,6 +11,7 @@ import {
   type ToFrame,
   type WalkDirection,
 } from "./protocol"
+import { keysOf, ownersOf } from "./react"
 
 // The inspector's half that runs in a preview frame: it finds, measures and
 // keeps track of elements for the canvas, which draws and owns the input.
@@ -17,6 +19,45 @@ import {
 
 const USER_COMPONENTS_DIR = "src/components/user-components/"
 const LOC_RE = /:\d+:\d+$/
+
+// The attributes that say what an element is (data-slot names a shadcn part)
+// or what state it's in.
+const ATTRIBUTES = [
+  "data-slot",
+  "role",
+  "aria-label",
+  "name",
+  "type",
+  "placeholder",
+  "alt",
+  "title",
+  "href",
+  "src",
+  "data-state",
+  "aria-expanded",
+  "aria-selected",
+  "aria-checked",
+  "aria-current",
+  "disabled",
+  "checked",
+  "open",
+]
+
+// As the user reads it: innerText breaks between blocks, where textContent
+// runs "Pro" and "Choose" together. Without it (an SVG), text by text.
+const textOf = (el: Element) => {
+  let text = el instanceof HTMLElement ? el.innerText : undefined
+  if (text === undefined) {
+    const parts: string[] = []
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) parts.push(node.nodeValue ?? "")
+    text = parts.join(" ")
+  }
+  return text.replace(/\s+/g, " ").trim().slice(0, 80)
+}
+
+const clip = (s: string, max = 80) => (s.length > max ? `${s.slice(0, max - 1)}…` : s)
+const fileOf = (loc: string) => loc.replace(LOC_RE, "")
 
 const px = (v: string) => parseFloat(v) || 0
 const sides = (cs: CSSStyleDeclaration, prop: (side: string) => string): Sides =>
@@ -86,11 +127,101 @@ export function startInspector(container: HTMLElement, componentName: string): (
       tag: el.localName,
       id: el.id,
       classes: [...el.classList].slice(0, 4),
-      text: (el.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 80),
+      text: textOf(el),
       rect: { x: r.x, y: r.y, width: r.width, height: r.height },
       margin: sides(cs, (s) => `margin-${s}`),
       border: sides(cs, (s) => `border-${s}-width`),
       padding: sides(cs, (s) => `padding-${s}`),
+    }
+  }
+
+  // ── What an agent is told about an element ───────────────────────────────
+
+  const stampedAround = (el: Element) => {
+    for (let node = el.parentElement; inside(node); node = node.parentElement)
+      if (node.hasAttribute(SOURCE_ATTRIBUTE)) return node
+    return null
+  }
+
+  // From `from` down to `el`, as a selector.
+  const pathFrom = (from: Element, el: Element) => {
+    const steps: string[] = []
+    for (let node = el; node !== from && node.parentElement; node = node.parentElement) {
+      const like = [...node.parentElement.children].filter((c) => c.localName === node.localName)
+      steps.unshift(like.length > 1 ? `${node.localName}:nth-of-type(${like.indexOf(node) + 1})` : node.localName)
+    }
+    return steps.join(" > ")
+  }
+
+  // The nearest location at or around `el` that `owns` says is its code.
+  const ownedLoc = (el: Element, owns: (node: Element) => boolean) => {
+    for (let node: Element | null = el; inside(node); node = node.parentElement) {
+      const loc = node.getAttribute(SOURCE_ATTRIBUTE)
+      if (loc && owns(node)) return loc
+    }
+    return null
+  }
+
+  const componentsOf = (el: Element): ElementContext["components"] => {
+    const owners = ownersOf(el, container)
+    if (owners.length) {
+      const all = owners.map((o) => ({ name: o.name, loc: ownedLoc(el, o.owns) }))
+      return all.filter((c, i) => c.loc || i === 0 || i === all.length - 1)
+    }
+    // No React internals to read: each file the stamps around it pass
+    // through on the way out, up to the previewed component's.
+    const files: ElementContext["components"] = []
+    for (let node: Element | null = el; inside(node); node = node.parentElement) {
+      const loc = node.getAttribute(SOURCE_ATTRIBUTE)
+      if (!loc || (files[0]?.loc && fileOf(files[0].loc) === fileOf(loc))) continue
+      files.unshift({ name: fileOf(loc).split("/").pop()!.replace(/\.[jt]sx$/, ""), loc })
+      if (fileOf(loc) === ownFile) break
+    }
+    return files
+  }
+
+  const contextFor = (el: Element): ElementContext => {
+    const info = infoFor(el)
+    const loc = el.getAttribute(SOURCE_ATTRIBUTE)
+    const anchor = loc ? el : stampedAround(el)
+    // The others rendered from the same place by the same places around it:
+    // a shared component's button used twice isn't a list. Nor is one
+    // written twice in the same place: a list's items differ by key. (Without
+    // React's data there are no keys; the same place twice is taken as a list.)
+    const where = (node: Element) => componentsOf(node).map((c) => c.loc).join(" ")
+    const here = anchor && where(anchor)
+    const matches = anchor
+      ? [...withLoc(anchor.getAttribute(SOURCE_ATTRIBUTE)!)].filter((m) => m === anchor || where(m) === here)
+      : []
+    const listed =
+      matches.length > 1 &&
+      (!ownersOf(anchor!, container).length || new Set(matches.map((m) => keysOf(m, container).join("\0"))).size > 1)
+    const attributes: Record<string, string> = {}
+    for (const name of ATTRIBUTES) {
+      const value = el.getAttribute(name)
+      if (value !== null) attributes[name] = clip(value)
+    }
+    // React sets the checked attribute once; the property is what's on screen.
+    if (el instanceof HTMLInputElement && (el.type === "checkbox" || el.type === "radio")) {
+      if (el.checked) attributes.checked = ""
+      else delete attributes.checked
+    }
+    return {
+      viewport: [window.innerWidth, window.innerHeight],
+      element: el.localName + (el.id ? `#${el.id}` : "") + [...el.classList].slice(0, 6).map((c) => `.${c}`).join(""),
+      text: info.text,
+      loc,
+      within: !loc && anchor ? { loc: anchor.getAttribute(SOURCE_ATTRIBUTE)!, path: pathFrom(anchor, el) } : null,
+      components: componentsOf(el),
+      repeat:
+        listed
+          ? { index: matches.indexOf(anchor!), count: matches.length, keys: keysOf(el, container) }
+          : null,
+      attributes,
+      size: [Math.round(info.rect.width), Math.round(info.rect.height)],
+      margin: info.margin,
+      border: info.border,
+      padding: info.padding,
     }
   }
 
@@ -200,13 +331,13 @@ export function startInspector(container: HTMLElement, componentName: string): (
         return post({ type: "selected", id: msg.id, info: select(msg.ref && find(msg.ref)) })
       case "walk":
         return post({ type: "selected", id: msg.id, info: select(walk(msg.dir)) })
-      case "resolve":
+      case "context":
         return post({
-          type: "resolved",
+          type: "context",
           id: msg.id,
-          infos: msg.refs.map((ref) => {
+          contexts: msg.refs.map((ref) => {
             const el = find(ref)
-            return el && infoFor(el)
+            return el && contextFor(el)
           }),
         })
     }

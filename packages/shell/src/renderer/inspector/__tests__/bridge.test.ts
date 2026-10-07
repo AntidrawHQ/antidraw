@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { INSPECTOR_NS, type ElementInfo, type FromFrame } from "@antidrawapp/runtime/inspector";
-import { clearHover, hoverAt, registerFrame, selectAt } from "../bridge";
+import { INSPECTOR_NS, type ElementContext, type ElementInfo, type FromFrame } from "@antidrawapp/runtime/inspector";
+import { clearHover, getSelectedElementContext, hoverAt, registerFrame, selectAt } from "../bridge";
 import { useInspectorStore } from "../store";
-import { describeTag, takeTags } from "../tags";
+import { describeContext, takeTags } from "../tags";
 
 // The canvas side of the inspector, against a frame played by the test: what
 // it asks, and which answers it believes.
@@ -19,6 +19,25 @@ const info = (over: Partial<ElementInfo> = {}): ElementInfo => ({
   classes: ["title"],
   text: "Pro plan",
   rect: { x: 10, y: 20, width: 100, height: 24 },
+  margin: [0, 0, 0, 0],
+  border: [0, 0, 0, 0],
+  padding: [0, 0, 0, 0],
+  ...over,
+});
+
+const context = (over: Partial<ElementContext> = {}): ElementContext => ({
+  viewport: [1280, 800],
+  element: "button.btn",
+  text: "Buy",
+  loc: "src/components/ui/button.tsx:3:5",
+  within: null,
+  components: [
+    { name: "Card", loc: `${OWN}:5:5` },
+    { name: "Button", loc: "src/components/ui/button.tsx:3:5" },
+  ],
+  repeat: null,
+  attributes: {},
+  size: [120, 40],
   margin: [0, 0, 0, 0],
   border: [0, 0, 0, 0],
   padding: [0, 0, 0, 0],
@@ -98,28 +117,124 @@ it("follows the selection the frame reports, and gives it back after a reload", 
   expect(useInspectorStore.getState().selection).toBeNull();
 });
 
-it("sends tags as the frame sees them now, keeping the old description if it can't say", async () => {
-  const moved = { frame: "Card", info: info() };
-  const gone = { frame: "Card", info: info({ tag: "p", classes: [], ref: { loc: `${OWN}:9:7`, index: 0, path: [3], tag: "p" } }) };
-  useInspectorStore.setState({ tags: [moved, gone] });
+it("sends tags grouped by component, as their frames describe them now, or as last seen", async () => {
+  const buy = { frame: "Card", info: info() };
+  // A frame that isn't on the canvas any more can't answer.
+  const price = { frame: "Pricing", info: info({ tag: "p", classes: ["price"], text: "$12", callsite: null, ref: { loc: "src/components/user-components/Pricing.tsx:9:7", index: 0, path: [3], tag: "p" } }) };
+  const title = { frame: "Card", info: info() };
+  useInspectorStore.setState({ tags: [buy, price, title] });
   const taking = takeTags();
   expect(useInspectorStore.getState().tags).toEqual([]);
-  expect(lastAsked()).toMatchObject({ type: "resolve", refs: [moved.info.ref, gone.info.ref] });
-  frameSays({ type: "resolved", id: lastAsked().id, infos: [info({ ref: { loc: `${OWN}:5:7`, index: 0, path: [0, 0], tag: "h3" } }), null] });
+  expect(lastAsked()).toMatchObject({ type: "context", refs: [buy.info.ref, title.info.ref] });
+  frameSays({
+    type: "context",
+    id: lastAsked().id,
+    contexts: [
+      context({
+        repeat: { index: 3, count: 4, keys: ["pro", "export"] },
+        attributes: { "data-slot": "button", "aria-expanded": "false" },
+        margin: [0, 0, 12, 0],
+        border: [1, 1, 1, 1],
+        padding: [8, 16, 8, 16],
+      }),
+      context({ element: "h3.title", text: "Pro plan", loc: `${OWN}:4:7`, components: [{ name: "Card", loc: `${OWN}:4:7` }], size: [268, 24] }),
+    ],
+  });
   await settle();
   expect(await taking).toMatchInlineSnapshot(`
     "<canvas-selection>
-    <element component="Card" loc="src/components/user-components/Card.tsx:5:7" callsite="src/components/user-components/Card.tsx:4:7" element="h3.title" text="Pro plan" />
-    <element component="Card" loc="src/components/user-components/Card.tsx:9:7" callsite="src/components/user-components/Card.tsx:4:7" element="p" text="Pro plan" />
+    <component name="Card" file="src/components/user-components/Card.tsx" preview="https://frame.test/preview?componentName=Card" frame="1280×800">
+    <element>
+    element: button.btn "Buy"
+    written at: src/components/ui/button.tsx:3:5
+    rendered by: Card (src/components/user-components/Card.tsx:5:5) > Button (src/components/ui/button.tsx:3:5)
+    repeated: item 4 of 4 rendered from there, keys "pro" > "export"
+    attributes: data-slot="button" aria-expanded="false"
+    box: 120×40, margin 0 0 12, border 1, padding 8 16
+    </element>
+    <element>
+    element: h3.title "Pro plan"
+    written at: src/components/user-components/Card.tsx:4:7
+    rendered by: Card (src/components/user-components/Card.tsx:4:7)
+    box: 268×24
+    </element>
+    </component>
+    <component name="Pricing" file="src/components/user-components/Pricing.tsx">
+    <element>
+    element: p.price "$12"
+    written at: src/components/user-components/Pricing.tsx:9:7
+    (as last seen: the frame didn't answer)
+    </element>
+    </component>
     </canvas-selection>"
   `);
 });
 
-it("describes an element without a source location by its path, escaped", () => {
+it("describes a pick its live frame can't find any more as last seen, in its place", async () => {
+  const buy = { frame: "Card", info: info() };
+  const gone = { frame: "Card", info: info({ tag: "p", classes: [], text: "Billed yearly", ref: { loc: `${OWN}:9:7`, index: 0, path: [3], tag: "p" } }) };
+  const title = { frame: "Card", info: info() };
+  useInspectorStore.setState({ tags: [buy, gone, title] });
+  const taking = takeTags();
+  expect(lastAsked()).toMatchObject({ type: "context", refs: [buy.info.ref, gone.info.ref, title.info.ref] });
+  frameSays({
+    type: "context",
+    id: lastAsked().id,
+    contexts: [context(), null, context({ element: "h3.title", text: "Pro plan", loc: `${OWN}:4:7`, components: [{ name: "Card", loc: `${OWN}:4:7` }] })],
+  });
+  await settle();
+  expect(await taking).toMatchInlineSnapshot(`
+    "<canvas-selection>
+    <component name="Card" file="src/components/user-components/Card.tsx" preview="https://frame.test/preview?componentName=Card" frame="1280×800">
+    <element>
+    element: button.btn "Buy"
+    written at: src/components/ui/button.tsx:3:5
+    rendered by: Card (src/components/user-components/Card.tsx:5:5) > Button (src/components/ui/button.tsx:3:5)
+    box: 120×40
+    </element>
+    <element>
+    element: p "Billed yearly"
+    written at: src/components/user-components/Card.tsx:9:7
+    used at: src/components/user-components/Card.tsx:4:7
+    (as last seen: the frame didn't answer)
+    </element>
+    <element>
+    element: h3.title "Pro plan"
+    written at: src/components/user-components/Card.tsx:4:7
+    rendered by: Card (src/components/user-components/Card.tsx:4:7)
+    box: 120×40
+    </element>
+    </component>
+    </canvas-selection>"
+  `);
+});
+
+it("places an element without a location of its own, with nothing in it read as a tag", () => {
   expect(
-    describeTag({
-      frame: "Card",
-      info: info({ ref: { loc: null, index: 0, path: [0, 2], tag: "h3" }, callsite: null, id: "cta", text: 'Say "hi" & <go>' }),
-    }),
-  ).toBe('<element component="Card" element="h3#cta.title" text="Say &quot;hi&quot; &amp; &lt;go>" path="0/2" />');
+    describeContext(
+      context({
+        element: "path",
+        text: 'Say "hi" & </element>',
+        loc: null,
+        within: { loc: "src/components/ui/button.tsx:3:5", path: "svg > path" },
+        components: [{ name: "Card", loc: `${OWN}:5:5` }, { name: "Icon", loc: null }],
+        attributes: { "aria-label": "Terms & <Conditions>", href: "/search?q=a&page=2" },
+      }),
+    ),
+  ).toMatchInlineSnapshot(`
+    "<element>
+    element: path "Say \\"hi\\" & &lt;/element>"
+    written at: none of its own; inside src/components/ui/button.tsx:3:5, at svg > path
+    rendered by: Card (src/components/user-components/Card.tsx:5:5) > Icon
+    attributes: aria-label="Terms & &lt;Conditions>" href="/search?q=a&page=2"
+    box: 120×40
+    </element>"
+  `);
+});
+
+it("describes the selected element", async () => {
+  useInspectorStore.setState({ selection: { frame: "Card", info: info() } });
+  const asking = getSelectedElementContext();
+  frameSays({ type: "context", id: lastAsked().id, contexts: [context()] });
+  expect(await asking).toEqual(context());
 });
