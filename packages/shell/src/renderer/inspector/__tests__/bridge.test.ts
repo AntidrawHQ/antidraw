@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { INSPECTOR_NS, type ElementContext, type ElementInfo, type FromFrame } from "@antidrawapp/runtime/inspector";
-import { clearHover, getSelectedElementContext, hoverAt, registerFrame, selectAt } from "../bridge";
+import { clearHover, clearSelection, getSelectedElementContext, hoverAt, registerFrame, selectAt, walk } from "../bridge";
 import { useInspectorStore } from "../store";
-import { describeContext, takeTags } from "../tags";
+import { useWorkspaceStore } from "../../store/workspace";
+import { describeContext, describePendingTags, retagTags, untagTags } from "../tags";
 
 // The canvas side of the inspector, against a frame played by the test: what
 // it asks, and which answers it believes.
@@ -123,8 +124,9 @@ it("sends tags grouped by component, as their frames describe them now, or as la
   const price = { frame: "Pricing", info: info({ tag: "p", classes: ["price"], text: "$12", callsite: null, ref: { loc: "src/components/user-components/Pricing.tsx:9:7", index: 0, path: [3], tag: "p" } }) };
   const title = { frame: "Card", info: info() };
   useInspectorStore.setState({ tags: [buy, price, title] });
-  const taking = takeTags();
-  expect(useInspectorStore.getState().tags).toEqual([]);
+  const taking = describePendingTags().then((t) => t.block);
+  // Still tagged until the message is on its way.
+  expect(useInspectorStore.getState().tags).toEqual([buy, price, title]);
   expect(lastAsked()).toMatchObject({ type: "context", refs: [buy.info.ref, title.info.ref] });
   frameSays({
     type: "context",
@@ -175,7 +177,7 @@ it("describes a pick its live frame can't find any more as last seen, in its pla
   const gone = { frame: "Card", info: info({ tag: "p", classes: [], text: "Billed yearly", ref: { loc: `${OWN}:9:7`, index: 0, path: [3], tag: "p" } }) };
   const title = { frame: "Card", info: info() };
   useInspectorStore.setState({ tags: [buy, gone, title] });
-  const taking = takeTags();
+  const taking = describePendingTags().then((t) => t.block);
   expect(lastAsked()).toMatchObject({ type: "context", refs: [buy.info.ref, gone.info.ref, title.info.ref] });
   frameSays({
     type: "context",
@@ -237,4 +239,81 @@ it("describes the selected element", async () => {
   const asking = getSelectedElementContext();
   frameSays({ type: "context", id: lastAsked().id, contexts: [context()] });
   expect(await asking).toEqual(context());
+});
+
+it("untags what a message took when it's sent, and tags it again if the send fails", () => {
+  const buy = { frame: "Card", info: info() };
+  const title = { frame: "Card", info: info({ ref: { loc: `${OWN}:9:7`, index: 0, path: [1], tag: "h3" } }) };
+  useInspectorStore.setState({ tags: [buy] });
+  untagTags([buy]);
+  // Tagged while the message was going out.
+  useInspectorStore.getState().addTag(title);
+  retagTags([buy]);
+  expect(useInspectorStore.getState().tags.map((t) => t.info.ref.loc)).toMatchInlineSnapshot(`
+    [
+      "src/components/user-components/Card.tsx:4:7",
+      "src/components/user-components/Card.tsx:9:7",
+    ]
+  `);
+});
+
+it("takes only the latest selection's answer, and deselects in a frame the selection leaves", async () => {
+  const other = document.createElement("iframe");
+  other.src = `${ORIGIN}/preview?componentName=Pricing`;
+  document.body.append(other);
+  const toOther: Record<string, unknown>[] = [];
+  vi.spyOn(other.contentWindow!, "postMessage").mockImplementation(((msg: Record<string, unknown>) => {
+    toOther.push(msg);
+  }) as Window["postMessage"]);
+  const unregisterOther = registerFrame("Pricing", other);
+  const otherSays = (msg: FromFrame) =>
+    window.dispatchEvent(new MessageEvent("message", { data: { ns: INSPECTOR_NS, ...msg }, origin: ORIGIN, source: other.contentWindow }));
+  const selected = () => {
+    const s = useInspectorStore.getState().selection;
+    return s && `${s.frame}: ${s.info.text}`;
+  };
+
+  // A click in Card, then in Pricing; Card, busy, answers last.
+  const inCard = selectAt("Card", 1, 1);
+  const cardAsk = lastAsked().id;
+  const inPricing = selectAt("Pricing", 1, 1);
+  otherSays({ type: "selected", id: toOther.at(-1)!.id as number, info: info({ text: "Team" }) });
+  frameSays({ type: "selected", id: cardAsk, info: info({ text: "Pro plan" }) });
+  await Promise.all([inCard, inPricing]);
+  expect(selected()).toMatchInlineSnapshot(`"Pricing: Team"`);
+
+  // Back to Card: Pricing is told to let go of its element.
+  const back = selectAt("Card", 2, 2);
+  frameSays({ type: "selected", id: lastAsked().id, info: info({ text: "Buy" }) });
+  await back;
+  expect(selected()).toMatchInlineSnapshot(`"Card: Buy"`);
+  expect(toOther.at(-1)).toMatchObject({ type: "select", ref: null });
+
+  // A walk answered after Escape cleared the selection.
+  const walking = walk("parent");
+  const walkAsk = lastAsked().id;
+  clearSelection();
+  frameSays({ type: "selected", id: walkAsk, info: info({ text: "Card" }) });
+  await walking;
+  expect(selected()).toMatchInlineSnapshot(`null`);
+
+  unregisterOther();
+  other.remove();
+});
+
+it("drops tags, the selection and the hover when the workspace changes", () => {
+  const pick = { frame: "Card", info: info() };
+  useWorkspaceStore.setState({ activeWorkspaceId: "a" });
+  useInspectorStore.setState({ tags: [pick], selection: pick, hover: pick });
+  useWorkspaceStore.setState({ activeWorkspaceId: "a" });
+  expect(useInspectorStore.getState().tags).toHaveLength(1);
+  useWorkspaceStore.getState().setActiveWorkspaceId("b");
+  const { tags, selection, hover } = useInspectorStore.getState();
+  expect({ tags, selection, hover }).toMatchInlineSnapshot(`
+    {
+      "hover": null,
+      "selection": null,
+      "tags": [],
+    }
+  `);
 });

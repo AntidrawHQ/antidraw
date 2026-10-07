@@ -50,7 +50,7 @@ import { QueuedMessagesDeck } from "@/renderer/components/QueuedMessagesDeck";
 import { useQueueDeck } from "@/renderer/lib/use-queue-deck";
 import { SMOOTH } from "@/renderer/lib/motion";
 import { TagChips } from "@/renderer/inspector/TagChips";
-import { takeTags } from "@/renderer/inspector/tags";
+import { describePendingTags, retagTags, untagTags } from "@/renderer/inspector/tags";
 import {
   SUPPORTED_IMAGE_TYPES,
   type ImageAttachment,
@@ -533,30 +533,44 @@ function Composer({
     return () => imageUrls.forEach((url) => URL.revokeObjectURL(url));
   }, [imageUrls]);
 
+  // Asking the frames about tags takes a moment, before the composer clears:
+  // a second Enter then must not send the message again.
+  const submitting = useRef(false);
+
   const handleSubmit = async () => {
-    if (!canSend || !input.trim() || isSendPending) return;
-
-    // Elements tagged on the canvas lead the message.
-    const tagged = await takeTags();
-    const prompt = tagged ? `${tagged}\n\n${input.trim()}` : input.trim();
-
-    let imagesToSend: ImageAttachment[] | undefined;
+    if (!canSend || !input.trim() || isSendPending || submitting.current) return;
+    submitting.current = true;
     try {
-      imagesToSend =
-        attachedImages.length > 0
-          ? await Promise.all(attachedImages.map(fileToBase64))
-          : undefined;
-    } catch (err) {
-      console.error("Failed to process images:", err);
-      // TODO: show toast if toast system exists
-      alert("Failed to process attached images. Please try again.");
-      return;
+      // Elements tagged on the canvas lead the message.
+      const tagged = await describePendingTags();
+      const prompt = tagged.block ? `${tagged.block}\n\n${input.trim()}` : input.trim();
+
+      let imagesToSend: ImageAttachment[] | undefined;
+      try {
+        imagesToSend =
+          attachedImages.length > 0
+            ? await Promise.all(attachedImages.map(fileToBase64))
+            : undefined;
+      } catch (err) {
+        console.error("Failed to process images:", err);
+        // TODO: show toast if toast system exists
+        alert("Failed to process attached images. Please try again.");
+        return;
+      }
+
+      setInput("");
+      setAttachedImages([]);
+      untagTags(tagged.tags);
+
+      try {
+        await onSend(prompt, imagesToSend);
+      } catch (err) {
+        retagTags(tagged.tags);
+        throw err;
+      }
+    } finally {
+      submitting.current = false;
     }
-
-    setInput("");
-    setAttachedImages([]);
-
-    await onSend(prompt, imagesToSend);
   };
 
   return (

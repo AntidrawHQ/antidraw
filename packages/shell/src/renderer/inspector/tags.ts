@@ -1,6 +1,6 @@
 import type { ElementContext, ElementInfo, Sides } from "@antidrawapp/runtime/inspector";
 import { frameUrl, getElementContext } from "./bridge";
-import { useInspectorStore, type Picked } from "./store";
+import { samePick, useInspectorStore, type Picked } from "./store";
 
 // Tagged elements as the agent reads them, at the top of the message,
 // grouped by the component whose frame they were picked in. The system
@@ -96,11 +96,23 @@ export function describeTags(picks: { pick: Picked; context: ElementContext | nu
   ].join("\n");
 }
 
-// Empties the tags into a block for the message being sent.
-export async function takeTags() {
-  const { tags, setTags } = useInspectorStore.getState();
-  if (!tags.length) return "";
-  setTags([]);
+// The tags as a block for the message being sent, and the tags it holds.
+// They stay tagged until the message is on its way (untagTags), and come
+// back if it fails (retagTags).
+export async function describePendingTags() {
+  const { tags } = useInspectorStore.getState();
+  if (!tags.length) return { block: "", tags };
   const contexts = await getElementContext(tags);
-  return describeTags(tags.map((pick, i) => ({ pick, context: contexts[i] ?? null })));
+  return { block: describeTags(tags.map((pick, i) => ({ pick, context: contexts[i] ?? null }))), tags };
 }
+
+export const untagTags = (sent: Picked[]) => {
+  const { tags, setTags } = useInspectorStore.getState();
+  setTags(tags.filter((t) => !sent.includes(t)));
+};
+
+// Back ahead of any tagged since, as they were.
+export const retagTags = (sent: Picked[]) => {
+  const { tags, setTags } = useInspectorStore.getState();
+  setTags([...sent.filter((t) => !tags.some((x) => samePick(x, t))), ...tags]);
+};

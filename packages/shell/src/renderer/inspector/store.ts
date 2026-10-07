@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { ElementInfo } from "@antidrawapp/runtime/inspector";
+import { useWorkspaceStore } from "../store/workspace";
 
 // What the canvas inspector knows: which frames can answer it, the element
 // under the pointer, the selected one, and the elements tagged for the next
@@ -58,3 +59,10 @@ export const useInspectorStore = create<InspectorStore>((set) => ({
   removeTag: (tag) => set((s) => ({ tags: s.tags.filter((t) => t !== tag) })),
   setTags: (tags) => set({ tags }),
 }));
+
+// Picks name elements by component name and source location, which mean
+// something else in another workspace: switching drops them.
+useWorkspaceStore.subscribe((s, prev) => {
+  if (s.activeWorkspaceId !== prev.activeWorkspaceId)
+    useInspectorStore.setState({ hover: null, selection: null, tags: [] });
+});
