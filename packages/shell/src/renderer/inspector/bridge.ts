@@ -1,6 +1,7 @@
 import {
   INSPECTOR_NS,
   INSPECTOR_PROTOCOL,
+  type ElementContext,
   type ElementRef,
   type Envelope,
   type FromFrame,
@@ -116,6 +117,9 @@ export function registerFrame(frame: string, iframe: HTMLIFrameElement) {
   };
 }
 
+// The URL a frame previews its component at.
+export const frameUrl = (frame: string) => iframes.get(frame)?.src ?? null;
+
 // ── What the canvas asks ─────────────────────────────────────────────────
 
 // Hover at a point in the frame's CSS pixels. Answers that arrive after a
@@ -157,21 +161,27 @@ export function clearSelection() {
   store.getState().setSelection(null);
 }
 
-// The picks as their frames see them now (an edit may have moved them);
-// one that a frame can't find, or doesn't answer for, stays as it was.
-export async function refresh(picks: Picked[]): Promise<Picked[]> {
+// What an agent is told about each pick (see ElementContext), as its frame
+// sees it now: an edit may have moved it. Null where the frame can't find it
+// or doesn't answer.
+export async function getElementContext(picks: Picked[]): Promise<(ElementContext | null)[]> {
   const byFrame = new Map<string, Picked[]>();
   for (const p of picks) byFrame.set(p.frame, [...(byFrame.get(p.frame) ?? []), p]);
-  const fresh = new Map<Picked, Picked>();
+  const contexts = new Map<Picked, ElementContext>();
   await Promise.all(
     [...byFrame].map(async ([frame, group]) => {
-      const reply = await request(frame, { type: "resolve", refs: group.map((p) => p.info.ref) }, 500);
-      if (reply?.type !== "resolved") return;
+      const reply = await request(frame, { type: "context", refs: group.map((p) => p.info.ref) }, 500);
+      if (reply?.type !== "context") return;
       group.forEach((p, i) => {
-        const info = reply.infos[i];
-        if (info) fresh.set(p, { frame, info });
+        const context = reply.contexts[i];
+        if (context) contexts.set(p, context);
       });
     }),
   );
-  return picks.map((p) => fresh.get(p) ?? p);
+  return picks.map((p) => contexts.get(p) ?? null);
+}
+
+export async function getSelectedElementContext() {
+  const selection = store.getState().selection;
+  return selection ? (await getElementContext([selection]))[0]! : null;
 }

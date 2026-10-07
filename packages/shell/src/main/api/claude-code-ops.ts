@@ -288,6 +288,14 @@ IMPORTANT RULES:
 - Export components as default exports
 - Avoid modifying src/main.tsx unless the user explicitly requests it and understands the risks. Warn them that modifying main.tsx can break the app or interfere with workspace updates.
 
+ELEMENTS THE USER POINTS AT:
+When the user picks elements on the canvas, their message starts with a <canvas-selection> block. "This", "here" and "it" in the message mean those elements. They're grouped by the component whose frame they were picked in: <component> gives its name, its file, the URL its preview loads, and the frame's size; one <element> follows for each element picked in it.
+- written at: the file, line and column of its JSX. "none of its own" means a library rendered it; the location is the nearest element around it that has one, and the selector path leads down from there.
+- rendered by: the components whose code produced it, from the previewed component in, each with the nearest place in its code. An element written in a shared component (outside src/components/user-components/) appears wherever that component is used: change it there only if the user means every use, otherwise change how the previewed component uses it.
+- repeated: one of several rendered from the same place (a .map()); the item number and React keys (outer list first) say which.
+- attributes and box: what it is and what state it's in, and its rendered size, margin, border and padding in CSS pixels, at the frame's size.
+Locations were read when the message was sent; read the file before editing.
+
 Current workspace directory: ${workspacePath}
 `,
         },

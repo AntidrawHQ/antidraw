@@ -100,9 +100,80 @@ test("tells repeated elements apart by index, and finds them again from a ref", 
   const { msg } = ask({ type: "select-at", id: 1, x: 0, y: 0 })
   expect(msg).toMatchObject({ type: "selected", info: { ref: { loc: `${OWN}:6:28`, index: 1 }, text: "two" } })
   const ref = (msg as Extract<FromFrame, { type: "selected" }>).info!.ref
-  expect(ask({ type: "resolve", id: 2, refs: [ref, { loc: "gone.tsx:1:1", index: 0, path: [9], tag: "p" }] }).msg).toMatchObject({
-    type: "resolved",
-    infos: [{ text: "two" }, null],
+  expect(ask({ type: "context", id: 2, refs: [ref, { loc: "gone.tsx:1:1", index: 0, path: [9], tag: "p" }] }).msg).toMatchObject({
+    type: "context",
+    contexts: [{ text: "two", repeat: { index: 1, count: 2, keys: [] } }, null],
+  })
+})
+
+const contextOf = (el: Element) => {
+  at = el
+  const { msg } = ask({ type: "select-at", id: 1, x: 0, y: 0 })
+  const ref = (msg as Extract<FromFrame, { type: "selected" }>).info!.ref
+  return (ask({ type: "context", id: 2, refs: [ref] }).msg as Extract<FromFrame, { type: "context" }>).contexts[0]
+}
+
+test("tells an agent where an element is written, what it is and how it's used", () => {
+  $(".btn").setAttribute("data-slot", "button")
+  $(".btn").setAttribute("aria-expanded", "false")
+  $(".btn").setAttribute("style", "padding: 4px 8px")
+  expect(contextOf($(".btn"))).toMatchInlineSnapshot(`
+    {
+      "attributes": {
+        "aria-expanded": "false",
+        "data-slot": "button",
+      },
+      "border": [
+        0,
+        0,
+        0,
+        0,
+      ],
+      "components": [
+        {
+          "loc": "src/components/user-components/Card.tsx:3:5",
+          "name": "Card",
+        },
+        {
+          "loc": "src/components/ui/button.tsx:8:10",
+          "name": "button",
+        },
+      ],
+      "element": "button.btn",
+      "loc": "src/components/ui/button.tsx:8:10",
+      "margin": [
+        0,
+        0,
+        0,
+        0,
+      ],
+      "padding": [
+        4,
+        8,
+        4,
+        8,
+      ],
+      "repeat": null,
+      "size": [
+        0,
+        0,
+      ],
+      "text": "Upgrade",
+      "viewport": [
+        1024,
+        768,
+      ],
+      "within": null,
+    }
+  `)
+})
+
+test("places an element without a location of its own inside the nearest one that has one", () => {
+  $(".btn").innerHTML = `<span><svg></svg><svg><path></path></svg></span>`
+  expect(contextOf($(".btn path"))).toMatchObject({
+    loc: null,
+    within: { loc: `${BUTTON}:8:10`, path: "span > svg:nth-of-type(2) > path" },
+    components: [{ name: "Card" }, { name: "button", loc: `${BUTTON}:8:10` }],
   })
 })
 

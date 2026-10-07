@@ -43,6 +43,35 @@ export type ElementInfo = {
   padding: Sides
 }
 
+// What an agent needs to find one element in the code and tell it from the
+// ones like it, beyond what it can read there itself (no computed styles).
+// The canvas knows which component's frame it's from.
+export type ElementContext = {
+  // The frame's size.
+  viewport: [width: number, height: number]
+  // Its tag, id and first classes: "button#buy.btn.primary".
+  element: string
+  text: string
+  // Where it's written. Without one (a library rendered it), the nearest
+  // element around it that has one, and the way down from there.
+  loc: string | null
+  within: { loc: string; path: string } | null
+  // The components whose code rendered it, from the previewed one in, each
+  // with the nearest place in its code around it (the element's own location
+  // for the innermost). Library components without one are left out.
+  components: { name: string; loc: string | null }[]
+  // One of several rendered from the same place, by way of the same places
+  // in the components around it (a .map()): which, and the React keys on and
+  // around it, outermost first.
+  repeat: { index: number; count: number; keys: string[] } | null
+  // The attributes that say what it is or what state it's in.
+  attributes: Record<string, string>
+  size: [width: number, height: number]
+  margin: Sides
+  border: Sides
+  padding: Sides
+}
+
 export type WalkDirection = "parent" | "child" | "next" | "prev"
 
 // Canvas to frame. Each carries an id the answer repeats.
@@ -52,7 +81,7 @@ export type ToFrame =
   | { type: "select-at"; id: number; x: number; y: number }
   | { type: "select"; id: number; ref: ElementRef | null }
   | { type: "walk"; id: number; dir: WalkDirection }
-  | { type: "resolve"; id: number; refs: ElementRef[] }
+  | { type: "context"; id: number; refs: ElementRef[] }
 
 // Frame to canvas. "ready" is sent on start and in answer to "hello";
 // "selection-changed" and "selection-lost" whenever a re-render (an edit, a
@@ -61,7 +90,7 @@ export type FromFrame =
   | { type: "ready"; id?: number; protocol: number; componentName: string; tagged: boolean }
   | { type: "hover"; id: number; info: ElementInfo | null }
   | { type: "selected"; id: number; info: ElementInfo | null }
-  | { type: "resolved"; id: number; infos: (ElementInfo | null)[] }
+  | { type: "context"; id: number; contexts: (ElementContext | null)[] }
   | { type: "selection-changed"; info: ElementInfo }
   | { type: "selection-lost" }
 
