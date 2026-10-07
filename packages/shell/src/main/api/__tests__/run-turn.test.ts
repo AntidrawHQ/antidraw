@@ -15,7 +15,9 @@ import {
   openHandle,
   releaseHandle,
   addPending,
+  addPendingQuestion,
 } from "@/main/lib/conversation-store";
+import type { PermissionResult } from "@anthropic-ai/claude-agent-sdk";
 
 beforeAll(async () => {
   const migrationsFolder = fileURLToPath(
@@ -161,5 +163,66 @@ describe("runTurn and the pending set", () => {
     expect(log).toContainEqual({ type: "queue", ids: [followUpId] });
     expect(log).toContainEqual({ type: "queue", ids: [] });
     expect(log[log.length - 1]).toEqual({ type: "error" });
+  });
+
+  test("a dying turn denies a parked question, and says so before the terminal error", async () => {
+    // Same doomed cold start as above: real rows, no workspace directory, so
+    // the spawn fails and the turn dies in the catch.
+    const workspaceId = crypto.randomUUID();
+    const conversationId = crypto.randomUUID();
+    await db.insert(workspaces).values({ id: workspaceId, name: "run-turn" });
+    await db.insert(conversations).values({ id: conversationId, workspaceId });
+
+    const log: unknown[] = [];
+    detach.push(
+      subscribe(conversationId, (event) => {
+        if (event.type === "questions") log.push({ questions: event.toolUseIds });
+        if (event.type === "error") log.push({ error: true });
+      }),
+    );
+
+    const turn = runTurn({
+      conversation: {
+        id: conversationId,
+        workspaceId,
+        claudeCodeSessionId: null,
+      } as Conversation,
+      workspaceId,
+      message: "doomed cold start",
+      userMessageId: crypto.randomUUID(),
+    });
+    // A question parked on the handle, the way canUseTool leaves one.
+    let settled: PermissionResult | undefined;
+    addPendingQuestion(conversationId, "toolu_ask", {
+      input: {},
+      settle: (r) => {
+        settled = r;
+      },
+    });
+    await turn;
+
+    // The CLI's request is answered — never left waiting on a dead process —
+    // and the card came down before the `error` that closes the stream.
+    expect(settled).toMatchInlineSnapshot(`
+      {
+        "behavior": "deny",
+        "message": "The session ended before the user answered.",
+      }
+    `);
+    expect(log).toMatchInlineSnapshot(`
+      [
+        {
+          "questions": [
+            "toolu_ask",
+          ],
+        },
+        {
+          "questions": [],
+        },
+        {
+          "error": true,
+        },
+      ]
+    `);
   });
 });

@@ -40,6 +40,7 @@ import {
 import {
   subscribe,
   getPending,
+  getPendingQuestionIds,
   getAwaitingAck,
   getPartial,
   getCliState,
@@ -48,7 +49,9 @@ import {
   type StreamEvent,
 } from "@/main/lib/conversation-store";
 export type { StreamEvent } from "@/main/lib/conversation-store";
+export type { AnswerQuestionError } from "./ask-user-question";
 import { runTurn } from "./turn";
+import { answerQuestion, declineQuestion } from "./ask-user-question";
 import { workspaceController } from "./controllers/workspace.controller";
 import { preferenceController } from "./controllers/preference.controller";
 import { claudeCliInteractionsController } from "./controllers/claude-cli-interactions.controller";
@@ -237,6 +240,10 @@ api.get(
         // flight now, or none.
         send({ type: "state", state: getCliState(conversationId) });
         send({ type: "queue", userMessageIds: getPending(conversationId) });
+        send({
+          type: "questions",
+          toolUseIds: getPendingQuestionIds(conversationId),
+        });
         send({ type: "livePartial", livePartial: getPartial(conversationId) });
 
         // Park until the subscriber leaves — and then RETURN. Returning is
@@ -324,6 +331,52 @@ api.delete(
     }
 
     return ctx.json({ cancelled: true });
+  },
+);
+
+// A question the CLI is blocked on (AskUserQuestion), answered or declined.
+// Both settle the CLI's waiting can_use_tool request through the store, which
+// emits the `questions` event that takes the card down. 404 when nothing is
+// waiting under that id — answered already, cancelled by Stop, or the turn
+// ended — and the renderer's cache hears the same from that event.
+const questionParamSchema = z.object({
+  conversationId: z.uuid(),
+  toolUseId: z.string().min(1),
+});
+
+const answerQuestionSchema = z.object({
+  answers: z.record(z.string(), z.union([z.string(), z.array(z.string())])),
+});
+
+api.post(
+  "/chat/:conversationId/question/:toolUseId",
+  zValidator("param", questionParamSchema),
+  zValidator("json", answerQuestionSchema),
+  (ctx) => {
+    const { conversationId, toolUseId } = ctx.req.valid("param");
+    const { answers } = ctx.req.valid("json");
+
+    const answered = answerQuestion(conversationId, toolUseId, answers);
+    if (answered.isErr()) {
+      const { status, code, message } = answered.error;
+      return ctx.json({ error: { code, message } }, status);
+    }
+
+    return ctx.json({ answered: true });
+  },
+);
+
+api.delete(
+  "/chat/:conversationId/question/:toolUseId",
+  zValidator("param", questionParamSchema),
+  (ctx) => {
+    const { conversationId, toolUseId } = ctx.req.valid("param");
+
+    if (declineQuestion(conversationId, toolUseId)) {
+      return ctx.json({ declined: true });
+    }
+
+    return ctx.json({ declined: false }, 404);
   },
 );
 

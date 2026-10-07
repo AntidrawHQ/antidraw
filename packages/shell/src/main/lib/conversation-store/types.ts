@@ -1,4 +1,4 @@
-import type { Query } from "@anthropic-ai/claude-agent-sdk";
+import type { PermissionResult, Query } from "@anthropic-ai/claude-agent-sdk";
 import type { PromptStream } from "@/main/api/claude-code-ops";
 import type { LivePartial } from "@/shared/utils/live-partial";
 
@@ -11,6 +11,15 @@ export type CliSessionState =
 // Which side of the fork a send landed on: it either has to start the CLI,
 // or a CLI is already there and it is a follow-up into the live one.
 export type TurnType = "cold-start" | "follow-up";
+
+// A question the CLI is waiting on: AskUserQuestion's can_use_tool request,
+// parked until the user answers, declines, or the turn goes away. `input` is
+// held because the answer has to echo it back; `settle` is the request's
+// resolver, and settling is the only way an entry leaves the map.
+export type PendingQuestion = {
+  readonly input: Record<string, unknown>;
+  readonly settle: (result: PermissionResult) => void;
+};
 
 export type CliHandle = {
   readonly conversationId: string;
@@ -25,4 +34,7 @@ export type CliHandle = {
   // must not count it while the spawn is in flight.
   spawnPromptId: string | null;
   partial: LivePartial | null;
+  // By the tool_use id the CLI asked under — the same id as the persisted
+  // tool_use block, which is where the renderer reads the question from.
+  readonly pendingQuestions: Map<string, PendingQuestion>;
 };

@@ -163,8 +163,8 @@ export const subscribeToStream = (
             // connection that flaps but keeps producing rows should not
             // exhaust the budget meant for one that can never open. Mere
             // delivery must not count — the backend seeds every attach with
-            // state/queue/livePartial for free, so a link that accepts and
-            // immediately dies would refund itself forever. -1 so the
+            // state/queue/questions/livePartial for free, so a link that
+            // accepts and immediately dies would refund itself forever. -1 so the
             // loop's ++ lands on 0. No baseline, no refund: a cache that
             // appears mid-attempt is the detail query landing, not the link
             // producing.
@@ -359,6 +359,18 @@ const handleStreamEvent = (
     queryClient.setQueryData<string[]>(
       queryKeys.conversations.queuedMessageIds(conversationId),
       event.userMessageIds,
+    );
+    return;
+  }
+
+  // The backend's complete list of questions the CLI is blocked on, as
+  // tool_use ids — the question itself is the tool_use block already in the
+  // transcript. Replaces whatever we held, like `queue`: sent on subscribe
+  // and on every change.
+  if (event.type === "questions") {
+    queryClient.setQueryData<string[]>(
+      queryKeys.conversations.pendingQuestionIds(conversationId),
+      event.toolUseIds,
     );
     return;
   }

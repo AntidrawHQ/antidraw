@@ -20,6 +20,9 @@ export const queryKeys = {
     // useSendIntents.
     sendIntents: (id: string | null) =>
       ["conversation", id, "send-intents"] as const,
+    // Renderer-only: tool_use ids of the questions the CLI is blocked on.
+    pendingQuestionIds: (id: string | null) =>
+      ["conversation", id, "pending-question-ids"] as const,
     // userMessageIds the CLI never received, as the backend computes them.
     failedMessageIds: (id: string | null) =>
       ["conversation", id, "failed-message-ids"] as const,

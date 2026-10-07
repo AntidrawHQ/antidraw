@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import type { UUID } from "node:crypto";
 import type {
+  CanUseTool,
   EffortLevel,
   HookInput,
   ModelInfo,
@@ -230,6 +231,17 @@ export const sendMessage = (params: {
    * selection.
    */
   onEffortLevel?: (level: string) => void;
+  /**
+   * Answers the CLI's permission asks. Under bypassPermissions the only asks
+   * that reach it are ones the CLI forces past the bypass — AskUserQuestion
+   * among them, since it requires user interaction. Injected rather than
+   * built here so this module stays free of the conversation store.
+   *
+   * The SDK warns CLAUDE_SDK_CAN_USE_TOOL_SHADOWED for this pairing ("will
+   * not be invoked"). That is true of ordinary tools and not of these: the
+   * AskUserQuestion e2e test drives a real question through it.
+   */
+  canUseTool?: CanUseTool;
 }) => {
   try {
     const {
@@ -239,6 +251,7 @@ export const sendMessage = (params: {
       model,
       effort,
       onEffortLevel,
+      canUseTool,
     } = params;
     const workspacePath = getWorkspaceSourcePath(workspaceId);
 
@@ -292,6 +305,7 @@ Current workspace directory: ${workspacePath}
 `,
         },
         permissionMode: "bypassPermissions",
+        canUseTool,
         includePartialMessages: true,
         // Ask the CLI to re-emit each stdin user message once it is folded
         // into a turn ({type:"user", isReplay:true, uuid}). That replay is the

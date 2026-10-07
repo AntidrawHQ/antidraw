@@ -13,6 +13,7 @@ import type {
   Workspace,
 } from "@/main/api";
 import type { ImageAttachment } from "@/shared/utils/message";
+import type { AskUserQuestionAnswers } from "@/shared/utils/ask-user-question";
 import { fetchEventSource } from "@microsoft/fetch-event-source";
 import { ok, err } from "neverthrow";
 
@@ -656,6 +657,75 @@ export const cancelQueuedMessage = async (
       status: 500 as const,
       code: "NETWORK_ERROR",
       message: "Failed to cancel queued message",
+    });
+  }
+};
+
+// Answers a question the CLI is blocked on. 404 when it is no longer waiting
+// (answered elsewhere, cancelled by Stop, or the turn ended); 400 when the
+// answers do not fit the question.
+export const answerQuestion = async (
+  conversationId: string,
+  toolUseId: string,
+  answers: AskUserQuestionAnswers,
+) => {
+  try {
+    const response = await fetch(
+      `antidraw://app/api/chat/${conversationId}/question/${encodeURIComponent(toolUseId)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ answers }),
+      },
+    );
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      return err({
+        status: response.status as 400 | 404 | 500,
+        code: errorBody?.error?.code ?? "FETCH_ERROR",
+        message: errorBody?.error?.message ?? response.statusText,
+      });
+    }
+
+    const data: { answered: true } = await response.json();
+    return ok(data);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "NETWORK_ERROR",
+      message: "Failed to answer the question",
+    });
+  }
+};
+
+export const declineQuestion = async (
+  conversationId: string,
+  toolUseId: string,
+) => {
+  try {
+    const response = await fetch(
+      `antidraw://app/api/chat/${conversationId}/question/${encodeURIComponent(toolUseId)}`,
+      { method: "DELETE" },
+    );
+
+    // 404 carries a body too: { declined: false } — nothing was waiting.
+    if (!response.ok && response.status !== 404) {
+      const errorBody = await response.json().catch(() => ({}));
+      return err({
+        status: response.status as 500,
+        code: errorBody?.error?.code ?? "FETCH_ERROR",
+        message: errorBody?.error?.message ?? response.statusText,
+      });
+    }
+
+    const data: { declined: boolean } = await response.json();
+    return ok(data);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "NETWORK_ERROR",
+      message: "Failed to decline the question",
     });
   }
 };

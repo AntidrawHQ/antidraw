@@ -38,6 +38,8 @@ import {
 import { Tool } from "@/renderer/components/ui/tool";
 import type { ToolPart } from "@/renderer/components/ui/tool";
 import { liveToolPart, viewableComponent } from "./lib/tool-utils";
+import { AskUserQuestion } from "@/renderer/components/AskUserQuestionCard";
+import { ASK_USER_QUESTION_TOOL } from "@/shared/utils/ask-user-question";
 import { AuthError } from "@/renderer/components/auth-error";
 import { StreamError } from "@/renderer/components/stream-error";
 import { useWorkspaceStore } from "./store/workspace";
@@ -192,11 +194,15 @@ const MessageRow = memo(
       return null;
     }
 
+    // A question is its own kind: "tool" would pull it up against the group
+    // above (TOOL_ROW) and join its edges to that group's.
     const kind = blocks.some((b) => b.type === "text")
       ? "text"
-      : blocks.some((b) => b.type === "tool_use" || b.type === "tool_result")
-        ? "tool"
-        : "text";
+      : blocks.some((b) => b.type === "tool_use" && b.name === ASK_USER_QUESTION_TOOL)
+        ? "question"
+        : blocks.some((b) => b.type === "tool_use" || b.type === "tool_result")
+          ? "tool"
+          : "text";
 
     // Text in order, with each run of consecutive tool calls in one group.
     const renderBlocks = () => {
@@ -219,6 +225,20 @@ const MessageRow = memo(
           const toolPart = tools[toolIndex];
           const onViewComponent = views[toolIndex];
           toolIndex++;
+          // Interactive, so it is not one of a run's compact rows: it ends
+          // the run and stands on its own, the way text does.
+          if (toolPart?.type === ASK_USER_QUESTION_TOOL) {
+            flush();
+            nodes.push(
+              <AskUserQuestion
+                key={idx}
+                conversationId={msg.conversationId}
+                toolUseId={block.id}
+                toolPart={toolPart}
+              />
+            );
+            return;
+          }
           if (toolPart) {
             run.push(
               <Tool

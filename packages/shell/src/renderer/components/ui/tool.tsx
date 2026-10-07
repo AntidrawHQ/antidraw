@@ -20,6 +20,9 @@ export type ToolPart = {
   input?: Record<string, unknown>;
   output?: Record<string, unknown>;
   errorText?: string;
+  // The tool's structured output (the SDK's tool_use_result) — what a tool
+  // with its own rendering reads instead of parsing the tool_result text.
+  structuredOutput?: unknown;
 };
 
 /* ── Helpers ────────────────────────────────────────────────────────────── */
@@ -55,7 +58,7 @@ const getToolTitle = (toolPart: ToolPart): string => {
 // Monochrome status, from the ToolCallsMono "Ghost" design: a grey arc
 // spinning while running, an outline ring with a check or × once settled.
 // The spin is a transform, so it stays on the compositor.
-const Spinner = () => (
+export const Spinner = () => (
   <svg
     width={16}
     height={16}
@@ -80,7 +83,7 @@ const Spinner = () => (
   </svg>
 );
 
-const Ring = ({ failed }: { failed: boolean }) => (
+export const Ring = ({ failed }: { failed: boolean }) => (
   <svg
     width={16}
     height={16}

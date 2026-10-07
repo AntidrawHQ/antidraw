@@ -386,7 +386,7 @@ describe("reconnecting", () => {
   test("seeds alone do not buy back the budget", async () => {
     const conversationId = freshId();
     seedCache(queryClient, conversationId, []);
-    // The backend sends its state/queue/livePartial seeds unconditionally on
+    // The backend sends its state/queue/questions/livePartial seeds unconditionally on
     // every successful attach. A link that accepts the stream and then drops
     // the body — a main-process reload loop, a torn-down CLI handle — thus
     // delivers events on every cycle without ever making progress.
@@ -893,6 +893,52 @@ describe("the branches that only the stream writes", () => {
         queryKeys.conversations.queuedMessageIds(conversationId),
       ),
     ).toEqual(["m2"]);
+  });
+
+  test("questions replaces the pending question ids wholesale", async () => {
+    const conversationId = freshId();
+    seedCache(queryClient, conversationId, []);
+    queryClient.setQueryData<string[]>(
+      queryKeys.conversations.pendingQuestionIds(conversationId),
+      ["stale"],
+    );
+    const seen: string[][] = [];
+    const unwatch = queryClient.getQueryCache().subscribe((e) => {
+      if (
+        e.type === "updated" &&
+        e.query.queryKey[2] === "pending-question-ids" &&
+        e.query.queryKey[1] === conversationId
+      ) {
+        seen.push([...(e.query.state.data as string[])]);
+      }
+    });
+    scriptAttempts([
+      {
+        events: [
+          { type: "questions", toolUseIds: ["toolu_a", "toolu_b"] },
+          // Answered: the backend's next snapshot simply omits it.
+          { type: "questions", toolUseIds: ["toolu_b"] },
+          { type: "questions", toolUseIds: [] },
+        ],
+      },
+    ]);
+
+    subscribeToStream(conversationId, queryClient);
+    await settle(conversationId);
+    unwatch();
+
+    expect(seen).toMatchInlineSnapshot(`
+      [
+        [
+          "toolu_a",
+          "toolu_b",
+        ],
+        [
+          "toolu_b",
+        ],
+        [],
+      ]
+    `);
   });
 
   test("partial folds deltas onto the live block", async () => {

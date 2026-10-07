@@ -12,7 +12,10 @@ import { useEffect, useMemo, useRef } from "react";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
 import type { ToolPart } from "@/renderer/components/ui/tool";
 import { queryKeys } from "./query-keys";
+import type { AskUserQuestionAnswers } from "@/shared/utils/ask-user-question";
 import {
+  answerQuestion,
+  declineQuestion,
   cancelConversationStream,
   cancelQueuedMessage,
   createConversation,
@@ -187,6 +190,80 @@ export const useQueuedMessageIds = (conversationId: string | null) => {
     enabled: false,
     initialData: [],
     staleTime: Infinity,
+  });
+};
+
+// tool_use ids of the questions the CLI is blocked on. Mirror-only, like the
+// queue: the sole writer is stream-subscription applying the backend's
+// `questions` snapshots, seeded on every attach.
+export const usePendingQuestionIds = (conversationId: string | null) => {
+  return useQuery<string[]>({
+    queryKey: queryKeys.conversations.pendingQuestionIds(conversationId),
+    queryFn: () => [],
+    enabled: false,
+    initialData: [],
+    staleTime: Infinity,
+  });
+};
+
+// Drops a question from the mirror once the backend has settled it. The
+// `questions` event that follows says the same; this only spares the card a
+// round trip of looking answerable after it was answered.
+const dropPendingQuestion = (
+  queryClient: QueryClient,
+  conversationId: string,
+  toolUseId: string,
+) => {
+  queryClient.setQueryData<string[]>(
+    queryKeys.conversations.pendingQuestionIds(conversationId),
+    (prev) => prev?.filter((id) => id !== toolUseId) ?? [],
+  );
+};
+
+export const useAnswerQuestion = () => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      conversationId,
+      toolUseId,
+      answers,
+    }: {
+      conversationId: string;
+      toolUseId: string;
+      answers: AskUserQuestionAnswers;
+    }) => {
+      const result = await answerQuestion(conversationId, toolUseId, answers);
+      if (result.isErr()) {
+        throw new Error(result.error.message);
+      }
+      return result.value;
+    },
+    onSuccess: (_data, { conversationId, toolUseId }) =>
+      dropPendingQuestion(queryClient, conversationId, toolUseId),
+  });
+};
+
+export const useDeclineQuestion = () => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      conversationId,
+      toolUseId,
+    }: {
+      conversationId: string;
+      toolUseId: string;
+    }) => {
+      const result = await declineQuestion(conversationId, toolUseId);
+      if (result.isErr()) {
+        throw new Error(result.error.message);
+      }
+      return result.value;
+    },
+    // Dropped either way: false means nothing was waiting under that id.
+    onSuccess: (_data, { conversationId, toolUseId }) =>
+      dropPendingQuestion(queryClient, conversationId, toolUseId),
   });
 };
 
