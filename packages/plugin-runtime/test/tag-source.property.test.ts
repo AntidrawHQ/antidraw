@@ -50,8 +50,9 @@ const DOM = ["div", "span", "li", "button", "svg", "path", "motion.div", "ui.ico
 const COMPONENTS = ["Card", "UI.Card", "React.Fragment", "motion.Div"]
 const isDom = (name: string) => /^[a-z]/.test(name.split(".").pop()!)
 
-// Between attributes: spaces, line breaks, and comments holding tags.
-const attrGap = fc.constantFrom(" ", "\n  ", " /* <b> */ ", " // <i>\n  ")
+// Between attributes: spaces, line breaks, and comments holding tags or
+// characters Babel ends a line at but editors don't (a lone \r, U+2029).
+const attrGap = fc.constantFrom(" ", "\n  ", " /* <b> */ ", " // <i>\n  ", " /* a\rb\u2029c */ ")
 const childGap = fc.constantFrom("", " ", "\n    ")
 const plainAttr = fc.constantFrom(
   `className="a b"`,
@@ -62,11 +63,12 @@ const plainAttr = fc.constantFrom(
   `style={{ color: "red" }}`,
   "onClick={() => count + 1}",
 )
-// Text and expressions that look like tags but aren't, and wide characters
-// ahead of elements on the same line (columns count UTF-16 units).
+// Text and expressions that look like tags but aren't, wide characters
+// ahead of elements on the same line (columns count UTF-16 units), and a
+// pasted line separator (U+2028), which doesn't end the line.
 const text = fc.record({
   kind: fc.constant("text" as const),
-  text: fc.constantFrom("hi", "a &amp; b", "it's", "// not a comment", "🎨 paint", "é"),
+  text: fc.constantFrom("hi", "a &amp; b", "it's", "// not a comment", "🎨 paint", "é", "one\u2028two"),
 })
 const expr = fc.record({
   kind: fc.constant("expr" as const),
@@ -202,8 +204,9 @@ const source = fc
 
 const STAMP = / data-ad-loc=\{"((?:[^"\\]|\\.)*)"\}/g
 
-// Babel's line and column for an offset: lines split at \r\n or \n, the column
-// in UTF-16 units, both from 1.
+// The line and column of an offset as editors and the agent's Read tool
+// count them: lines end only at \n or \r\n (not where Babel also ends them,
+// at a lone \r, U+2028 or U+2029), the column in UTF-16 units, both from 1.
 const lineColumn = (code: string, offset: number) => {
   const lines = code.slice(0, offset).split(/\r\n|\n/)
   return `${lines.length}:${lines.at(-1)!.length + 1}`
@@ -239,13 +242,14 @@ test("stamps each DOM element once, after its name, with where its < is, and cha
 })
 
 test("generates the cases that matter", () => {
-  // The generator reaches nesting, stamps inside attributes, kept stamps and
-  // CRLF files, or the property above says little.
+  // The generator reaches nesting, stamps inside attributes, kept stamps,
+  // CRLF files and line separators, or the property above says little.
   const samples = fc.sample(source, { numRuns: 500, seed: 1 })
   const seen = (pred: (s: (typeof samples)[number]) => boolean) => samples.filter(pred).length
   expect(seen((s) => s.stamped.length >= 5)).toBeGreaterThan(25)
   expect(seen((s) => /icon=\{<[a-z]/.test(s.code))).toBeGreaterThan(25)
   expect(seen((s) => s.code.includes(KEPT))).toBeGreaterThan(25)
   expect(seen((s) => s.code.includes("\r\n"))).toBeGreaterThan(25)
+  expect(seen((s) => /[\u2028\u2029]|\r(?!\n)/.test(s.code))).toBeGreaterThan(25)
   expect(seen((s) => /<[a-z.]+<\{ a: 1 \}>/.test(s.code))).toBeGreaterThan(25)
 })
