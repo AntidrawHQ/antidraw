@@ -185,16 +185,26 @@ export function startInspector(container: HTMLElement, componentName: string): (
     const loc = el.getAttribute(SOURCE_ATTRIBUTE)
     const anchor = loc ? el : stampedAround(el)
     // The others rendered from the same place by the same places around it:
-    // a shared component's button used twice isn't a list.
+    // a shared component's button used twice isn't a list. Nor is one
+    // written twice in the same place: a list's items differ by key. (Without
+    // React's data there are no keys; the same place twice is taken as a list.)
     const where = (node: Element) => componentsOf(node).map((c) => c.loc).join(" ")
     const here = anchor && where(anchor)
     const matches = anchor
       ? [...withLoc(anchor.getAttribute(SOURCE_ATTRIBUTE)!)].filter((m) => m === anchor || where(m) === here)
       : []
+    const listed =
+      matches.length > 1 &&
+      (!ownersOf(anchor!, container).length || new Set(matches.map((m) => keysOf(m, container).join("\0"))).size > 1)
     const attributes: Record<string, string> = {}
     for (const name of ATTRIBUTES) {
       const value = el.getAttribute(name)
       if (value !== null) attributes[name] = clip(value)
+    }
+    // React sets the checked attribute once; the property is what's on screen.
+    if (el instanceof HTMLInputElement && (el.type === "checkbox" || el.type === "radio")) {
+      if (el.checked) attributes.checked = ""
+      else delete attributes.checked
     }
     return {
       viewport: [window.innerWidth, window.innerHeight],
@@ -204,7 +214,7 @@ export function startInspector(container: HTMLElement, componentName: string): (
       within: !loc && anchor ? { loc: anchor.getAttribute(SOURCE_ATTRIBUTE)!, path: pathFrom(anchor, el) } : null,
       components: componentsOf(el),
       repeat:
-        matches.length > 1
+        listed
           ? { index: matches.indexOf(anchor!), count: matches.length, keys: keysOf(el, container) }
           : null,
       attributes,

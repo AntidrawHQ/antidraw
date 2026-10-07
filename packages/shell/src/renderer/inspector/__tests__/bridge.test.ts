@@ -170,6 +170,45 @@ it("sends tags grouped by component, as their frames describe them now, or as la
   `);
 });
 
+it("describes a pick its live frame can't find any more as last seen, in its place", async () => {
+  const buy = { frame: "Card", info: info() };
+  const gone = { frame: "Card", info: info({ tag: "p", classes: [], text: "Billed yearly", ref: { loc: `${OWN}:9:7`, index: 0, path: [3], tag: "p" } }) };
+  const title = { frame: "Card", info: info() };
+  useInspectorStore.setState({ tags: [buy, gone, title] });
+  const taking = takeTags();
+  expect(lastAsked()).toMatchObject({ type: "context", refs: [buy.info.ref, gone.info.ref, title.info.ref] });
+  frameSays({
+    type: "context",
+    id: lastAsked().id,
+    contexts: [context(), null, context({ element: "h3.title", text: "Pro plan", loc: `${OWN}:4:7`, components: [{ name: "Card", loc: `${OWN}:4:7` }] })],
+  });
+  await settle();
+  expect(await taking).toMatchInlineSnapshot(`
+    "<canvas-selection>
+    <component name="Card" file="src/components/user-components/Card.tsx" preview="https://frame.test/preview?componentName=Card" frame="1280×800">
+    <element>
+    element: button.btn "Buy"
+    written at: src/components/ui/button.tsx:3:5
+    rendered by: Card (src/components/user-components/Card.tsx:5:5) > Button (src/components/ui/button.tsx:3:5)
+    box: 120×40
+    </element>
+    <element>
+    element: p "Billed yearly"
+    written at: src/components/user-components/Card.tsx:9:7
+    used at: src/components/user-components/Card.tsx:4:7
+    (as last seen: the frame didn't answer)
+    </element>
+    <element>
+    element: h3.title "Pro plan"
+    written at: src/components/user-components/Card.tsx:4:7
+    rendered by: Card (src/components/user-components/Card.tsx:4:7)
+    box: 120×40
+    </element>
+    </component>
+    </canvas-selection>"
+  `);
+});
+
 it("places an element without a location of its own, with nothing in it read as a tag", () => {
   expect(
     describeContext(
@@ -179,13 +218,15 @@ it("places an element without a location of its own, with nothing in it read as 
         loc: null,
         within: { loc: "src/components/ui/button.tsx:3:5", path: "svg > path" },
         components: [{ name: "Card", loc: `${OWN}:5:5` }, { name: "Icon", loc: null }],
+        attributes: { "aria-label": "Terms & <Conditions>", href: "/search?q=a&page=2" },
       }),
     ),
   ).toMatchInlineSnapshot(`
     "<element>
-    element: path "Say \\"hi\\" &amp; &lt;/element>"
+    element: path "Say \\"hi\\" & &lt;/element>"
     written at: none of its own; inside src/components/ui/button.tsx:3:5, at svg > path
     rendered by: Card (src/components/user-components/Card.tsx:5:5) > Icon
+    attributes: aria-label="Terms & &lt;Conditions>" href="/search?q=a&page=2"
     box: 120×40
     </element>"
   `);

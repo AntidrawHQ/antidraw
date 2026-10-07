@@ -27,13 +27,17 @@ const nameOf = (type: unknown): string | null => {
   return null
 }
 
+const LAZY = Symbol.for("react.lazy")
+
 // esbuild renames the function in `const Row = memo(function Row() {…})`,
-// whose name shadows the variable's, to Row2: the code says Row.
+// whose name shadows the variable's, to Row2 (and H2's to H22): the code
+// says Row. Only memo() and forwardRef(); lazy() wraps a function esbuild
+// left alone (the previewed component, Hero2, is loaded through one).
 const componentName = (fiber: Fiber) => {
   const name = nameOf(fiber.type)
-  const wrapped = !!fiber.elementType && typeof fiber.elementType === "object"
-  const named = wrapped && !!(fiber.elementType as { displayName?: string }).displayName
-  return name && wrapped && !named ? name.replace(/(\D)\d+$/, "$1") : name
+  const wrapper = fiber.elementType as { $$typeof?: symbol; displayName?: string } | null
+  const renamed = !!wrapper && typeof wrapper === "object" && wrapper.$$typeof !== LAZY && !wrapper.displayName
+  return name && renamed ? name.replace(/(?<=.)[2-9]$/, "") : name
 }
 
 // A fiber and its alternate are the same instance, at different renders.

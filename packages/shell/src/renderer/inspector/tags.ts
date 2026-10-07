@@ -12,8 +12,9 @@ const componentFile = (frame: string) => `src/components/user-components/${frame
 export const elementName = (info: ElementInfo) =>
   info.tag + (info.id ? `#${info.id}` : "") + info.classes.map((c) => `.${c}`).join("");
 
-// Inside the block, nothing may read as a tag.
-const escape = (v: string) => v.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+// Inside the block, nothing may read as a tag. Only "<" is escaped: the
+// values are quoted, not XML, and an "&amp;" would read as the text.
+const escape = (v: string) => v.replace(/</g, "&lt;");
 const quote = (v: string) => JSON.stringify(v);
 
 // As CSS writes them: "8", "8 16", "8 16 4", "8 16 4 0". Nothing when all are 0.

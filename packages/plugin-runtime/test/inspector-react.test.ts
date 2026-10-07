@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, createElement as h, forwardRef, memo, type ReactNode } from "react"
+import { act, createElement as h, forwardRef, lazy, memo, Suspense, useState, type ReactNode } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, expect, test, vi } from "vitest"
 import { startInspector } from "../src/inspector/agent"
@@ -322,6 +322,125 @@ test("an element in a frame the dev server didn't tag", async () => {
       "repeat": null,
       "text": "New",
       "within": null,
+    }
+  `)
+})
+
+test("a shared component written twice in one place isn't a list", async () => {
+  await render(h(function Toolbar() {
+    return h("div", loc(CARD, 3), h(Button, null, "Save"), h(Button, null, "Cancel"))
+  }))
+  expect(contextOf(withText(".btn", "Cancel"))).toMatchInlineSnapshot(`
+    {
+      "attributes": {
+        "data-slot": "button",
+      },
+      "components": [
+        {
+          "loc": "src/components/user-components/Card.tsx:3:5",
+          "name": "Toolbar",
+        },
+        {
+          "loc": "src/components/ui/button.tsx:3:5",
+          "name": "Button",
+        },
+      ],
+      "element": "button.btn",
+      "loc": "src/components/ui/button.tsx:3:5",
+      "repeat": null,
+      "text": "Cancel",
+      "within": null,
+    }
+  `)
+})
+
+test("nor is it when the previewed component's root is a shared component", async () => {
+  const Panel = ({ children }: { children: ReactNode }) => h("div", loc(BOX, 2), children)
+  await render(h(function Form() {
+    return h(Panel, null, h(Panel, null, h(Button, null, "Email")), h(Panel, null, h(Button, null, "Cancel"), h(Button, null, "Save")))
+  }))
+  expect(contextOf(withText(".btn", "Save"))).toMatchInlineSnapshot(`
+    {
+      "attributes": {
+        "data-slot": "button",
+      },
+      "components": [
+        {
+          "loc": null,
+          "name": "Form",
+        },
+        {
+          "loc": "src/components/ui/button.tsx:3:5",
+          "name": "Button",
+        },
+      ],
+      "element": "button.btn",
+      "loc": "src/components/ui/button.tsx:3:5",
+      "repeat": null,
+      "text": "Save",
+      "within": null,
+    }
+  `)
+})
+
+test("a previewed component ending in a digit, and esbuild-renamed memo and forwardRef", async () => {
+  // As esbuild writes `const H2 = forwardRef(function H2 …)` and
+  // `const Plan2 = memo(function Plan2 …)`.
+  const H2 = forwardRef<HTMLHeadingElement, { children: ReactNode }>(function H22({ children }, ref) {
+    return h("h2", { ...loc(BOX, 4), ref }, children)
+  })
+  const Plan2 = memo(function Plan22() {
+    return h("article", loc(CARD, 12), h(H2, null, "Team"))
+  })
+  function Hero2() {
+    return h("section", loc(CARD, 3), h(Plan2))
+  }
+  // The preview loads the component it shows through lazy().
+  const Lazy = lazy(async () => ({ default: Hero2 }))
+  await act(async () => root.render(h("div", { id: "frame" }, h(Suspense, null, h(Lazy)))))
+  expect(contextOf(all("h2")[0])).toMatchInlineSnapshot(`
+    {
+      "attributes": {},
+      "components": [
+        {
+          "loc": "src/components/user-components/Card.tsx:3:5",
+          "name": "Hero2",
+        },
+        {
+          "loc": "src/components/user-components/Card.tsx:12:5",
+          "name": "Plan2",
+        },
+        {
+          "loc": "src/components/ui/box.tsx:4:5",
+          "name": "H2",
+        },
+      ],
+      "element": "h2",
+      "loc": "src/components/ui/box.tsx:4:5",
+      "repeat": null,
+      "text": "Team",
+      "within": null,
+    }
+  `)
+})
+
+test("a checkbox's state as the user left it", async () => {
+  await render(h(function Settings() {
+    const [on, setOn] = useState(true)
+    return h("input", { ...loc(CARD, 9), type: "checkbox", checked: on, onChange: () => setOn(!on) })
+  }))
+  const box = all("input")[0] as HTMLInputElement
+  expect(contextOf(box).attributes).toMatchInlineSnapshot(`
+    {
+      "checked": "",
+      "type": "checkbox",
+    }
+  `)
+  await act(async () => box.click())
+  expect(box.checked).toBe(false)
+  expect(contextOf(box).attributes).toMatchInlineSnapshot(`
+    {
+      "type": "checkbox",
     }
   `)
 })
