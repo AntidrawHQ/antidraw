@@ -210,6 +210,43 @@ test("follows the selection when it moves without the DOM changing", async () =>
   expect(sent.at(-1)!.msg).toMatchObject({ type: "selection-changed", info: { rect: { x: 0, y: 12, width: 120, height: 30 } } })
 })
 
+// Paragraphs written one per line, from line `first`, as a remount renders them.
+const paragraphs = (first: number, texts: string[]) => {
+  const list = document.createElement("div")
+  list.setAttribute("data-ad-loc", `${OWN}:${first - 1}:3`)
+  list.innerHTML = texts.map((t, i) => `<p data-ad-loc="${OWN}:${first + i}:5">${t}</p>`).join("")
+  container.replaceChildren(list)
+  return list
+}
+const lastSelection = () => {
+  const msg = sent.at(-1)!.msg as Extract<FromFrame, { type: "selection-changed" }>
+  return `${msg.type}: ${JSON.stringify(msg.info?.text)} at ${msg.info?.ref.loc}`
+}
+
+test("finds a remounted element again when a line added above moves every location", async () => {
+  paragraphs(11, ["a", "b", "c"])
+  at = $("p:nth-of-type(2)")
+  const { info } = ask({ type: "select-at", id: 1, x: 0, y: 0 }).msg as Extract<FromFrame, { type: "selected" }>
+  // A hook added above the JSX: Fast Refresh remounts, a line lower. "b"'s
+  // old location now names "a".
+  paragraphs(12, ["a", "b", "c"])
+  await frames()
+  expect(lastSelection()).toMatchInlineSnapshot(`"selection-changed: "b" at src/components/user-components/Card.tsx:13:5"`)
+  // And a tag refreshed on send, with the ref from before.
+  const reply = ask({ type: "context", id: 2, refs: [info!.ref] }).msg as Extract<FromFrame, { type: "context" }>
+  expect(`${reply.contexts[0]?.text} at ${reply.contexts[0]?.loc}`).toMatchInlineSnapshot(`"b at src/components/user-components/Card.tsx:13:5"`)
+})
+
+test("keeps a remounted element by its location when a sibling before it is hidden", async () => {
+  paragraphs(11, ["a", "b", "c"])
+  at = $("p:nth-of-type(2)")
+  ask({ type: "select-at", id: 1, x: 0, y: 0 })
+  // State hides "a" and remounts the rest: "b" keeps its line, not its place.
+  paragraphs(11, ["a", "b", "c"]).firstElementChild!.remove()
+  await frames()
+  expect(lastSelection()).toMatchInlineSnapshot(`"selection-changed: "b" at src/components/user-components/Card.tsx:12:5"`)
+})
+
 test("says so when the selected element is gone, rather than take its neighbour", async () => {
   at = $("h3")
   ask({ type: "select-at", id: 1, x: 0, y: 0 })

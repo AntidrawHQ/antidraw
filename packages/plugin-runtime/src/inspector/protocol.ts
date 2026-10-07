@@ -18,12 +18,14 @@ export type Sides = [top: number, right: number, bottom: number, left: number]
 // How the canvas names an element it can't hold: its source location, which
 // of the elements rendered from that location it is (a .map() repeats one),
 // and its child-index path from the component's root with its tag name, for
-// when the location is gone (a remount at a new line) or never was.
+// when the location is gone (a remount at a new line) or never was. Its text
+// settles which one when the location and the path disagree.
 export type ElementRef = {
   loc: string | null
   index: number
   path: number[]
   tag: string
+  text?: string
 }
 
 export type ElementInfo = {

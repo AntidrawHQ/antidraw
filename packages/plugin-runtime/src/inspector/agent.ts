@@ -87,27 +87,34 @@ export function startInspector(container: HTMLElement, componentName: string): (
   const withLoc = (loc: string) =>
     container.querySelectorAll(`[${SOURCE_ATTRIBUTE}="${CSS.escape(loc)}"]`)
 
-  const refFor = (el: Element): ElementRef => {
+  const refFor = (el: Element, text = textOf(el)): ElementRef => {
     const loc = el.getAttribute(SOURCE_ATTRIBUTE)
     const path: number[] = []
     for (let node: Element = el; node !== container && node.parentElement; node = node.parentElement)
       path.unshift([...node.parentElement.children].indexOf(node))
-    return { loc, index: loc ? [...withLoc(loc)].indexOf(el) : 0, path, tag: el.localName }
+    return { loc, index: loc ? [...withLoc(loc)].indexOf(el) : 0, path, tag: el.localName, text }
   }
 
-  // The element a ref names now: by source location, then by path. Either
-  // way it must be the same kind of element: deleting a line moves the next
-  // element up into the deleted one's location.
+  // The element a ref names now: by source location, or by path. Either way
+  // it must be the same kind of element: deleting a line moves the next
+  // element up into the deleted one's location. Adding a line moves every
+  // location below it, so the old one can name the element written above,
+  // of the same kind: when the two disagree, the one whose text is still
+  // the ref's wins, and the location otherwise (a sibling shown or hidden
+  // moves the path, not the location).
   const find = (ref: ElementRef): Element | null => {
     const same = (el: Element | null | undefined): el is Element => inside(el ?? null) && el!.localName === ref.tag
+    let byLoc: Element | null = null
     if (ref.loc) {
       const matches = withLoc(ref.loc)
       const hit = matches[ref.index] ?? (matches.length === 1 ? matches[0] : undefined)
-      if (same(hit)) return hit
+      if (same(hit)) byLoc = hit
     }
     let node: Element | undefined = container
     for (const i of ref.path) node = node?.children[i]
-    return same(node) ? node : null
+    const byPath = same(node) ? node : null
+    if (!byLoc || !byPath || byLoc === byPath || ref.text === undefined) return byLoc ?? byPath
+    return textOf(byLoc) !== ref.text && textOf(byPath) === ref.text ? byPath : byLoc
   }
 
   const callsiteOf = (el: Element) => {
@@ -121,13 +128,14 @@ export function startInspector(container: HTMLElement, componentName: string): (
   const infoFor = (el: Element): ElementInfo => {
     const cs = getComputedStyle(el)
     const r = el.getBoundingClientRect()
+    const text = textOf(el)
     return {
-      ref: refFor(el),
+      ref: refFor(el, text),
       callsite: callsiteOf(el),
       tag: el.localName,
       id: el.id,
       classes: [...el.classList].slice(0, 4),
-      text: textOf(el),
+      text,
       rect: { x: r.x, y: r.y, width: r.width, height: r.height },
       margin: sides(cs, (s) => `margin-${s}`),
       border: sides(cs, (s) => `border-${s}-width`),
