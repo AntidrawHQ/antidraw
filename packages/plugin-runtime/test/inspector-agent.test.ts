@@ -15,9 +15,19 @@ let sent: { msg: FromFrame; origin: string }[]
 let at: Element | null
 let container: HTMLElement
 
+// Animation frames run when the test says, not on a timer: a timer can fire
+// after the test has stopped waiting for it.
+let queued: Map<number, FrameRequestCallback>
+let lastFrameId: number
+
 beforeEach(() => {
-  vi.stubGlobal("requestAnimationFrame", (fn: FrameRequestCallback) => setTimeout(() => fn(0), 0))
-  vi.stubGlobal("cancelAnimationFrame", (id: number) => clearTimeout(id))
+  queued = new Map()
+  lastFrameId = 0
+  vi.stubGlobal("requestAnimationFrame", (fn: FrameRequestCallback) => {
+    queued.set(++lastFrameId, fn)
+    return lastFrameId
+  })
+  vi.stubGlobal("cancelAnimationFrame", (id: number) => queued.delete(id))
   at = null
   document.elementsFromPoint = () => (at ? [at, container, document.body, document.documentElement] : [])
   sent = []
@@ -49,7 +59,15 @@ const ask = (msg: ToFrame, source: MessageEventSource | null = window) => {
   return sent.at(-1)!
 }
 const $ = (selector: string) => container.querySelector(selector)!
-const frames = () => new Promise((resolve) => setTimeout(resolve, 5))
+// A few frames, each after the DOM's pending mutation records are delivered.
+const frames = async (count = 3) => {
+  for (let i = 0; i < count; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const due = [...queued.values()]
+    queued.clear()
+    for (const fn of due) fn(0)
+  }
+}
 
 test("says it's ready to any parent, and whether the dev server tagged it", () => {
   expect(sent).toEqual([
