@@ -58,6 +58,26 @@ export default function List<T>({ items }: { items: T[] }) {
   `)
 })
 
+test("counts lines as editors do: only \\n ends one, and a byte order mark isn't a column", () => {
+  const transform = tagSource()
+  // Shown with the characters editors don't break a line at made visible.
+  const visible = (code: string | null) =>
+    code!.replace(/\u2028/g, "<LS>").replace(/\u2029/g, "<PS>").replace(/\r(?!\n)/g, "<CR>").replace(/\ufeff/g, "<BOM>")
+  const file = "src/components/user-components/A.tsx"
+  // U+2028 and U+2029 in pasted text, a lone \r: one line each, to an editor.
+  expect(
+    visible(transform("// one\u2028two\u2029three\rfour\nexport default () => <p>a\u2028b <span/></p>\n", file)),
+  ).toMatchInlineSnapshot(`
+    "// one<LS>two<PS>three<CR>four
+    export default () => <p data-ad-loc={"src/components/user-components/A.tsx:2:22"}>a<LS>b <span data-ad-loc={"src/components/user-components/A.tsx:2:29"}/></p>
+    "
+  `)
+  expect(visible(transform("\ufeffexport default () => <div/>\r\n", file))).toMatchInlineSnapshot(`
+    "<BOM>export default () => <div data-ad-loc={"src/components/user-components/A.tsx:1:22"}/>
+    "
+  `)
+})
+
 test("skips files that aren't JSX, aren't the workspace's, or don't parse", () => {
   const transform = tagSource()
   expect(transform(`export const a = <div />`, "src/lib/a.ts")).toBeNull()

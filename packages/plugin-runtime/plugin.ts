@@ -218,16 +218,33 @@ const tagSource = (): Plugin => {
         return null
       }
       const relative = normalizePath(path.relative(root, file))
+      // Line and column as editors and the agent's Read tool count them: lines
+      // end only at \n (or \r\n). Babel's loc also ends them at a lone \r,
+      // U+2028 and U+2029, so text pasted with one would put every element
+      // after it a line too low. A byte order mark isn't a column.
+      const lineStarts = [0]
+      for (let i = code.indexOf("\n"); i !== -1; i = code.indexOf("\n", i + 1)) lineStarts.push(i + 1)
+      const bom = code.charCodeAt(0) === 0xfeff ? 1 : 0
+      const position = (offset: number) => {
+        let lo = 0
+        let hi = lineStarts.length - 1
+        while (lo < hi) {
+          const mid = (lo + hi + 1) >> 1
+          if (lineStarts[mid]! <= offset) lo = mid
+          else hi = mid - 1
+        }
+        return { line: lo + 1, column: offset - lineStarts[lo]! + 1 - (lo === 0 ? bom : 0) }
+      }
       const s = new MagicString(code)
       visit(ast.program as unknown as Node, (node) => {
         if (node.type !== "JSXOpeningElement" || !rendersDomNode(node.name as Node)) return
         const attributes = node.attributes as Node[]
         const named = (a: Node) => a.type === "JSXAttribute" && (a.name as Node & { name: unknown }).name === SOURCE_ATTRIBUTE
         if (attributes.some(named)) return
-        const { line, column } = (node.loc as { start: { line: number; column: number } }).start
+        const { line, column } = position(node.start)
         // After the name and any type arguments (<motion.div<Props>>).
         const after = ((node.typeArguments ?? node.typeParameters ?? node.name) as Node).end
-        s.appendLeft(after, ` ${SOURCE_ATTRIBUTE}={${JSON.stringify(`${relative}:${line}:${column + 1}`)}}`)
+        s.appendLeft(after, ` ${SOURCE_ATTRIBUTE}={${JSON.stringify(`${relative}:${line}:${column}`)}}`)
       })
       if (!s.hasChanged()) return null
       return { code: s.toString(), map: s.generateMap({ hires: "boundary", source: file, includeContent: true }) }
