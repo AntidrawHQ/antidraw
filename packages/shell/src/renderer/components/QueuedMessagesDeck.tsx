@@ -5,6 +5,7 @@ import { cn } from "@/renderer/lib/utils";
 import { SMOOTH, collapseHeight } from "@/renderer/lib/motion";
 import type { DeckRow } from "@/renderer/lib/use-queue-deck";
 import { useCancelQueuedMessage } from "@/renderer/lib/claude-code-ops";
+import { splitTagged } from "@/renderer/inspector/tags";
 
 // Messages sent mid-turn, waiting on the CLI, at the end of the transcript.
 // Built from the QueueGhostWithSelection design: square hairline
@@ -13,13 +14,16 @@ import { useCancelQueuedMessage } from "@/renderer/lib/claude-code-ops";
 // its measured height — up when accepted (the transcript takes it), right
 // when cancelled.
 
+// As the user wrote it: elements tagged on the canvas lead with a count.
 const promptText = (message: Message) => {
   const content =
     message.sdkMessage.type === "user" ? message.sdkMessage.message.content : "";
-  if (typeof content === "string") return content;
-  return content
-    .flatMap((block) => (block.type === "text" ? [block.text] : []))
-    .join("\n");
+  const text =
+    typeof content === "string"
+      ? content
+      : content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n");
+  const { tags, text: written } = splitTagged(text);
+  return tags.length ? `${tags.length === 1 ? "1 element" : `${tags.length} elements`} · ${written}` : written;
 };
 
 type QueuedRowProps = {

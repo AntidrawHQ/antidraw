@@ -29,3 +29,17 @@ export const TagChips = () => {
     </div>
   );
 };
+
+// The elements a sent message was tagged with, as its bubble shows them.
+export const SentTags = ({ tags }: { tags: string[] }) => (
+  <div className="flex flex-wrap justify-end gap-1.5 pb-1">
+    {tags.map((tag, i) => (
+      <span
+        key={i}
+        className="rounded-md border border-neutral-600 bg-neutral-800 px-2 py-0.5 font-mono text-[11px] text-neutral-300"
+      >
+        {tag}
+      </span>
+    ))}
+  </div>
+);

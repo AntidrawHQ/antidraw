@@ -49,8 +49,8 @@ import { useComposerModel } from "@/renderer/hooks/use-composer-model";
 import { QueuedMessagesDeck } from "@/renderer/components/QueuedMessagesDeck";
 import { useQueueDeck } from "@/renderer/lib/use-queue-deck";
 import { SMOOTH } from "@/renderer/lib/motion";
-import { TagChips } from "@/renderer/inspector/TagChips";
-import { describePendingTags, retagTags, untagTags } from "@/renderer/inspector/tags";
+import { SentTags, TagChips } from "@/renderer/inspector/TagChips";
+import { describePendingTags, retagTags, splitTagged, untagTags } from "@/renderer/inspector/tags";
 import {
   SUPPORTED_IMAGE_TYPES,
   type ImageAttachment,
@@ -235,6 +235,10 @@ const MessageRow = memo(
 
         if (block.type !== "text") return;
         flush();
+        // Elements tagged on the canvas lead a user's message as markup for
+        // the agent; the bubble shows them as chips.
+        const tagged = isAssistant ? null : splitTagged(block.text);
+        if (tagged?.tags.length) nodes.push(<SentTags key={`tags-${idx}`} tags={tagged.tags} />);
         nodes.push(
           isAssistant ? (
             <Markdown
@@ -253,7 +257,7 @@ const MessageRow = memo(
                 isFailed && "opacity-60"
               )}
             >
-              {block.text}
+              {tagged ? tagged.text : block.text}
             </MessageContent>
           )
         );
@@ -757,7 +761,7 @@ export function AppChat({ className, ...props }: AppChatProps) {
       generateTitle.mutate({
         conversationId,
         workspaceId: activeWorkspaceId,
-        firstMessage: prompt,
+        firstMessage: splitTagged(prompt).text,
       });
     }
   };

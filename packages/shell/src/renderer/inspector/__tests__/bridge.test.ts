@@ -4,7 +4,7 @@ import { INSPECTOR_NS, type ElementContext, type ElementInfo, type FromFrame } f
 import { clearHover, clearSelection, getSelectedElementContext, hoverAt, registerFrame, selectAt, walk } from "../bridge";
 import { useInspectorStore } from "../store";
 import { useWorkspaceStore } from "../../store/workspace";
-import { describeContext, describePendingTags, retagTags, untagTags } from "../tags";
+import { describeContext, describePendingTags, describeTags, retagTags, splitTagged, untagTags } from "../tags";
 
 // The canvas side of the inspector, against a frame played by the test: what
 // it asks, and which answers it believes.
@@ -316,4 +316,24 @@ it("drops tags, the selection and the hover when the workspace changes", () => {
       "tags": [],
     }
   `);
+});
+
+it("reads a sent message back into the elements it was tagged with and what the user wrote", () => {
+  const message = `${describeTags([
+    { pick: { frame: "Card", info: info() }, context: context() },
+    { pick: { frame: "Card", info: info({ tag: "p", classes: [] }) }, context: null },
+    { pick: { frame: "A<B>", info: info() }, context: context({ element: "svg.lucide", text: "</canvas-selection>" }) },
+  ])}\n\nmake these the same blue\n<canvas-selection> stays`;
+  expect(splitTagged(message)).toMatchInlineSnapshot(`
+    {
+      "tags": [
+        "Card · button.btn",
+        "Card · p",
+        "A<B> · svg.lucide",
+      ],
+      "text": "make these the same blue
+    <canvas-selection> stays",
+    }
+  `);
+  expect(splitTagged("no tags here")).toEqual({ tags: [], text: "no tags here" });
 });

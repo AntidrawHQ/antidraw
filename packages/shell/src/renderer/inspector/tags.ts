@@ -96,6 +96,25 @@ export function describeTags(picks: { pick: Picked; context: ElementContext | nu
   ].join("\n");
 }
 
+// A sent message as the user wrote it: the block the tags put ahead of it
+// read back into the elements it names ("Card · button.btn"), and the rest.
+const BLOCK_RE = /^<canvas-selection>\n([\s\S]*?)\n<\/canvas-selection>(?:\n\n|$)/;
+const unescape = (v: string) => v.replace(/&lt;/g, "<");
+
+export function splitTagged(message: string): { tags: string[]; text: string } {
+  const block = BLOCK_RE.exec(message);
+  if (!block) return { tags: [], text: message };
+  const tags: string[] = [];
+  let frame = "";
+  for (const line of block[1]!.split("\n")) {
+    const component = /^<component name=("(?:[^"\\]|\\.)*")/.exec(line);
+    if (component) frame = unescape(JSON.parse(component[1]!) as string);
+    const element = /^element: (\S+)/.exec(line);
+    if (element) tags.push(`${frame} · ${unescape(element[1]!)}`);
+  }
+  return { tags, text: message.slice(block[0].length) };
+}
+
 // The tags as a block for the message being sent, and the tags it holds.
 // They stay tagged until the message is on its way (untagTags), and come
 // back if it fails (retagTags).
