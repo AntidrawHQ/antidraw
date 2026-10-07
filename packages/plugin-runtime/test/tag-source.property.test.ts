@@ -16,10 +16,10 @@ const fixture = path.join(here, "fixture")
 const tagSource = () => {
   const plugin = antidraw().find((p) => p.name === "antidraw:tag-source") as Plugin & {
     configResolved: (config: { root: string }) => void
-    transform: (code: string, id: string) => { code: string } | null
+    transform: { handler: (code: string, id: string) => { code: string } | null }
   }
   plugin.configResolved({ root: fixture })
-  return (code: string, file: string) => plugin.transform(code, path.join(fixture, file))?.code ?? null
+  return (code: string, file: string) => plugin.transform.handler(code, path.join(fixture, file))?.code ?? null
 }
 
 type El = {

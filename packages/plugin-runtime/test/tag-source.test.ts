@@ -1,3 +1,4 @@
+import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { expect, test } from "vitest"
@@ -14,10 +15,10 @@ const fixture = path.join(here, "fixture")
 const tagSource = () => {
   const plugin = antidraw().find((p) => p.name === "antidraw:tag-source") as Plugin & {
     configResolved: (config: { root: string }) => void
-    transform: (code: string, id: string) => { code: string } | null
+    transform: { handler: (code: string, id: string) => { code: string } | null }
   }
   plugin.configResolved({ root: fixture })
-  return (code: string, file: string) => plugin.transform(code, path.join(fixture, file))?.code ?? null
+  return (code: string, file: string) => plugin.transform.handler(code, path.join(fixture, file))?.code ?? null
 }
 
 test("stamps DOM elements with file, line and column, and leaves components alone", () => {
@@ -101,6 +102,27 @@ test("is part of the dev server only, after which the element still gets the att
   try {
     const card = await server.transformRequest("/src/components/user-components/Card.tsx")
     expect(card?.code).toMatch(/"data-ad-loc": "src\/components\/user-components\/Card\.tsx:2:10"/)
+    // Stamped before plugin-react reprints the file, though it's listed first.
+    const shifted = await server.transformRequest("/src/lib/Shifted.tsx")
+    const source = fs.readFileSync(path.join(fixture, "src/lib/Shifted.tsx"), "utf8").split("\n")
+    expect(
+      [...shifted!.code.matchAll(/"data-ad-loc": "src\/lib\/Shifted\.tsx:(\d+):(\d+)"/g)].map(([, line, column]) =>
+        source[Number(line) - 1]!.slice(Number(column) - 1, Number(column) + 7),
+      ),
+    ).toMatchInlineSnapshot(`
+      [
+        "<div>",
+        "<p>first",
+        "<br/>sec",
+        "<b>bold<",
+        "<input d",
+        "<label>n",
+        "<i data-",
+        "<span>af",
+        "<em>yes<",
+        "<s>no</s",
+      ]
+    `)
   } finally {
     await server.close()
   }
