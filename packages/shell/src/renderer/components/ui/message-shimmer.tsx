@@ -1,6 +1,7 @@
 import { Message } from "@/renderer/components/ui/message";
 
-export const MessageShimmer = () => (
+// `label` reads "Waiting for your answer" while a question holds the turn.
+export const MessageShimmer = ({ label = "Working…" }: { label?: string }) => (
   <Message className="justify-start">
     <>
       <style>{`
@@ -25,7 +26,7 @@ export const MessageShimmer = () => (
         }
       `}</style>
       <span className="shimmer-text text-sm font-medium tracking-tight inline-block py-2">
-        Working…
+        {label}
       </span>
     </>
   </Message>

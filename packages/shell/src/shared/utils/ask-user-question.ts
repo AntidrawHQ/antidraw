@@ -8,6 +8,29 @@ import { z } from "zod";
 // runtime check of the part we read.
 export const ASK_USER_QUESTION_TOOL = "AskUserQuestion";
 
+// The deny messages are what the model reads in the tool_result, so they say
+// what happened from its side. Shared so the card can say which of them
+// settled a question.
+export const DENY_MESSAGES = {
+  // A tool other than AskUserQuestion asking for permission. Under
+  // bypassPermissions that is only an ask the CLI forces past the bypass — a
+  // safety check, an ask rule, an interactive tool — and none of those have a
+  // prompt in antidraw. Allowing them here would quietly widen what bypass
+  // grants; denying keeps it exactly as strict as before there was a
+  // callback. (The callback also turns tools on — the plan-mode ones —
+  // which sendMessage disallows, since this deny would strand them.)
+  unsupported: (toolName: string) =>
+    `${toolName} needs the user's approval, and antidraw has no prompt for it. Do not retry; continue without it or ask the user in plain text.`,
+  // An AskUserQuestion input the card cannot draw. Parking it would block the
+  // CLI on a question nobody can see to answer or skip.
+  unreadable:
+    "The question could not be shown to the user: its input was not in the expected shape. Ask in plain text instead.",
+  cancelled: "The user stopped the turn before answering.",
+  declined: "The user declined to answer. Continue without their input, or ask in plain text.",
+  ended: "The session ended before the user answered.",
+  noHandle: "The question could not be shown to the user.",
+} as const;
+
 // Loose on purpose. The CLI already validated the input against the tool's
 // schema before asking, and its counts (1–4 questions, 2–4 options) are its
 // to enforce; this only proves the fields we render and key answers on are
@@ -56,4 +79,19 @@ export const answersFromToolUseResult = (
     .object({ answers: z.record(z.string(), z.string()) })
     .safeParse(toolUseResult);
   return parsed.success ? parsed.data.answers : null;
+};
+
+// The labels of a multi-select answer, split back out of the CLI's join (see
+// joinMultiSelect in main): ", " between labels, a label that holds ", " or a
+// quote JSON-quoted.
+export const splitMultiSelect = (joined: string): string[] => {
+  const labels: string[] = [];
+  let rest = joined;
+  while (rest) {
+    const quoted = rest.match(/^"(?:[^"\\]|\\.)*"/);
+    const end = quoted ? quoted[0].length : rest.indexOf(", ") < 0 ? rest.length : rest.indexOf(", ");
+    labels.push(quoted ? (JSON.parse(quoted[0]) as string) : rest.slice(0, end));
+    rest = rest.slice(end).replace(/^, /, "");
+  }
+  return labels;
 };

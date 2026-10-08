@@ -31,6 +31,7 @@ import {
   useFailedMessageIds,
   useGenerateTitle,
   useLivePartial,
+  usePendingQuestionIds,
   useQueuedMessageIds,
   useSendMessage,
   useToolMap,
@@ -340,6 +341,7 @@ type LiveTailProps = {
 // column — spacing and the tool-adjacency selector on rows depend on it.
 const LiveTail = memo(({ conversationId, toolMap, isStreaming }: LiveTailProps) => {
   const { data: live } = useLivePartial(conversationId);
+  const { data: pendingQuestionIds } = usePendingQuestionIds(conversationId);
 
   const liveText =
     live?.block.type === "text" && live.block.text.length > 0
@@ -378,7 +380,11 @@ const LiveTail = memo(({ conversationId, toolMap, isStreaming }: LiveTailProps) 
           </div>
         </Message>
       )}
-      {isStreaming && <MessageShimmer />}
+      {isStreaming && (
+        <MessageShimmer
+          label={pendingQuestionIds.length ? "Waiting for your answer" : undefined}
+        />
+      )}
     </>
   );
 });

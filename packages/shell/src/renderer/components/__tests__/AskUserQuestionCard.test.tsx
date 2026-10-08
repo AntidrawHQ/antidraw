@@ -8,7 +8,7 @@ import {
   AskUserQuestionCard,
   type AskUserQuestionCardProps,
 } from "../AskUserQuestionCard";
-import type { AskUserQuestionInput } from "@/shared/utils/ask-user-question";
+import { DENY_MESSAGES, type AskUserQuestionInput } from "@/shared/utils/ask-user-question";
 import { queryKeys } from "@/renderer/lib/query-keys";
 
 // The card in jsdom: what it shows in each state, and what it hands onSubmit
@@ -17,6 +17,19 @@ import { queryKeys } from "@/renderer/lib/query-keys";
 
 beforeAll(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  // The border beam measures its box and reads the color scheme; jsdom has
+  // neither.
+  window.matchMedia ??= ((query: string) => ({
+    matches: false,
+    media: query,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  })) as unknown as typeof window.matchMedia;
+  globalThis.ResizeObserver ??= class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
 });
 
 const LAYOUT = "Which layout should the hero use?";
@@ -30,7 +43,7 @@ const input: AskUserQuestionInput = {
       multiSelect: false,
       options: [
         { label: "Split hero", description: "Copy left, shot right", preview: "[copy] [shot]" },
-        { label: "Centered", description: "Headline over an image" },
+        { label: "Centered (Recommended)", description: "Headline over an image" },
       ],
     },
     {
@@ -45,6 +58,9 @@ const input: AskUserQuestionInput = {
   ],
 };
 
+const one: AskUserQuestionInput = { questions: [input.questions[0]!] };
+const multi: AskUserQuestionInput = { questions: [input.questions[1]!] };
+
 let root: Root | undefined;
 afterEach(() => {
   act(() => root?.unmount());
@@ -58,152 +74,188 @@ const render = (props: Partial<AskUserQuestionCardProps> = {}) => {
   const host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
-  act(() =>
-    root!.render(
-      <AskUserQuestionCard
-        input={input}
-        state="input-available"
-        pending
-        answered={null}
-        onSubmit={onSubmit}
-        onDecline={onDecline}
-        {...props}
-      />,
-    ),
-  );
-  return { onSubmit, onDecline };
+  const draw = (more: Partial<AskUserQuestionCardProps> = {}) =>
+    act(() =>
+      root!.render(
+        <AskUserQuestionCard
+          input={input}
+          state="input-available"
+          pending
+          answered={null}
+          onSubmit={onSubmit}
+          onDecline={onDecline}
+          {...props}
+          {...more}
+        />,
+      ),
+    );
+  draw();
+  return { onSubmit, onDecline, rerender: draw };
 };
 
 const card = () => document.querySelector<HTMLElement>('[data-testid="ask-user-question"]')!;
 
-const button = (name: string, scope: ParentNode = document) => {
-  const found = [...scope.querySelectorAll<HTMLButtonElement>("button")].find(
-    (b) => b.textContent?.startsWith(name),
+// By its text, or by its title for the round send button.
+const button = (name: string) => {
+  const found = [...card().querySelectorAll<HTMLButtonElement>("button")].find(
+    (b) => b.title === name || b.textContent?.startsWith(name),
   );
   if (!found) throw new Error(`no button "${name}"`);
   return found;
 };
 
-const group = (question: string) =>
-  document.querySelector<HTMLElement>(`[aria-label="${question}"]`)!;
-
 const click = (el: HTMLElement) => act(() => el.click());
+
+const other = () => card().querySelector<HTMLInputElement>("input")!;
 
 // React tracks an input's value itself; setting .value directly would be
 // overwritten on the next render. The native setter plus an input event is
 // what a keystroke amounts to.
-const type = (question: string, text: string) => {
-  const el = document.querySelector<HTMLInputElement>(
-    `input[aria-label="Other answer: ${question}"]`,
-  )!;
+const type = (text: string) => {
+  const el = other();
   act(() => {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(el, text);
     el.dispatchEvent(new Event("input", { bubbles: true }));
   });
 };
 
-// Everything a user can see or reach, as data.
-const view = () => ({
-  status: card().querySelector("p")?.textContent,
-  questions: [...card().querySelectorAll<HTMLElement>("[role=radiogroup],[role=group]")].map(
-    (g) => ({
-      question: g.getAttribute("aria-label"),
-      kind: g.getAttribute("role"),
-      options: [...g.querySelectorAll<HTMLButtonElement>("button")].map(
-        (b) =>
-          `${b.getAttribute("aria-checked") === "true" ? "[x]" : "[ ]"} ${b.querySelector("span")?.textContent ?? b.textContent}${b.disabled ? " (disabled)" : ""}`,
+const off = (b: HTMLButtonElement) => (b.disabled ? " (disabled)" : "");
+
+// Everything a user can see or reach on an open card, as data.
+const view = () => {
+  const c = card();
+  const head = c.firstElementChild!.firstElementChild!;
+  const send = [...c.querySelectorAll<HTMLButtonElement>("button[title]")].find((b) => !b.getAttribute("role"));
+  const skip = [...head.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "Skip");
+  return {
+    tabs: [...c.querySelectorAll<HTMLButtonElement>("[role=tab]")].map(
+      (t) => `${t.getAttribute("aria-selected") === "true" ? ">" : t.querySelector("svg") ? "✓" : " "} ${t.textContent}${off(t)}`,
+    ),
+    status: head.querySelector("span.flex-1")?.textContent ?? null,
+    question: c.querySelector("p")?.textContent,
+    options: [...c.querySelectorAll<HTMLButtonElement>("[role=radio],[role=checkbox]")].map(
+      (b) =>
+        `${b.getAttribute("aria-checked") === "true" ? "[x]" : "[ ]"} ${[...b.querySelectorAll("span")]
+          .map((s) => s.textContent)
+          .filter(Boolean)
+          .join(" · ")}${off(b)}`,
+    ),
+    other: other() ? `${other().value || other().placeholder}${other().disabled ? " (disabled)" : ""}` : null,
+    preview: c.querySelector("pre")?.textContent ?? null,
+    actions: [skip && `Skip${off(skip)}`, send && `${send.title}${off(send)}`].filter(Boolean),
+    submitError: c.querySelector('[data-testid="submit-error"]')?.textContent ?? null,
+  };
+};
+
+// A settled card: its header, each row (lit ones checked), and why.
+const settled = () => {
+  const [head, ...rest] = [...card().children];
+  return {
+    head: [...head!.querySelectorAll("span,p")].map((e) => e.textContent),
+    rows: rest
+      .filter((e) => e.tagName === "DIV")
+      .map(
+        (r) =>
+          `${r.querySelector("svg") ? "[x]" : "[ ]"} ${[...r.children]
+            .filter((e) => e.tagName === "SPAN")
+            .map((s) => s.textContent)
+            .join(" · ")}`,
       ),
-      preview: g.querySelector("pre")?.textContent ?? null,
-    }),
-  ),
-  answers: [...card().querySelectorAll('[data-testid="answer"]')].map((a) => a.textContent),
-  actions: ["Skip", "Submit"].flatMap((name) => {
-    const b = [...card().querySelectorAll("button")].find((x) => x.textContent === name);
-    return b ? [`${name}${b.disabled ? " (disabled)" : ""}`] : [];
-  }),
-  error: card().querySelector('[data-testid="error"]')?.textContent ?? null,
-});
+    reason: rest.find((e) => e.tagName === "P")?.textContent ?? null,
+    controls: card().querySelectorAll("button,input").length,
+  };
+};
 
 describe("a question the CLI is waiting on", () => {
-  test("shows every question and option, with Submit held until all are answered", () => {
+  test("one question at a time: the headers are tabs, sending held until every one is answered", () => {
     render();
 
     expect(view()).toMatchInlineSnapshot(`
       {
         "actions": [
           "Skip",
-          "Submit (disabled)",
+          "Next question (disabled)",
         ],
-        "answers": [],
-        "error": null,
-        "questions": [
-          {
-            "kind": "radiogroup",
-            "options": [
-              "[ ] Split hero",
-              "[ ] Centered",
-              "[ ] Other…",
-            ],
-            "preview": null,
-            "question": "Which layout should the hero use?",
-          },
-          {
-            "kind": "group",
-            "options": [
-              "[ ] Pricing",
-              "[ ] FAQ",
-              "[ ] Other…",
-            ],
-            "preview": null,
-            "question": "Which sections should follow it?",
-          },
+        "options": [
+          "[ ] Split hero · Copy left, shot right · 1",
+          "[ ] Centered · Recommended · Headline over an image · 2",
         ],
-        "status": "Claude is asking",
+        "other": "Or type your own answer…",
+        "preview": null,
+        "question": "Which layout should the hero use?",
+        "status": null,
+        "submitError": null,
+        "tabs": [
+          "> Layout",
+          "  Sections",
+        ],
       }
     `);
   });
 
-  test("submits the picks in the question's own order, whatever order they were clicked", () => {
-    const { onSubmit } = render();
+  test("a single question shows its header and what Claude is doing instead of tabs", () => {
+    render({ input: multi });
 
-    click(button("Split hero", group(LAYOUT)));
-    click(button("FAQ", group(SECTIONS)));
-    click(button("Pricing", group(SECTIONS)));
     expect(view()).toMatchInlineSnapshot(`
       {
         "actions": [
           "Skip",
-          "Submit",
+          "Send answers (disabled)",
         ],
-        "answers": [],
-        "error": null,
-        "questions": [
-          {
-            "kind": "radiogroup",
-            "options": [
-              "[x] Split hero",
-              "[ ] Centered",
-              "[ ] Other…",
-            ],
-            "preview": "[copy] [shot]",
-            "question": "Which layout should the hero use?",
-          },
-          {
-            "kind": "group",
-            "options": [
-              "[x] Pricing",
-              "[x] FAQ",
-              "[ ] Other…",
-            ],
-            "preview": null,
-            "question": "Which sections should follow it?",
-          },
+        "options": [
+          "[ ] Pricing · Three tiers · 1",
+          "[ ] FAQ · Accordion · 2",
         ],
-        "status": "Claude is asking",
+        "other": "Add your own…",
+        "preview": null,
+        "question": "Which sections should follow it?Choose any",
+        "status": "Claude is waiting on this",
+        "submitError": null,
+        "tabs": [],
       }
     `);
+  });
 
-    click(button("Submit"));
+  test("a pick stays on its question until Next; then the answered tab gets a tick", () => {
+    render();
+
+    click(button("Split hero"));
+    expect(view().tabs).toEqual(["> Layout", "  Sections"]);
+    expect(view().preview).toBe("[copy] [shot]");
+    click(button("Next question"));
+
+    expect(view()).toMatchInlineSnapshot(`
+      {
+        "actions": [
+          "Skip",
+          "Send answers (disabled)",
+        ],
+        "options": [
+          "[ ] Pricing · Three tiers · 1",
+          "[ ] FAQ · Accordion · 2",
+        ],
+        "other": "Add your own…",
+        "preview": null,
+        "question": "Which sections should follow it?Choose any",
+        "status": null,
+        "submitError": null,
+        "tabs": [
+          "✓ Layout",
+          "> Sections",
+        ],
+      }
+    `);
+  });
+
+  test("sends the picks in the question's own order, whatever order they were clicked", () => {
+    const { onSubmit } = render();
+
+    click(button("Split hero"));
+    click(button("Sections"));
+    click(button("FAQ"));
+    click(button("Pricing"));
+    click(button("Send answers"));
+
     expect(onSubmit.mock.calls).toMatchInlineSnapshot(`
       [
         [
@@ -222,16 +274,17 @@ describe("a question the CLI is waiting on", () => {
   test("a single-select pick replaces the last one; a multi-select pick toggles", () => {
     const { onSubmit } = render();
 
-    click(button("Split hero", group(LAYOUT)));
-    click(button("Centered", group(LAYOUT)));
-    click(button("Pricing", group(SECTIONS)));
-    click(button("FAQ", group(SECTIONS)));
-    click(button("Pricing", group(SECTIONS)));
-    click(button("Submit"));
+    click(button("Split hero"));
+    click(button("Centered"));
+    click(button("Sections"));
+    click(button("Pricing"));
+    click(button("FAQ"));
+    click(button("Pricing"));
+    click(button("Send answers"));
 
     expect(onSubmit.mock.calls[0]?.[0]).toMatchInlineSnapshot(`
       {
-        "Which layout should the hero use?": "Centered",
+        "Which layout should the hero use?": "Centered (Recommended)",
         "Which sections should follow it?": [
           "FAQ",
         ],
@@ -239,19 +292,21 @@ describe("a question the CLI is waiting on", () => {
     `);
   });
 
-  test("Other takes a typed answer, alone on single-select and alongside picks on multi-select", () => {
+  test("typing an answer picks Other: alone on single-select, alongside picks on multi-select", () => {
     const { onSubmit } = render();
 
-    click(button("Split hero", group(LAYOUT)));
-    click(button("Other", group(LAYOUT)));
-    click(button("Pricing", group(SECTIONS)));
-    click(button("Other", group(SECTIONS)));
-    // Picked but still blank: not an answer yet.
-    expect(button("Submit").disabled).toBe(true);
-
-    type(LAYOUT, "  Asymmetric  ");
-    type(SECTIONS, "Team");
-    click(button("Submit"));
+    click(button("Split hero"));
+    type("  Asymmetric  ");
+    expect(view().options).toMatchInlineSnapshot(`
+      [
+        "[ ] Split hero · Copy left, shot right · 1",
+        "[ ] Centered · Recommended · Headline over an image · 2",
+      ]
+    `);
+    click(button("Sections"));
+    click(button("Pricing"));
+    type("Team");
+    click(button("Send answers"));
 
     expect(onSubmit.mock.calls[0]?.[0]).toMatchInlineSnapshot(`
       {
@@ -264,26 +319,26 @@ describe("a question the CLI is waiting on", () => {
     `);
   });
 
-  test("Skip declines", () => {
+  test("Skip declines, and so does Escape", () => {
     const { onDecline, onSubmit } = render();
 
     click(button("Skip"));
+    act(() => {
+      card().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
 
-    expect(onDecline).toHaveBeenCalledTimes(1);
+    expect(onDecline).toHaveBeenCalledTimes(2);
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
   test("a failed submit says why, and the card stays answerable", () => {
-    render({ submitError: '"Which layout should the hero use?" has an empty answer.' });
+    render({ input: one, submitError: '"Which layout should the hero use?" has an empty answer.' });
 
-    expect({
-      submitError: card().querySelector('[data-testid="submit-error"]')?.textContent,
-      actions: view().actions,
-    }).toMatchInlineSnapshot(`
+    expect({ submitError: view().submitError, actions: view().actions }).toMatchInlineSnapshot(`
       {
         "actions": [
           "Skip",
-          "Submit (disabled)",
+          "Send answers (disabled)",
         ],
         "submitError": ""Which layout should the hero use?" has an empty answer.",
       }
@@ -291,111 +346,139 @@ describe("a question the CLI is waiting on", () => {
   });
 
   test("while a submit is in flight nothing can be clicked twice", () => {
-    render({ busy: true });
+    render({ input: one, busy: true });
 
-    expect(view().actions).toMatchInlineSnapshot(`
-      [
-        "Skip (disabled)",
-        "Submit (disabled)",
-      ]
+    expect(view()).toMatchInlineSnapshot(`
+      {
+        "actions": [
+          "Skip (disabled)",
+          "Send answers (disabled)",
+        ],
+        "options": [
+          "[ ] Split hero · Copy left, shot right (disabled)",
+          "[ ] Centered · Recommended · Headline over an image (disabled)",
+        ],
+        "other": "Or type your own answer… (disabled)",
+        "preview": null,
+        "question": "Which layout should the hero use?",
+        "status": "Sending…",
+        "submitError": null,
+        "tabs": [],
+      }
     `);
-    expect(view().questions[0]?.options[0]).toMatchInlineSnapshot(`"[ ] Split hero (disabled)"`);
+  });
+
+  test("once it is no longer waiting, it stays sending until its result lands", () => {
+    const { rerender } = render({ input: one });
+
+    rerender({ pending: false });
+
+    expect(view().status).toBe("Sending…");
   });
 });
 
 describe("a question the CLI is not waiting on", () => {
-  test("answered: shows what the tool ran with, and no controls", () => {
+  test("not yet asked: the question shows, but nothing can be picked", () => {
+    render({ input: one, pending: false });
+
+    expect(view()).toMatchInlineSnapshot(`
+      {
+        "actions": [],
+        "options": [
+          "[ ] Split hero · Copy left, shot right (disabled)",
+          "[ ] Centered · Recommended · Headline over an image (disabled)",
+        ],
+        "other": "Or type your own answer… (disabled)",
+        "preview": null,
+        "question": "Which layout should the hero use?",
+        "status": "Question",
+        "submitError": null,
+        "tabs": [],
+      }
+    `);
+  });
+
+  test("answered: the pick stays lit, the rest dim, and nothing can be changed", () => {
+    render({ input: one, pending: false, state: "output-available", answered: { [LAYOUT]: "Centered (Recommended)" } });
+
+    expect(settled()).toMatchInlineSnapshot(`
+      {
+        "controls": 0,
+        "head": [
+          "Layout",
+          "Answered",
+          "Which layout should the hero use?",
+        ],
+        "reason": null,
+        "rows": [
+          "[ ] Split hero · Copy left, shot right",
+          "[x] Centered · Headline over an image",
+        ],
+      }
+    `);
+  });
+
+  test("answered on multi-select: the CLI's joined answer splits back into picks and a typed one", () => {
+    render({
+      input: multi,
+      pending: false,
+      state: "output-available",
+      answered: { [SECTIONS]: 'Pricing, FAQ, "Team, careers"' },
+    });
+
+    expect(settled().rows).toMatchInlineSnapshot(`
+      [
+        "[x] Pricing · Three tiers",
+        "[x] FAQ · Accordion",
+        "[x] “Team, careers”",
+      ]
+    `);
+  });
+
+  test("answered, several questions: each question over its answer", () => {
     render({
       pending: false,
       state: "output-available",
-      answered: { [LAYOUT]: "Centered", [SECTIONS]: "Pricing, FAQ" },
+      answered: { [LAYOUT]: "Centered (Recommended)", [SECTIONS]: "Pricing, FAQ" },
     });
 
-    expect(view()).toMatchInlineSnapshot(`
+    expect(settled()).toMatchInlineSnapshot(`
       {
-        "actions": [],
-        "answers": [
-          "Centered",
-          "Pricing, FAQ",
+        "controls": 0,
+        "head": [
+          "Answered · 2 questions",
         ],
-        "error": null,
-        "questions": [],
-        "status": "Answered",
+        "reason": null,
+        "rows": [
+          "[x] Which layout should the hero use? · Centered",
+          "[x] Which sections should follow it? · Pricing, FAQ",
+        ],
       }
     `);
   });
 
-  test("declined, stopped or ended: says so and shows why", () => {
-    render({
-      pending: false,
-      state: "output-error",
-      errorText: "The user declined to answer.",
-    });
+  test("not answered: says which way it settled, from the deny the model read", () => {
+    const why = (errorText: string) => {
+      render({ input: one, pending: false, state: "output-error", errorText });
+      const { head, reason } = settled();
+      act(() => root?.unmount());
+      return `${head[1]}: ${reason}`;
+    };
 
-    expect(view()).toMatchInlineSnapshot(`
-      {
-        "actions": [],
-        "answers": [],
-        "error": "The user declined to answer.",
-        "questions": [
-          {
-            "kind": "radiogroup",
-            "options": [
-              "[ ] Split hero (disabled)",
-              "[ ] Centered (disabled)",
-              "[ ] Other… (disabled)",
-            ],
-            "preview": null,
-            "question": "Which layout should the hero use?",
-          },
-          {
-            "kind": "group",
-            "options": [
-              "[ ] Pricing (disabled)",
-              "[ ] FAQ (disabled)",
-              "[ ] Other… (disabled)",
-            ],
-            "preview": null,
-            "question": "Which sections should follow it?",
-          },
-        ],
-        "status": "Not answered",
-      }
-    `);
-  });
-
-  test("not yet asked: the question shows, but nothing can be picked", () => {
-    render({ pending: false });
-
-    expect(view()).toMatchInlineSnapshot(`
-      {
-        "actions": [],
-        "answers": [],
-        "error": null,
-        "questions": [
-          {
-            "kind": "radiogroup",
-            "options": [
-              "[ ] Split hero (disabled)",
-              "[ ] Centered (disabled)",
-              "[ ] Other… (disabled)",
-            ],
-            "preview": null,
-            "question": "Which layout should the hero use?",
-          },
-          {
-            "kind": "group",
-            "options": [
-              "[ ] Pricing (disabled)",
-              "[ ] FAQ (disabled)",
-              "[ ] Other… (disabled)",
-            ],
-            "preview": null,
-            "question": "Which sections should follow it?",
-          },
-        ],
-        "status": "Question",
-      }
+    expect([
+      why(DENY_MESSAGES.declined),
+      why(DENY_MESSAGES.cancelled),
+      why(DENY_MESSAGES.ended),
+      why(DENY_MESSAGES.noHandle),
+      why(DENY_MESSAGES.unreadable),
+    ]).toMatchInlineSnapshot(`
+      [
+        "Skipped: Skipped — Claude carried on without it.",
+        "Not answered: Stopped before it was answered.",
+        "Not answered: The session ended before it was answered.",
+        "Not shown: Couldn't be shown — Claude asked in plain text instead.",
+        "Not shown: Couldn't be shown — Claude asked in plain text instead.",
+      ]
     `);
   });
 });
@@ -437,14 +520,17 @@ describe("the connected card", () => {
 
   // Lets the mutation's fetch and its settle run.
   const flush = () => act(() => new Promise((r) => setTimeout(r, 0)));
-  const shown = () => ({
-    submitError: card().querySelector('[data-testid="submit-error"]')?.textContent ?? null,
-    actions: view().actions,
-  });
+  const shown = () => ({ submitError: view().submitError, actions: view().actions, status: view().status });
 
   afterEach(() => vi.unstubAllGlobals());
 
-  test("each failure replaces the last one's message; a Skip that goes through takes the question down", async () => {
+  const answerBoth = () => {
+    click(button("Split hero"));
+    click(button("Sections"));
+    click(button("Pricing"));
+  };
+
+  test("each failure replaces the last one's message; a Skip that goes through leaves it sending until its result lands", async () => {
     const calls = respond(
       [400, { error: { code: "EMPTY_ANSWER", message: '"Which layout should the hero use?" has an empty answer.' } }],
       [500, { error: { code: "INTERNAL", message: "The decline did not go through." } }],
@@ -454,16 +540,16 @@ describe("the connected card", () => {
     const pending = () =>
       queryClient.getQueryData(queryKeys.conversations.pendingQuestionIds(conversationId));
 
-    click(button("Split hero"));
-    click(button("Pricing"));
-    click(button("Submit"));
+    answerBoth();
+    click(button("Send answers"));
     await flush();
     expect(shown()).toMatchInlineSnapshot(`
       {
         "actions": [
           "Skip",
-          "Submit",
+          "Send answers",
         ],
+        "status": null,
         "submitError": ""Which layout should the hero use?" has an empty answer.",
       }
     `);
@@ -480,8 +566,9 @@ describe("the connected card", () => {
         "shown": {
           "actions": [
             "Skip",
-            "Submit",
+            "Send answers",
           ],
+          "status": null,
           "submitError": "The decline did not go through.",
         },
       }
@@ -498,7 +585,11 @@ describe("the connected card", () => {
         ],
         "pending": [],
         "shown": {
-          "actions": [],
+          "actions": [
+            "Skip (disabled)",
+            "Send answers (disabled)",
+          ],
+          "status": null,
           "submitError": null,
         },
       }
@@ -509,9 +600,8 @@ describe("the connected card", () => {
     vi.stubGlobal("fetch", vi.fn(async () => Promise.reject(new TypeError("Failed to fetch"))));
     mount();
 
-    click(button("Split hero"));
-    click(button("Pricing"));
-    click(button("Submit"));
+    answerBoth();
+    click(button("Send answers"));
     await flush();
 
     expect(shown().submitError).toMatchInlineSnapshot(`"Failed to answer the question"`);
