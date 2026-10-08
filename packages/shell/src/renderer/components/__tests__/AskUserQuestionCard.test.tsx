@@ -2,15 +2,18 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
+  AskUserQuestion,
   AskUserQuestionCard,
   type AskUserQuestionCardProps,
 } from "../AskUserQuestionCard";
 import type { AskUserQuestionInput } from "@/shared/utils/ask-user-question";
+import { queryKeys } from "@/renderer/lib/query-keys";
 
-// The card in jsdom, presentational half only: what it shows in each state,
-// and what it hands onSubmit for a given set of clicks. The wiring half is
-// three hooks and is covered by the stream and route tests.
+// The card in jsdom: what it shows in each state, and what it hands onSubmit
+// for a given set of clicks. The connected card is covered at the end, with
+// only fetch faked — what happens when the backend says no.
 
 beforeAll(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -270,6 +273,23 @@ describe("a question the CLI is waiting on", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
+  test("a failed submit says why, and the card stays answerable", () => {
+    render({ submitError: '"Which layout should the hero use?" has an empty answer.' });
+
+    expect({
+      submitError: card().querySelector('[data-testid="submit-error"]')?.textContent,
+      actions: view().actions,
+    }).toMatchInlineSnapshot(`
+      {
+        "actions": [
+          "Skip",
+          "Submit (disabled)",
+        ],
+        "submitError": ""Which layout should the hero use?" has an empty answer.",
+      }
+    `);
+  });
+
   test("while a submit is in flight nothing can be clicked twice", () => {
     render({ busy: true });
 
@@ -377,5 +397,123 @@ describe("a question the CLI is not waiting on", () => {
         "status": "Question",
       }
     `);
+  });
+});
+
+describe("the connected card", () => {
+  const conversationId = "conv-1";
+  const toolUseId = "toolu_ask";
+  const toolPart = { type: "tool-AskUserQuestion", state: "input-available" as const, input };
+
+  // Each call answers with the next response in line.
+  const respond = (...responses: Array<[number, unknown]>) => {
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        calls.push(`${init?.method ?? "GET"} ${url}`);
+        const [status, body] = responses.shift()!;
+        return new Response(JSON.stringify(body), { status });
+      }),
+    );
+    return calls;
+  };
+
+  const mount = () => {
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(queryKeys.conversations.pendingQuestionIds(conversationId), [toolUseId]);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() =>
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <AskUserQuestion conversationId={conversationId} toolUseId={toolUseId} toolPart={toolPart} />
+        </QueryClientProvider>,
+      ),
+    );
+    return queryClient;
+  };
+
+  // Lets the mutation's fetch and its settle run.
+  const flush = () => act(() => new Promise((r) => setTimeout(r, 0)));
+  const shown = () => ({
+    submitError: card().querySelector('[data-testid="submit-error"]')?.textContent ?? null,
+    actions: view().actions,
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  test("each failure replaces the last one's message; a Skip that goes through takes the question down", async () => {
+    const calls = respond(
+      [400, { error: { code: "EMPTY_ANSWER", message: '"Which layout should the hero use?" has an empty answer.' } }],
+      [500, { error: { code: "INTERNAL", message: "The decline did not go through." } }],
+      [200, { declined: true }],
+    );
+    const queryClient = mount();
+    const pending = () =>
+      queryClient.getQueryData(queryKeys.conversations.pendingQuestionIds(conversationId));
+
+    click(button("Split hero"));
+    click(button("Pricing"));
+    click(button("Submit"));
+    await flush();
+    expect(shown()).toMatchInlineSnapshot(`
+      {
+        "actions": [
+          "Skip",
+          "Submit",
+        ],
+        "submitError": ""Which layout should the hero use?" has an empty answer.",
+      }
+    `);
+
+    // The question is still waiting, so the Skip's own failure is what shows,
+    // not the Submit's from before it.
+    click(button("Skip"));
+    await flush();
+    expect({ pending: pending(), shown: shown() }).toMatchInlineSnapshot(`
+      {
+        "pending": [
+          "toolu_ask",
+        ],
+        "shown": {
+          "actions": [
+            "Skip",
+            "Submit",
+          ],
+          "submitError": "The decline did not go through.",
+        },
+      }
+    `);
+
+    click(button("Skip"));
+    await flush();
+    expect({ calls, pending: pending(), shown: shown() }).toMatchInlineSnapshot(`
+      {
+        "calls": [
+          "POST antidraw://app/api/chat/conv-1/question/toolu_ask",
+          "DELETE antidraw://app/api/chat/conv-1/question/toolu_ask",
+          "DELETE antidraw://app/api/chat/conv-1/question/toolu_ask",
+        ],
+        "pending": [],
+        "shown": {
+          "actions": [],
+          "submitError": null,
+        },
+      }
+    `);
+  });
+
+  test("a network failure is shown too, rather than Submit doing nothing", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Promise.reject(new TypeError("Failed to fetch"))));
+    mount();
+
+    click(button("Split hero"));
+    click(button("Pricing"));
+    click(button("Submit"));
+    await flush();
+
+    expect(shown().submitError).toMatchInlineSnapshot(`"Failed to answer the question"`);
   });
 });

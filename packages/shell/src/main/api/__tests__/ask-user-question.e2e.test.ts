@@ -14,6 +14,8 @@ import {
   subscribe,
 } from "@/main/lib/conversation-store";
 import { parseAskUserQuestionInput } from "@/shared/utils/ask-user-question";
+import { buildPrompt, sendMessage } from "@/main/api/claude-code-ops";
+import { createCanUseTool } from "@/main/api/ask-user-question";
 
 // Real everything: the bundled CLI under bypassPermissions, asked to use
 // AskUserQuestion. This is the claim the whole design rests on — that the
@@ -125,6 +127,37 @@ const teardown = async (conversationId: string) => {
 };
 
 describe("AskUserQuestion against the real CLI", () => {
+  // The callback enables every tool gated on there being a prompt, not just
+  // AskUserQuestion. The plan-mode ones must stay off: entering plan mode is
+  // allowed under the bypass, but nothing could approve leaving it, so the
+  // session would be stuck unable to edit. Read from the CLI's own init
+  // message, with sendMessage's options as the app passes them.
+  test("the callback brings AskUserQuestion and nothing else that needs a prompt", { timeout: TIMEOUT }, async () => {
+    const promptStream = buildPrompt("hi", { uuid: crypto.randomUUID() });
+    const q = sendMessage({
+      promptStream,
+      workspaceId,
+      model: MODEL,
+      canUseTool: createCanUseTool("init-probe"),
+    })._unsafeUnwrap();
+
+    let tools: string[] = [];
+    for await (const m of q) {
+      if (m.type === "system" && m.subtype === "init") {
+        tools = m.tools;
+        break;
+      }
+    }
+    q.close();
+    promptStream.end();
+
+    expect(tools.filter((t) => /PlanMode|AskUserQuestion/.test(t))).toMatchInlineSnapshot(`
+      [
+        "AskUserQuestion",
+      ]
+    `);
+  });
+
   test("bypass mode still asks, and the answer reaches the model", { timeout: TIMEOUT }, async () => {
     const { conversationId, toolUseId, question, events, off } = await askedTurn();
     const parsed = parseAskUserQuestionInput(question.input);

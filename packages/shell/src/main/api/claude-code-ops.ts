@@ -306,6 +306,14 @@ Current workspace directory: ${workspacePath}
         },
         permissionMode: "bypassPermissions",
         canUseTool,
+        // A canUseTool gives the CLI a prompt tool, and with one it enables
+        // the plan-mode tools alongside AskUserQuestion (all three are off in
+        // a headless session without one). EnterPlanMode is allowed under the
+        // bypass, but plan mode is not bypassed headless: every edit after it,
+        // and the ExitPlanMode that would leave it, would come to canUseTool
+        // and be denied — the session stuck read-only for the CLI's life.
+        // Disallowed, they are off again, as they were before the callback.
+        disallowedTools: ["EnterPlanMode", "ExitPlanMode"],
         includePartialMessages: true,
         // Ask the CLI to re-emit each stdin user message once it is folded
         // into a turn ({type:"user", isReplay:true, uuid}). That replay is the

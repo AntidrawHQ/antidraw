@@ -71,6 +71,9 @@ export type AskUserQuestionCardProps = {
   // What the tool ran with, once it has (from its structured output).
   answered: Record<string, string> | null;
   errorText?: string;
+  // Why the last Submit or Skip did not go through. The question is still
+  // waiting, so the card stays answerable and says what went wrong.
+  submitError?: string;
   busy?: boolean;
   onSubmit: (answers: AskUserQuestionAnswers) => void;
   onDecline: () => void;
@@ -83,6 +86,7 @@ export const AskUserQuestionCard = ({
   pending,
   answered,
   errorText,
+  submitError,
   busy = false,
   onSubmit,
   onDecline,
@@ -221,6 +225,12 @@ export const AskUserQuestionCard = ({
           </p>
         )}
 
+        {pending && submitError && (
+          <p className="m-0 text-[12px] text-red-300/70" data-testid="submit-error">
+            {submitError}
+          </p>
+        )}
+
         {pending && (
           <div className="flex justify-end gap-1.5">
             <button
@@ -284,9 +294,17 @@ export const AskUserQuestion = memo(function AskUserQuestion({
       pending={pendingIds.includes(toolUseId)}
       answered={answersFromToolUseResult(toolPart.structuredOutput)}
       errorText={toolPart.errorText}
+      // At most one is set: each action resets the other's error first.
+      submitError={(answer.error ?? decline.error)?.message}
       busy={answer.isPending || decline.isPending}
-      onSubmit={(answers) => answer.mutate({ conversationId, toolUseId, answers })}
-      onDecline={() => decline.mutate({ conversationId, toolUseId })}
+      onSubmit={(answers) => {
+        decline.reset();
+        answer.mutate({ conversationId, toolUseId, answers });
+      }}
+      onDecline={() => {
+        answer.reset();
+        decline.mutate({ conversationId, toolUseId });
+      }}
       className={className}
     />
   );

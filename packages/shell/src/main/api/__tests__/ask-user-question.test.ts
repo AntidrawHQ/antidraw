@@ -193,8 +193,9 @@ const call = (
   toolName: string,
   toolUseID: string,
   signal = new AbortController().signal,
+  toolInput: Record<string, unknown> = input(),
 ) =>
-  createCanUseTool(conversationId)(toolName, input(), {
+  createCanUseTool(conversationId)(toolName, toolInput, {
     signal,
     toolUseID,
     requestId: `req-${toolUseID}`,
@@ -383,6 +384,29 @@ describe("createCanUseTool", () => {
 
     expect(result?.behavior).toBe("deny");
     expect(questions).toEqual([]);
+    releaseHandle(id);
+  });
+
+  test("an input the card could not draw is denied at once rather than parked", async () => {
+    const id = liveConversation();
+    const questions = watch(id);
+    // No header: the card falls back to a plain tool row with no Skip.
+    const { header: _header, ...unreadable } = input().questions[0]!;
+
+    const result = await call(id, "AskUserQuestion", "toolu_ask", undefined, {
+      questions: [unreadable],
+    });
+
+    expect({ result, questions, pending: getPendingQuestionIds(id) }).toMatchInlineSnapshot(`
+      {
+        "pending": [],
+        "questions": [],
+        "result": {
+          "behavior": "deny",
+          "message": "The question could not be shown to the user: its input was not in the expected shape. Ask in plain text instead.",
+        },
+      }
+    `);
     releaseHandle(id);
   });
 

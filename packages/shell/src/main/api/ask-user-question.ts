@@ -19,9 +19,14 @@ export const DENY_MESSAGES = {
   // safety check, an ask rule, an interactive tool — and none of those have a
   // prompt in antidraw. Allowing them here would quietly widen what bypass
   // grants; denying keeps it exactly as strict as before there was a
-  // callback.
+  // callback. (The callback also turns tools on — the plan-mode ones —
+  // which sendMessage disallows, since this deny would strand them.)
   unsupported: (toolName: string) =>
     `${toolName} needs the user's approval, and antidraw has no prompt for it. Do not retry; continue without it or ask the user in plain text.`,
+  // An AskUserQuestion input the card cannot draw. Parking it would block the
+  // CLI on a question nobody can see to answer or skip.
+  unreadable:
+    "The question could not be shown to the user: its input was not in the expected shape. Ask in plain text instead.",
   cancelled: "The user stopped the turn before answering.",
   declined: "The user declined to answer. Continue without their input, or ask in plain text.",
   ended: "The session ended before the user answered.",
@@ -102,7 +107,8 @@ export const buildAnswer = (
 
 // The canUseTool callback for one conversation's query. AskUserQuestion is
 // parked in the store until the user answers; every other tool is denied (see
-// DENY_MESSAGES.unsupported).
+// DENY_MESSAGES.unsupported), and so is a question whose input the card could
+// not draw (DENY_MESSAGES.unreadable).
 //
 // The promise settles exactly once, through the store: an answer or a decline
 // from the routes, the abort signal (Stop — the SDK aborts it when the CLI
@@ -115,6 +121,9 @@ export const createCanUseTool =
     }
     if (signal.aborted) {
       return { behavior: "deny", message: DENY_MESSAGES.cancelled };
+    }
+    if (!parseAskUserQuestionInput(input)) {
+      return { behavior: "deny", message: DENY_MESSAGES.unreadable };
     }
 
     return new Promise<PermissionResult>((resolve) => {
