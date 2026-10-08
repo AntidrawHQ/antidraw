@@ -2,6 +2,7 @@ import type { CanUseTool, PermissionResult } from "@anthropic-ai/claude-agent-sd
 import { ok, err, type Result } from "neverthrow";
 import {
   ASK_USER_QUESTION_TOOL,
+  DENY_MESSAGES,
   parseAskUserQuestionInput,
   type AskUserQuestionAnswers,
 } from "@/shared/utils/ask-user-question";
@@ -11,27 +12,7 @@ import {
   settleQuestion,
 } from "@/main/lib/conversation-store";
 
-// The deny messages are what the model reads in the tool_result, so they say
-// what happened from its side.
-export const DENY_MESSAGES = {
-  // A tool other than AskUserQuestion asking for permission. Under
-  // bypassPermissions that is only an ask the CLI forces past the bypass — a
-  // safety check, an ask rule, an interactive tool — and none of those have a
-  // prompt in antidraw. Allowing them here would quietly widen what bypass
-  // grants; denying keeps it exactly as strict as before there was a
-  // callback. (The callback also turns tools on — the plan-mode ones —
-  // which sendMessage disallows, since this deny would strand them.)
-  unsupported: (toolName: string) =>
-    `${toolName} needs the user's approval, and antidraw has no prompt for it. Do not retry; continue without it or ask the user in plain text.`,
-  // An AskUserQuestion input the card cannot draw. Parking it would block the
-  // CLI on a question nobody can see to answer or skip.
-  unreadable:
-    "The question could not be shown to the user: its input was not in the expected shape. Ask in plain text instead.",
-  cancelled: "The user stopped the turn before answering.",
-  declined: "The user declined to answer. Continue without their input, or ask in plain text.",
-  ended: "The session ended before the user answered.",
-  noHandle: "The question could not be shown to the user.",
-} as const;
+export { DENY_MESSAGES };
 
 // The CLI's own spelling for a multi-select answer: labels joined with ", ",
 // any label that contains ", " or a quote JSON-quoted so the join can be split

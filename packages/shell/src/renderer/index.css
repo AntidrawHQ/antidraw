@@ -138,11 +138,25 @@
   to { background-position: -50% 0; }
 }
 
+/* AskUserQuestion's "Claude is asking…" while its input streams in. */
+@keyframes auq-working {
+  0% { background-position: 200% center; }
+  100% { background-position: -200% center; }
+}
+
 @layer utilities {
   .drag-region {
     -webkit-app-region: drag;
   }
   /* The base stop is neutral-400: 5.7:1 on the chat's #2A2A2A. */
+  .auq-working {
+    background: linear-gradient(90deg, rgba(255,255,255,.35) 0%, rgba(255,255,255,.35) 40%, rgba(255,255,255,1) 50%, rgba(255,255,255,.35) 60%, rgba(255,255,255,.35) 100%);
+    background-size: 200% auto;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: auq-working 2.2s linear infinite;
+  }
   [data-streaming] .tool-shimmer {
     background: linear-gradient(90deg, #a3a3a3 0%, #a3a3a3 40%, #fafafa 50%, #a3a3a3 60%, #a3a3a3 100%);
     background-size: 200% 100%;
