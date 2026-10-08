@@ -82,22 +82,37 @@ const useCoarsePointer = () =>
 type FrameActions = {
   onFullscreen: (url: string) => void;
   onSeeCode?: (componentName: string) => void;
+  frameLayer?: FrameLayer;
 };
+
+// Drawn over a frame's preview, for a host's own tools (the shell's
+// inspector). It gets the iframe once there is one.
+export type FrameLayer = (frame: {
+  componentName: string;
+  iframe: HTMLIFrameElement | null;
+}) => ReactNode;
 
 const FrameActionsContext = createContext<FrameActions>({
   onFullscreen: () => {},
 });
 
 type IframeNodeProps = {
+  componentName: string;
   url: string | undefined;
   selected: boolean;
   onLoad?: () => void;
 };
 
-const IframeNode = memo(({ url, selected, onLoad }: IframeNodeProps) => {
+const IframeNode = memo(({ componentName, url, selected, onLoad }: IframeNodeProps) => {
   const [isResizing, setIsResizing] = useState(false);
   const [interactionMode, setInteractionMode] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const [iframe, setIframe] = useState<HTMLIFrameElement | null>(null);
+  const { frameLayer } = useContext(FrameActionsContext);
+  const setIframeRef = useCallback((el: HTMLIFrameElement | null) => {
+    iframeRef.current = el;
+    setIframe(el);
+  }, []);
 
   // Exit interaction mode when node is deselected
   useEffect(() => {
@@ -144,7 +159,7 @@ const IframeNode = memo(({ url, selected, onLoad }: IframeNodeProps) => {
       <div className="absolute inset-0 overflow-hidden">
         {url ? (
           <iframe
-            ref={iframeRef}
+            ref={setIframeRef}
             src={url}
             className="iframe-content h-full w-full border-0"
             sandbox="allow-scripts allow-same-origin"
@@ -164,6 +179,8 @@ const IframeNode = memo(({ url, selected, onLoad }: IframeNodeProps) => {
           onDoubleClick={handleDoubleClick}
         />
       )}
+
+      {frameLayer?.({ componentName, iframe })}
     </div>
   );
 });
@@ -252,6 +269,7 @@ const IframeNodeRenderer = ({
         />
       </NodeToolbar>
       <IframeNode
+        componentName={data.componentName}
         url={iframeUrl}
         selected={selected}
         onLoad={handleLoad}
@@ -288,6 +306,7 @@ type CanvasProps = {
   onFullscreen: (url: string) => void;
   // Without it, frames have no See Code button.
   onSeeCode?: (componentName: string) => void;
+  frameLayer?: FrameLayer;
   className?: string;
   // Rendered inside React Flow, for hosts that drive the viewport (useReactFlow).
   children?: ReactNode;
@@ -301,6 +320,7 @@ export const Canvas = ({
   onLayoutsChange,
   onFullscreen,
   onSeeCode,
+  frameLayer,
   className,
   children,
 }: CanvasProps) => {
@@ -484,8 +504,8 @@ export const Canvas = ({
   const touch = useCoarsePointer();
 
   const frameActions = useMemo(
-    () => ({ onFullscreen, onSeeCode }),
-    [onFullscreen, onSeeCode],
+    () => ({ onFullscreen, onSeeCode, frameLayer }),
+    [onFullscreen, onSeeCode, frameLayer],
   );
 
   return (

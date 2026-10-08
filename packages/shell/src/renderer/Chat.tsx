@@ -49,6 +49,8 @@ import { useComposerModel } from "@/renderer/hooks/use-composer-model";
 import { QueuedMessagesDeck } from "@/renderer/components/QueuedMessagesDeck";
 import { useQueueDeck } from "@/renderer/lib/use-queue-deck";
 import { SMOOTH } from "@/renderer/lib/motion";
+import { SentTags, TagChips } from "@/renderer/inspector/TagChips";
+import { describePendingTags, retagTags, splitTagged, untagTags } from "@/renderer/inspector/tags";
 import {
   SUPPORTED_IMAGE_TYPES,
   type ImageAttachment,
@@ -233,6 +235,10 @@ const MessageRow = memo(
 
         if (block.type !== "text") return;
         flush();
+        // Elements tagged on the canvas lead a user's message as markup for
+        // the agent; the bubble shows them as chips.
+        const tagged = isAssistant ? null : splitTagged(block.text);
+        if (tagged?.tags.length) nodes.push(<SentTags key={`tags-${idx}`} tags={tagged.tags} />);
         nodes.push(
           isAssistant ? (
             <Markdown
@@ -251,7 +257,7 @@ const MessageRow = memo(
                 isFailed && "opacity-60"
               )}
             >
-              {block.text}
+              {tagged ? tagged.text : block.text}
             </MessageContent>
           )
         );
@@ -531,28 +537,44 @@ function Composer({
     return () => imageUrls.forEach((url) => URL.revokeObjectURL(url));
   }, [imageUrls]);
 
+  // Asking the frames about tags takes a moment, before the composer clears:
+  // a second Enter then must not send the message again.
+  const submitting = useRef(false);
+
   const handleSubmit = async () => {
-    if (!canSend || !input.trim() || isSendPending) return;
-
-    const prompt = input.trim();
-
-    let imagesToSend: ImageAttachment[] | undefined;
+    if (!canSend || !input.trim() || isSendPending || submitting.current) return;
+    submitting.current = true;
     try {
-      imagesToSend =
-        attachedImages.length > 0
-          ? await Promise.all(attachedImages.map(fileToBase64))
-          : undefined;
-    } catch (err) {
-      console.error("Failed to process images:", err);
-      // TODO: show toast if toast system exists
-      alert("Failed to process attached images. Please try again.");
-      return;
+      // Elements tagged on the canvas lead the message.
+      const tagged = await describePendingTags();
+      const prompt = tagged.block ? `${tagged.block}\n\n${input.trim()}` : input.trim();
+
+      let imagesToSend: ImageAttachment[] | undefined;
+      try {
+        imagesToSend =
+          attachedImages.length > 0
+            ? await Promise.all(attachedImages.map(fileToBase64))
+            : undefined;
+      } catch (err) {
+        console.error("Failed to process images:", err);
+        // TODO: show toast if toast system exists
+        alert("Failed to process attached images. Please try again.");
+        return;
+      }
+
+      setInput("");
+      setAttachedImages([]);
+      untagTags(tagged.tags);
+
+      try {
+        await onSend(prompt, imagesToSend);
+      } catch (err) {
+        retagTags(tagged.tags);
+        throw err;
+      }
+    } finally {
+      submitting.current = false;
     }
-
-    setInput("");
-    setAttachedImages([]);
-
-    await onSend(prompt, imagesToSend);
   };
 
   return (
@@ -566,6 +588,7 @@ function Composer({
           onSubmit={handleSubmit}
           className="bg-neutral-700 border-neutral-600"
         >
+          <TagChips />
           {attachedImages.length > 0 && (
             <div className="flex flex-wrap gap-2 p-2 pb-0">
               {attachedImages.map((file, index) => (
@@ -738,7 +761,7 @@ export function AppChat({ className, ...props }: AppChatProps) {
       generateTitle.mutate({
         conversationId,
         workspaceId: activeWorkspaceId,
-        firstMessage: prompt,
+        firstMessage: splitTagged(prompt).text,
       });
     }
   };

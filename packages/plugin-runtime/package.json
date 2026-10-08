@@ -1,6 +1,6 @@
 {
   "name": "@antidrawapp/runtime",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "license": "MIT",
   "type": "module",
   "exports": {
@@ -8,7 +8,8 @@
     "./router": "./src/router.ts",
     "./plugin": "./dist/plugin.js",
     "./eslint": "./eslint.config.js",
-    "./tsconfig.json": "./tsconfig.base.json"
+    "./tsconfig.json": "./tsconfig.base.json",
+    "./inspector": "./src/inspector/protocol.ts"
   },
   "files": [
     "src",
@@ -24,10 +25,12 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@babel/parser": "^7.29.0",
     "@eslint/js": "^9.28.0",
     "eslint-plugin-react-hooks": "^5.2.0",
     "eslint-plugin-react-refresh": "^0.4.20",
     "globals": "^16.2.0",
+    "magic-string": "^0.30.21",
     "typescript-eslint": "^8.51.0"
   },
   "peerDependencies": {
@@ -43,6 +46,8 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@vitejs/plugin-react": "^5.1.2",
+    "fast-check": "^4.10.2",
+    "jsdom": "^30.1.1",
     "tsup": "8.5.0",
     "vitest": "^4.1.5"
   }
