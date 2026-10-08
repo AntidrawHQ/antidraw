@@ -1,6 +1,7 @@
 import { BorderBeam } from "border-beam";
 import { ArrowRight, ArrowUp, Check } from "lucide-react";
-import { memo, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { memo, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 import { cn } from "@/renderer/lib/utils";
 import type { ToolPart } from "@/renderer/components/ui/tool";
 import { Tool } from "@/renderer/components/ui/tool";
@@ -14,6 +15,7 @@ import {
   type AskUserQuestionItem,
 } from "@/shared/utils/ask-user-question";
 import {
+  conversationQueryOpts,
   useAnswerQuestion,
   useDeclineQuestion,
   usePendingQuestionIds,
@@ -27,8 +29,19 @@ type Choice = { selected: string[]; otherOn: boolean; other: string };
 const EMPTY: Choice = { selected: [], otherOn: false, other: "" };
 
 // Before the CLI parks it: still streaming in, or arrived but not yet
-// answerable. Open: waiting on the user, or sending. Then how it settled.
-type Phase = "arriving" | "ready" | "waiting" | "busy" | "answered" | "skipped" | "stopped" | "ended" | "notShown";
+// answerable. Open: waiting on the user, or sending. Then how it settled;
+// "rejected" is an error none of the others account for.
+type Phase =
+  | "arriving"
+  | "ready"
+  | "waiting"
+  | "busy"
+  | "answered"
+  | "skipped"
+  | "stopped"
+  | "ended"
+  | "notShown"
+  | "rejected";
 const OPEN: Phase[] = ["waiting", "busy"];
 
 const RECO = /\s*\(Recommended\)\s*$/;
@@ -58,18 +71,33 @@ const typeOther = (q: AskUserQuestionItem, c: Choice, other: string): Choice => 
   return q.multiSelect ? { ...c, other, otherOn: on } : { ...c, other, otherOn: on, selected: on ? [] : c.selected };
 };
 
-const focusOther = (q: AskUserQuestionItem, c: Choice): Choice =>
+// Clicking into Other re-picks the text it still holds. Only a click: tabbing
+// through it on the way to send must not swap the pick for that text.
+const clickOther = (q: AskUserQuestionItem, c: Choice): Choice =>
   !q.multiSelect && !c.otherOn && c.other.trim() ? { ...c, otherOn: true, selected: [] } : c;
 
+// What the CLI itself writes for a tool call cut short by Stop. It cancels the
+// permission request and persists its own rejection, so the cancelled deny we
+// answer with never reaches the tool_result.
+const INTERRUPTED = [
+  "The user doesn't want to proceed with this tool use",
+  "[Request interrupted by user",
+  "Tool permission request aborted",
+];
+
 // Which deny settled it, from the tool_result the model read.
-const deniedAs = (errorText = ""): Phase =>
-  errorText.includes(DENY_MESSAGES.declined)
+const deniedAs = (errorText = ""): Phase => {
+  const has = (s: string) => errorText.includes(s);
+  return has(DENY_MESSAGES.declined)
     ? "skipped"
-    : errorText.includes(DENY_MESSAGES.cancelled)
+    : has(DENY_MESSAGES.cancelled) || INTERRUPTED.some(has)
       ? "stopped"
-      : errorText.includes(DENY_MESSAGES.noHandle) || errorText.includes(DENY_MESSAGES.unreadable)
+      : has(DENY_MESSAGES.noHandle) || has(DENY_MESSAGES.unreadable)
         ? "notShown"
-        : "ended";
+        : has(DENY_MESSAGES.ended)
+          ? "ended"
+          : "rejected";
+};
 
 /* ── Look ──────────────────────────────────────────────────────────────── */
 
@@ -132,6 +160,7 @@ type OpenProps = {
 
 const OpenCard = ({ qs, phase, choices, setChoice, step, setStep, submitError, onSubmit, onSkip, className }: OpenProps) => {
   const [hover, setHover] = useState<number | null>(null);
+  const box = useRef<HTMLDivElement>(null);
   const q = qs[step]!;
   const c = choices[q.question] ?? EMPTY;
   const many = qs.length > 1;
@@ -140,24 +169,37 @@ const OpenCard = ({ qs, phase, choices, setChoice, step, setStep, submitError, o
   const done = (x: AskUserQuestionItem) => answerFor(x, choices[x.question] ?? EMPTY) !== null;
   const canGo = last ? qs.every(done) : done(q);
 
+  // Focus goes to the card on every move: the focused option unmounts with
+  // its question, and a focused Other input would take the next question's
+  // 1–9 as text.
+  const moveTo = (i: number) => {
+    setStep(i);
+    box.current?.focus({ preventScroll: true });
+  };
   const go = () => {
     if (!interactive || !canGo) return;
     if (last) onSubmit();
-    else setStep(step + 1);
+    else moveTo(step + 1);
   };
   // A pick stays on its question; moving on is the user's, by → or ↵.
   const choose = (label: string) => setChoice(q, pick(q, c, label));
 
   const onKey = (e: KeyboardEvent) => {
-    if (!interactive) return;
-    const typing = (e.target as HTMLElement).tagName === "INPUT";
+    // Enter or Esc mid-composition commits or cancels the IME's text.
+    if (!interactive || e.nativeEvent.isComposing || e.keyCode === 229) return;
+    const target = e.target as HTMLElement;
+    const typing = target.tagName === "INPUT";
+    // A focused tab, Skip or send button does its own thing on Enter; from an
+    // option, the Other input or the card, Enter is next / send.
+    const role = target.getAttribute("role");
+    const ownButton = target.tagName === "BUTTON" && role !== "radio" && role !== "checkbox";
     if (e.key === "Escape") onSkip();
-    else if (e.key === "Enter") {
+    else if (e.key === "Enter" && !ownButton) {
       e.preventDefault();
       go();
     } else if (!typing && /^[1-9]$/.test(e.key) && +e.key <= q.options.length) choose(q.options[+e.key - 1]!.label);
-    else if (!typing && many && e.key === "ArrowRight") setStep(Math.min(step + 1, qs.length - 1));
-    else if (!typing && many && e.key === "ArrowLeft") setStep(Math.max(step - 1, 0));
+    else if (!typing && many && e.key === "ArrowRight") moveTo(Math.min(step + 1, qs.length - 1));
+    else if (!typing && many && e.key === "ArrowLeft") moveTo(Math.max(step - 1, 0));
   };
 
   const shownIdx = hover ?? q.options.findIndex((o) => c.selected.includes(o.label));
@@ -174,7 +216,7 @@ const OpenCard = ({ qs, phase, choices, setChoice, step, setStep, submitError, o
     );
 
   return (
-    <div data-testid="ask-user-question" tabIndex={interactive ? 0 : -1} onKeyDown={onKey} className={cn(BOX, className)}>
+    <div ref={box} data-testid="ask-user-question" tabIndex={interactive ? 0 : -1} onKeyDown={onKey} className={cn(BOX, className)}>
       <div className="flex flex-col gap-1.5 px-1.5 pb-1 pt-1.5">
         <div className="flex min-h-[18px] items-center gap-2">
           {many ? (
@@ -187,7 +229,7 @@ const OpenCard = ({ qs, phase, choices, setChoice, step, setStep, submitError, o
                   role="tab"
                   aria-selected={i === step}
                   disabled={!interactive}
-                  onClick={() => setStep(i)}
+                  onClick={() => moveTo(i)}
                   className={cn(
                     "flex cursor-pointer items-center gap-1 rounded-sm px-1.5 py-px text-[11px] disabled:cursor-default",
                     i === step ? "bg-white/[0.1] text-neutral-100" : done(x) ? "text-neutral-400 hover:text-neutral-200" : "text-neutral-500 hover:text-neutral-300",
@@ -262,7 +304,7 @@ const OpenCard = ({ qs, phase, choices, setChoice, step, setStep, submitError, o
             aria-label={`Other answer: ${q.question}`}
             value={c.other}
             disabled={!interactive}
-            onFocus={() => setChoice(q, focusOther(q, c))}
+            onClick={() => setChoice(q, clickOther(q, c))}
             onChange={(e) => setChoice(q, typeOther(q, c, e.target.value))}
             placeholder={q.multiSelect ? "Add your own…" : "Or type your own answer…"}
             className="min-w-0 flex-1 bg-transparent text-[13px] text-neutral-100 outline-none placeholder:text-neutral-500 disabled:cursor-default"
@@ -305,6 +347,7 @@ const STATUS: Partial<Record<Phase, string>> = {
   stopped: "Not answered",
   ended: "Not answered",
   notShown: "Not shown",
+  rejected: "Not answered",
 };
 
 const SettledRow = ({ on, label, description }: { on: boolean; label: string; description?: string }) => (
@@ -319,16 +362,19 @@ const SettledCard = ({
   qs,
   phase,
   answers,
+  errorText,
   className,
 }: {
   qs: AskUserQuestionItem[];
   phase: Phase;
   answers: Record<string, string[]> | null;
+  errorText?: string;
   className?: string;
 }) => {
   const q = qs[0]!;
   const many = qs.length > 1;
-  const reason = REASON[phase];
+  // An error we have no words for says it in its own.
+  const reason = phase === "rejected" ? errorText : REASON[phase];
   return (
     <div data-testid="ask-user-question" className={cn(BOX, className)}>
       <div className="flex flex-col gap-1.5 px-1.5 pb-1 pt-1.5">
@@ -398,6 +444,9 @@ export type AskUserQuestionCardProps = {
   // waiting, so the card stays answerable and says what went wrong.
   submitError?: string;
   busy?: boolean;
+  // The turn is over (idle, or its stream failed). A question it was waiting
+  // on that has no result by now will not get one: the CLI is gone.
+  turnEnded?: boolean;
   onSubmit: (answers: AskUserQuestionAnswers) => void;
   onDecline: () => void;
   className?: string;
@@ -411,6 +460,7 @@ export const AskUserQuestionCard = ({
   errorText,
   submitError,
   busy = false,
+  turnEnded = false,
   onSubmit,
   onDecline,
   className,
@@ -420,7 +470,8 @@ export const AskUserQuestionCard = ({
   const [step, setStep] = useState(0);
   // Once it has waited, a question no longer pending but not yet settled has
   // been answered or skipped and is on its way: it stays "Sending…" until its
-  // result lands, rather than going back to looking unasked.
+  // result lands, rather than going back to looking unasked — or until the
+  // turn ends without one.
   const [asked, setAsked] = useState(pending);
   if (pending && !asked) setAsked(true);
 
@@ -433,7 +484,9 @@ export const AskUserQuestionCard = ({
           ? "busy"
           : "waiting"
         : asked
-          ? "busy"
+          ? turnEnded
+            ? "ended"
+            : "busy"
           : state === "input-streaming"
             ? "arriving"
             : "ready";
@@ -447,7 +500,7 @@ export const AskUserQuestionCard = ({
           }),
         )
       : null;
-    return <SettledCard qs={qs} phase={phase} answers={answers} className={className} />;
+    return <SettledCard qs={qs} phase={phase} answers={answers} errorText={errorText} className={className} />;
   }
 
   const body = (
@@ -492,6 +545,12 @@ export const AskUserQuestion = memo(function AskUserQuestion({
   className?: string;
 }) {
   const { data: pendingIds } = usePendingQuestionIds(conversationId);
+  // Read from the conversation the chat already holds, never fetched here.
+  const { data: streamStatus } = useQuery({
+    ...conversationQueryOpts(conversationId),
+    enabled: false,
+    select: (c) => c.streamStatus,
+  });
   const answer = useAnswerQuestion();
   const decline = useDeclineQuestion();
   const input = parseAskUserQuestionInput(toolPart.input);
@@ -515,6 +574,7 @@ export const AskUserQuestion = memo(function AskUserQuestion({
       // At most one is set: each action resets the other's error first.
       submitError={(answer.error ?? decline.error)?.message}
       busy={answer.isPending || decline.isPending}
+      turnEnded={streamStatus !== undefined && streamStatus !== "streaming"}
       onSubmit={(answers) => {
         decline.reset();
         answer.mutate({ conversationId, toolUseId, answers });

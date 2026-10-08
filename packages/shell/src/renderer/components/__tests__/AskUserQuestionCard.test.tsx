@@ -106,6 +106,11 @@ const button = (name: string) => {
 
 const click = (el: HTMLElement) => act(() => el.click());
 
+const key = (el: HTMLElement, k: string, init: KeyboardEventInit = {}) =>
+  act(() => {
+    el.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true, ...init }));
+  });
+
 const other = () => card().querySelector<HTMLInputElement>("input")!;
 
 // React tracks an input's value itself; setting .value directly would be
@@ -331,6 +336,57 @@ describe("a question the CLI is waiting on", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
+  test("Enter on a focused tab, Skip or send button is left to that button; from an option it sends", () => {
+    const { onSubmit, onDecline } = render({ input: one });
+
+    click(button("Split hero"));
+    key(button("Skip"), "Enter");
+    key(button("Send answers"), "Enter");
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(onDecline).not.toHaveBeenCalled();
+
+    key(button("Split hero"), "Enter");
+    expect(onSubmit.mock.calls).toEqual([[{ [LAYOUT]: "Split hero" }]]);
+  });
+
+  test("Enter or Escape mid-composition is the IME's, not the card's", () => {
+    const { onSubmit, onDecline } = render({ input: one });
+
+    type("あ");
+    key(other(), "Enter", { isComposing: true });
+    key(other(), "Escape", { isComposing: true });
+
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(onDecline).not.toHaveBeenCalled();
+  });
+
+  test("moving on focuses the card, so the next question's keys pick rather than type", () => {
+    const { onSubmit } = render();
+
+    type("Asymmetric");
+    act(() => other().focus());
+    key(other(), "Enter");
+    expect(view().tabs).toEqual(["✓ Layout", "> Sections"]);
+    expect(document.activeElement).toBe(card());
+
+    key(card(), "2");
+    key(card(), "Enter");
+    expect(onSubmit.mock.calls[0]?.[0]).toEqual({ [LAYOUT]: "Asymmetric", [SECTIONS]: ["FAQ"] });
+  });
+
+  test("tabbing through Other keeps the pick; clicking into it picks the typed text again", () => {
+    const { onSubmit } = render({ input: one });
+
+    type("Asymmetric");
+    click(button("Split hero"));
+    act(() => other().focus());
+    click(button("Send answers"));
+    click(other());
+    click(button("Send answers"));
+
+    expect(onSubmit.mock.calls).toEqual([[{ [LAYOUT]: "Split hero" }], [{ [LAYOUT]: "Asymmetric" }]]);
+  });
+
   test("a failed submit says why, and the card stays answerable", () => {
     render({ input: one, submitError: '"Which layout should the hero use?" has an empty answer.' });
 
@@ -374,6 +430,15 @@ describe("a question the CLI is waiting on", () => {
     rerender({ pending: false });
 
     expect(view().status).toBe("Sending…");
+  });
+
+  test("a turn that ends with no result for it leaves it not answered, not sending", () => {
+    const { rerender } = render({ input: one });
+
+    rerender({ pending: false });
+    rerender({ pending: false, turnEnded: true });
+
+    expect(settled()).toMatchObject({ head: ["Layout", "Not answered", LAYOUT], reason: "The session ended before it was answered." });
   });
 });
 
@@ -471,6 +536,11 @@ describe("a question the CLI is not waiting on", () => {
       why(DENY_MESSAGES.ended),
       why(DENY_MESSAGES.noHandle),
       why(DENY_MESSAGES.unreadable),
+      // What the CLI writes itself when Stop interrupts it.
+      why(
+        "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.",
+      ),
+      why("Answer too long."),
     ]).toMatchInlineSnapshot(`
       [
         "Skipped: Skipped — Claude carried on without it.",
@@ -478,6 +548,8 @@ describe("a question the CLI is not waiting on", () => {
         "Not answered: The session ended before it was answered.",
         "Not shown: Couldn't be shown — Claude asked in plain text instead.",
         "Not shown: Couldn't be shown — Claude asked in plain text instead.",
+        "Not answered: Stopped before it was answered.",
+        "Not answered: Answer too long.",
       ]
     `);
   });
