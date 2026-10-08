@@ -4,7 +4,12 @@ import { buildPrompt } from "@/main/api/claude-code-ops";
 import { conversationEvents, subscribe } from "../events";
 import {
   addPending,
+  addPendingQuestion,
   attachQuery,
+  clearPendingQuestions,
+  getPendingQuestion,
+  getPendingQuestionIds,
+  settleQuestion,
   cancelQueued,
   openHandle,
   clearPending,
@@ -626,5 +631,172 @@ describe("cancelQueued", () => {
     expect(seen).toMatchInlineSnapshot(`[]`);
     expect(getPending(id)).toEqual(["msg-a"]);
     error.mockRestore();
+  });
+});
+
+describe("pending questions", () => {
+  // Records only the `questions` event, plus every settle in call order on
+  // the same log — so a snapshot shows which came first.
+  const watch = (conversationId: string) => {
+    const log: unknown[] = [];
+    detach.push(
+      subscribe(conversationId, (event) => {
+        if (event.type === "questions") log.push({ questions: event.toolUseIds });
+      }),
+    );
+    const question = (name: string) => ({
+      input: { name },
+      settle: (result: unknown) => log.push({ settled: name, result }),
+    });
+    return { log, question };
+  };
+
+  test("add lists the question, settle answers and drops it — dropped before the answer goes out", () => {
+    const id = freshId();
+    openHandle(id, promptStream());
+    const { log, question } = watch(id);
+
+    expect(addPendingQuestion(id, "toolu_a", question("a"))).toBe(true);
+    expect(addPendingQuestion(id, "toolu_b", question("b"))).toBe(true);
+    expect(getPendingQuestionIds(id)).toEqual(["toolu_a", "toolu_b"]);
+    expect(getPendingQuestion(id, "toolu_a")?.input).toEqual({ name: "a" });
+
+    expect(
+      settleQuestion(id, "toolu_a", { behavior: "allow", updatedInput: { name: "a" } }),
+    ).toBe(true);
+
+    expect(log).toMatchInlineSnapshot(`
+      [
+        {
+          "questions": [
+            "toolu_a",
+          ],
+        },
+        {
+          "questions": [
+            "toolu_a",
+            "toolu_b",
+          ],
+        },
+        {
+          "questions": [
+            "toolu_b",
+          ],
+        },
+        {
+          "result": {
+            "behavior": "allow",
+            "updatedInput": {
+              "name": "a",
+            },
+          },
+          "settled": "a",
+        },
+      ]
+    `);
+    expect(getPendingQuestionIds(id)).toEqual(["toolu_b"]);
+  });
+
+  test("settling what is not waiting is a no-op that reports false", () => {
+    const id = freshId();
+    openHandle(id, promptStream());
+    const { log, question } = watch(id);
+    addPendingQuestion(id, "toolu_a", question("a"));
+    settleQuestion(id, "toolu_a", { behavior: "deny", message: "first" });
+    log.length = 0;
+
+    const outcomes = {
+      again: settleQuestion(id, "toolu_a", { behavior: "deny", message: "second" }),
+      neverAsked: settleQuestion(id, "toolu_x", { behavior: "deny", message: "x" }),
+      noHandle: settleQuestion(freshId(), "toolu_a", { behavior: "deny", message: "x" }),
+    };
+
+    expect(outcomes).toMatchInlineSnapshot(`
+      {
+        "again": false,
+        "neverAsked": false,
+        "noHandle": false,
+      }
+    `);
+    // Nothing settled twice, nothing announced.
+    expect(log).toEqual([]);
+  });
+
+  test("a question with no handle to hold it, or under a taken id, is refused", () => {
+    const id = freshId();
+    openHandle(id, promptStream());
+    const { log, question } = watch(id);
+    addPendingQuestion(id, "toolu_a", question("first"));
+    log.length = 0;
+
+    const outcomes = {
+      noHandle: addPendingQuestion(freshId(), "toolu_a", question("orphan")),
+      duplicate: addPendingQuestion(id, "toolu_a", question("second")),
+    };
+
+    expect(outcomes).toMatchInlineSnapshot(`
+      {
+        "duplicate": false,
+        "noHandle": false,
+      }
+    `);
+    // The first keeps its slot; the refused one is the caller's to settle.
+    expect(getPendingQuestion(id, "toolu_a")?.input).toEqual({ name: "first" });
+    expect(log).toEqual([]);
+  });
+
+  test("clear denies everything waiting, after one event that lists none", () => {
+    const id = freshId();
+    openHandle(id, promptStream());
+    const { log, question } = watch(id);
+    addPendingQuestion(id, "toolu_a", question("a"));
+    addPendingQuestion(id, "toolu_b", question("b"));
+    log.length = 0;
+
+    clearPendingQuestions(id, "The session ended.");
+
+    expect(log).toMatchInlineSnapshot(`
+      [
+        {
+          "questions": [],
+        },
+        {
+          "result": {
+            "behavior": "deny",
+            "message": "The session ended.",
+          },
+          "settled": "a",
+        },
+        {
+          "result": {
+            "behavior": "deny",
+            "message": "The session ended.",
+          },
+          "settled": "b",
+        },
+      ]
+    `);
+    expect(getPendingQuestionIds(id)).toEqual([]);
+  });
+
+  test("clear with nothing waiting says nothing", () => {
+    const id = freshId();
+    openHandle(id, promptStream());
+    const { log } = watch(id);
+
+    clearPendingQuestions(id, "unused");
+    clearPendingQuestions(freshId(), "no handle");
+
+    expect(log).toEqual([]);
+  });
+
+  test("a released handle takes its questions with it", () => {
+    const id = freshId();
+    openHandle(id, promptStream());
+    addPendingQuestion(id, "toolu_a", { input: {}, settle: () => {} });
+    releaseHandle(id);
+
+    expect(getPendingQuestionIds(id)).toEqual([]);
+    expect(getPendingQuestion(id, "toolu_a")).toBeUndefined();
   });
 });

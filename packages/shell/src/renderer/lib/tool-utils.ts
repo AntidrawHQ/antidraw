@@ -77,6 +77,15 @@ export function correlateTools(
       continue;
     }
 
+    // tool_use_result is per message, not per block. The CLI writes one
+    // tool_result per message, so it belongs to that one; a message carrying
+    // several cannot say which, and gives none of them a structured output.
+    const structuredOutput =
+      sdkMessage.type === "user" &&
+      content.filter((b) => isToolResultBlock(b)).length === 1
+        ? sdkMessage.tool_use_result
+        : undefined;
+
     for (const block of content) {
       // Handle any tool use block (tool_use, mcp_tool_use, etc.)
       if (isToolUseBlock(block)) {
@@ -99,6 +108,10 @@ export function correlateTools(
 
           if (isError) {
             existing.errorText = text;
+          }
+
+          if (structuredOutput !== undefined) {
+            existing.structuredOutput = structuredOutput;
           }
         }
       }
@@ -127,6 +140,7 @@ export const reuseToolParts = (
       old.state === part.state &&
       old.input === part.input &&
       old.errorText === part.errorText &&
+      old.structuredOutput === part.structuredOutput &&
       old.output?.result === part.output?.result
     ) {
       next.set(id, old);

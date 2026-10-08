@@ -30,9 +30,11 @@ import {
   resolvePending,
   getAwaitingAck,
   clearPending,
+  clearPendingQuestions,
   type CliHandle,
 } from "@/main/lib/conversation-store";
 import { trackMessageSent } from "@/main/lib/posthog";
+import { createCanUseTool, DENY_MESSAGES } from "./ask-user-question";
 
 // The CLI has taken a prompt: record it and release it from the queue.
 //
@@ -218,6 +220,7 @@ const runColdStart = async (
       effort: options?.effort,
       onEffortLevel: (level) =>
         conversationEvents.emit("effort", conversation.id, { level }),
+      canUseTool: createCanUseTool(conversation.id),
     });
 
     if (res.isErr()) {
@@ -244,9 +247,15 @@ const runColdStart = async (
     // the stream, so a queue frame behind it is never delivered — and the
     // follow-ups queued behind this turn would keep their "Queued" bubbles.
     clearPending(conversation.id);
+    // Same reason, same place: an open question card would outlive the
+    // `error` that closes the stream.
+    clearPendingQuestions(conversation.id, DENY_MESSAGES.ended);
     conversationEvents.emit("error", conversation.id, { error: errorMessage });
   } finally {
     clearPending(conversation.id); // no-op after the catch; covers the clean path
+    // Before the release: the handle is what holds the questions, and a
+    // request still parked on it would wait on a CLI that is gone.
+    clearPendingQuestions(conversation.id, DENY_MESSAGES.ended);
     releaseHandle(conversation.id);
   }
 };

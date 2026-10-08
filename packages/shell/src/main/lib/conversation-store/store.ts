@@ -1,7 +1,12 @@
-import type { Query } from "@anthropic-ai/claude-agent-sdk";
+import type { PermissionResult, Query } from "@anthropic-ai/claude-agent-sdk";
 import type { StreamStatus } from "@/main/api/models/chat.model";
 import type { PromptStream } from "@/main/api/claude-code-ops";
-import type { CliHandle, CliSessionState, TurnType } from "./types";
+import type {
+  CliHandle,
+  CliSessionState,
+  PendingQuestion,
+  TurnType,
+} from "./types";
 import {
   foldPartial,
   type LivePartial,
@@ -30,6 +35,7 @@ export const openHandle = (
     pendingUserMessageIds: new Set(),
     spawnPromptId: null,
     partial: null,
+    pendingQuestions: new Map(),
   });
   return "cold-start";
 };
@@ -165,6 +171,72 @@ export const clearPending = (conversationId: string): void => {
   if (handle.pendingUserMessageIds.size === 0) return;
   handle.pendingUserMessageIds.clear();
   emitQueue(handle);
+};
+
+// Questions the CLI is blocked on, as ids only — the same shape the queue
+// event uses. The question itself is already in the transcript (the tool_use
+// block is persisted before the CLI asks), so the wire never carries it twice.
+const emitQuestions = (handle: CliHandle): void => {
+  conversationEvents.emit("questions", handle.conversationId, {
+    toolUseIds: [...handle.pendingQuestions.keys()],
+  });
+};
+
+export const getPendingQuestionIds = (conversationId: string): string[] => [
+  ...(handles.get(conversationId)?.pendingQuestions.keys() ?? []),
+];
+
+export const getPendingQuestion = (
+  conversationId: string,
+  toolUseId: string,
+): PendingQuestion | undefined =>
+  handles.get(conversationId)?.pendingQuestions.get(toolUseId);
+
+// False when there is no handle to hold it — the caller must settle the
+// request itself then, or the CLI waits on it forever.
+export const addPendingQuestion = (
+  conversationId: string,
+  toolUseId: string,
+  question: PendingQuestion,
+): boolean => {
+  const handle = handles.get(conversationId);
+  if (!handle || handle.pendingQuestions.has(toolUseId)) return false;
+  handle.pendingQuestions.set(toolUseId, question);
+  emitQuestions(handle);
+  return true;
+};
+
+// Answers the CLI's request and drops the question. Removed before settling,
+// so whatever the settle sets off — the CLI resuming, its next event — never
+// finds the question still listed. False when nothing is waiting under that
+// id: already answered, declined, cancelled, or never asked.
+export const settleQuestion = (
+  conversationId: string,
+  toolUseId: string,
+  result: PermissionResult,
+): boolean => {
+  const handle = handles.get(conversationId);
+  const question = handle?.pendingQuestions.get(toolUseId);
+  if (!handle || !question) return false;
+  handle.pendingQuestions.delete(toolUseId);
+  emitQuestions(handle);
+  question.settle(result);
+  return true;
+};
+
+// The turn is going away: deny everything still waiting, so no request is
+// left hanging on a CLI that can no longer use the answer, and no card is
+// left asking for one.
+export const clearPendingQuestions = (
+  conversationId: string,
+  message: string,
+): void => {
+  const handle = handles.get(conversationId);
+  if (!handle || handle.pendingQuestions.size === 0) return;
+  const waiting = [...handle.pendingQuestions.values()];
+  handle.pendingQuestions.clear();
+  emitQuestions(handle);
+  for (const question of waiting) question.settle({ behavior: "deny", message });
 };
 
 // cancelAsyncMessage is a real control request on the SDK's Query (subtype

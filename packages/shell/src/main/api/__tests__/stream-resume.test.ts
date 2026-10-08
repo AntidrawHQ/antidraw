@@ -152,8 +152,8 @@ const openStream = async (path: string) => {
   };
 };
 
-// The three seeds, in the order the route sends them.
-const SEEDS = ["state", "queue", "livePartial"] as const;
+// The four seeds, in the order the route sends them.
+const SEEDS = ["state", "queue", "questions", "livePartial"] as const;
 
 const messageTexts = (events: StreamEvent[]) =>
   events
@@ -249,7 +249,7 @@ describe("stream replay", () => {
       `/api/chat/${conversationId}/stream?afterSeq=${a.seq}`,
     );
     try {
-      const events = await stream.take(5);
+      const events = await stream.take(6);
       expect(messageTexts(events)).toEqual(["b", "c"]);
       expect(events.slice(2).map((e) => e.type)).toEqual([...SEEDS]);
     } finally {
@@ -267,7 +267,7 @@ describe("stream replay", () => {
       `/api/chat/${conversationId}/stream?afterSeq=${a.seq}`,
     );
     try {
-      const replayed = (await stream.take(5)).filter(
+      const replayed = (await stream.take(6)).filter(
         (e): e is Extract<StreamEvent, { type: "message" }> =>
           e.type === "message",
       );
@@ -297,7 +297,7 @@ describe("stream replay", () => {
 
     const stream = await openStream(`/api/chat/${conversationId}/stream`);
     try {
-      const events = await stream.take(3);
+      const events = await stream.take(4);
       expect(events.map((e) => e.type)).toEqual([...SEEDS]);
       // No CLI handle is open for this conversation, and getCliState's
       // no-handle answer is the seed's payload: idle, not a crash and not a
@@ -325,7 +325,7 @@ describe("stream replay", () => {
     try {
       // A livePartial seeded ahead of the backlog would be wiped by the
       // renderer reacting to an assistant message older than it.
-      expect((await stream.take(4)).map((e) => e.type)).toEqual([
+      expect((await stream.take(5)).map((e) => e.type)).toEqual([
         "message",
         ...SEEDS,
       ]);
@@ -352,7 +352,7 @@ describe("stream replay", () => {
       const missed = await send(conversationId, "missed");
       gate.release();
 
-      const events = await stream.take(5);
+      const events = await stream.take(6);
       expect(messageTexts(events)).toEqual(["missed", "b"]);
       expect(events.map((e) => e.type)).toEqual([
         "message",
@@ -381,7 +381,7 @@ describe("stream replay", () => {
       conversationEvents.emit("message", conversationId, { message: b });
       gate.release();
 
-      const events = await stream.take(5);
+      const events = await stream.take(6);
       expect(messageTexts(events)).toEqual(["b", "b"]);
       expect(events.map((e) => e.type)).toEqual([
         "message",
@@ -425,7 +425,7 @@ describe("stream replay", () => {
       });
       gate.release();
 
-      const events = await stream.take(4);
+      const events = await stream.take(5);
       expect(events.map((e) => e.type)).toEqual(["partial", ...SEEDS]);
       // The payload, not just the type: this is the only test that reads the
       // `state` seed while a handle exists, so it is what pins getCliState —
@@ -585,7 +585,7 @@ describe("stream teardown", () => {
       // The seeds still describe the present, and the live half still works —
       // the client's cursor only advances on a clean end, so the rows this
       // read owed it are owed by the next attach instead.
-      const events = await stream.take(3);
+      const events = await stream.take(4);
       expect(events.map((e) => e.type)).toEqual([...SEEDS]);
 
       const after = await send(conversationId, "after the failure");

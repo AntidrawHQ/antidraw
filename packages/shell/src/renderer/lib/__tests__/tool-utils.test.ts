@@ -86,3 +86,103 @@ describe("reuseToolParts", () => {
     expect(after.get("t1")?.output?.result).toBe("second");
   });
 });
+
+describe("structured output", () => {
+  const askUserQuestion = (id: string) =>
+    ({
+      sdkMessage: {
+        type: "assistant",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id,
+              name: "AskUserQuestion",
+              input: { questions: [] },
+            },
+          ],
+        },
+      },
+    }) as unknown as Msgs[number];
+
+  const resultWith = (
+    blocks: { id: string; content: string }[],
+    toolUseResult: unknown,
+  ) =>
+    ({
+      sdkMessage: {
+        type: "user",
+        tool_use_result: toolUseResult,
+        message: {
+          content: blocks.map((b) => ({
+            type: "tool_result",
+            tool_use_id: b.id,
+            content: b.content,
+          })),
+        },
+      },
+    }) as unknown as Msgs[number];
+
+  test("a tool's tool_use_result rides along on its part", () => {
+    const tools = correlateTools([
+      askUserQuestion("t1"),
+      resultWith([{ id: "t1", content: "User has answered" }], {
+        answers: { "Which layout?": "Split hero" },
+      }),
+    ]);
+
+    expect(tools.get("t1")).toMatchInlineSnapshot(`
+      {
+        "input": {
+          "questions": [],
+        },
+        "output": {
+          "result": "User has answered",
+        },
+        "state": "output-available",
+        "structuredOutput": {
+          "answers": {
+            "Which layout?": "Split hero",
+          },
+        },
+        "type": "AskUserQuestion",
+      }
+    `);
+  });
+
+  test("a message with several results gives none of them its tool_use_result", () => {
+    const tools = correlateTools([
+      askUserQuestion("t1"),
+      askUserQuestion("t2"),
+      resultWith(
+        [
+          { id: "t1", content: "one" },
+          { id: "t2", content: "two" },
+        ],
+        { answers: { q: "a" } },
+      ),
+    ]);
+
+    expect([...tools.values()].map((t) => t.structuredOutput)).toEqual([
+      undefined,
+      undefined,
+    ]);
+  });
+
+  test("a changed structured output is a changed part", () => {
+    const ask = askUserQuestion("t1");
+    const before = correlateTools([
+      ask,
+      resultWith([{ id: "t1", content: "x" }], { answers: { q: "a" } }),
+    ]);
+    const after = reuseToolParts(
+      before,
+      correlateTools([
+        ask,
+        resultWith([{ id: "t1", content: "x" }], { answers: { q: "b" } }),
+      ]),
+    );
+
+    expect(after.get("t1")).not.toBe(before.get("t1"));
+  });
+});

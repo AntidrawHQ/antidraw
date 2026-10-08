@@ -13,6 +13,7 @@ export type ConversationEventPayloads = {
   livePartial: { livePartial: LivePartial | null };
   state: { state: CliSessionState };
   queue: { userMessageIds: string[] };
+  questions: { toolUseIds: string[] };
   error: { error: string };
   effort: { level: string };
 };
@@ -27,6 +28,7 @@ export const CONVERSATION_EVENT_NAMES = [
   "livePartial",
   "state",
   "queue",
+  "questions",
   "error",
   "effort",
 ] as const satisfies readonly (keyof ConversationEventPayloads)[];
