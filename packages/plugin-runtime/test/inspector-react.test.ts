@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act, createElement as h, forwardRef, lazy, memo, Suspense, useState, type ReactNode } from "react"
+import { createPortal } from "react-dom"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, expect, test, vi } from "vitest"
 import { startInspector } from "../src/inspector/agent"
@@ -441,6 +442,121 @@ test("a checkbox's state as the user left it", async () => {
   expect(contextOf(box).attributes).toMatchInlineSnapshot(`
     {
       "type": "checkbox",
+    }
+  `)
+})
+
+// A dialog as Radix renders one: the library's overlay and wrapper portaled
+// to <body>, around content the previewed component wrote.
+const DialogContent = ({ children }: { children: ReactNode }) =>
+  createPortal(
+    h("div", { className: "portal" }, h("div", { className: "overlay" }), h("div", { role: "dialog", className: "dialog" }, children)),
+    document.body,
+  )
+function Settings() {
+  return h(
+    "section",
+    loc(CARD, 3),
+    h("button", loc(CARD, 4), "Edit profile"),
+    h(DialogContent, null, h("h2", loc(CARD, 7), "Edit profile"), h("button", { ...loc(CARD, 9), className: "save" }, "Save")),
+  )
+}
+const inPortal = (selector: string) => document.querySelector(`body > .portal ${selector}`)!
+
+test("an element a portal put under <body>: the component's all the same", async () => {
+  await render(h(Settings))
+  expect(contextOf(inPortal(".save"))).toMatchInlineSnapshot(`
+    {
+      "attributes": {},
+      "components": [
+        {
+          "loc": "src/components/user-components/Card.tsx:9:5",
+          "name": "Settings",
+        },
+      ],
+      "element": "button.save",
+      "loc": "src/components/user-components/Card.tsx:9:5",
+      "repeat": null,
+      "text": "Save",
+      "within": null,
+    }
+  `)
+})
+
+test("a library's element in a portal, placed from the element the portal was rendered from", async () => {
+  await render(h(Settings))
+  expect(contextOf(inPortal(".dialog"))).toMatchInlineSnapshot(`
+    {
+      "attributes": {
+        "role": "dialog",
+      },
+      "components": [
+        {
+          "loc": "src/components/user-components/Card.tsx:3:5",
+          "name": "Settings",
+        },
+        {
+          "loc": null,
+          "name": "DialogContent",
+        },
+      ],
+      "element": "div.dialog",
+      "loc": null,
+      "repeat": null,
+      "text": "Edit profile Save",
+      "within": {
+        "loc": "src/components/user-components/Card.tsx:3:5",
+        "path": "(portal) div > div:nth-of-type(2)",
+      },
+    }
+  `)
+})
+
+test("walks out of a portal to the element it was rendered from, and finds a portal's element again", async () => {
+  await render(h(Settings))
+  const ask = (msg: object) =>
+    window.dispatchEvent(
+      new MessageEvent("message", { data: { ns: INSPECTOR_NS, ...msg }, origin: "https://canvas.test", source: window }),
+    )
+  const said = () => {
+    const info = (sent.at(-1) as Extract<FromFrame, { type: "selected" }>).info
+    return info && `${info.tag} ${JSON.stringify(info.text)} at ${info.ref.loc}, path ${info.ref.path.join("/")}`
+  }
+  document.elementsFromPoint = () => [inPortal(".save"), document.body]
+  ask({ type: "select-at", id: 1, x: 0, y: 0 })
+  const ref = (sent.at(-1) as Extract<FromFrame, { type: "selected" }>).info!.ref
+  const steps = [said()]
+  for (const id of [2, 3, 4]) {
+    ask({ type: "walk", id, dir: "parent" })
+    steps.push(said())
+  }
+  ask({ type: "select", id: 5, ref })
+  steps.push(said())
+  expect(steps).toMatchInlineSnapshot(`
+    [
+      "button "Save" at src/components/user-components/Card.tsx:9:5, path -1/1/1/1",
+      "div "Edit profile Save" at null, path -1/1/1",
+      "div "Edit profile Save" at null, path -1/1",
+      "section "Edit profile" at src/components/user-components/Card.tsx:3:5, path 0",
+      "button "Save" at src/components/user-components/Card.tsx:9:5, path -1/1/1/1",
+    ]
+  `)
+})
+
+test("looks under the point as DevTools does: pointer-events: none hides nothing", async () => {
+  await render(h(Settings))
+  let forced: boolean | undefined
+  document.elementsFromPoint = () => {
+    forced = [...document.head.querySelectorAll("style")].some((s) => s.textContent?.includes("pointer-events: auto !important"))
+    return [inPortal(".save"), document.body]
+  }
+  window.dispatchEvent(
+    new MessageEvent("message", { data: { ns: INSPECTOR_NS, type: "hit", id: 1, x: 0, y: 0 }, origin: "https://canvas.test", source: window }),
+  )
+  expect({ forcedWhileLooking: forced, leftBehind: document.head.querySelectorAll("style").length }).toMatchInlineSnapshot(`
+    {
+      "forcedWhileLooking": true,
+      "leftBehind": 0,
     }
   `)
 })

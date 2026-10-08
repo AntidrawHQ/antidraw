@@ -11,7 +11,7 @@ import {
   type ToFrame,
   type WalkDirection,
 } from "./protocol"
-import { keysOf, ownersOf } from "./react"
+import { keysOf, ownersOf, reactParent, renderedWithin } from "./react"
 
 // The inspector's half that runs in a preview frame: it finds, measures and
 // keeps track of elements for the canvas, which draws and owns the input.
@@ -76,23 +76,49 @@ export function startInspector(container: HTMLElement, componentName: string): (
     window.parent.postMessage({ ns: INSPECTOR_NS, ...msg } satisfies Envelope<FromFrame>, origin)
   }
 
+  // The component's elements: those inside the container, and those it
+  // rendered into a portal (a dialog, a menu, a tooltip), which sit under
+  // <body> in the DOM but under the component in React's tree.
   const inside = (el: Element | null): el is Element =>
-    !!el && el !== container && container.contains(el)
+    !!el && el !== container && (container.contains(el) || renderedWithin(el, container))
 
-  const elementAt = (x: number, y: number) =>
-    Number.isFinite(x) && Number.isFinite(y)
-      ? (document.elementsFromPoint(x, y).find(inside) ?? null)
-      : null
+  // Its parent among them: the DOM parent, and at the top of a portal the
+  // element the portal was rendered from.
+  const parentOf = (el: Element): Element | null => {
+    const parent = el.parentElement
+    if (parent === container || inside(parent)) return parent
+    return container.contains(el) ? null : reactParent(el, container)
+  }
+  const isPortalTop = (el: Element) => !container.contains(el) && !inside(el.parentElement)
+
+  // What's under a point, as DevTools sees it: pointer-events: none hides
+  // nothing (a disabled button, the page behind an open modal dialog).
+  const elementAt = (x: number, y: number) => {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null
+    const style = document.createElement("style")
+    style.textContent = "* { pointer-events: auto !important; }"
+    document.head.append(style)
+    try {
+      return document.elementsFromPoint(x, y).find(inside) ?? null
+    } finally {
+      style.remove()
+    }
+  }
 
   const withLoc = (loc: string) =>
-    container.querySelectorAll(`[${SOURCE_ATTRIBUTE}="${CSS.escape(loc)}"]`)
+    [...document.querySelectorAll(`[${SOURCE_ATTRIBUTE}="${CSS.escape(loc)}"]`)].filter(inside)
 
+  // The child-index path from the container, or for an element in a portal
+  // from <body>, marked by a leading -1.
   const refFor = (el: Element, text = textOf(el)): ElementRef => {
     const loc = el.getAttribute(SOURCE_ATTRIBUTE)
+    const portaled = !container.contains(el)
+    const root = portaled ? document.body : container
     const path: number[] = []
-    for (let node: Element = el; node !== container && node.parentElement; node = node.parentElement)
+    for (let node: Element = el; node !== root && node.parentElement; node = node.parentElement)
       path.unshift([...node.parentElement.children].indexOf(node))
-    return { loc, index: loc ? [...withLoc(loc)].indexOf(el) : 0, path, tag: el.localName, text }
+    if (portaled) path.unshift(-1)
+    return { loc, index: loc ? withLoc(loc).indexOf(el) : 0, path, tag: el.localName, text }
   }
 
   // The element a ref names now: by source location, or by path. Either way
@@ -110,15 +136,16 @@ export function startInspector(container: HTMLElement, componentName: string): (
       const hit = matches[ref.index] ?? (matches.length === 1 ? matches[0] : undefined)
       if (same(hit)) byLoc = hit
     }
-    let node: Element | undefined = container
-    for (const i of ref.path) node = node?.children[i]
+    const portaled = ref.path[0] === -1
+    let node: Element | undefined = portaled ? document.body : container
+    for (const i of portaled ? ref.path.slice(1) : ref.path) node = node?.children[i]
     const byPath = same(node) ? node : null
     if (!byLoc || !byPath || byLoc === byPath || ref.text === undefined) return byLoc ?? byPath
     return textOf(byLoc) !== ref.text && textOf(byPath) === ref.text ? byPath : byLoc
   }
 
   const callsiteOf = (el: Element) => {
-    for (let node: Element | null = el; inside(node); node = node.parentElement) {
+    for (let node: Element | null = el; inside(node); node = parentOf(node)) {
       const loc = node.getAttribute(SOURCE_ATTRIBUTE)
       if (loc && loc.replace(LOC_RE, "") === ownFile) return loc
     }
@@ -146,16 +173,21 @@ export function startInspector(container: HTMLElement, componentName: string): (
   // ── What an agent is told about an element ───────────────────────────────
 
   const stampedAround = (el: Element) => {
-    for (let node = el.parentElement; inside(node); node = node.parentElement)
+    for (let node = parentOf(el); inside(node); node = parentOf(node))
       if (node.hasAttribute(SOURCE_ATTRIBUTE)) return node
     return null
   }
 
-  // From `from` down to `el`, as a selector.
+  // From `from` down to `el`, as a selector; a step into a portal is
+  // marked, since no selector crosses one.
   const pathFrom = (from: Element, el: Element) => {
     const steps: string[] = []
-    for (let node = el; node !== from && node.parentElement; node = node.parentElement) {
-      const like = [...node.parentElement.children].filter((c) => c.localName === node.localName)
+    for (let node: Element | null = el; node && node !== from; node = parentOf(node)) {
+      if (isPortalTop(node)) {
+        steps.unshift(`(portal) ${node.localName}`)
+        continue
+      }
+      const like = [...node.parentElement!.children].filter((c) => c.localName === node!.localName)
       steps.unshift(like.length > 1 ? `${node.localName}:nth-of-type(${like.indexOf(node) + 1})` : node.localName)
     }
     return steps.join(" > ")
@@ -163,7 +195,7 @@ export function startInspector(container: HTMLElement, componentName: string): (
 
   // The nearest location at or around `el` that `owns` says is its code.
   const ownedLoc = (el: Element, owns: (node: Element) => boolean) => {
-    for (let node: Element | null = el; inside(node); node = node.parentElement) {
+    for (let node: Element | null = el; inside(node); node = parentOf(node)) {
       const loc = node.getAttribute(SOURCE_ATTRIBUTE)
       if (loc && owns(node)) return loc
     }
@@ -179,7 +211,7 @@ export function startInspector(container: HTMLElement, componentName: string): (
     // No React internals to read: each file the stamps around it pass
     // through on the way out, up to the previewed component's.
     const files: ElementContext["components"] = []
-    for (let node: Element | null = el; inside(node); node = node.parentElement) {
+    for (let node: Element | null = el; inside(node); node = parentOf(node)) {
       const loc = node.getAttribute(SOURCE_ATTRIBUTE)
       if (!loc || (files[0]?.loc && fileOf(files[0].loc) === fileOf(loc))) continue
       files.unshift({ name: fileOf(loc).split("/").pop()!.replace(/\.[jt]sx$/, ""), loc })
@@ -199,7 +231,7 @@ export function startInspector(container: HTMLElement, componentName: string): (
     const where = (node: Element) => componentsOf(node).map((c) => c.loc).join(" ")
     const here = anchor && where(anchor)
     const matches = anchor
-      ? [...withLoc(anchor.getAttribute(SOURCE_ATTRIBUTE)!)].filter((m) => m === anchor || where(m) === here)
+      ? withLoc(anchor.getAttribute(SOURCE_ATTRIBUTE)!).filter((m) => m === anchor || where(m) === here)
       : []
     const listed =
       matches.length > 1 &&
@@ -293,14 +325,15 @@ export function startInspector(container: HTMLElement, componentName: string): (
   const schedule = () => {
     if (!frame) frame = requestAnimationFrame(check)
   }
+  // The whole body: the component's portals are outside the container.
   const mutations = new MutationObserver(schedule)
-  mutations.observe(container, { subtree: true, childList: true, attributes: true, characterData: true })
+  mutations.observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true })
   window.addEventListener("resize", schedule)
 
   const walk = (dir: WalkDirection) => {
     if (!selected) return null
     const next = {
-      parent: selected.parentElement,
+      parent: parentOf(selected),
       child: selected.firstElementChild,
       next: selected.nextElementSibling,
       prev: selected.previousElementSibling,

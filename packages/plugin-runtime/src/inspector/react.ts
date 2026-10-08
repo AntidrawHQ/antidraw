@@ -7,6 +7,7 @@ type Fiber = {
   type: unknown
   elementType: unknown
   key: string | null
+  stateNode: unknown
   return: Fiber | null
   alternate: Fiber | null
   _debugOwner?: Fiber | null
@@ -53,6 +54,23 @@ const ancestry = (el: Element, container: Element): Fiber[] => {
     chain.push(f)
   }
   return []
+}
+
+// Whether React rendered `el` from inside `container`, wherever it sits in
+// the DOM: a portal (a dialog, a menu) puts its content under <body>, and
+// React's tree still has it under the component that rendered it.
+export const renderedWithin = (el: Element, container: Element) => ancestry(el, container).length > 0
+
+// The element above `el` in React's tree: its DOM parent, except at the top
+// of a portal, where it's the element the portal was rendered from. Null
+// above `container`, or without React's data.
+export function reactParent(el: Element, container: Element): Element | null {
+  const stop = fiberOf(container)
+  for (let f = fiberOf(el)?.return; f; f = f.return) {
+    if (same(f, stop)) return container
+    if (typeof f.type === "string" && f.stateNode instanceof Element) return f.stateNode
+  }
+  return null
 }
 
 export type Owner = { name: string; owns: (node: Element) => boolean }
