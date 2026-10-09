@@ -1,11 +1,12 @@
 import { useEffect } from "react";
-import { Panel } from "@xyflow/react";
 import type { WalkDirection } from "@antidrawapp/runtime/inspector";
 import { clearSelection, walk } from "./bridge";
 import { useInspectorStore } from "./store";
 
-// The inspector's switch and keys, rendered inside the canvas. Placeholder UI.
-//   I            inspect on / off
+// The inspector's keys, mounted inside the canvas. Its switch is the canvas
+// toolbar's Inspect tool.
+//   I            start inspecting (it stays on: Esc or V stops it)
+//   V            back to the pointer: stop inspecting, as Figma's Move tool
 //   Esc          clear the selection, then stop inspecting
 //   Enter        tag the selection for the next chat message
 //   ↑ ↓ ← →      parent, first child, previous and next sibling
@@ -32,16 +33,14 @@ const isCanvasKey = (e: KeyboardEvent) =>
   (e.target === document.body || (e.target instanceof Element && !!e.target.closest(".react-flow")));
 
 export const InspectorControls = () => {
-  const active = useInspectorStore((s) => s.active);
-  const setActive = useInspectorStore((s) => s.setActive);
-
   useEffect(() => {
     // Ahead of React Flow, which moves a focused node with the arrows.
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape" || !isCanvasKey(e)) return;
       const s = useInspectorStore.getState();
-      if (e.key === "i") s.setActive(!s.active);
+      if (e.key === "i") s.setActive(true);
       else if (!s.active) return;
+      else if (e.key === "v") s.setActive(false);
       else if (e.key === "Enter" && s.selection) s.addTag(s.selection);
       else if (ARROWS[e.key] && s.selection) void walk(ARROWS[e.key]!);
       else return;
@@ -69,16 +68,5 @@ export const InspectorControls = () => {
     };
   }, []);
 
-  return (
-    <Panel position="top-center">
-      <button
-        type="button"
-        aria-pressed={active}
-        onClick={() => setActive(!active)}
-        className="rounded-md border border-white/10 bg-neutral-900/90 px-2.5 py-1 text-xs text-white/70 hover:text-white"
-      >
-        {active ? "Inspecting · Esc to stop" : "Inspect · I"}
-      </button>
-    </Panel>
-  );
+  return null;
 };

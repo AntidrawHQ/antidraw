@@ -7,6 +7,7 @@ import { useFrameLayouts } from "./lib/frame-layout-ops";
 import { saveFrameLayouts, type FrameLayoutData } from "./lib/api";
 import { cn } from "./lib/utils";
 import { Canvas, useFocusComponent, type FrameLayout } from "./canvas/Canvas";
+import { CanvasToolbar } from "./components/CanvasToolbar";
 import { EmptyState } from "./components/EmptyState";
 import { renderFrameInspector } from "./inspector/FrameInspector";
 import { InspectorControls } from "./inspector/InspectorControls";
@@ -72,6 +73,7 @@ const WorkspaceCanvas = ({
     >
       <FocusRequestedComponent />
       <InspectorControls />
+      <CanvasToolbar />
     </Canvas>
   );
 };
