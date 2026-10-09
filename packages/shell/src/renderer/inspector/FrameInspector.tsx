@@ -6,7 +6,8 @@ import { samePick, useInspectorStore } from "./store";
 
 // The inspector over one frame: catches the pointer while inspecting, asks
 // the frame what's under it, and draws the answer. It lives in the frame's
-// node, so frame pixels are its own pixels and the canvas zoom applies.
+// node, so frame pixels are its own pixels and the canvas zoom applies. A
+// frame's own window (PreviewWindow) puts it over its frame at zoom 1.
 // Placeholder visuals: the DevTools box model, and an outline for the selection.
 
 const COLORS = {
@@ -47,13 +48,20 @@ const BoxModel = ({ info }: { info: ElementInfo }) => {
   );
 };
 
-export const FrameInspector = ({ frame, iframe }: { frame: string; iframe: HTMLIFrameElement | null }) => {
+export const FrameInspector = ({
+  frame,
+  iframe,
+  zoom = 1,
+}: {
+  frame: string;
+  iframe: HTMLIFrameElement | null;
+  zoom?: number;
+}) => {
   useEffect(() => (iframe ? registerFrame(frame, iframe) : undefined), [frame, iframe]);
 
   const active = useInspectorStore((s) => s.active && !!s.frames[frame]?.ready);
   const hover = useInspectorStore((s) => (s.hover?.frame === frame ? s.hover : null));
   const selection = useInspectorStore((s) => (s.selection?.frame === frame ? s.selection : null));
-  const zoom = useStore((s) => s.transform[2]);
 
   // At most one hover question per animation frame.
   const point = useRef<{ x: number; y: number } | null>(null);
@@ -104,6 +112,11 @@ export const FrameInspector = ({ frame, iframe }: { frame: string; iframe: HTMLI
   );
 };
 
+const CanvasFrameInspector = ({ frame, iframe }: { frame: string; iframe: HTMLIFrameElement | null }) => {
+  const zoom = useStore((s) => s.transform[2]);
+  return <FrameInspector frame={frame} iframe={iframe} zoom={zoom} />;
+};
+
 export const renderFrameInspector = ({ componentName, iframe }: { componentName: string; iframe: HTMLIFrameElement | null }) => (
-  <FrameInspector frame={componentName} iframe={iframe} />
+  <CanvasFrameInspector frame={componentName} iframe={iframe} />
 );

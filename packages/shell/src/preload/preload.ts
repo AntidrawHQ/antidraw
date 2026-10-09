@@ -10,6 +10,14 @@ const appKey = APP_PAGES.some((page) => location.href.startsWith(page))
 
 contextBridge.exposeInMainWorld("electronAPI", {
   openPreviewWindow: (url: string) => ipcRenderer.invoke("open-preview-window", url),
+  // A preview window's tags go to the main window's composer, by way of main.
+  tagElement: (pick: unknown, url: string) => ipcRenderer.invoke("inspector:tag", pick, url),
+  onElementTagged: (callback: (pick: unknown, url: string) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, pick: unknown, url: string) =>
+      callback(pick, url);
+    ipcRenderer.on("inspector:tagged", listener);
+    return () => ipcRenderer.removeListener("inspector:tagged", listener);
+  },
   appKey,
   getUpdateStatus: () => ipcRenderer.invoke("update:get-status"),
   installUpdate: () => ipcRenderer.invoke("update:install"),

@@ -12,7 +12,7 @@ import { useInspectorStore } from "@/renderer/inspector/store";
 
 type Mode = "pointer" | "inspect" | "comment";
 
-const TOOLS: { id: Mode; label: string; Icon: typeof MousePointer2 }[] = [
+export const TOOLS: { id: Mode; label: string; Icon: typeof MousePointer2 }[] = [
   { id: "pointer", label: "Pointer", Icon: MousePointer2 },
   { id: "inspect", label: "Inspect", Icon: SquareDashedMousePointer },
   { id: "comment", label: "Comment", Icon: MessageCircle },
@@ -21,6 +21,45 @@ const TOOLS: { id: Mode; label: string; Icon: typeof MousePointer2 }[] = [
 const railShadow = "0 4px 16px rgba(0,0,0,.4), 0 0 0 1px rgba(255,255,255,.06)";
 const idle = "text-white/50 hover:bg-white/[0.05] hover:text-white/85";
 const on = "text-white/95";
+
+// One tool: also the preview window's titlebar's (PreviewWindow).
+export const ToolButton = ({
+  label,
+  Icon,
+  active,
+  onClick,
+  size,
+  tooltipSide,
+}: {
+  label: string;
+  Icon: typeof MousePointer2;
+  active: boolean;
+  onClick: () => void;
+  size: number;
+  tooltipSide: "right" | "bottom";
+}) => (
+  <Tooltip>
+    <TooltipTrigger asChild>
+      <button
+        type="button"
+        onClick={onClick}
+        aria-pressed={active}
+        aria-label={label}
+        className={cn("relative grid place-items-center rounded-[8px]", active ? on : idle)}
+        style={{ width: size, height: size }}
+      >
+        {active && (
+          <span className="absolute inset-0 rounded-[8px] bg-white/[0.1] ring-1 ring-white/[0.06]" />
+        )}
+        <Icon size={16} strokeWidth={1.75} className="relative" />
+      </button>
+    </TooltipTrigger>
+    {/* No animation, so moving between tools never lags. */}
+    <TooltipContent side={tooltipSide} sideOffset={4} style={{ animation: "none" }}>
+      {label}
+    </TooltipContent>
+  </Tooltip>
+);
 
 export const CanvasToolbar = () => {
   const inspecting = useInspectorStore((s) => s.active);
@@ -39,32 +78,17 @@ export const CanvasToolbar = () => {
         className="flex flex-col gap-0.5 rounded-[12px] bg-[#262626] p-1"
         style={{ boxShadow: railShadow }}
       >
-        {TOOLS.map((t) => {
-          const active = mode === t.id;
-          return (
-            <Tooltip key={t.id}>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  onClick={() => select(t.id)}
-                  aria-pressed={active}
-                  aria-label={t.label}
-                  className={cn("relative grid place-items-center rounded-[8px]", active ? on : idle)}
-                  style={{ width: 32, height: 32 }}
-                >
-                  {active && (
-                    <span className="absolute inset-0 rounded-[8px] bg-white/[0.1] ring-1 ring-white/[0.06]" />
-                  )}
-                  <t.Icon size={16} strokeWidth={1.75} className="relative" />
-                </button>
-              </TooltipTrigger>
-              {/* No animation, so moving between tools never lags. */}
-              <TooltipContent side="right" sideOffset={4} style={{ animation: "none" }}>
-                {t.label}
-              </TooltipContent>
-            </Tooltip>
-          );
-        })}
+        {TOOLS.map((t) => (
+          <ToolButton
+            key={t.id}
+            label={t.label}
+            Icon={t.Icon}
+            active={mode === t.id}
+            onClick={() => select(t.id)}
+            size={32}
+            tooltipSide="right"
+          />
+        ))}
       </div>
     </Panel>
   );

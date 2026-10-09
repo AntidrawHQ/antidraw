@@ -123,6 +123,21 @@ export function registerFrame(frame: string, iframe: HTMLIFrameElement) {
 // The URL a frame previews its component at.
 export const frameUrl = (frame: string) => iframes.get(frame)?.src ?? null;
 
+// An element tagged in a frame's own window (PreviewWindow), which shows the
+// same component from the same dev server. Taken only while this canvas has
+// that frame from that server: a window left open on another workspace's
+// component would name a file this one doesn't have.
+export function tagFromPreview(pick: Picked, url: string) {
+  const src = frameUrl(pick?.frame);
+  if (!src || !pick.info?.ref) return;
+  try {
+    if (new URL(src).origin !== new URL(url).origin) return;
+  } catch {
+    return;
+  }
+  store.getState().addTag(pick);
+}
+
 // ── What the canvas asks ─────────────────────────────────────────────────
 
 // Hover at a point in the frame's CSS pixels. Answers that arrive after a

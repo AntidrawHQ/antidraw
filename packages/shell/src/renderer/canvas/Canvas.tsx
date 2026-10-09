@@ -237,11 +237,9 @@ const IframeNodeRenderer = ({
     setRefreshCounter((c) => c + 1);
   }, []);
 
-  const handleFullscreen = useCallback(() => {
-    const fullscreenUrl = new URL(data.url);
-    fullscreenUrl.searchParams.set("fullscreen", "true");
-    onFullscreen(fullscreenUrl.toString());
-  }, [data.url, onFullscreen]);
+  // The frame's own URL, not the runtime's ?fullscreen=true: that turns off
+  // the runtime's inspector, which the window's titlebar tools use.
+  const handleFullscreen = useCallback(() => onFullscreen(data.url), [data.url, onFullscreen]);
 
   const handleSeeCode = useMemo(
     () => (onSeeCode ? () => onSeeCode(data.componentName) : undefined),

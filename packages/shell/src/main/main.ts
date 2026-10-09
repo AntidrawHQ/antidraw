@@ -62,8 +62,33 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 
+// The app's own pages. A window stays on them: the main window's preload
+// hands out the account key (lib/app-key.ts), and a page that replaced the app
+// would get it. Web links (an assistant reply's markdown, say) open in the
+// browser instead.
+const APP_PAGE = process.env.NODE_ENV === "development" ? "http://localhost:5173/" : "antidraw://app/";
+
+const stayOnApp = (win: BrowserWindow) => {
+  const openInBrowser = (url: string) => {
+    if (/^https?:\/\//.test(url)) shell.openExternal(url).catch(() => {});
+  };
+  win.webContents.on("will-navigate", (event, url) => {
+    if (url.startsWith(APP_PAGE)) return;
+    event.preventDefault();
+    openInBrowser(url);
+  });
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    openInBrowser(url);
+    return { action: "deny" };
+  });
+};
+
+// Where elements tagged in a preview window go (see "inspector:tag").
+let mainWindow: BrowserWindow | null = null;
+const previewWindows = new Set<Electron.WebContents>();
+
 const createWindow = () => {
-  const mainWindow = new BrowserWindow({
+  const win = new BrowserWindow({
     width: 900,
     height: 670,
     // The titlebar's workspace switcher and Publish button need the room.
@@ -79,29 +104,13 @@ const createWindow = () => {
       backgroundThrottling: false,
     },
   });
-
-  if (process.env.NODE_ENV === "development") {
-    mainWindow.loadURL("http://localhost:5173");
-  } else {
-    mainWindow.loadURL("antidraw://app/");
-  }
-
-  // The window stays on the app: its preload hands out the account key
-  // (lib/app-key.ts), and a page that replaced the app would get it. Web
-  // links (an assistant reply's markdown, say) open in the browser instead.
-  const appPage = process.env.NODE_ENV === "development" ? "http://localhost:5173/" : "antidraw://app/";
-  const openInBrowser = (url: string) => {
-    if (/^https?:\/\//.test(url)) shell.openExternal(url).catch(() => {});
-  };
-  mainWindow.webContents.on("will-navigate", (event, url) => {
-    if (url.startsWith(appPage)) return;
-    event.preventDefault();
-    openInBrowser(url);
+  mainWindow = win;
+  win.on("closed", () => {
+    if (mainWindow === win) mainWindow = null;
   });
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    openInBrowser(url);
-    return { action: "deny" };
-  });
+
+  win.loadURL(APP_PAGE);
+  stayOnApp(win);
 };
 
 // Serve renderer assets out of dist/renderer with an SPA fallback to index.html
@@ -175,19 +184,36 @@ app.whenReady().then(async () => {
       throw new Error("URL must be an https://localhost/preview URL");
     }
 
+    // Chrome like the main window's: the page draws the titlebar
+    // (renderer/PreviewWindow.tsx) and shows the component in a frame under
+    // it. No account key: the page has no use for it.
     const previewWindow = new BrowserWindow({
       width: 1200,
       height: 800,
+      minWidth: 400,
       center: true,
+      titleBarStyle: "hidden",
+      trafficLightPosition: { x: 12, y: 13 },
       backgroundColor: "#0a0a0a",
       webPreferences: {
+        preload: path.join(__dirname, "../preload/preload.cjs"),
         contextIsolation: true,
         nodeIntegration: false,
         backgroundThrottling: false,
       },
     });
+    const contents = previewWindow.webContents;
+    previewWindows.add(contents);
+    previewWindow.on("closed", () => previewWindows.delete(contents));
 
-    previewWindow.loadURL(url);
+    previewWindow.loadURL(`${APP_PAGE}preview-window.html?url=${encodeURIComponent(url)}`);
+    stayOnApp(previewWindow);
+  });
+
+  // An element tagged in a preview window, for the main window's composer.
+  ipcMain.handle("inspector:tag", (event, pick: unknown, url: unknown) => {
+    if (!previewWindows.has(event.sender) || typeof url !== "string") return;
+    mainWindow?.webContents.send("inspector:tagged", pick, url);
   });
 
   // Cleanup any orphaned dev servers from previous crash (non-blocking)
