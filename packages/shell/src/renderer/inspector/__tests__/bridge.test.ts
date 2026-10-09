@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { INSPECTOR_NS, type ElementContext, type ElementInfo, type FromFrame } from "@antidrawapp/runtime/inspector";
-import { clearHover, clearSelection, getSelectedElementContext, hoverAt, registerFrame, selectAt, walk } from "../bridge";
+import { clearHover, clearSelection, getSelectedElementContext, hoverAt, registerFrame, selectAt, tagFromPreview, walk } from "../bridge";
 import { useInspectorStore } from "../store";
 import { useWorkspaceStore } from "../../store/workspace";
 import { describeContext, describePendingTags, describeTags, retagTags, splitTagged, untagTags } from "../tags";
@@ -299,6 +299,18 @@ it("takes only the latest selection's answer, and deselects in a frame the selec
 
   unregisterOther();
   other.remove();
+});
+
+it("takes a preview window's tag only for a frame it has, from the same dev server", () => {
+  const pick = { frame: "Card", info: info() };
+  const url = `${ORIGIN}/preview?componentName=Card`;
+  tagFromPreview({ frame: "Pricing", info: info() }, `${ORIGIN}/preview?componentName=Pricing`);
+  tagFromPreview(pick, "https://other-workspace.test/preview?componentName=Card");
+  tagFromPreview(pick, "not a url");
+  expect(useInspectorStore.getState().tags).toEqual([]);
+  tagFromPreview(pick, url);
+  tagFromPreview({ frame: "Card", info: info() }, url);
+  expect(useInspectorStore.getState().tags).toEqual([pick]);
 });
 
 it("drops tags, the selection and the hover when the workspace changes", () => {
