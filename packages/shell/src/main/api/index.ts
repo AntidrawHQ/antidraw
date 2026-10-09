@@ -7,6 +7,8 @@ export type {
 } from "./models/chat.model";
 import type { Message } from "./models/chat.model";
 export type { Workspace } from "./models/workspace.model";
+export type { Comment, CommentState } from "./models/comment.model";
+export type { ChatPhase, CommentChat } from "./services/comment.service";
 export type { CreateWorkspaceResponse } from "./controllers/workspace.controller";
 export type { CreateWorkspaceStatusCode } from "./services/workspace.service";
 export type { DevServerState } from "@/main/lib/runtime-store";
@@ -56,10 +58,12 @@ import { workspaceController } from "./controllers/workspace.controller";
 import { preferenceController } from "./controllers/preference.controller";
 import { claudeCliInteractionsController } from "./controllers/claude-cli-interactions.controller";
 import { accountController } from "./controllers/account.controller";
+import { commentController } from "./controllers/comment.controller";
 
 const api = new Hono();
 
 api.route("/workspaces", workspaceController);
+api.route("/workspaces", commentController);
 api.route("/preferences", preferenceController);
 api.route("/claude-cli", claudeCliInteractionsController);
 api.route("/account", accountController);

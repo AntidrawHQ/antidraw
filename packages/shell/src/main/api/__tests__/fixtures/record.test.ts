@@ -47,7 +47,12 @@ test.skipIf(!process.env.RECORD_FIXTURES)(
     );
 
     const promptStream = buildPrompt(PROMPTS[0]!, { uuid: crypto.randomUUID() });
-    const res = sendMessage({ promptStream, workspaceId, model: "haiku" });
+    const res = sendMessage({
+      promptStream,
+      workspaceId,
+      conversationId: crypto.randomUUID(),
+      model: "haiku",
+    });
     if (res.isErr()) throw new Error("failed to start the CLI");
 
     const captured: SDKMessage[] = [];

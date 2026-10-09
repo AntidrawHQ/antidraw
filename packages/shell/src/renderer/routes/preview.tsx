@@ -17,6 +17,8 @@ const isPreviewUrl = (url: string) => {
 
 const previewSearch = z.object({
   url: z.string().refine(isPreviewUrl, "Not a dev server's preview URL"),
+  // The workspace it's from, for its comments. Without one, no Comment tool.
+  workspace: z.uuid().optional().catch(undefined),
 });
 
 // Still a window to drag and close, with nothing in it to show.
@@ -28,8 +30,8 @@ const PreviewError = () => (
 );
 
 const Preview = () => {
-  const { url } = Route.useSearch();
-  return <PreviewWindow url={url} />;
+  const { url, workspace } = Route.useSearch();
+  return <PreviewWindow url={url} workspaceId={workspace ?? null} />;
 };
 
 export const Route = createFileRoute("/preview")({

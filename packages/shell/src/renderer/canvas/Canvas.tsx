@@ -45,7 +45,7 @@ export type FrameLayout = {
 };
 
 // The React Flow node that holds a component's frame.
-const frameNodeId = (componentName: string) => `${componentName}-1`;
+export const frameNodeId = (componentName: string) => `${componentName}-1`;
 
 // Pans and zooms the canvas to one component's frame. For the host's own
 // controls (a component list, a "View" button): call it inside the same

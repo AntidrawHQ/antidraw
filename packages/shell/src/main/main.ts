@@ -83,6 +83,12 @@ const stayOnApp = (win: BrowserWindow) => {
   });
 };
 
+// Where elements tagged in a preview window go (see "inspector:tag").
+let mainWindow: BrowserWindow | null = null;
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const previewWindows = new Set<Electron.WebContents>();
+
 const createWindow = () => {
   const win = new BrowserWindow({
     width: 900,
@@ -164,7 +170,7 @@ app.whenReady().then(async () => {
 
   createWindow();
 
-  ipcMain.handle("open-preview-window", (_event, url: string) => {
+  ipcMain.handle("open-preview-window", (_event, url: string, workspaceId?: unknown) => {
     let parsed: URL;
     try {
       parsed = new URL(url);
@@ -194,9 +200,34 @@ app.whenReady().then(async () => {
         backgroundThrottling: false,
       },
     });
-    // The app's /preview route; hash routing reads its search from inside the hash.
-    previewWindow.loadURL(`${APP_PAGE}#/preview?${new URLSearchParams({ url })}`);
+    const contents = previewWindow.webContents;
+    previewWindows.add(contents);
+    previewWindow.on("closed", () => previewWindows.delete(contents));
+
+    // The app's /preview route; hash routing reads its search from inside
+    // the hash. The workspace, for the comments it leaves (renderer/comments).
+    const search = new URLSearchParams({ url });
+    if (typeof workspaceId === "string" && UUID_RE.test(workspaceId)) search.set("workspace", workspaceId);
+    previewWindow.loadURL(`${APP_PAGE}#/preview?${search}`);
     stayOnApp(previewWindow);
+  });
+
+  // An element tagged in a preview window, for the main window's composer.
+  ipcMain.handle("inspector:tag", (event, pick: unknown, url: unknown) => {
+    if (!previewWindows.has(event.sender) || typeof url !== "string") return;
+    mainWindow?.webContents.send("inspector:tagged", pick, url);
+  });
+
+  // A preview window's comment, for the main window's list: bring it
+  // forward, show the comment, and with `send`, send the drafts there.
+  ipcMain.handle("comments:show", (event, request: unknown) => {
+    if (!previewWindows.has(event.sender) || !mainWindow) return;
+    const { commentId, send } = (request ?? {}) as { commentId?: unknown; send?: unknown };
+    if (typeof commentId !== "number") return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+    mainWindow.webContents.send("comments:shown", { commentId, send: send === true });
   });
 
   // Cleanup any orphaned dev servers from previous crash (non-blocking)

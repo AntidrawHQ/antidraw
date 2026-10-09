@@ -15,3 +15,8 @@ export const createDevServerMcpServer = (workspaceId: string) =>
     alwaysLoad: true,
     tools: [devServerInfoTool(workspaceId)],
   });
+
+export {
+  COMMENTS_MCP_SERVER_NAME,
+  createCommentsMcpServer,
+} from "@/main/api/tools/comments";

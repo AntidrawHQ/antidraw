@@ -9,7 +9,8 @@ import { samePick, useInspectorStore } from "./store";
 // node, so frame pixels are its own pixels and the canvas zoom applies.
 // Placeholder visuals: the DevTools box model, and an outline for the selection.
 
-const COLORS = {
+// Also the Comment tool's, over the same frames (comments/CommentFlow).
+export const COLORS = {
   margin: "rgba(246, 178, 107, 0.5)",
   border: "rgba(255, 229, 153, 0.5)",
   padding: "rgba(147, 196, 125, 0.5)",
@@ -19,7 +20,7 @@ const COLORS = {
 
 const widths = (s: Sides) => s.map((v) => `${Math.max(0, v)}px`).join(" ");
 
-const Box = ({ x, y, w, h, style }: { x: number; y: number; w: number; h: number; style?: CSSProperties }) => (
+export const Box = ({ x, y, w, h, style }: { x: number; y: number; w: number; h: number; style?: CSSProperties }) => (
   <div
     style={{
       position: "absolute",
@@ -33,7 +34,7 @@ const Box = ({ x, y, w, h, style }: { x: number; y: number; w: number; h: number
   />
 );
 
-const BoxModel = ({ info }: { info: ElementInfo }) => {
+export const BoxModel = ({ info }: { info: ElementInfo }) => {
   const { x, y, width: w, height: h } = info.rect;
   const m = info.margin.map((v) => Math.max(0, v)) as Sides;
   const [b, p] = [info.border, info.padding];

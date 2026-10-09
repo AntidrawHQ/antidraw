@@ -54,6 +54,7 @@ import { useQueueDeck } from "@/renderer/lib/use-queue-deck";
 import { SMOOTH } from "@/renderer/lib/motion";
 import { SentTags, TagChips } from "@/renderer/inspector/TagChips";
 import { describePendingTags, retagTags, splitTagged, untagTags } from "@/renderer/inspector/tags";
+import { splitComments } from "@/shared/utils/canvas-comments";
 import {
   SUPPORTED_IMAGE_TYPES,
   type ImageAttachment,
@@ -260,6 +261,24 @@ const MessageRow = memo(
         // the agent; the bubble shows them as chips.
         const tagged = isAssistant ? null : splitTagged(block.text);
         if (tagged?.tags.length) nodes.push(<SentTags key={`tags-${idx}`} tags={tagged.tags} />);
+        // Comments sent from the canvas are the whole message: the bubble
+        // shows them, one to a line, under the components they're on.
+        const commented = isAssistant ? null : splitComments(block.text);
+        if (commented) {
+          nodes.push(
+            <SentTags key={`tags-${idx}`} tags={[...new Set(commented.comments.map((c) => c.component))]} />,
+            <MessageContent
+              key={idx}
+              className={cn(
+                "self-end max-w-[85%] bg-neutral-700 text-neutral-200 prose prose-sm prose-invert whitespace-pre-wrap",
+                isFailed && "opacity-60"
+              )}
+            >
+              {commented.comments.map((c) => c.text).join("\n\n")}
+            </MessageContent>
+          );
+          return;
+        }
         nodes.push(
           isAssistant ? (
             <Markdown

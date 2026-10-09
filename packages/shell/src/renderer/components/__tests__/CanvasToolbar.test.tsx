@@ -5,10 +5,11 @@ import { ReactFlowProvider } from "@xyflow/react";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { TooltipProvider } from "@/renderer/components/ui/tooltip";
 import { useInspectorStore } from "@/renderer/inspector/store";
+import { useCommentStore } from "@/renderer/comments/store";
 import { CanvasToolbar } from "../CanvasToolbar";
 
 // Which tool the rail shows as active, and what clicking each one does to
-// the inspector. Comment isn't built yet, so it does nothing.
+// the inspector. Comment turns the inspector off.
 
 let root: Root;
 let host: HTMLElement;
@@ -32,6 +33,7 @@ beforeEach(async () => {
 afterEach(() => {
   act(() => root.unmount());
   useInspectorStore.setState({ active: false, selection: null, tags: [] });
+  useCommentStore.setState({ active: false });
 });
 
 // Clicks a tool; says which tool is active and whether the inspector is on.
@@ -53,7 +55,7 @@ it("switches the inspector from the rail", () => {
     [
       "Pointer: Pointer active, not inspecting",
       "Inspect: Inspect active, inspecting",
-      "Comment: Inspect active, inspecting",
+      "Comment: Comment active, not inspecting",
       "Inspect: Inspect active, inspecting",
       "Inspect: Inspect active, inspecting",
       "Pointer: Pointer active, not inspecting",

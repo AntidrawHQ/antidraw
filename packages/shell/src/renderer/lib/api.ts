@@ -1,5 +1,7 @@
 import type {
   Account,
+  Comment,
+  CommentChat,
   ComponentListItem,
   ComponentSource,
   Conversation,
@@ -953,6 +955,148 @@ export const saveFrameLayouts = async (
       message: "Failed to save frame layouts",
     });
   }
+};
+
+// ============================================================================
+// Comments API
+// ============================================================================
+
+export type CommentList = { comments: Comment[]; chats: CommentChat[] };
+
+const commentsUrl = (workspaceId: string, path = "") =>
+  `antidraw://app/api/workspaces/${workspaceId}/comments${path}`;
+
+// One request to the comments routes, as a Result like the rest.
+const commentsRequest = async <T>(
+  url: string,
+  failure: string,
+  init?: { method: string; body?: unknown },
+) => {
+  try {
+    const response = await fetch(url, {
+      method: init?.method,
+      ...(init?.body !== undefined
+        ? {
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(init.body),
+          }
+        : {}),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      return err({
+        status: response.status as 500,
+        code: errorBody?.error?.code ?? "FETCH_ERROR",
+        message: errorBody?.error?.message ?? response.statusText,
+      });
+    }
+
+    return ok((await response.json()) as T);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "NETWORK_ERROR",
+      message: failure,
+    });
+  }
+};
+
+export const listComments = (workspaceId: string) =>
+  commentsRequest<CommentList>(commentsUrl(workspaceId), "Failed to list comments");
+
+export const addComment = (
+  workspaceId: string,
+  comment: Pick<Comment, "componentName" | "x" | "y" | "text" | "element">,
+) =>
+  commentsRequest<Comment>(commentsUrl(workspaceId), "Failed to add comment", {
+    method: "POST",
+    body: comment,
+  });
+
+export const editComment = (workspaceId: string, id: number, text: string) =>
+  commentsRequest<Comment>(commentsUrl(workspaceId, `/${id}`), "Failed to edit comment", {
+    method: "PATCH",
+    body: { text },
+  });
+
+export const removeComment = (workspaceId: string, id: number) =>
+  commentsRequest<{ ok: true }>(commentsUrl(workspaceId, `/${id}`), "Failed to remove comment", {
+    method: "DELETE",
+  });
+
+export const clearCompletedComments = (workspaceId: string) =>
+  commentsRequest<{ ok: true }>(
+    commentsUrl(workspaceId, "/clear-completed"),
+    "Failed to clear completed comments",
+    { method: "POST" },
+  );
+
+// Opens a new chat with the drafts, and starts its turn.
+export const sendComments = (
+  workspaceId: string,
+  params: {
+    context: { id: number; element: string | null; preview: string | null; frame: string | null }[];
+    model?: string;
+    effort?: EffortLevel;
+  },
+) =>
+  commentsRequest<{ conversation: Conversation; comments: Comment[] }>(
+    commentsUrl(workspaceId, "/send"),
+    "Failed to send comments",
+    { method: "POST", body: params },
+  );
+
+// Calls `onChange` whenever the workspace's comments may have changed, and
+// once on every (re)connect. Reconnects on its own, backing off, until the
+// returned stop is called. Nothing rides on the events, so a drop loses
+// nothing: the change on reconnect makes up for whatever went by.
+export const watchComments = (workspaceId: string, onChange: () => void) => {
+  let stopped = false;
+  let attempt: AbortController | null = null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let delay = 1000;
+
+  const connect = () => {
+    const abort = new AbortController();
+    attempt = abort;
+    let ended = false;
+    // One retry per attempt, from whichever ending gets there first. The
+    // abort cancels the body, which is what detaches the route's listeners
+    // (see /chat/:id/stream), before the next attempt attaches its own.
+    const retry = () => {
+      if (ended) return;
+      ended = true;
+      abort.abort();
+      if (stopped) return;
+      timer = setTimeout(connect, delay);
+      delay = Math.min(delay * 2, 30_000);
+    };
+    fetchEventSource(commentsUrl(workspaceId, "/events"), {
+      signal: abort.signal,
+      openWhenHidden: true,
+      onopen: async (response) => {
+        if (!response.ok) throw new Error(response.statusText);
+      },
+      onmessage: () => {
+        delay = 1000;
+        onChange();
+      },
+      // Thrown, so the library doesn't retry on its own: retry() does.
+      onerror: (error) => {
+        retry();
+        throw error;
+      },
+      onclose: retry,
+    }).catch(() => {});
+  };
+
+  connect();
+  return () => {
+    stopped = true;
+    clearTimeout(timer);
+    attempt?.abort();
+  };
 };
 
 // ============================================================================
