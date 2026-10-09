@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { MessageSquare, Blocks } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
 import { useWorkspaceStore } from "./store/workspace";
@@ -12,14 +13,30 @@ const tabs = [
   { id: "components" as const, icon: Blocks, label: "Components" },
 ];
 
+const isMac = navigator.userAgent.includes("Mac");
+
 export const IconStrip = () => {
   const activeSidePanel = useWorkspaceStore((s) => s.activeSidePanel);
   const setActiveSidePanel = useWorkspaceStore((s) => s.setActiveSidePanel);
+  const open = useWorkspaceStore((s) => s.sidePanelOpen);
+
+  // Mod+B folds the side panel, as in VS Code: Cmd on macOS, Ctrl elsewhere.
+  // Typing too, since nothing here takes it for bold.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+      if (e.key !== "b" || !mod || e.shiftKey || e.altKey) return;
+      e.preventDefault();
+      useWorkspaceStore.getState().toggleSidePanel();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   return (
     <div className="w-12 shrink-0 bg-[#2A2A2A] flex flex-col items-stretch border-r border-[#333]">
       {tabs.map((tab) => {
-        const isActive = activeSidePanel === tab.id;
+        const isActive = open && activeSidePanel === tab.id;
         return (
           <Tooltip key={tab.id}>
             <TooltipTrigger asChild>

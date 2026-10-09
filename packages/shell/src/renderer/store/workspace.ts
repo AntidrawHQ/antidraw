@@ -9,6 +9,9 @@ type WorkspaceStore = {
   setActiveConversationId: (id: string | null) => void;
   activeSidePanel: SidePanel;
   setActiveSidePanel: (panel: SidePanel) => void;
+  // Folded away with Mod+B; picking a panel unfolds it.
+  sidePanelOpen: boolean;
+  toggleSidePanel: () => void;
   focusComponentName: string | null;
   setFocusComponentName: (name: string | null) => void;
   codePanelComponentName: string | null;
@@ -21,7 +24,9 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
   activeConversationId: null,
   setActiveConversationId: (id) => set({ activeConversationId: id }),
   activeSidePanel: "chat",
-  setActiveSidePanel: (panel) => set({ activeSidePanel: panel }),
+  setActiveSidePanel: (panel) => set({ activeSidePanel: panel, sidePanelOpen: true }),
+  sidePanelOpen: true,
+  toggleSidePanel: () => set((s) => ({ sidePanelOpen: !s.sidePanelOpen })),
   focusComponentName: null,
   setFocusComponentName: (name) => set({ focusComponentName: name }),
   codePanelComponentName: null,

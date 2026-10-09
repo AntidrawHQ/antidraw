@@ -43,8 +43,12 @@ afterEach(() => {
 });
 
 // Presses a key at a target; says whether the inspector took it and what's left.
-const press = (key: string, target: Element, { handledBy }: { handledBy?: "a menu" } = {}) => {
-  useInspectorStore.setState({ active: true, selection: { frame: "Card", info }, tags: [] });
+const press = (
+  key: string,
+  target: Element,
+  { handledBy, inspecting = true }: { handledBy?: "a menu"; inspecting?: boolean } = {},
+) => {
+  useInspectorStore.setState({ active: inspecting, selection: { frame: "Card", info }, tags: [] });
   // As Radix does: on the document, capturing, marking the key handled.
   const layer = (e: KeyboardEvent) => e.preventDefault();
   if (handledBy) document.addEventListener("keydown", layer, true);
@@ -53,7 +57,8 @@ const press = (key: string, target: Element, { handledBy }: { handledBy?: "a men
   document.removeEventListener("keydown", layer, true);
   const s = useInspectorStore.getState();
   const where = target === document.body ? "nothing focused" : target === canvas ? "the canvas" : "a menu";
-  return `${key} on ${where}${handledBy ? `, handled by ${handledBy}` : ""}: ${
+  const from = inspecting ? "" : ", from not inspecting";
+  return `${key} on ${where}${handledBy ? `, handled by ${handledBy}` : ""}${from}: ${
     s.selection ? "selected" : "cleared"
   }, ${s.active ? "inspecting" : "not inspecting"}, ${s.tags.length} tagged`;
 };
@@ -66,8 +71,12 @@ it("takes keys on the canvas and with nothing focused, and leaves a menu's alone
     press("Escape", canvas, { handledBy: "a menu" }),
     press("Enter", canvas),
     press("Enter", menu),
-    press("i", menu),
+    press("i", menu, { inspecting: false }),
+    press("i", document.body, { inspecting: false }),
     press("i", document.body),
+    press("v", menu),
+    press("v", canvas),
+    press("v", document.body, { inspecting: false }),
   ]).toMatchInlineSnapshot(`
     [
       "Escape on nothing focused: cleared, inspecting, 0 tagged",
@@ -76,8 +85,12 @@ it("takes keys on the canvas and with nothing focused, and leaves a menu's alone
       "Escape on the canvas, handled by a menu: selected, inspecting, 0 tagged",
       "Enter on the canvas: selected, inspecting, 1 tagged",
       "Enter on a menu: selected, inspecting, 0 tagged",
-      "i on a menu: selected, inspecting, 0 tagged",
-      "i on nothing focused: selected, not inspecting, 0 tagged",
+      "i on a menu, from not inspecting: selected, not inspecting, 0 tagged",
+      "i on nothing focused, from not inspecting: selected, inspecting, 0 tagged",
+      "i on nothing focused: selected, inspecting, 0 tagged",
+      "v on a menu: selected, inspecting, 0 tagged",
+      "v on the canvas: selected, not inspecting, 0 tagged",
+      "v on nothing focused, from not inspecting: selected, not inspecting, 0 tagged",
     ]
   `);
 });

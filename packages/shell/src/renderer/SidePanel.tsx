@@ -231,11 +231,13 @@ type SidePanelProps = {
 
 export const SidePanel = ({ className }: SidePanelProps) => {
   const activeSidePanel = useWorkspaceStore((s) => s.activeSidePanel);
+  const open = useWorkspaceStore((s) => s.sidePanelOpen);
   const ActivePanel = panelMap[activeSidePanel];
 
+  // Hidden, not unmounted: the panel keeps its width and the composer its draft.
   return (
     <ResizablePanel
-      className={cn("bg-[#2A2A2A]", className)}
+      className={cn("bg-[#2A2A2A]", !open && "hidden", className)}
       defaultWidth={500}
       maxWidth={800}
     >
