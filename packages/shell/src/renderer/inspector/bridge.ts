@@ -152,6 +152,13 @@ export async function hoverAt(frame: string, x: number, y: number) {
   store.getState().setHover(reply.info && { frame, info: reply.info });
 }
 
+// The element at a point in the frame's CSS pixels, without hovering or
+// selecting it (a comment's pin). Null where there's none, or no answer.
+export async function elementAt(frame: string, x: number, y: number) {
+  const reply = await request(frame, { type: "hit", x, y });
+  return reply?.type === "hover" ? reply.info : null;
+}
+
 export const clearHover = (frame: string) => {
   latestHit.set(frame, nextId++);
   if (store.getState().hover?.frame === frame) store.getState().setHover(null);
