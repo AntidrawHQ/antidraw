@@ -84,6 +84,24 @@ describe("comments", () => {
     expect((await list()).chats.map((c) => c.n)).toEqual([1, 2]);
   });
 
+  test("a send into an open chat joins its set, and leaves it out of history", async () => {
+    const a = await add("Make Upgrade full width");
+    const first = await send([a.id]);
+    const b = await add("And the secondary one too");
+    const second = (
+      await sendComments(workspaceId, [{ id: b.id, element: null, preview: null }], first.conversationId)
+    )._unsafeUnwrap();
+    expect(second.conversationId).toBe(first.conversationId);
+    expect(second.prompt).not.toContain(`<comment id="${a.id}"`);
+    const chat = (await list()).chats.filter((c) => c.conversationId === first.conversationId);
+    expect(chat).toHaveLength(1);
+
+    // Another workspace's chat isn't one to send into.
+    const c = await add("stray");
+    expect((await sendComments(workspaceId, [{ id: c.id, element: null, preview: null }], crypto.randomUUID())).isErr()).toBe(true);
+    expect((await list()).comments.find((x) => x.id === c.id)?.state).toBe("draft");
+  });
+
   test("nothing left to send opens no chat", async () => {
     const c = await add("Swap the bullets for checkmarks");
     await send([c.id]);

@@ -108,19 +108,29 @@ const describeElements = async (drafts: Comment[]) => {
   }));
 };
 
-// Every send opens a new chat right away, alongside any already running.
+// Sends into `conversationId` (the chat that's open), or a new chat if none.
 export const useSendComments = (workspaceId: string | null) => {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ drafts, model, effort }: { drafts: Comment[]; model?: string; effort?: EffortLevel }) => {
+    mutationFn: async ({
+      drafts,
+      conversationId,
+      model,
+      effort,
+    }: {
+      drafts: Comment[];
+      conversationId?: string;
+      model?: string;
+      effort?: EffortLevel;
+    }) => {
       if (!workspaceId) throw new Error("No workspace");
       const context = await describeElements(drafts);
-      return unwrap(sendComments(workspaceId, { context, model, effort }));
+      return unwrap(sendComments(workspaceId, { context, conversationId, model, effort }));
     },
     onSuccess: ({ conversation }) => {
       queryClient.setQueryData<Conversation[]>(
         queryKeys.conversations.byWorkspace(conversation.workspaceId),
-        (old) => (old ? [conversation, ...old] : old),
+        (old) => (old && !old.some((c) => c.id === conversation.id) ? [conversation, ...old] : old),
       );
       void queryClient.invalidateQueries({ queryKey: queryKeys.comments.byWorkspace(workspaceId) });
     },

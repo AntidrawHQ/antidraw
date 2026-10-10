@@ -44,6 +44,8 @@ const sendSchema = z.object({
       }),
     )
     .min(1),
+  // The chat to send into; none opens a new one.
+  conversationId: z.uuid().optional(),
   model: z.string().min(1).optional(),
   effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
 });
@@ -120,17 +122,18 @@ commentController.post(
   },
 );
 
-// Every send opens a new chat, whatever else is running, and starts its
-// turn. Returns the conversation for the renderer's list.
+// Sends into the given chat, as a message typed there would go (queued if
+// it's mid-turn), or opens a new one. Returns the conversation for the
+// renderer's list.
 commentController.post(
   "/:workspaceId/comments/send",
   zValidator("param", workspaceParam),
   zValidator("json", sendSchema),
   async (ctx) => {
     const { workspaceId } = ctx.req.valid("param");
-    const { context, model, effort } = ctx.req.valid("json");
+    const { context, conversationId, model, effort } = ctx.req.valid("json");
 
-    const sent = await sendComments(workspaceId, context);
+    const sent = await sendComments(workspaceId, context, conversationId);
     if (sent.isErr()) {
       const { status, code, message } = sent.error;
       return ctx.json({ error: { code, message } }, status);
