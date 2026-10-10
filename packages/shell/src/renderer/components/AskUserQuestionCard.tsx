@@ -104,12 +104,13 @@ const deniedAs = (errorText = ""): Phase => {
 const BOX = "relative flex flex-col gap-0.5 rounded-md border border-white/[0.05] p-1.5 outline-none";
 const CHIP = "shrink-0 rounded-sm bg-white/[0.06] px-1.5 py-px text-[11px] text-neutral-400";
 
-const Beam = ({ active, children }: { active: boolean; children: ReactNode }) => (
+// Also the canvas comments' list (comments/CommentFlow), at its own radius.
+export const Beam = ({ active, radius = 6, children }: { active: boolean; radius?: number; children: ReactNode }) => (
   <BorderBeam
     size="sm"
     colorVariant="mono"
     theme="dark"
-    borderRadius={6}
+    borderRadius={radius}
     duration={3}
     strength={1}
     glowSize={0.7}

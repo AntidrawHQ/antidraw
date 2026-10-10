@@ -2,15 +2,15 @@ import { Panel } from "@xyflow/react";
 import { MessageCircle, MousePointer2, SquareDashedMousePointer } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/renderer/components/ui/tooltip";
-import { useInspectorStore } from "@/renderer/inspector/store";
+import { setCanvasTool, useCanvasTool, type CanvasTool } from "@/renderer/comments/store";
 
 // The canvas's tool rail, floating at its top left. The active tool stays
 // neutral: a soft white fill and a brighter icon, no mode colours.
 //   Pointer   select and move frames
 //   Inspect   hover and click elements inside a frame, tag them for Claude
-//   Comment   not built yet: the button does nothing
+//   Comment   click a frame to pin a comment for Claude (comments/CommentFlow)
 
-type Mode = "pointer" | "inspect" | "comment";
+type Mode = CanvasTool;
 
 export const TOOLS: { id: Mode; label: string; Icon: typeof MousePointer2 }[] = [
   { id: "pointer", label: "Pointer", Icon: MousePointer2 },
@@ -62,15 +62,10 @@ export const ToolButton = ({
 );
 
 export const CanvasToolbar = () => {
-  const inspecting = useInspectorStore((s) => s.active);
-  const setInspecting = useInspectorStore((s) => s.setActive);
-  const mode: Mode = inspecting ? "inspect" : "pointer";
+  const mode = useCanvasTool();
 
   // Picking a tool selects it; picking the active one again leaves it on.
-  const select = (id: Mode) => {
-    if (id === "pointer") setInspecting(false);
-    else if (id === "inspect") setInspecting(true);
-  };
+  const select = (id: Mode) => setCanvasTool(id);
 
   return (
     <Panel position="top-left">

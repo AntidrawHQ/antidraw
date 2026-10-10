@@ -9,7 +9,8 @@ const appKey = APP_PAGES.some((page) => location.href.startsWith(page))
   : "";
 
 contextBridge.exposeInMainWorld("electronAPI", {
-  openPreviewWindow: (url: string) => ipcRenderer.invoke("open-preview-window", url),
+  openPreviewWindow: (url: string, workspaceId?: string) =>
+    ipcRenderer.invoke("open-preview-window", url, workspaceId),
   // A preview window's tags go to the main window's composer, by way of main.
   tagElement: (pick: unknown, url: string) => ipcRenderer.invoke("inspector:tag", pick, url),
   onElementTagged: (callback: (pick: unknown, url: string) => void) => {
@@ -17,6 +18,18 @@ contextBridge.exposeInMainWorld("electronAPI", {
       callback(pick, url);
     ipcRenderer.on("inspector:tagged", listener);
     return () => ipcRenderer.removeListener("inspector:tagged", listener);
+  },
+  // A preview window's comment, for the main window: show it there, and with
+  // `send`, send the drafts there.
+  showComments: (request: { workspaceId: string; commentId: number; send: boolean }) =>
+    ipcRenderer.invoke("comments:show", request),
+  onCommentsShown: (callback: (request: { workspaceId: string; commentId: number; send: boolean }) => void) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      request: { workspaceId: string; commentId: number; send: boolean },
+    ) => callback(request);
+    ipcRenderer.on("comments:shown", listener);
+    return () => ipcRenderer.removeListener("comments:shown", listener);
   },
   appKey,
   getUpdateStatus: () => ipcRenderer.invoke("update:get-status"),

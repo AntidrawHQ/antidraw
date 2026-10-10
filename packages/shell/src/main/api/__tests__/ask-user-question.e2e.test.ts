@@ -137,6 +137,7 @@ describe("AskUserQuestion against the real CLI", () => {
     const q = sendMessage({
       promptStream,
       workspaceId,
+      conversationId: "init-probe",
       model: MODEL,
       canUseTool: createCanUseTool("init-probe"),
     })._unsafeUnwrap();

@@ -7,6 +7,8 @@ export type {
 } from "./models/chat.model";
 import type { Message } from "./models/chat.model";
 export type { Workspace } from "./models/workspace.model";
+export type { Comment, CommentState } from "./models/comment.model";
+export type { ChatPhase, CommentChat } from "./services/comment.service";
 export type { CreateWorkspaceResponse } from "./controllers/workspace.controller";
 export type { CreateWorkspaceStatusCode } from "./services/workspace.service";
 export type { DevServerState } from "@/main/lib/runtime-store";
@@ -56,10 +58,13 @@ import { workspaceController } from "./controllers/workspace.controller";
 import { preferenceController } from "./controllers/preference.controller";
 import { claudeCliInteractionsController } from "./controllers/claude-cli-interactions.controller";
 import { accountController } from "./controllers/account.controller";
+import { commentController } from "./controllers/comment.controller";
+import { markCommentsSent } from "./services/comment.service";
 
 const api = new Hono();
 
 api.route("/workspaces", workspaceController);
+api.route("/workspaces", commentController);
 api.route("/preferences", preferenceController);
 api.route("/claude-cli", claudeCliInteractionsController);
 api.route("/account", accountController);
@@ -85,6 +90,10 @@ const chatMessageSchema = z.object({
   images: z.array(imageAttachmentSchema).optional(),
   model: z.string().min(1).optional(),
   effort: effortLevelSchema.optional(),
+  // Canvas comments the message carries (a <canvas-comments> block from
+  // POST /comments/prompt): marked sent into this chat before the turn
+  // starts, or the send is refused.
+  commentIds: z.array(z.number().int()).min(1).optional(),
 });
 
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
@@ -93,7 +102,7 @@ api.post(
   "/chat/message",
   zValidator("json", chatMessageSchema),
   async (ctx) => {
-    const { message, workspaceId, conversationId, userMessageId, images, model, effort } =
+    const { message, workspaceId, conversationId, userMessageId, images, model, effort, commentIds } =
       ctx.req.valid("json");
 
     const conversationRes = await resolveOrCreateConversation(
@@ -107,6 +116,14 @@ api.post(
     }
 
     const conversation = conversationRes.value;
+
+    if (commentIds) {
+      const marked = await markCommentsSent(workspaceId, conversation.id, commentIds);
+      if (marked.isErr()) {
+        const { status, code, message } = marked.error;
+        return ctx.json({ error: { code, message } }, status);
+      }
+    }
 
     runTurn({
       conversation,

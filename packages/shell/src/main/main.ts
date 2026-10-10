@@ -85,6 +85,8 @@ const stayOnApp = (win: BrowserWindow) => {
 
 // Where elements tagged in a preview window go (see "inspector:tag").
 let mainWindow: BrowserWindow | null = null;
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const previewWindows = new Set<Electron.WebContents>();
 
 const createWindow = () => {
@@ -172,7 +174,7 @@ app.whenReady().then(async () => {
 
   createWindow();
 
-  ipcMain.handle("open-preview-window", (_event, url: string) => {
+  ipcMain.handle("open-preview-window", (_event, url: string, workspaceId?: unknown) => {
     let parsed: URL;
     try {
       parsed = new URL(url);
@@ -206,7 +208,12 @@ app.whenReady().then(async () => {
     previewWindows.add(contents);
     previewWindow.on("closed", () => previewWindows.delete(contents));
 
-    previewWindow.loadURL(`${APP_PAGE}preview-window.html?url=${encodeURIComponent(url)}`);
+    // The workspace, for the comments it leaves (renderer/comments).
+    const page = new URL(`${APP_PAGE}preview-window.html`);
+    page.searchParams.set("url", url);
+    if (typeof workspaceId === "string" && UUID_RE.test(workspaceId))
+      page.searchParams.set("workspace", workspaceId);
+    previewWindow.loadURL(page.toString());
     stayOnApp(previewWindow);
   });
 
@@ -214,6 +221,22 @@ app.whenReady().then(async () => {
   ipcMain.handle("inspector:tag", (event, pick: unknown, url: unknown) => {
     if (!previewWindows.has(event.sender) || typeof url !== "string") return;
     mainWindow?.webContents.send("inspector:tagged", pick, url);
+  });
+
+  // A preview window's comment, for the main window's list: bring it
+  // forward, show the comment, and with `send`, send the drafts there.
+  ipcMain.handle("comments:show", (event, request: unknown) => {
+    if (!previewWindows.has(event.sender) || !mainWindow) return;
+    const { workspaceId, commentId, send } = (request ?? {}) as {
+      workspaceId?: unknown;
+      commentId?: unknown;
+      send?: unknown;
+    };
+    if (typeof workspaceId !== "string" || !UUID_RE.test(workspaceId) || typeof commentId !== "number") return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+    mainWindow.webContents.send("comments:shown", { workspaceId, commentId, send: send === true });
   });
 
   // Cleanup any orphaned dev servers from previous crash (non-blocking)

@@ -6,12 +6,22 @@ import { useDevServerStatus, useAutoStartDevServer } from "./lib/workspace-ops";
 import { useFrameLayouts } from "./lib/frame-layout-ops";
 import { saveFrameLayouts, type FrameLayoutData } from "./lib/api";
 import { cn } from "./lib/utils";
-import { Canvas, useFocusComponent, type FrameLayout } from "./canvas/Canvas";
+import { Canvas, useFocusComponent, type FrameLayer, type FrameLayout } from "./canvas/Canvas";
 import { CanvasToolbar } from "./components/CanvasToolbar";
 import { EmptyState } from "./components/EmptyState";
 import { renderFrameInspector } from "./inspector/FrameInspector";
 import { InspectorControls } from "./inspector/InspectorControls";
 import { tagFromPreview } from "./inspector/bridge";
+import { CommentFlow, renderFrameComments } from "./comments/CommentFlow";
+import { CommentControls } from "./comments/CommentControls";
+
+// Over each frame: the inspector, and the Comment tool's click target.
+const renderFrameLayers: FrameLayer = (frame) => (
+  <>
+    {renderFrameInspector(frame)}
+    {renderFrameComments(frame)}
+  </>
+);
 
 // Focus on component when clicked in ComponentPanel
 const FocusRequestedComponent = () => {
@@ -30,7 +40,7 @@ const FocusRequestedComponent = () => {
 };
 
 const openFullscreen = (url: string) => {
-  window.electronAPI.openPreviewWindow(url);
+  window.electronAPI.openPreviewWindow(url, useWorkspaceStore.getState().activeWorkspaceId ?? undefined);
 };
 
 // Elements tagged in a frame's own window, for this composer.
@@ -75,12 +85,14 @@ const WorkspaceCanvas = ({
       onLayoutsChange={saveLayouts}
       onFullscreen={openFullscreen}
       onSeeCode={setCodePanelComponentName}
-      frameLayer={renderFrameInspector}
+      frameLayer={renderFrameLayers}
       className={className}
     >
       <FocusRequestedComponent />
       <InspectorControls />
+      <CommentControls />
       <TagsFromPreviewWindows />
+      <CommentFlow />
       <CanvasToolbar />
     </Canvas>
   );
