@@ -12,8 +12,10 @@ import {
   editComment,
   listComments,
   removeComment,
-  sendComments,
+  describeDrafts,
+  markCommentsSent,
 } from "@/main/api/services/comment.service";
+import { createConversation } from "@/main/api/services/chat.service";
 import { commentEvents } from "@/main/lib/comment-events";
 import { splitComments } from "@/shared/utils/canvas-comments";
 import { app } from "@/main/api";
@@ -29,13 +31,17 @@ beforeAll(async () => {
 const add = async (text: string, element: Record<string, unknown> | null = null) =>
   (await addComment(workspaceId, { componentName: "PricingCard", x: 132, y: 64, text, element }))._unsafeUnwrap();
 
-const send = async (ids: number[], element: string | null = null) =>
-  (
-    await sendComments(
-      workspaceId,
-      ids.map((id) => ({ id, element, preview: "https://localhost:5173/preview?componentName=PricingCard", frame: "1280×800" })),
-    )
-  )._unsafeUnwrap();
+const contextOf = (ids: number[], element: string | null = null) =>
+  ids.map((id) => ({ id, element, preview: "https://localhost:5173/preview?componentName=PricingCard", frame: "1280×800" }));
+
+// What a send does: the message from POST /comments/prompt, then the chat
+// send's marking (POST /chat/message with commentIds), into `into` or a new chat.
+const send = async (ids: number[], element: string | null = null, into?: string) => {
+  const { ids: carried, prompt } = (await describeDrafts(workspaceId, contextOf(ids, element), into))._unsafeUnwrap();
+  const conversationId = into ?? (await createConversation(workspaceId))._unsafeUnwrap().id;
+  (await markCommentsSent(workspaceId, conversationId, carried))._unsafeUnwrap();
+  return { conversationId, prompt };
+};
 
 const list = async () => (await listComments(workspaceId))._unsafeUnwrap();
 
@@ -46,7 +52,7 @@ describe("comments", () => {
     expect((await editComment(workspaceId, c2.id, "  Make it pop  "))._unsafeUnwrap().text).toBe("Make it pop");
 
     const first = await send([c1.id, c2.id], "<element>\nelement: button\n</element>");
-    expect(first.comments.map((c) => c.state)).toEqual(["sent", "sent"]);
+    expect((await list()).comments.map((c) => c.state)).toEqual(["sent", "sent"]);
     expect(first.prompt).toContain(`<comment id="${c1.id}" component="PricingCard"`);
     expect(first.prompt).toContain('frame="1280×800" at="132,64"');
     expect(first.prompt).not.toContain("<earlier>");
@@ -88,25 +94,39 @@ describe("comments", () => {
     const a = await add("Make Upgrade full width");
     const first = await send([a.id]);
     const b = await add("And the secondary one too");
-    const second = (
-      await sendComments(workspaceId, [{ id: b.id, element: null, preview: null }], first.conversationId)
-    )._unsafeUnwrap();
-    expect(second.conversationId).toBe(first.conversationId);
+    const second = await send([b.id], null, first.conversationId);
     expect(second.prompt).not.toContain(`<comment id="${a.id}"`);
     const chat = (await list()).chats.filter((c) => c.conversationId === first.conversationId);
     expect(chat).toHaveLength(1);
-
-    // Another workspace's chat isn't one to send into.
-    const c = await add("stray");
-    expect((await sendComments(workspaceId, [{ id: c.id, element: null, preview: null }], crypto.randomUUID())).isErr()).toBe(true);
-    expect((await list()).comments.find((x) => x.id === c.id)?.state).toBe("draft");
   });
 
-  test("nothing left to send opens no chat", async () => {
+  test("the prompt changes nothing, and only a send's drafts go out, all or none", async () => {
     const c = await add("Swap the bullets for checkmarks");
+    const d = await add("And the icons");
+    const { ids } = (await describeDrafts(workspaceId, contextOf([c.id, d.id])))._unsafeUnwrap();
+    expect(ids).toEqual([c.id, d.id]);
+    expect((await list()).comments.filter((x) => ids.includes(x.id)).map((x) => x.state)).toEqual(["draft", "draft"]);
+
+    // One of them went out meanwhile: the other isn't marked either.
+    const chat = (await createConversation(workspaceId))._unsafeUnwrap().id;
+    (await markCommentsSent(workspaceId, chat, [c.id]))._unsafeUnwrap();
+    const both = await markCommentsSent(workspaceId, chat, [c.id, d.id]);
+    expect(both.isErr() && both.error.status).toBe(409);
+    expect((await list()).comments.find((x) => x.id === d.id)?.state).toBe("draft");
+
+    // Nothing left to send: no message for it.
+    expect((await describeDrafts(workspaceId, contextOf([c.id]))).isErr()).toBe(true);
+  });
+
+  test("the chat send refuses a message whose comments went out, before any turn", async () => {
+    const c = await add("Make it pop");
     await send([c.id]);
-    const again = await sendComments(workspaceId, [{ id: c.id, element: null, preview: null }]);
-    expect(again.isErr()).toBe(true);
+    const res = await app.request("/api/chat/message", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "x", workspaceId, userMessageId: crypto.randomUUID(), commentIds: [c.id] }),
+    });
+    expect(res.status).toBe(409);
   });
 
   test("a removed draft is gone; a removed sent one is only off the list", async () => {

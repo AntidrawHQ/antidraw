@@ -9,7 +9,7 @@ import { Beam } from "@/renderer/components/AskUserQuestionCard";
 import { frameNodeId, useFocusComponent } from "@/renderer/canvas/Canvas";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
 import { useComposerModel } from "@/renderer/hooks/use-composer-model";
-import { useConversationMessages, useGenerateTitle } from "@/renderer/lib/claude-code-ops";
+import { useConversationMessages } from "@/renderer/lib/claude-code-ops";
 import { queryKeys } from "@/renderer/lib/query-keys";
 import type { CommentList } from "@/renderer/lib/api";
 import { beside, BOX, CommentBoxAt, FLOAT, floatShadow, FrameCommentTarget, Kbd, useCloseOnClickAway } from "./pieces";
@@ -478,7 +478,6 @@ export const CommentFlow = () => {
   const removeComment = useRemoveComment(workspaceId);
   const clearCompleted = useClearCompleted(workspaceId);
   const sendComments = useSendComments(workspaceId);
-  const generateTitle = useGenerateTitle();
   // Sends go to the chat that's open, with its model and effort, as the
   // composer's would; with none open, to a new chat.
   const activeConversationId = useWorkspaceStore((s) => s.activeConversationId);
@@ -511,19 +510,9 @@ export const CommentFlow = () => {
     await Promise.allSettled([...adding.current]);
     const list = queryClient.getQueryData<CommentList>(queryKeys.comments.byWorkspace(workspaceId));
     const drafts = list?.comments.filter((c) => c.state === "draft") ?? [];
-    if (!drafts.length || !workspaceId) return;
-    const { conversation } = await sendComments.mutateAsync({
-      drafts,
-      conversationId: activeConversationId ?? undefined,
-      model: composer.selectedModelId,
-      effort: composer.effort,
-    });
-    // A new chat opens, so the next send joins it rather than starting another.
-    if (!activeConversationId) showConversation(conversation.id);
-    // A chat still untitled (new, or opened with + New) is named by them.
-    if (!conversation.title && !conversation.summary)
-      generateTitle.mutate({ conversationId: conversation.id, workspaceId, firstMessage: drafts.map((c) => c.text).join("\n") });
-    return conversation;
+    // To the open chat, or a new one that then opens, so the next send
+    // joins it rather than starting another.
+    return sendComments.send({ drafts, model: composer.selectedModelId, effort: composer.effort });
   };
 
   // A frame's own window asking to show a comment it added (its Show), or
@@ -540,8 +529,8 @@ export const CommentFlow = () => {
           await queryClient.refetchQueries({ queryKey: queryKeys.comments.byWorkspace(workspaceId) });
           latest.current.reveal(commentId);
           if (!send) return;
-          const conversation = await latest.current.sendDrafts();
-          if (conversation) showConversation(conversation.id);
+          const conversationId = await latest.current.sendDrafts();
+          if (conversationId) showConversation(conversationId);
         })().catch(console.error);
       }),
     [queryClient, workspaceId, showConversation],

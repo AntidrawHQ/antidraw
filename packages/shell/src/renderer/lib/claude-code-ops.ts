@@ -363,6 +363,8 @@ export const sendMessageMutationOptions = (queryClient: QueryClient) =>
       // options are ever set.
       model?: string;
       effort?: EffortLevel;
+      // Canvas comments the message carries, marked sent by the backend.
+      commentIds?: number[];
       // Whether the conversation was streaming when the user sent, as the
       // caller saw it. Overrides the cache read in onMutate: a send from the
       // error state reopens the stream first, and that writes "streaming"

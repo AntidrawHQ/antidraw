@@ -1,18 +1,21 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import type { Result } from "neverthrow";
 import { skipToken, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Comment, Conversation, EffortLevel } from "@/main/api";
+import type { Comment, EffortLevel } from "@/main/api";
 import type { ElementInfo } from "@antidrawapp/runtime/inspector";
+import type { CommentContext } from "@/shared/utils/canvas-comments";
 import { frameUrl, getElementContext } from "@/renderer/inspector/bridge";
 import { describeContext, describeLastSeen } from "@/renderer/inspector/tags";
 import { queryKeys } from "./query-keys";
+import { useSendToChat } from "@/renderer/hooks/use-send-to-chat";
+import { useWorkspaceStore } from "@/renderer/store/workspace";
 import {
   addComment,
   clearCompletedComments,
   editComment,
   listComments,
   removeComment,
-  sendComments,
+  commentsPrompt,
   watchComments,
   type CommentList,
 } from "./api";
@@ -90,7 +93,7 @@ export const useClearCompleted = (workspaceId: string | null) =>
 
 // The <element> under each draft's pin, as its frame sees it now: an edit
 // may have moved it. As last seen, where the frame doesn't answer.
-const describeElements = async (drafts: Comment[]) => {
+const describeElements = async (drafts: Comment[]): Promise<CommentContext[]> => {
   const picks = drafts.flatMap((c) =>
     c.element ? [{ id: c.id, pick: { frame: c.componentName, info: c.element as unknown as ElementInfo } }] : [],
   );
@@ -108,31 +111,37 @@ const describeElements = async (drafts: Comment[]) => {
   }));
 };
 
-// Sends into `conversationId` (the chat that's open), or a new chat if none.
+// Sends the drafts to the chat that's open, or a new one if none is, as a
+// chat message: the server writes the message (POST /comments/prompt), and
+// it goes out through the composer's own send (useSendToChat), which marks
+// them sent with it. Resolves to the chat they went to.
 export const useSendComments = (workspaceId: string | null) => {
   const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async ({
-      drafts,
-      conversationId,
+  const sendToChat = useSendToChat();
+  const [describing, setDescribing] = useState(false);
+
+  const send = async ({ drafts, model, effort }: { drafts: Comment[]; model?: string; effort?: EffortLevel }) => {
+    if (!workspaceId || !drafts.length) return;
+    const into = useWorkspaceStore.getState().activeConversationId ?? undefined;
+    setDescribing(true);
+    let message: { ids: number[]; prompt: string };
+    try {
+      const context = await describeElements(drafts);
+      message = await unwrap(commentsPrompt(workspaceId, { context, conversationId: into }));
+    } finally {
+      setDescribing(false);
+    }
+    const sent = new Set(message.ids);
+    const conversationId = await sendToChat.send({
+      prompt: message.prompt,
       model,
       effort,
-    }: {
-      drafts: Comment[];
-      conversationId?: string;
-      model?: string;
-      effort?: EffortLevel;
-    }) => {
-      if (!workspaceId) throw new Error("No workspace");
-      const context = await describeElements(drafts);
-      return unwrap(sendComments(workspaceId, { context, conversationId, model, effort }));
-    },
-    onSuccess: ({ conversation }) => {
-      queryClient.setQueryData<Conversation[]>(
-        queryKeys.conversations.byWorkspace(conversation.workspaceId),
-        (old) => (old && !old.some((c) => c.id === conversation.id) ? [conversation, ...old] : old),
-      );
-      void queryClient.invalidateQueries({ queryKey: queryKeys.comments.byWorkspace(workspaceId) });
-    },
-  });
+      commentIds: message.ids,
+      title: drafts.filter((c) => sent.has(c.id)).map((c) => c.text).join("\n"),
+    });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.comments.byWorkspace(workspaceId) });
+    return conversationId;
+  };
+
+  return { send, isPending: describing || sendToChat.isPending };
 };
