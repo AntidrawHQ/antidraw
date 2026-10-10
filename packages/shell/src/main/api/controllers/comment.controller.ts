@@ -10,10 +10,9 @@ import {
   isCommentChat,
   listComments,
   removeComment,
-  sendComments,
+  describeDrafts,
 } from "../services/comment.service";
-import { getConversation } from "../services/chat.service";
-import { runTurn } from "../turn";
+import type { CommentContext } from "@/shared/utils/canvas-comments";
 import { commentEvents } from "@/main/lib/comment-events";
 import { conversationEvents } from "@/main/lib/conversation-store";
 
@@ -33,21 +32,17 @@ const addSchema = z.object({
 
 const editSchema = z.object({ text: z.string().trim().min(1) });
 
-const sendSchema = z.object({
-  context: z
-    .array(
-      z.object({
-        id: z.number().int(),
-        element: z.string().nullable(),
-        preview: z.string().nullable(),
-        frame: z.string().nullable().optional(),
-      }),
-    )
-    .min(1),
-  // The chat to send into; none opens a new one.
+const commentContextSchema = z.object({
+  id: z.number().int(),
+  element: z.string().nullable(),
+  preview: z.string().nullable(),
+  frame: z.string().nullable(),
+}) satisfies z.ZodType<CommentContext>;
+
+const promptSchema = z.object({
+  context: z.array(commentContextSchema).min(1),
+  // The chat it's for, if one's open: its own set isn't history to it.
   conversationId: z.uuid().optional(),
-  model: z.string().min(1).optional(),
-  effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
 });
 
 commentController.get(
@@ -122,38 +117,23 @@ commentController.post(
   },
 );
 
-// Sends into the given chat, as a message typed there would go (queued if
-// it's mid-turn), or opens a new one. Returns the conversation for the
-// renderer's list.
+// The message for sending the drafts to a chat, `conversationId` if one's
+// open. Changes nothing: the send is POST /chat/message with the drafts'
+// commentIds, the composer's own send, so a comment message is sent, queued,
+// shown and retried like any other.
 commentController.post(
-  "/:workspaceId/comments/send",
+  "/:workspaceId/comments/prompt",
   zValidator("param", workspaceParam),
-  zValidator("json", sendSchema),
+  zValidator("json", promptSchema),
   async (ctx) => {
     const { workspaceId } = ctx.req.valid("param");
-    const { context, conversationId, model, effort } = ctx.req.valid("json");
-
-    const sent = await sendComments(workspaceId, context, conversationId);
-    if (sent.isErr()) {
-      const { status, code, message } = sent.error;
+    const { context, conversationId } = ctx.req.valid("json");
+    const result = await describeDrafts(workspaceId, context, conversationId);
+    if (result.isErr()) {
+      const { status, code, message } = result.error;
       return ctx.json({ error: { code, message } }, status);
     }
-
-    const conversation = await getConversation(sent.value.conversationId);
-    if (conversation.isErr()) {
-      const { status, code, message } = conversation.error;
-      return ctx.json({ error: { code, message } }, status);
-    }
-
-    runTurn({
-      conversation: conversation.value,
-      workspaceId,
-      message: sent.value.prompt,
-      userMessageId: crypto.randomUUID(),
-      options: { model, effort },
-    }).catch(console.error);
-
-    return ctx.json({ conversation: conversation.value, comments: sent.value.comments }, 202);
+    return ctx.json(result.value);
   },
 );
 

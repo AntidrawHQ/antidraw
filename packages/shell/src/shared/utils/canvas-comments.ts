@@ -16,17 +16,22 @@ const attr = (name: string, value: string | null | undefined) =>
 export const componentFile = (componentName: string) =>
   `src/components/user-components/${componentName}.tsx`;
 
-export type NewCommentInput = {
+// What the canvas says about a draft when it's sent: only its frame can.
+export type CommentContext = {
   id: number;
+  // The <element> block the canvas wrote for the element under the pin.
+  element: string | null;
+  // The URL the frame previews its component at.
+  preview: string | null;
+  // The frame's size ("1280×800"), which the element's box is read at.
+  frame: string | null;
+};
+
+export type NewCommentInput = CommentContext & {
   componentName: string;
   x: number;
   y: number;
   text: string;
-  // The <element> block the canvas wrote for the element under the pin.
-  element: string | null;
-  preview: string | null;
-  // The frame's size ("1280×800"), which the element's box is read at.
-  frame: string | null;
 };
 
 export type EarlierSet = {

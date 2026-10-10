@@ -10,11 +10,11 @@ import {
 import { ok, err } from "neverthrow";
 import { db } from "@/main/db";
 import { comments, type Comment } from "@/main/api/models/comment.model";
-import { conversations } from "@/main/api/models/chat.model";
 import { getCliState } from "@/main/lib/conversation-store";
 import { commentEvents } from "@/main/lib/comment-events";
 import {
   describeComments,
+  type CommentContext,
   type EarlierSet,
   type NewCommentInput,
 } from "@/shared/utils/canvas-comments";
@@ -168,47 +168,23 @@ export const clearCompleted = async (workspaceId: string) => {
   }
 };
 
-// Hands the drafts to a chat: the workspace's `into`, or a new one when
-// there's none. They're sent from here on, and that chat's set. Returns the
-// chat, and the message for it, which carries them and the other chats'
-// earlier sets (`into` has its own). The canvas describes the elements
-// (`context`): only the frames can.
-export const sendComments = async (
+// The message that sends drafts to a chat: them, and the other chats'
+// earlier sets (`into`, the chat it's for, has its own). Reads only: the send
+// itself is POST /chat/message, which marks them (markCommentsSent). The
+// canvas describes the elements (`context`): only the frames can.
+export const describeDrafts = async (
   workspaceId: string,
-  context: { id: number; element: string | null; preview: string | null; frame?: string | null }[],
+  context: CommentContext[],
   into?: string,
 ) => {
   try {
-    const conversationId = into ?? crypto.randomUUID();
-    const sent = await db.transaction(async (tx) => {
-      if (into) {
-        const [chat] = await tx
-          .select({ id: conversations.id })
-          .from(conversations)
-          .where(and(eq(conversations.id, into), eq(conversations.workspaceId, workspaceId)));
-        if (!chat) tx.rollback();
-      } else await tx.insert(conversations).values({ id: conversationId, workspaceId });
-      const rows = await tx
-        .update(comments)
-        .set({ state: "sent", conversationId, sentAt: new Date() })
-        .where(
-          and(
-            eq(comments.workspaceId, workspaceId),
-            eq(comments.state, "draft"),
-            inArray(comments.id, context.map((c) => c.id)),
-          ),
-        )
-        .returning();
-      // None left to send (another send took them): no new chat either.
-      if (!rows.length) tx.rollback();
-      return rows;
-    });
-    sent.sort((a, b) => a.id - b.id);
-    commentEvents.emit("changed", workspaceId);
-
     const rows = await workspaceComments(workspaceId);
+    const byId = new Map(context.map((c) => [c.id, c]));
+    const drafts = rows.filter((c) => c.state === "draft" && byId.has(c.id));
+    if (!drafts.length) return notFound("No comments to send");
+
     const earlier: EarlierSet[] = numberedSets(rows)
-      .filter((s) => s.conversationId !== conversationId)
+      .filter((s) => s.conversationId !== into)
       .slice(-HISTORY_SETS)
       .map(({ conversationId: id, n }) => ({
         n,
@@ -217,21 +193,48 @@ export const sendComments = async (
           .map((c) => ({ id: c.id, text: c.text, done: c.state === "done", note: c.note })),
       }));
 
-    const byId = new Map(context.map((c) => [c.id, c]));
-    const fresh: NewCommentInput[] = sent.map((c) => ({
-      id: c.id,
+    const fresh: NewCommentInput[] = drafts.map((c) => ({
+      ...byId.get(c.id)!,
       componentName: c.componentName,
       x: c.x,
       y: c.y,
       text: c.text,
-      element: byId.get(c.id)?.element ?? null,
-      preview: byId.get(c.id)?.preview ?? null,
-      frame: byId.get(c.id)?.frame ?? null,
     }));
-    return ok({ conversationId, comments: sent, prompt: describeComments(fresh, earlier) });
+    return ok({ ids: drafts.map((c) => c.id), prompt: describeComments(fresh, earlier) });
+  } catch (_e) {
+    return dbError("Failed to describe comments");
+  }
+};
+
+// The drafts a message carries, sent into its chat: they're that chat's set
+// from here on. All or none: if any isn't a draft any more (another send
+// took it, or it was deleted), nothing is marked and the send must not go.
+export const markCommentsSent = async (
+  workspaceId: string,
+  conversationId: string,
+  ids: number[],
+) => {
+  try {
+    await db.transaction(async (tx) => {
+      const rows = await tx
+        .update(comments)
+        .set({ state: "sent", conversationId, sentAt: new Date() })
+        .where(
+          and(
+            eq(comments.workspaceId, workspaceId),
+            eq(comments.state, "draft"),
+            inArray(comments.id, ids),
+          ),
+        )
+        .returning({ id: comments.id });
+      if (rows.length !== new Set(ids).size) tx.rollback();
+    });
+    commentEvents.emit("changed", workspaceId);
+    return ok(true);
   } catch (e) {
-    if (e instanceof TransactionRollbackError) return notFound("No comments to send, or no such chat");
-    return dbError("Failed to send comments");
+    if (e instanceof TransactionRollbackError)
+      return err({ status: 409 as const, code: "COMMENTS_CHANGED", message: "Some of these comments were already sent or removed" });
+    return dbError("Failed to mark comments sent");
   }
 };
 

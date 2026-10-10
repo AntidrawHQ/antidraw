@@ -15,6 +15,7 @@ import type {
   Workspace,
 } from "@/main/api";
 import type { ImageAttachment } from "@/shared/utils/message";
+import type { CommentContext } from "@/shared/utils/canvas-comments";
 import type { AskUserQuestionAnswers } from "@/shared/utils/ask-user-question";
 import { fetchEventSource } from "@microsoft/fetch-event-source";
 import { ok, err } from "neverthrow";
@@ -445,6 +446,9 @@ export const sendMessage = async (params: {
   // way options are ever set). Absent = CLI defaults.
   model?: string;
   effort?: EffortLevel;
+  // Canvas comments the message carries: marked sent into the chat by the
+  // backend before the turn starts, or the send is refused.
+  commentIds?: number[];
 }) => {
   try {
     const response = await fetch("antidraw://app/api/chat/message", {
@@ -1032,19 +1036,16 @@ export const clearCompletedComments = (workspaceId: string) =>
     { method: "POST" },
   );
 
-// Opens a new chat with the drafts, and starts its turn.
-export const sendComments = (
+// The message that sends the drafts in `context` to a chat
+// (`conversationId`, if one's open), and which of them it carries. Changes
+// nothing: it goes out as a chat message (sendMessage with commentIds).
+export const commentsPrompt = (
   workspaceId: string,
-  params: {
-    context: { id: number; element: string | null; preview: string | null; frame: string | null }[];
-    conversationId?: string;
-    model?: string;
-    effort?: EffortLevel;
-  },
+  params: { context: CommentContext[]; conversationId?: string },
 ) =>
-  commentsRequest<{ conversation: Conversation; comments: Comment[] }>(
-    commentsUrl(workspaceId, "/send"),
-    "Failed to send comments",
+  commentsRequest<{ ids: number[]; prompt: string }>(
+    commentsUrl(workspaceId, "/prompt"),
+    "Failed to describe comments",
     { method: "POST", body: params },
   );
 
