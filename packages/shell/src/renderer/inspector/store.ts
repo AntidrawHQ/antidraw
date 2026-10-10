@@ -1,13 +1,17 @@
 import { create } from "zustand";
-import type { ElementInfo } from "@antidrawapp/runtime/inspector";
+import type { ElementContext, ElementInfo } from "@antidrawapp/runtime/inspector";
 import { useWorkspaceStore } from "../store/workspace";
 
 // What the canvas inspector knows: which frames can answer it, the element
 // under the pointer, the selected one, and the elements tagged for the next
 // chat message. The frames themselves are reached through ./bridge.
 
-// An element in a frame, as the frame last described it.
-export type Picked = { frame: string; info: ElementInfo };
+// An element in a frame, as the frame last described it. One picked in a
+// frame's own window (PreviewWindow) also has what that window said about it
+// then (`seen`, null if it couldn't say): the canvas's frame of the component
+// is another page, at another size, where the same ref can name another
+// element, so it isn't asked.
+export type Picked = { frame: string; info: ElementInfo; seen?: ElementContext | null };
 
 export type FrameStatus = {
   // Its runtime answered: it has an inspector.

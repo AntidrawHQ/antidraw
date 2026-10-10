@@ -121,8 +121,14 @@ export function splitTagged(message: string): { tags: string[]; text: string } {
 export async function describePendingTags() {
   const { tags } = useInspectorStore.getState();
   if (!tags.length) return { block: "", tags };
-  const contexts = await getElementContext(tags);
-  return { block: describeTags(tags.map((pick, i) => ({ pick, context: contexts[i] ?? null }))), tags };
+  // A frame window's tags are as that window saw them (see Picked).
+  const asked = tags.filter((t) => t.seen === undefined);
+  const contexts = await getElementContext(asked);
+  const told = new Map(asked.map((t, i) => [t, contexts[i] ?? null]));
+  return {
+    block: describeTags(tags.map((pick) => ({ pick, context: pick.seen !== undefined ? pick.seen : (told.get(pick) ?? null) }))),
+    tags,
+  };
 }
 
 export const untagTags = (sent: Picked[]) => {

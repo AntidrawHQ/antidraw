@@ -3,6 +3,7 @@ import { RotateCw } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/renderer/components/ui/tooltip";
 import { TOOLS, ToolButton } from "@/renderer/components/CanvasToolbar";
 import { FrameInspector } from "@/renderer/inspector/FrameInspector";
+import { getElementContext } from "@/renderer/inspector/bridge";
 import { InspectorControls } from "@/renderer/inspector/InspectorControls";
 import { useInspectorStore } from "@/renderer/inspector/store";
 import { elementName } from "@/renderer/inspector/tags";
@@ -42,7 +43,9 @@ export const PreviewWindow = ({ url }: { url: string }) => {
     () =>
       useInspectorStore.subscribe((s) => {
         if (!s.tags.length) return;
-        for (const tag of s.tags) void window.electronAPI.tagElement(tag, url);
+        // Described here, where it was picked (see Picked's `seen`).
+        for (const tag of s.tags)
+          void getElementContext([tag]).then(([seen]) => window.electronAPI.tagElement({ ...tag, seen: seen ?? null }, url));
         setTagged(elementName(s.tags.at(-1)!.info));
         useInspectorStore.setState({ tags: [] });
       }),
@@ -57,7 +60,7 @@ export const PreviewWindow = ({ url }: { url: string }) => {
 
   return (
     <TooltipProvider>
-      <div className="flex h-screen w-full flex-col bg-[#0a0a0a]">
+      <div data-inspector-keys className="flex h-screen w-full flex-col bg-[#0a0a0a]">
         <div className="relative flex h-[38px] w-full shrink-0 items-center gap-2 border-b border-[#333] bg-[#2A2A2A] pl-20 pr-2 drag-region">
           {/* Centered on the window, as the main window's "Antidraw". */}
           <span className="pointer-events-none absolute inset-x-0 truncate px-48 text-center text-[13px] font-medium text-neutral-400 max-[560px]:hidden">
@@ -108,7 +111,11 @@ export const PreviewWindow = ({ url }: { url: string }) => {
               src={url}
               title={componentName}
               className="absolute inset-0 h-full w-full border-0"
-              sandbox="allow-scripts allow-same-origin"
+              // The component works here as it would on its own page: forms
+              // submit, alerts show, links open (main sends them to the
+              // browser) and it can copy. Only the window stays the shell's.
+              sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-downloads"
+              allow="clipboard-read; clipboard-write; fullscreen"
             />
           )}
           <FrameInspector frame={componentName} iframe={iframe} />

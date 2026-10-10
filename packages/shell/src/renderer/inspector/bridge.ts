@@ -135,7 +135,7 @@ export function tagFromPreview(pick: Picked, url: string) {
   } catch {
     return;
   }
-  store.getState().addTag(pick);
+  store.getState().addTag({ frame: pick.frame, info: pick.info, seen: pick.seen ?? null });
 }
 
 // ── What the canvas asks ─────────────────────────────────────────────────
