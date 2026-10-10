@@ -17,6 +17,9 @@ type CommentStore = {
   box: Box | null;
   opened: { id: number; edit: boolean } | null;
   lit: number | null;
+  // Whether a frame is on the canvas: the canvas's (CommentFlow) while it's
+  // up, and with none up, none is.
+  onCanvas: (frame: string) => boolean;
   setActive: (active: boolean) => void;
   setBox: (box: Box | null) => void;
   setOpened: (opened: { id: number; edit: boolean } | null) => void;
@@ -28,6 +31,7 @@ const closed = { box: null, opened: null, lit: null };
 export const useCommentStore = create<CommentStore>((set) => ({
   active: false,
   ...closed,
+  onCanvas: () => false,
   setActive: (active) => set(active ? { active } : { active, ...closed }),
   setBox: (box) => set({ box }),
   setOpened: (opened) => set({ opened }),

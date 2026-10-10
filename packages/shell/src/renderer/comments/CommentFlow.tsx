@@ -12,7 +12,7 @@ import { useCommentsChanged } from "@/renderer/lib/comment-ops";
 import type { CommentList } from "@/renderer/lib/api";
 import { beside, BOX, CommentBoxAt, FLOAT, floatShadow, FrameCommentTarget, Kbd, TextBtn, useCloseOnClickAway } from "./pieces";
 import { LABEL, type Actions, type Cmt, type Flow } from "./model";
-import { useCommentActions } from "./use-comment-actions";
+import { sayNotOnCanvas, useCommentActions } from "./use-comment-actions";
 import { setCanvasTool, useCommentStore, type Pos } from "./store";
 
 // Comments for Claude, on the canvas, with the Comment tool on (design:
@@ -272,6 +272,11 @@ export const CommentFlow = () => {
     if (openedId !== undefined) revealRef.current(openedId);
   }, [openedId]);
 
+  useEffect(() => {
+    useCommentStore.setState({ onCanvas: (frame) => flow.getState().nodeLookup.has(frameNodeId(frame)) });
+    return () => useCommentStore.setState({ onCanvas: () => false });
+  }, [flow]);
+
   useCloseOnClickAway();
 
   // A frame's own window asking to show a comment it added (its Show), or
@@ -287,15 +292,22 @@ export const CommentFlow = () => {
       window.electronAPI.onCommentsShown?.((request) => {
         if (request.workspaceId !== workspaceId) return;
         const { commentId, send } = request;
-        setCanvasTool("comment");
         void (async () => {
           const queryKey = queryKeys.comments.byWorkspace(workspaceId);
           await queryClient.refetchQueries({ queryKey });
-          latest.current.reveal(commentId);
+          const list = queryClient.getQueryData<CommentList>(queryKey);
+          // The comments list is the chat panel's: open it, folded or not.
+          useWorkspaceStore.getState().setActiveSidePanel("chat");
+          // Shown on the canvas only where its frame is; the send goes either way.
+          const c = list?.comments.find((x) => x.id === commentId);
+          if (c && !useCommentStore.getState().onCanvas(c.componentName)) sayNotOnCanvas(c.componentName);
+          else {
+            setCanvasTool("comment");
+            latest.current.reveal(commentId);
+          }
           if (!send) return;
           // The send is for the comment the frame window just added: without
           // it among the drafts, there's nothing it asked to send.
-          const list = queryClient.getQueryData<CommentList>(queryKey);
           if (!list?.comments.some((c) => c.id === commentId && c.state === "draft")) return;
           const conversationId = await latest.current.sendDrafts();
           if (conversationId) showConversation(conversationId);
