@@ -1,18 +1,14 @@
-import { ArrowUp, Pencil, X } from "lucide-react";
-import type { EffortLevel } from "@/main/api";
+import { useState } from "react";
+import { ArrowUp, ArrowUpRight, ChevronDown, CornerDownRight, Pencil, X } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
 import { Ring } from "@/renderer/components/ui/tool";
 import { Beam } from "@/renderer/components/AskUserQuestionCard";
-import { useCommentsChanged } from "@/renderer/lib/comment-ops";
-import { useWorkspaceStore } from "@/renderer/store/workspace";
-import { FLOAT, floatShadow, Pending } from "./pieces";
-import { count, LABEL, type Actions, type Cmt, type Phase } from "./model";
-import { useCommentActions } from "./use-comment-actions";
+import { FLOAT, floatShadow, Pending, TextBtn } from "./pieces";
+import { allDone, count, isActive, LABEL, type Actions, type Cmt, type Flow, type Phase, type Send } from "./model";
 
-// The comments list, in the chat panel above the composer: what hasn't gone
-// out yet, and the open chat's own comments with where they've got to. Send
-// sends the drafts into this chat (or a new one, with none open). Other
-// chats' comments are in those chats. Hidden until there's something in it.
+// The comments list (design: CommentFlow's Tray): what hasn't gone out yet,
+// and every set that has, each under its chat. Drawn over the canvas by
+// CommentFlow.
 
 // A not-sent comment: its number and text. Click opens it on the canvas;
 // on hover, the pencil opens it for editing and × drops it.
@@ -54,9 +50,9 @@ const DraftRow = ({ i, c, a }: { i: number; c: Cmt; a: Actions }) => (
   </div>
 );
 
-// A comment this chat was sent. Claude's note goes to later chats' history,
-// not here. One still Sent after the chat's turn ended gets × on hover;
-// otherwise it waits for Claude.
+// A comment in a set. Claude's note goes to the next chat's history, not
+// here. One still Sent after its chat ended gets × on hover; otherwise it
+// waits for Claude, from the chat.
 const SentRow = ({ c, n, phase, a }: { c: Cmt; n: number; phase: Phase; a: Actions }) => (
   <div
     onClick={() => a.open(c.id)}
@@ -87,32 +83,62 @@ const SentRow = ({ c, n, phase, a }: { c: Cmt; n: number; phase: Phase; a: Actio
   </div>
 );
 
-export const ChatComments = ({ model, effort }: { model?: string; effort?: EffortLevel }) => {
-  const workspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
-  const conversationId = useWorkspaceStore((s) => s.activeConversationId);
-  useCommentsChanged(workspaceId);
-  const { f, a, sending } = useCommentActions({ model, effort });
+// What sits before "Chat N" on a set's header.
+const chatIcon = <CornerDownRight className="size-3.5" strokeWidth={1.75} />;
 
-  // This chat's sets: one per send into it, oldest first.
-  const own = f.sends.filter((s) => s.conversationId === conversationId);
-  const sent = own.flatMap((s) => s.comments.map((c) => ({ c, s })));
-  if (!f.draft.length && !sent.length) return null;
-  const hasDone = own.some((s) => s.phase === "ended" && count(s, "done") > 0);
-
+// One set: its chat, where it's got to, and its comments. Open while there's
+// anything to watch or act on; folds once every comment is completed.
+const SendGroup = ({ s, a }: { s: Send; a: Actions }) => {
+  const complete = allDone(s);
+  const [pin, setPin] = useState<boolean | null>(null);
+  const open = pin ?? !complete;
+  // No completed count: each row shows its own. Only what the rows can't say.
+  // A send resumes the chat it goes to, or starts it: either way it opens.
+  const label = s.phase === "opening" ? "Opening chat…" : null;
   return (
-    <div className="px-4 pt-2">
-      {/* Near square, in the chat panel; the canvas's box and card stay round. */}
-      <Beam active={own.some((s) => s.phase === "opening")} radius={4}>
-        <div className={cn("flex flex-col gap-0.5 p-1.5", FLOAT, "rounded-[4px]")} style={floatShadow}>
+    <div className="flex flex-col">
+      <div className="flex items-center gap-2 rounded px-1.5 py-1.5 hover:bg-white/[0.03]">
+        <button type="button" onClick={() => setPin(!open)} className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left">
+          <span className="grid w-4 shrink-0 place-items-center text-neutral-400">{chatIcon}</span>
+          <span className="shrink-0 text-[12.5px] font-medium text-neutral-200">Chat {s.n}</span>
+          {label && <span className={cn("min-w-0 truncate text-[12px]", isActive(s) ? "auq-shimmer" : "text-neutral-500")}>{label}</span>}
+          <ChevronDown className={cn("size-3.5 shrink-0 text-neutral-500 transition-transform", !open && "-rotate-90")} />
+        </button>
+        <TextBtn onClick={() => a.chat(s.conversationId)} className="flex shrink-0 items-center gap-1 font-medium text-neutral-400">
+          <ArrowUpRight className="size-3.5" />
+          Open
+        </TextBtn>
+      </div>
+      {open && (
+        <div className="flex flex-col pl-6">
+          {s.comments.map((c) => (
+            <SentRow key={c.id} c={c} n={s.n} phase={s.phase} a={a} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// The list, at the canvas's top right, whatever the tool. Hidden until
+// there's something in it. Never wider than the canvas leaves room for.
+export const TRAY_W = 392;
+export const Tray = ({ f, a, sending }: { f: Flow; a: Actions; sending: boolean }) => {
+  if (!f.draft.length && !f.sends.length) return null;
+  const hasDone = f.sends.some((s) => s.phase === "ended" && count(s, "done") > 0);
+  return (
+    <div data-comment-ui onClick={(e) => e.stopPropagation()} className="pointer-events-auto absolute right-4 top-4 z-30 w-[392px] max-w-[calc(100%-32px)]">
+      <Beam active={f.sends.some((s) => s.phase === "opening")} radius={12}>
+        <div className={cn("flex flex-col gap-0.5 p-1.5", FLOAT)} style={floatShadow}>
           <div className="flex min-h-[20px] items-center gap-2 px-1.5 pb-1 pt-1.5">
             <span className="text-[13px] font-medium text-neutral-100">Comments</span>
           </div>
           <div className="flex max-h-[300px] flex-col gap-0.5 overflow-y-auto">
-            {sent.map(({ c, s }) => (
-              <SentRow key={c.id} c={c} n={s.n} phase={s.phase} a={a} />
+            {f.sends.map((s) => (
+              <SendGroup key={s.n} s={s} a={a} />
             ))}
-            {/* Under what's gone out, a heading for what hasn't. */}
-            {sent.length > 0 && f.draft.length > 0 && <p className="m-0 px-1.5 pb-0.5 pt-2.5 text-[12px] text-neutral-500">Not sent yet</p>}
+            {/* Under the chats, a heading for what hasn't gone out. */}
+            {f.sends.length > 0 && f.draft.length > 0 && <p className="m-0 px-1.5 pb-0.5 pt-2.5 text-[12px] text-neutral-500">Not sent yet</p>}
             {f.draft.map((c, i) => (
               <DraftRow key={c.id} i={i + 1} c={c} a={a} />
             ))}

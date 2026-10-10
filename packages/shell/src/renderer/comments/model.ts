@@ -3,8 +3,8 @@ import type { CommentList } from "@/renderer/lib/api";
 import type { Pos } from "./store";
 
 // The comments as the design (CommentFlow) models them: what hasn't gone out,
-// and the sets that have, each with its chat. Shared by the canvas (pins, the
-// box, the open comment) and the chat panel (the list).
+// and the sets that have, each with its chat. Shared by the canvas's pins,
+// box and open comment (CommentFlow) and its list (CommentTray).
 
 export type CState = CommentState;
 // `frame` is the component whose frame the pin is on.

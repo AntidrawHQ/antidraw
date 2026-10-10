@@ -50,11 +50,11 @@ export const CommentBoxAt = ({ at, add, send, preset = "", onClose }: { at: At; 
   return (
     <div data-comment-ui className="pointer-events-auto" onClick={(e) => e.stopPropagation()}>
       <span
-        className="absolute z-20 size-5 -translate-y-full rounded-full rounded-bl-none bg-[#3b82f6] shadow-[0_2px_6px_rgba(0,0,0,.35)] ring-2 ring-white/90"
+        className="absolute z-40 size-5 -translate-y-full rounded-full rounded-bl-none bg-[#3b82f6] shadow-[0_2px_6px_rgba(0,0,0,.35)] ring-2 ring-white/90"
         style={{ left: x, top: y }}
       />
       <div
-        className={cn("absolute z-20 flex items-end gap-1.5 px-3 py-2 ring-1 ring-white/20", FLOAT)}
+        className={cn("absolute z-40 flex items-end gap-1.5 px-3 py-2 ring-1 ring-white/20", FLOAT)}
         style={{ ...floatShadow, left, top, width: BOX }}
       >
         <textarea

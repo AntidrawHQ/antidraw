@@ -33,8 +33,8 @@ export const useComments = (workspaceId: string | null) =>
       : skipToken,
   });
 
-// One stream per workspace, however many surfaces show its comments (the
-// canvas, the chat panel): the last to unmount closes it.
+// One stream per workspace, however many places watch its comments: the last
+// to unmount closes it.
 const watching = new Map<string, { users: number; stop: () => void }>();
 
 // The list's news, from the workspace's comments event stream: any write,

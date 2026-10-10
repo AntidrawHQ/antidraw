@@ -27,12 +27,12 @@ export const sayNotOnCanvas = (frame: string) =>
   });
 
 // ⌘↵ adds and sends at once: a send waits for the adds still in flight,
-// whichever surface made them (the canvas's box, the chat's list).
+// whichever window's box made them (the canvas's, a frame window's).
 const adding = new Set<Promise<unknown>>();
 
 // The workspace's comments and what can be done with them, for the canvas
-// (CommentFlow) and the chat panel's list (ChatComments). A send uses
-// `model`/`effort`: the caller's composer's.
+// (CommentFlow) and its list (CommentTray). A send uses `model`/`effort`: the
+// caller's composer's.
 export const useCommentActions = ({ model, effort }: { model?: string; effort?: EffortLevel }) => {
   const workspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const showConversation = useWorkspaceStore((s) => s.showConversation);
@@ -110,7 +110,7 @@ export const useCommentActions = ({ model, effort }: { model?: string; effort?: 
       clearCompleted.mutate();
     },
     point: (id) => useCommentStore.getState().setLit(id),
-    // On the canvas, by its pin: from the chat's list with another tool on,
+    // On the canvas, by its pin: from the list with another tool on,
     // it switches to Comment (pins are the Comment tool's), and the canvas
     // goes to it (CommentFlow).
     open: (id, edit = false) => {

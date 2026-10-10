@@ -13,11 +13,12 @@ import type { CommentList } from "@/renderer/lib/api";
 import { beside, BOX, CommentBoxAt, FLOAT, floatShadow, FrameCommentTarget, Kbd, TextBtn, useCloseOnClickAway } from "./pieces";
 import { LABEL, type Actions, type Cmt, type Flow } from "./model";
 import { sayNotOnCanvas, useCommentActions } from "./use-comment-actions";
+import { Tray, TRAY_W } from "./CommentTray";
 import { setCanvasTool, useCommentStore, type Pos } from "./store";
 
 // Comments for Claude, on the canvas, with the Comment tool on (design:
-// CommentFlow, variation A — the box by the pin; the list is the chat panel's,
-// above the composer: ChatComments).
+// CommentFlow, variation A — the box by the pin, the list at the top right:
+// CommentTray).
 //  - Click a frame to drop a pin there, on the element under it; the box
 //    opens by it. ↵ adds a comment to the list; nothing reaches Claude until
 //    Send.
@@ -124,8 +125,9 @@ const CommentCard = ({ f, id, editing, a, onClose }: { f: Flow; id: number; edit
   const w = useStore((st) => st.width);
   if (!c) return null;
   // Its frame isn't on the canvas (the component's gone, often by the
-  // comment's own doing): at the canvas's top right instead, inside it.
-  const { left, top } = at ?? { left: Math.max(16, w - 16 - BOX), top: 16 };
+  // comment's own doing): beside the list instead, at the top, inside the
+  // canvas.
+  const { left, top } = at ?? { left: Math.max(16, w - 16 - TRAY_W - 8 - BOX), top: 16 };
   const save = () => {
     // Emptied, it's gone, and so is its card.
     if (!v.trim()) return a.remove(c.id);
@@ -140,7 +142,7 @@ const CommentCard = ({ f, id, editing, a, onClose }: { f: Flow; id: number; edit
     <div
       data-comment-ui
       onClick={(e) => e.stopPropagation()}
-      className={cn("pointer-events-auto absolute z-20 flex flex-col gap-2 p-3 ring-1 ring-white/20", FLOAT)}
+      className={cn("pointer-events-auto absolute z-40 flex flex-col gap-2 p-3 ring-1 ring-white/20", FLOAT)}
       style={{ ...floatShadow, left, top, width: BOX }}
     >
       {!at && <p className="m-0 text-[12px] text-neutral-500">{c.frame} isn't on the canvas</p>}
@@ -247,11 +249,11 @@ export const CommentFlow = () => {
   const activeConversationId = useWorkspaceStore((s) => s.activeConversationId);
   const { data: activeConversation } = useConversationMessages(activeConversationId);
   const composer = useComposerModel(activeConversationId, activeConversation);
-  const { f, a, sendDrafts } = useCommentActions({ model: composer.selectedModelId, effort: composer.effort });
+  const { f, a, sendDrafts, sending } = useCommentActions({ model: composer.selectedModelId, effort: composer.effort });
 
   // An opened comment whose pin is off screen: the canvas goes to its frame,
-  // as the component list's View does. A comment opened from the chat's list
-  // is the usual case.
+  // as the component list's View does. A comment opened from the list is the
+  // usual case.
   const flow = useStoreApi();
   const focusComponent = useFocusComponent();
   const reveal = (id: number) => {
@@ -296,8 +298,6 @@ export const CommentFlow = () => {
           const queryKey = queryKeys.comments.byWorkspace(workspaceId);
           await queryClient.refetchQueries({ queryKey });
           const list = queryClient.getQueryData<CommentList>(queryKey);
-          // The comments list is the chat panel's: open it, folded or not.
-          useWorkspaceStore.getState().setActiveSidePanel("chat");
           // Shown on the canvas only where its frame is; the send goes either way.
           const c = list?.comments.find((x) => x.id === commentId);
           if (c && !useCommentStore.getState().onCanvas(c.componentName)) sayNotOnCanvas(c.componentName);
@@ -316,15 +316,16 @@ export const CommentFlow = () => {
     [queryClient, workspaceId, showConversation],
   );
 
-  // The list is the chat panel's (ChatComments). Here: the pins, the box and
-  // the open comment, all the Comment tool's.
-  if (!active) return null;
+  // The list shows whatever the tool, while there's something in it, so
+  // Claude's progress stays in sight. Pins, the box and the open comment are
+  // the Comment tool's.
   return (
     <div className="pointer-events-none absolute inset-0 z-[5] overflow-hidden">
-      <Pins f={f} lit={lit} a={a} />
-      {box && <CommentBox key={`${box.frame},${box.pos.x},${box.pos.y}`} frame={box.frame} pos={box.pos} a={a} onClose={() => setBox(null)} />}
-      {opened && <CommentCard key={`${opened.id}-${opened.edit}`} f={f} id={opened.id} editing={opened.edit} a={a} onClose={() => setOpened(null)} />}
-      {!box && !f.sends.length && (
+      {active && <Pins f={f} lit={lit} a={a} />}
+      {active && box && <CommentBox key={`${box.frame},${box.pos.x},${box.pos.y}`} frame={box.frame} pos={box.pos} a={a} onClose={() => setBox(null)} />}
+      {active && opened && <CommentCard key={`${opened.id}-${opened.edit}`} f={f} id={opened.id} editing={opened.edit} a={a} onClose={() => setOpened(null)} />}
+      <Tray f={f} a={a} sending={sending} />
+      {active && !box && !f.sends.length && (
         <p className="pointer-events-none absolute left-1/2 top-4 m-0 -translate-x-1/2 rounded-full bg-black/40 px-3 py-1 text-[12px] text-neutral-300">Click a frame to comment</p>
       )}
     </div>
