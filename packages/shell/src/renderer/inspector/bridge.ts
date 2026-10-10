@@ -5,6 +5,7 @@ import {
   type ElementRef,
   type Envelope,
   type FromFrame,
+  type Rect,
   type ToFrame,
   type WalkDirection,
 } from "@antidrawapp/runtime/inspector";
@@ -21,6 +22,8 @@ const store = useInspectorStore;
 const iframes = new Map<string, HTMLIFrameElement>();
 const pending = new Map<number, { frame: string; resolve: (msg: Reply | null) => void }>();
 const latestHit = new Map<string, number>();
+// The elements followed in each frame (trackElements), and who gets their boxes.
+const trackers = new Map<string, { refs: ElementRef[]; on: (rects: (Rect | null)[]) => void }>();
 // The selection request whose answer counts: a later one, or a clear, makes
 // an earlier one's answer stale.
 let latestSelect = 0;
@@ -84,6 +87,8 @@ function onMessage(event: MessageEvent) {
     case "ready": {
       if (data.protocol !== INSPECTOR_PROTOCOL) return;
       s.setFrame(frame, { ready: true, tagged: data.tagged });
+      // A reload lost what it followed too.
+      askTrack(frame);
       // A reload lost the frame's selection; give it back.
       if (s.selection?.frame === frame) void select(frame, s.selection.info.ref);
       return;
@@ -94,6 +99,11 @@ function onMessage(event: MessageEvent) {
     case "selection-lost":
       if (s.selection?.frame === frame) s.setSelection(null);
       return;
+    case "tracked": {
+      const t = trackers.get(frame);
+      if (t && data.rects.length === t.refs.length) t.on(data.rects);
+      return;
+    }
   }
 }
 
@@ -122,6 +132,42 @@ export function registerFrame(frame: string, iframe: HTMLIFrameElement) {
 
 // The URL a frame previews its component at.
 export const frameUrl = (frame: string) => iframes.get(frame)?.src ?? null;
+
+// An element tagged in a frame's own window (PreviewWindow), which shows the
+// same component from the same dev server. Taken only while this canvas has
+// that frame from that server: a window left open on another workspace's
+// component would name a file this one doesn't have.
+export function tagFromPreview(pick: Picked, url: string) {
+  const src = frameUrl(pick?.frame);
+  if (!src || !pick.info?.ref) return;
+  try {
+    if (new URL(src).origin !== new URL(url).origin) return;
+  } catch {
+    return;
+  }
+  store.getState().addTag({ frame: pick.frame, info: pick.info, seen: pick.seen ?? null });
+}
+
+// Where elements in a frame are, now and as they move: `on` gets their boxes
+// in the frame's CSS pixels, in `refs`' order, null for one it can't find,
+// whenever one moves (a scroll, a resize, an edit). One set per frame: a
+// later call replaces it. A frame whose runtime can't (before "track") never
+// answers. Returns the stop.
+export function trackElements(frame: string, refs: ElementRef[], on: (rects: (Rect | null)[]) => void) {
+  const t = { refs, on };
+  trackers.set(frame, t);
+  askTrack(frame);
+  return () => {
+    if (trackers.get(frame) !== t) return;
+    trackers.delete(frame);
+    post(frame, { type: "track", id: nextId++, refs: [] });
+  };
+}
+
+function askTrack(frame: string) {
+  const t = trackers.get(frame);
+  if (t) post(frame, { type: "track", id: nextId++, refs: t.refs });
+}
 
 // ── What the canvas asks ─────────────────────────────────────────────────
 

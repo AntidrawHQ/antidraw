@@ -1,3 +1,4 @@
+import type { ElementInfo } from "@antidrawapp/runtime/inspector";
 import type { ChatPhase, Comment, CommentState } from "@/main/api";
 import type { CommentList } from "@/renderer/lib/api";
 import type { Pos } from "./store";
@@ -7,8 +8,9 @@ import type { Pos } from "./store";
 // box, the open comment) and the chat panel (the list).
 
 export type CState = CommentState;
-// `frame` is the component whose frame the pin is on.
-export type Cmt = { id: number; text: string; state: CState; pos: Pos; frame: string };
+// `frame` is the component whose frame the pin is on; `element`, the one
+// under the pin when it was dropped, as the frame described it then.
+export type Cmt = { id: number; text: string; state: CState; pos: Pos; frame: string; element: ElementInfo | null };
 export type Phase = ChatPhase;
 export type Send = { n: number; phase: Phase; conversationId: string; comments: Cmt[] };
 export type Flow = { draft: Cmt[]; sends: Send[] };
@@ -19,7 +21,14 @@ export const allDone = (s: Send) => s.phase === "ended" && s.comments.every((c) 
 
 export const LABEL: Record<CState, string> = { draft: "", sent: "Sent", done: "Completed" };
 
-const cmt = (c: Comment): Cmt => ({ id: c.id, text: c.text, state: c.state, pos: { x: c.x, y: c.y }, frame: c.componentName });
+const cmt = (c: Comment): Cmt => ({
+  id: c.id,
+  text: c.text,
+  state: c.state,
+  pos: { x: c.x, y: c.y },
+  frame: c.componentName,
+  element: (c.element as ElementInfo | null) ?? null,
+});
 
 export const toFlow = (list: CommentList | undefined): Flow => {
   if (!list) return { draft: [], sends: [] };

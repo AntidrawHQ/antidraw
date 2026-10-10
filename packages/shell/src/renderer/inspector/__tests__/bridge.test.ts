@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { INSPECTOR_NS, type ElementContext, type ElementInfo, type FromFrame } from "@antidrawapp/runtime/inspector";
-import { clearHover, clearSelection, getSelectedElementContext, hoverAt, registerFrame, selectAt, walk } from "../bridge";
+import { clearHover, clearSelection, getSelectedElementContext, hoverAt, registerFrame, selectAt, tagFromPreview, trackElements, walk } from "../bridge";
 import { useInspectorStore } from "../store";
 import { useWorkspaceStore } from "../../store/workspace";
 import { describeContext, describePendingTags, describeTags, retagTags, splitTagged, untagTags } from "../tags";
@@ -336,4 +336,25 @@ it("reads a sent message back into the elements it was tagged with and what the 
     }
   `);
   expect(splitTagged("no tags here")).toEqual({ tags: [], text: "no tags here" });
+});
+
+it("follows elements in a frame, asks again after a reload, and stops", () => {
+  const seen: unknown[] = [];
+  const refs = [info().ref];
+  const stop = trackElements("Card", refs, (rects) => seen.push(rects));
+  expect(lastAsked()).toMatchObject({ type: "track", refs });
+  const box = { x: 0, y: 40, width: 120, height: 30 };
+  frameSays({ type: "tracked", id: lastAsked().id, rects: [box] });
+  // The page scrolled.
+  frameSays({ type: "tracked", rects: [{ ...box, y: 0 }] });
+  // An answer that isn't for these refs is dropped.
+  frameSays({ type: "tracked", rects: [] });
+  expect(seen).toEqual([[box], [{ ...box, y: 0 }]]);
+  // A reload forgets: asked again.
+  frameSays({ type: "ready", protocol: 1, componentName: "Card", tagged: true });
+  expect(lastAsked()).toMatchObject({ type: "track", refs });
+  stop();
+  expect(lastAsked()).toMatchObject({ type: "track", refs: [] });
+  frameSays({ type: "tracked", rects: [box] });
+  expect(seen).toHaveLength(2);
 });

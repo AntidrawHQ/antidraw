@@ -1,8 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, type ReactNode } from "react";
 import { useStore, useStoreApi } from "@xyflow/react";
 import { useQueryClient } from "@tanstack/react-query";
-import { ArrowUpRight, Pencil } from "lucide-react";
-import { cn } from "@/renderer/lib/utils";
 import { frameNodeId, useFocusComponent } from "@/renderer/canvas/Canvas";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
 import { useComposerModel } from "@/renderer/hooks/use-composer-model";
@@ -10,8 +8,10 @@ import { useConversationMessages } from "@/renderer/lib/claude-code-ops";
 import { queryKeys } from "@/renderer/lib/query-keys";
 import { useCommentsChanged } from "@/renderer/lib/comment-ops";
 import type { CommentList } from "@/renderer/lib/api";
-import { beside, BOX, CommentBoxAt, FLOAT, floatShadow, FrameCommentTarget, Kbd, TextBtn, useCloseOnClickAway } from "./pieces";
-import { LABEL, type Actions, type Cmt, type Flow } from "./model";
+import { CommentBoxAt, FrameCommentTarget, useCloseOnClickAway } from "./pieces";
+import { CommentCard, PlacementContext, Pins, useBeside, type Placement } from "./placed";
+import { useAnchoredFlow } from "./anchors";
+import type { Actions } from "./model";
 import { sayNotOnCanvas, useCommentActions } from "./use-comment-actions";
 import { setCanvasTool, useCommentStore, type Pos } from "./store";
 
@@ -37,67 +37,25 @@ import { setCanvasTool, useCommentStore, type Pos } from "./store";
 
 /* ── Pieces ────────────────────────────────────────────────────────────── */
 
-// Where a frame is on screen, and the canvas's zoom and width, so pins and
-// the box can be placed by it. Null while the frame isn't on the canvas.
-const useOrigin = (frame: string) => {
-  const at = useStore((s) => s.nodeLookup.get(frameNodeId(frame))?.internals.positionAbsolute);
+// Where a point in a frame is on screen, by the canvas's pan and zoom.
+const CanvasPlacement = ({ children }: { children: ReactNode }) => {
+  const flow = useStoreApi();
+  // Each a change in where frames are on screen.
+  const nodes = useStore((s) => s.nodes);
   const [tx, ty, k] = useStore((s) => s.transform);
-  const w = useStore((s) => s.width);
-  return at ? { ox: at.x * k + tx, oy: at.y * k + ty, k, w } : null;
-};
-
-// A point in a frame, on screen.
-const usePoint = (frame: string, pos: Pos) => {
-  const o = useOrigin(frame);
-  return o && { x: o.ox + pos.x * o.k, y: o.oy + pos.y * o.k, w: o.w };
-};
-
-// A pin: a speech bubble whose tail sits on the point. Numbered while not
-// sent, matching the list; grey once sent; gone once completed.
-// Click one to open its comment; the open one turns blue.
-const PinMark = ({ c, i, lit, a }: { c: Cmt; i?: number; lit: boolean; a: Actions }) => {
-  const p = usePoint(c.frame, c.pos);
-  if (!p) return null;
-  const draft = c.state === "draft";
-  const open = a.opened === c.id;
-  return (
-    <button
-      type="button"
-      data-comment-ui
-      onClick={(e) => {
-        e.stopPropagation();
-        a.open(c.id);
-      }}
-      className={cn(
-        "pointer-events-auto absolute z-10 grid -translate-y-full cursor-pointer place-items-center rounded-full rounded-bl-none text-[10px] font-semibold leading-none shadow-[0_2px_6px_rgba(0,0,0,.35)] transition-transform",
-        open
-          ? "size-5 bg-[#3b82f6] text-white ring-2 ring-white/90"
-          : draft
-            ? "size-5 bg-neutral-100 text-neutral-900"
-            : "size-4 bg-[#4a4a4a] text-neutral-300 ring-1 ring-white/15",
-        lit && !open && "scale-125 ring-2 ring-[#3b82f6]",
-      )}
-      style={{ left: p.x, top: p.y, transformOrigin: "bottom left" }}
-    >
-      {draft ? i : ""}
-    </button>
+  const width = useStore((s) => s.width);
+  const value = useMemo<Placement>(
+    () => ({
+      width,
+      at: (frame, pos) => {
+        const at = flow.getState().nodeLookup.get(frameNodeId(frame))?.internals.positionAbsolute;
+        return at ? { x: (at.x + pos.x) * k + tx, y: (at.y + pos.y) * k + ty } : null;
+      },
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `nodes` is when they move.
+    [flow, nodes, tx, ty, k, width],
   );
-};
-
-// Completed ones lose their pin, unless open.
-const Pins = ({ f, lit, a }: { f: Flow; lit: number | null; a: Actions }) => (
-  <>
-    {f.sends.flatMap((s) => s.comments.filter((c) => c.state !== "done" || a.opened === c.id).map((c) => <PinMark key={c.id} c={c} lit={lit === c.id} a={a} />))}
-    {f.draft.map((c, i) => (
-      <PinMark key={c.id} c={c} i={i + 1} lit={lit === c.id} a={a} />
-    ))}
-  </>
-);
-
-// Beside the pin, on the canvas.
-const useBeside = (frame: string, pos: Pos) => {
-  const p = usePoint(frame, pos);
-  return p && beside(p.x, p.y, p.w);
+  return <PlacementContext.Provider value={value}>{children}</PlacementContext.Provider>;
 };
 
 const CommentBox = ({ frame, pos, a, preset, onClose }: { frame: string; pos: Pos; a: Actions; preset?: string; onClose?: () => void }) => {
@@ -105,117 +63,6 @@ const CommentBox = ({ frame, pos, a, preset, onClose }: { frame: string; pos: Po
   return at && <CommentBoxAt at={at} add={a.add} send={a.send} preset={preset} onClose={onClose} />;
 };
 
-// An existing comment, opened on the canvas from its row or its pin. Reading:
-// the text, and where it's at. Editing (not sent only): the text in a field,
-// ↵ or Save to keep it, Esc or Cancel to leave it as it was.
-const CommentCard = ({ f, id, editing, a, onClose }: { f: Flow; id: number; editing: boolean; a: Actions; onClose?: () => void }) => {
-  const i = f.draft.findIndex((c) => c.id === id);
-  const s = f.sends.find((x) => x.comments.some((c) => c.id === id));
-  const c = i >= 0 ? f.draft[i] : s?.comments.find((x) => x.id === id);
-  const [v, setV] = useState(c?.text ?? "");
-  const ref = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    el.style.height = "0px";
-    el.style.height = `${el.scrollHeight}px`;
-  }, [v, editing]);
-  const at = useBeside(c?.frame ?? "", c?.pos ?? { x: 0, y: 0 });
-  const w = useStore((st) => st.width);
-  if (!c) return null;
-  // Its frame isn't on the canvas (the component's gone, often by the
-  // comment's own doing): at the canvas's top right instead, inside it.
-  const { left, top } = at ?? { left: Math.max(16, w - 16 - BOX), top: 16 };
-  const save = () => {
-    // Emptied, it's gone, and so is its card.
-    if (!v.trim()) return a.remove(c.id);
-    a.edit(c.id, v);
-    a.open(c.id, false);
-  };
-  const cancel = () => {
-    setV(c.text);
-    a.open(c.id, false);
-  };
-  return (
-    <div
-      data-comment-ui
-      onClick={(e) => e.stopPropagation()}
-      className={cn("pointer-events-auto absolute z-20 flex flex-col gap-2 p-3 ring-1 ring-white/20", FLOAT)}
-      style={{ ...floatShadow, left, top, width: BOX }}
-    >
-      {!at && <p className="m-0 text-[12px] text-neutral-500">{c.frame} isn't on the canvas</p>}
-      {editing ? (
-        <textarea
-          ref={ref}
-          rows={1}
-          autoFocus
-          onFocus={(e) => e.currentTarget.setSelectionRange(v.length, v.length)}
-          value={v}
-          onChange={(e) => setV(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") return cancel();
-            if (e.nativeEvent.isComposing || e.keyCode === 229 || e.key !== "Enter" || e.shiftKey) return;
-            e.preventDefault();
-            save();
-          }}
-          className="-mx-1.5 -my-1 resize-none rounded bg-white/[0.05] px-1.5 py-1 text-[13px] leading-[19px] text-neutral-100 outline-none ring-1 ring-white/15 focus:ring-[#3b82f6]"
-        />
-      ) : (
-        <p className="m-0 whitespace-pre-wrap break-words text-[13px] leading-[19px] text-neutral-100">{c.text}</p>
-      )}
-      <div className="flex items-center gap-3 text-[12px]">
-        {c.state === "draft" ? (
-          editing ? (
-            <>
-              <span className="flex-1 text-neutral-500">
-                <Kbd>↵</Kbd> save · <Kbd>esc</Kbd>
-              </span>
-              <TextBtn onClick={cancel}>Cancel</TextBtn>
-              <button type="button" onClick={save} className="flex h-[24px] cursor-pointer items-center rounded-lg bg-[#e0e0e0] px-2.5 text-[12px] font-medium text-neutral-900 transition-colors hover:bg-white">
-                Save
-              </button>
-            </>
-          ) : (
-            <>
-              <span className="flex-1" />
-              <TextBtn onClick={() => a.open(c.id, true)} className="flex items-center gap-1 font-medium text-neutral-200">
-                <Pencil className="size-3" />
-                Edit
-              </TextBtn>
-              <TextBtn
-                onClick={() => {
-                  a.remove(c.id);
-                  onClose?.();
-                }}
-              >
-                Delete
-              </TextBtn>
-            </>
-          )
-        ) : (
-          <>
-            {/* Only Completed is said: a sent one's row says Sent. */}
-            <span className="flex-1 text-neutral-500">{c.state === "done" ? LABEL.done : ""}</span>
-            <TextBtn onClick={() => s && a.chat(s.conversationId)} className="flex items-center gap-1 font-medium">
-              <ArrowUpRight className="size-3.5" />
-              Open chat
-            </TextBtn>
-            {s?.phase === "ended" && c.state === "sent" && (
-              <TextBtn
-                onClick={() => {
-                  a.dismiss(s.n, c.id);
-                  onClose?.();
-                }}
-              >
-                Remove
-              </TextBtn>
-            )}
-          </>
-        )}
-      </div>
-    </div>
-  );
-};
 
 /* ── On the canvas ─────────────────────────────────────────────────────── */
 
@@ -247,7 +94,9 @@ export const CommentFlow = () => {
   const activeConversationId = useWorkspaceStore((s) => s.activeConversationId);
   const { data: activeConversation } = useConversationMessages(activeConversationId);
   const composer = useComposerModel(activeConversationId, activeConversation);
-  const { f, a, sendDrafts } = useCommentActions({ model: composer.selectedModelId, effort: composer.effort });
+  const { f: listed, a, sendDrafts } = useCommentActions({ model: composer.selectedModelId, effort: composer.effort });
+  // Pins on their elements, while they're showing.
+  const f = useAnchoredFlow(listed, () => active);
 
   // An opened comment whose pin is off screen: the canvas goes to its frame,
   // as the component list's View does. A comment opened from the chat's list
@@ -291,13 +140,15 @@ export const CommentFlow = () => {
       // Optional: a renderer hot-reloaded over an older preload lacks it.
       window.electronAPI.onCommentsShown?.((request) => {
         if (request.workspaceId !== workspaceId) return;
-        const { commentId, send } = request;
+        const { commentId, send, chat } = request;
         void (async () => {
           const queryKey = queryKeys.comments.byWorkspace(workspaceId);
           await queryClient.refetchQueries({ queryKey });
           const list = queryClient.getQueryData<CommentList>(queryKey);
-          // The comments list is the chat panel's: open it, folded or not.
-          useWorkspaceStore.getState().setActiveSidePanel("chat");
+          // The comments list is the chat panel's: open it, folded or not, on
+          // the comment's own chat where it asked for that.
+          if (chat) showConversation(chat);
+          else useWorkspaceStore.getState().setActiveSidePanel("chat");
           // Shown on the canvas only where its frame is; the send goes either way.
           const c = list?.comments.find((x) => x.id === commentId);
           if (c && !useCommentStore.getState().onCanvas(c.componentName)) sayNotOnCanvas(c.componentName);
@@ -320,13 +171,15 @@ export const CommentFlow = () => {
   // the open comment, all the Comment tool's.
   if (!active) return null;
   return (
-    <div className="pointer-events-none absolute inset-0 z-[5] overflow-hidden">
-      <Pins f={f} lit={lit} a={a} />
-      {box && <CommentBox key={`${box.frame},${box.pos.x},${box.pos.y}`} frame={box.frame} pos={box.pos} a={a} onClose={() => setBox(null)} />}
-      {opened && <CommentCard key={`${opened.id}-${opened.edit}`} f={f} id={opened.id} editing={opened.edit} a={a} onClose={() => setOpened(null)} />}
-      {!box && !f.sends.length && (
-        <p className="pointer-events-none absolute left-1/2 top-4 m-0 -translate-x-1/2 rounded-full bg-black/40 px-3 py-1 text-[12px] text-neutral-300">Click a frame to comment</p>
-      )}
-    </div>
+    <CanvasPlacement>
+      <div className="pointer-events-none absolute inset-0 z-[5] overflow-hidden">
+        <Pins f={f} lit={lit} a={a} />
+        {box && <CommentBox key={`${box.frame},${box.pos.x},${box.pos.y}`} frame={box.frame} pos={box.pos} a={a} onClose={() => setBox(null)} />}
+        {opened && <CommentCard key={`${opened.id}-${opened.edit}`} f={f} id={opened.id} editing={opened.edit} a={a} onClose={() => setOpened(null)} />}
+        {!box && !f.sends.length && (
+          <p className="pointer-events-none absolute left-1/2 top-4 m-0 -translate-x-1/2 rounded-full bg-black/40 px-3 py-1 text-[12px] text-neutral-300">Click a frame to comment</p>
+        )}
+      </div>
+    </CanvasPlacement>
   );
 };
