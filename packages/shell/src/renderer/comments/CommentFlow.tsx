@@ -13,11 +13,12 @@ import { CommentCard, PlacementContext, Pins, useBeside, type Placement } from "
 import { useAnchoredFlow } from "./anchors";
 import type { Actions } from "./model";
 import { sayNotOnCanvas, useCommentActions } from "./use-comment-actions";
+import { Tray } from "./CommentTray";
 import { setCanvasTool, useCommentStore, type Pos } from "./store";
 
 // Comments for Claude, on the canvas, with the Comment tool on (design:
-// CommentFlow, variation A — the box by the pin; the list is the chat panel's,
-// above the composer: ChatComments).
+// CommentFlow, variation A — the box by the pin, the list at the top right:
+// CommentTray).
 //  - Click a frame to drop a pin there, on the element under it; the box
 //    opens by it. ↵ adds a comment to the list; nothing reaches Claude until
 //    Send.
@@ -94,13 +95,13 @@ export const CommentFlow = () => {
   const activeConversationId = useWorkspaceStore((s) => s.activeConversationId);
   const { data: activeConversation } = useConversationMessages(activeConversationId);
   const composer = useComposerModel(activeConversationId, activeConversation);
-  const { f: listed, a, sendDrafts } = useCommentActions({ model: composer.selectedModelId, effort: composer.effort });
+  const { f: listed, a, sendDrafts, sending } = useCommentActions({ model: composer.selectedModelId, effort: composer.effort });
   // Pins on their elements, while they're showing.
   const f = useAnchoredFlow(listed, () => active);
 
   // An opened comment whose pin is off screen: the canvas goes to its frame,
-  // as the component list's View does. A comment opened from the chat's list
-  // is the usual case.
+  // as the component list's View does. A comment opened from the list is the
+  // usual case.
   const flow = useStoreApi();
   const focusComponent = useFocusComponent();
   const reveal = (id: number) => {
@@ -145,10 +146,8 @@ export const CommentFlow = () => {
           const queryKey = queryKeys.comments.byWorkspace(workspaceId);
           await queryClient.refetchQueries({ queryKey });
           const list = queryClient.getQueryData<CommentList>(queryKey);
-          // The comments list is the chat panel's: open it, folded or not, on
-          // the comment's own chat where it asked for that.
+          // On the comment's own chat, where it asked for that (Open chat).
           if (chat) showConversation(chat);
-          else useWorkspaceStore.getState().setActiveSidePanel("chat");
           // Shown on the canvas only where its frame is; the send goes either way.
           const c = list?.comments.find((x) => x.id === commentId);
           if (c && !useCommentStore.getState().onCanvas(c.componentName)) sayNotOnCanvas(c.componentName);
@@ -167,16 +166,17 @@ export const CommentFlow = () => {
     [queryClient, workspaceId, showConversation],
   );
 
-  // The list is the chat panel's (ChatComments). Here: the pins, the box and
-  // the open comment, all the Comment tool's.
-  if (!active) return null;
+  // The list shows whatever the tool, while there's something in it, so
+  // Claude's progress stays in sight. Pins, the box and the open comment are
+  // the Comment tool's.
   return (
     <CanvasPlacement>
       <div className="pointer-events-none absolute inset-0 z-[5] overflow-hidden">
-        <Pins f={f} lit={lit} a={a} />
-        {box && <CommentBox key={`${box.frame},${box.pos.x},${box.pos.y}`} frame={box.frame} pos={box.pos} a={a} onClose={() => setBox(null)} />}
-        {opened && <CommentCard key={`${opened.id}-${opened.edit}`} f={f} id={opened.id} editing={opened.edit} a={a} onClose={() => setOpened(null)} />}
-        {!box && !f.sends.length && (
+        {active && <Pins f={f} lit={lit} a={a} />}
+        {active && box && <CommentBox key={`${box.frame},${box.pos.x},${box.pos.y}`} frame={box.frame} pos={box.pos} a={a} onClose={() => setBox(null)} />}
+        {active && opened && <CommentCard key={`${opened.id}-${opened.edit}`} f={f} id={opened.id} editing={opened.edit} a={a} onClose={() => setOpened(null)} />}
+        <Tray f={f} a={a} sending={sending} />
+        {active && !box && !f.sends.length && (
           <p className="pointer-events-none absolute left-1/2 top-4 m-0 -translate-x-1/2 rounded-full bg-black/40 px-3 py-1 text-[12px] text-neutral-300">Click a frame to comment</p>
         )}
       </div>

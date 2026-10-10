@@ -3,6 +3,7 @@ import { ArrowUpRight, Pencil } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
 import { beside as besideAt, BOX, FLOAT, floatShadow, Kbd, TextBtn } from "./pieces";
 import { LABEL, type Actions, type Cmt, type Flow } from "./model";
+import { TRAY_W } from "./CommentTray";
 import type { Pos } from "./store";
 
 // The pins and the open comment, where their frames are: on the canvas
@@ -93,8 +94,9 @@ export const CommentCard = ({ f, id, editing, a, onClose }: { f: Flow; id: numbe
   const { width: w } = useContext(PlacementContext);
   if (!c) return null;
   // Its frame isn't on the canvas (the component's gone, often by the
-  // comment's own doing): at the canvas's top right instead, inside it.
-  const { left, top } = at ?? { left: Math.max(16, w - 16 - BOX), top: 16 };
+  // comment's own doing): beside the list instead, at the top, inside the
+  // canvas.
+  const { left, top } = at ?? { left: Math.max(16, w - 16 - TRAY_W - 8 - BOX), top: 16 };
   const save = () => {
     // Emptied, it's gone, and so is its card.
     if (!v.trim()) return a.remove(c.id);
@@ -109,7 +111,7 @@ export const CommentCard = ({ f, id, editing, a, onClose }: { f: Flow; id: numbe
     <div
       data-comment-ui
       onClick={(e) => e.stopPropagation()}
-      className={cn("pointer-events-auto absolute z-20 flex flex-col gap-2 p-3 ring-1 ring-white/20", FLOAT)}
+      className={cn("pointer-events-auto absolute z-40 flex flex-col gap-2 p-3 ring-1 ring-white/20", FLOAT)}
       style={{ ...floatShadow, left, top, width: BOX }}
     >
       {!at && <p className="m-0 text-[12px] text-neutral-500">{c.frame} isn't on the canvas</p>}
