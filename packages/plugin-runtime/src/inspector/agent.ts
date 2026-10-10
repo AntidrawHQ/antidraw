@@ -156,20 +156,35 @@ export function startInspector(container: HTMLElement, componentName: string): (
   const located = (node: Element) => node.hasAttribute(SOURCE_ATTRIBUTE)
   const stamped = (node: Element) => located(node) || node.hasAttribute(USE_ATTRIBUTE)
 
-  // The others written in the same place and used from the same place: a
-  // .map()'s items. A shared component's button used twice is used from two
-  // places. (One that doesn't pass its props on carries no use: the same
-  // place twice is taken as a list.)
+  // The uses on the way out from `el`: the places in the code it's rendered
+  // inside of, as far as they reached the DOM.
+  const usesAround = (el: Element) => {
+    const uses: string[] = []
+    for (let node = parentOf(el); inside(node); node = parentOf(node)) {
+      const use = node.getAttribute(USE_ATTRIBUTE)
+      if (use) uses.push(use)
+    }
+    return uses.join("\0")
+  }
+
+  // The others written in the same place and used from the same places: a
+  // .map()'s items, and the items of a list inside one, counted as one list.
+  // A shared component's button used twice is used from two places, and so
+  // is everything inside it. (One that doesn't pass its props on carries no
+  // use: the same place twice is taken as a list.)
   const repeatOf = (el: Element): ElementContext["repeat"] => {
     const anchor = nearest(el, stamped)
     if (!anchor) return null
     const loc = anchor.getAttribute(SOURCE_ATTRIBUTE)
     const use = anchor.getAttribute(USE_ATTRIBUTE)
-    const matches = loc
-      ? withLoc(loc).filter((m) => m.getAttribute(USE_ATTRIBUTE) === use)
-      : [...document.querySelectorAll(`[${USE_ATTRIBUTE}="${CSS.escape(use!)}"]`)].filter(
-          (m) => inside(m) && !located(m),
-        )
+    const around = usesAround(anchor)
+    const matches = (
+      loc
+        ? withLoc(loc).filter((m) => m.getAttribute(USE_ATTRIBUTE) === use)
+        : [...document.querySelectorAll(`[${USE_ATTRIBUTE}="${CSS.escape(use!)}"]`)].filter(
+            (m) => inside(m) && !located(m),
+          )
+    ).filter((m) => usesAround(m) === around)
     return matches.length > 1 ? { index: matches.indexOf(anchor), count: matches.length } : null
   }
 
