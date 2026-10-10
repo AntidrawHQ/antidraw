@@ -21,12 +21,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
   // A preview window's comment, for the main window: show it there, and with
   // `send`, send the drafts there.
-  showComments: (request: { commentId: number; send: boolean }) =>
+  showComments: (request: { workspaceId: string; commentId: number; send: boolean }) =>
     ipcRenderer.invoke("comments:show", request),
-  onCommentsShown: (callback: (request: { commentId: number; send: boolean }) => void) => {
+  onCommentsShown: (callback: (request: { workspaceId: string; commentId: number; send: boolean }) => void) => {
     const listener = (
       _event: Electron.IpcRendererEvent,
-      request: { commentId: number; send: boolean },
+      request: { workspaceId: string; commentId: number; send: boolean },
     ) => callback(request);
     ipcRenderer.on("comments:shown", listener);
     return () => ipcRenderer.removeListener("comments:shown", listener);

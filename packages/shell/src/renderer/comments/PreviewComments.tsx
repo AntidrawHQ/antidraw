@@ -37,7 +37,7 @@ export const PreviewComments = ({
     useCommentStore.getState().setBox(null);
   };
   const send = () => {
-    void last.current.then((c) => c && window.electronAPI.showComments({ commentId: c.id, send: true }));
+    void last.current.then((c) => c && window.electronAPI.showComments({ workspaceId, commentId: c.id, send: true }));
   };
 
   return (

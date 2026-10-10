@@ -48,6 +48,7 @@ import ModelPicker from "@/renderer/components/ModelPicker";
 import EffortDropdown from "@/renderer/components/EffortDropdown";
 import { useComposerModel } from "@/renderer/hooks/use-composer-model";
 import { useSendToChat } from "@/renderer/hooks/use-send-to-chat";
+import { ChatComments } from "@/renderer/comments/ChatComments";
 import { QueuedMessagesDeck } from "@/renderer/components/QueuedMessagesDeck";
 import { useQueueDeck } from "@/renderer/lib/use-queue-deck";
 import { SMOOTH } from "@/renderer/lib/motion";
@@ -838,6 +839,9 @@ export function AppChat({ className, ...props }: AppChatProps) {
           )}
         </ChatContainerContent>
       </ChatContainerRoot>
+
+      {/* The canvas's comments: drafts, and this chat's own. */}
+      <ChatComments model={composer.selectedModelId} effort={composer.effort} />
 
       <Composer
         composer={composer}

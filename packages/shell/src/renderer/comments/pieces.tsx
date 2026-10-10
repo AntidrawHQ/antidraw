@@ -175,3 +175,22 @@ export const useCloseOnClickAway = () => {
   }, [open]);
 };
 
+// A sent comment that Claude hasn't marked yet: a dashed ring.
+export const Pending = () => (
+  <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeDasharray="2.6 3.2" strokeLinecap="round">
+    <circle cx="12" cy="12" r="8.5" strokeOpacity=".6" />
+  </svg>
+);
+
+export const TextBtn = ({ children, onClick, className }: { children: ReactNode; onClick?: () => void; className?: string }) => (
+  <button
+    type="button"
+    onClick={(e) => {
+      e.stopPropagation();
+      onClick?.();
+    }}
+    className={cn("cursor-pointer text-[12px] text-neutral-400 hover:text-neutral-100", className)}
+  >
+    {children}
+  </button>
+);
