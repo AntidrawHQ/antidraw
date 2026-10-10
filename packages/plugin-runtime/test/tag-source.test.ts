@@ -90,6 +90,10 @@ test("skips files that aren't JSX, aren't the workspace's, or don't parse", () =
   expect(transform(`export const A = () => <div />`, "node_modules/pkg/A.tsx")).toBeNull()
   expect(transform(`export const A = () => <div`, "src/components/user-components/A.tsx")).toBeNull()
   expect(transform(`export const A = () => <Fragment><React.Fragment /></Fragment>`, "src/components/user-components/A.tsx")).toBeNull()
+  // Fragment under another name is still Fragment, which takes no props.
+  expect(
+    transform(`import { Fragment as F } from "react"\nexport const A = () => <F><F /></F>`, "src/components/user-components/A.tsx"),
+  ).toBeNull()
 })
 
 test("is part of the dev server only, after which the element still gets the attribute", async () => {

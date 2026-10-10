@@ -15,7 +15,13 @@ const VOID = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input"
 // Elements whose content is code or a drawing, not markup to read.
 const OPAQUE = new Set(["svg", "script", "style", "template"])
 
-const clip = (s: string, max: number) => (s.length > max ? `${s.slice(0, max - 1)}…` : s)
+// Never half a character: a cut after the first half of a pair (an emoji)
+// goes before it.
+const clip = (s: string, max: number) => {
+  if (s.length <= max) return s
+  const end = /[\uD800-\uDBFF]/.test(s[max - 2]!) ? max - 2 : max - 1
+  return `${s.slice(0, end)}…`
+}
 const collapse = (s: string) => s.replace(/\s+/g, " ").trim()
 const escapeText = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
 const escapeValue = (s: string) => s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;")
@@ -45,7 +51,9 @@ export function markupOf(root: Element): string {
     const tag = el.localName
     if (VOID.has(tag)) return void lines.push(pad(depth) + open)
     const close = `</${tag}>`
-    const children = [...el.childNodes].filter(
+    // A template parsed from HTML holds its children in its content.
+    const nodes = el instanceof HTMLTemplateElement ? [...el.content.childNodes, ...el.childNodes] : [...el.childNodes]
+    const children = nodes.filter(
       (n) => n instanceof Element || (n.nodeType === Node.TEXT_NODE && collapse(n.nodeValue ?? "")),
     )
     if (!children.length) return void lines.push(pad(depth) + open + close)

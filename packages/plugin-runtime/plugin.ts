@@ -199,12 +199,23 @@ const tagSource = (): Plugin => {
     }
   }
   // The stamp an element's name takes: lowercase renders a DOM node, as does
-  // a member ending in one (motion.div); other names are components.
-  const stampFor = (name: Node): string | null => {
-    if (name.type === "JSXMemberExpression") return stampFor(name.property as Node)
+  // a member ending in one (motion.div); other names are components, but
+  // Fragment, under whatever name the file imports it (`fragments`).
+  const stampFor = (name: Node, fragments: Set<string>): string | null => {
+    if (name.type === "JSXMemberExpression") return stampFor(name.property as Node, fragments)
     if (name.type !== "JSXIdentifier") return null
     if (/^[a-z]/.test(name.name as string)) return SOURCE_ATTRIBUTE
-    return name.name === "Fragment" ? null : USE_ATTRIBUTE
+    return name.name === "Fragment" || fragments.has(name.name as string) ? null : USE_ATTRIBUTE
+  }
+  // The local names of React's Fragment: `import { Fragment as F } from "react"`.
+  const fragmentsOf = (program: Node) => {
+    const names = new Set<string>()
+    for (const node of program.body as Node[]) {
+      if (node.type !== "ImportDeclaration" || (node.source as Node & { value: unknown }).value !== "react") continue
+      for (const s of node.specifiers as (Node & { imported?: Node & { name?: string }; local: Node & { name: string } })[])
+        if (s.type === "ImportSpecifier" && s.imported?.name === "Fragment") names.add(s.local.name)
+    }
+    return names
   }
 
   return {
@@ -248,9 +259,10 @@ const tagSource = (): Plugin => {
           return { line: lo + 1, column: offset - lineStarts[lo]! + 1 - (lo === 0 ? bom : 0) }
         }
         const s = new MagicString(code)
+        const fragments = fragmentsOf(ast.program as unknown as Node)
         visit(ast.program as unknown as Node, (node) => {
           if (node.type !== "JSXOpeningElement") return
-          const stamp = stampFor(node.name as Node)
+          const stamp = stampFor(node.name as Node, fragments)
           if (!stamp) return
           const attributes = node.attributes as Node[]
           const named = (a: Node) => a.type === "JSXAttribute" && (a.name as Node & { name: unknown }).name === stamp
