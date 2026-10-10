@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { Result } from "neverthrow";
 import { skipToken, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Comment, EffortLevel } from "@/main/api";
-import type { ElementInfo } from "@antidrawapp/runtime/inspector";
+import type { ElementContext, ElementInfo } from "@antidrawapp/runtime/inspector";
 import type { CommentContext } from "@/shared/utils/canvas-comments";
 import { frameUrl, getElementContext } from "@/renderer/inspector/bridge";
 import { describeContext, describeLastSeen } from "@/renderer/inspector/tags";
@@ -105,18 +105,27 @@ export const useRemoveComment = (workspaceId: string | null) =>
 export const useClearCompleted = (workspaceId: string | null) =>
   useCommentMutation(workspaceId, (id, _: void) => unwrap(clearCompletedComments(id)));
 
+// A comment's element as saved. One left in a frame's own window also has
+// what that window said about it then (`seen`, null if it couldn't say).
+type SavedElement = ElementInfo & { seen?: ElementContext | null };
+
 // The <element> under each draft's pin, as its frame sees it now: an edit
-// may have moved it. As last seen, where the frame doesn't answer.
-const describeElements = async (drafts: Comment[]): Promise<CommentContext[]> => {
+// may have moved it. As last seen, where the frame doesn't answer. One left
+// in a frame's own window is as that window saw it: the canvas's frame is
+// another page, at another size, where its ref can name another element.
+export const describeElements = async (drafts: Comment[]): Promise<CommentContext[]> => {
   const picks = drafts.flatMap((c) =>
-    c.element ? [{ id: c.id, pick: { frame: c.componentName, info: c.element as unknown as ElementInfo } }] : [],
+    c.element ? [{ id: c.id, pick: { frame: c.componentName, info: c.element as unknown as SavedElement } }] : [],
   );
-  const contexts = await getElementContext(picks.map((p) => p.pick));
+  const asked = picks.filter((p) => p.pick.info.seen === undefined);
+  const contexts = await getElementContext(asked.map((p) => p.pick));
+  const told = new Map(asked.map((p, i) => [p.id, contexts[i] ?? null]));
+  const seen = new Map(picks.map((p) => [p.id, p.pick.info.seen !== undefined ? p.pick.info.seen : (told.get(p.id) ?? null)]));
   const blocks = new Map(
-    picks.map((p, i) => [p.id, contexts[i] ? describeContext(contexts[i]!) : describeLastSeen(p.pick)]),
+    picks.map((p) => [p.id, seen.get(p.id) ? describeContext(seen.get(p.id)!) : describeLastSeen(p.pick)]),
   );
   // The frame's size, which the element's box is read at, as Inspect gives it.
-  const viewports = new Map(picks.map((p, i) => [p.id, contexts[i]?.viewport.join("×") ?? null]));
+  const viewports = new Map(picks.map((p) => [p.id, seen.get(p.id)?.viewport.join("×") ?? null]));
   return drafts.map((c) => ({
     id: c.id,
     element: blocks.get(c.id) ?? null,

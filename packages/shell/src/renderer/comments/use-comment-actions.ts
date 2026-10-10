@@ -1,4 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import type { EffortLevel } from "@/main/api";
 import type { CommentList } from "@/renderer/lib/api";
 import { queryKeys } from "@/renderer/lib/query-keys";
@@ -13,7 +14,17 @@ import {
 import { useWorkspaceStore } from "@/renderer/store/workspace";
 import { useConversationMessages } from "@/renderer/lib/claude-code-ops";
 import { toFlow, type Actions } from "./model";
+import { FLOAT, floatShadow } from "./pieces";
 import { setCanvasTool, useCommentStore } from "./store";
+
+// A comment whose frame isn't on the canvas (it's gone, or there's no canvas
+// up) has nowhere to go to: say so, rather than switch tools to nothing.
+export const sayNotOnCanvas = (frame: string) =>
+  toast(`${frame} isn't on the canvas`, {
+    id: "comment-not-on-canvas",
+    className: `${FLOAT} px-3 py-2 text-[13px] text-neutral-200`,
+    style: floatShadow,
+  });
 
 // ⌘↵ adds and sends at once: a send waits for the adds still in flight,
 // whichever surface made them (the canvas's box, the chat's list).
@@ -104,6 +115,8 @@ export const useCommentActions = ({ model, effort }: { model?: string; effort?: 
     // goes to it (CommentFlow).
     open: (id, edit = false) => {
       const s = useCommentStore.getState();
+      const c = [...f.draft, ...f.sends.flatMap((x) => x.comments)].find((x) => x.id === id);
+      if (c && !s.onCanvas(c.frame)) return void sayNotOnCanvas(c.frame);
       if (!s.active) setCanvasTool("comment");
       s.setBox(null);
       s.setOpened({ id, edit });

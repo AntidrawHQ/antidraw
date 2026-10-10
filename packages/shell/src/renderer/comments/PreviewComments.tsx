@@ -1,6 +1,7 @@
 import { useRef } from "react";
 import type { Comment } from "@/main/api";
 import { addComment } from "@/renderer/lib/api";
+import { getElementContext } from "@/renderer/inspector/bridge";
 import { beside, CommentBoxAt, FrameCommentTarget, useCloseOnClickAway } from "./pieces";
 import { useCommentStore } from "./store";
 
@@ -25,14 +26,21 @@ export const PreviewComments = ({
 
   const add = (t: string) => {
     if (box && t.trim()) {
-      last.current = addComment(workspaceId, { componentName: frame, x: box.pos.x, y: box.pos.y, text: t.trim(), element: box.element as Record<string, unknown> | null }).then((r) => {
-        if (r.isErr()) {
-          console.error("Failed to add comment:", r.error.message);
-          return null;
-        }
-        onAdded(r.value);
-        return r.value;
-      });
+      const { element, pos } = box;
+      // The element as this window sees it, kept with it (`seen`): the
+      // canvas's frame is another page, at another size (comment-ops).
+      last.current = (element ? getElementContext([{ frame, info: element }]) : Promise.resolve([null]))
+        .then(([seen]) =>
+          addComment(workspaceId, { componentName: frame, x: pos.x, y: pos.y, text: t.trim(), element: element && { ...element, seen: seen ?? null } }),
+        )
+        .then((r) => {
+          if (r.isErr()) {
+            console.error("Failed to add comment:", r.error.message);
+            return null;
+          }
+          onAdded(r.value);
+          return r.value;
+        });
     }
     useCommentStore.getState().setBox(null);
   };

@@ -17,7 +17,8 @@ const isCanvasKey = (e: KeyboardEvent) =>
   !e.ctrlKey &&
   !e.altKey &&
   !isTyping(e.target) &&
-  (e.target === document.body || (e.target instanceof Element && !!e.target.closest(".react-flow")));
+  (e.target === document.body ||
+    (e.target instanceof Element && !!e.target.closest(".react-flow, [data-inspector-keys]")));
 
 export const CommentControls = () => {
   useEffect(() => {
