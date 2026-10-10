@@ -12,6 +12,7 @@ import {
   type NodeChange,
   NodeResizer,
   SelectionMode,
+  MiniMap,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import "./canvas.css";
@@ -283,6 +284,17 @@ const nodeTypes: NodeTypes = {
   iframe: IframeNodeRenderer,
 };
 
+// The minimap's frames: brighter when selected, like their selection outline.
+const miniMapNodeColor = (node: Node) => (node.selected ? "#a3a3a3" : "#525252");
+
+const miniMapStyle = {
+  width: 180,
+  height: 120,
+  borderRadius: 12,
+  overflow: "hidden",
+  boxShadow: "0 4px 16px rgba(0,0,0,.4), 0 0 0 1px rgba(255,255,255,.06)",
+};
+
 type CanvasComponent = {
   name: string;
 };
@@ -503,6 +515,14 @@ export const Canvas = ({
 
   const touch = useCoarsePointer();
 
+  const reactFlow = useReactFlow();
+  const focusMiniMapNode = useCallback(
+    (_: React.MouseEvent, node: IframeReactFlowNode) => {
+      reactFlow.fitView({ nodes: [{ id: node.id }], duration: 300, padding: 0.3 });
+    },
+    [reactFlow],
+  );
+
   const frameActions = useMemo(
     () => ({ onFullscreen, onSeeCode, frameLayer }),
     [onFullscreen, onSeeCode, frameLayer],
@@ -530,6 +550,24 @@ export const Canvas = ({
           onlyRenderVisibleElements={false}
           proOptions={{ hideAttribution: true }}
         >
+          {/* Phones have no room for it: they pinch and drag instead. */}
+          {!touch && (
+            <MiniMap
+              position="bottom-right"
+              pannable
+              zoomable
+              onNodeClick={focusMiniMapNode}
+              // The titlebar's colour. No dimming outside the viewport, or the
+              // whole map turns near-black: its outline marks it instead.
+              bgColor="#2A2A2A"
+              nodeColor={miniMapNodeColor}
+              nodeBorderRadius={6}
+              maskColor="transparent"
+              maskStrokeColor="rgba(255, 255, 255, 0.35)"
+              maskStrokeWidth={1}
+              style={miniMapStyle}
+            />
+          )}
           {children}
         </ReactFlow>
       </div>
