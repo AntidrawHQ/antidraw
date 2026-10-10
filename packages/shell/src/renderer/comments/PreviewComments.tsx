@@ -109,7 +109,7 @@ export const PreviewComments = ({
 
   return (
     <PlacementContext.Provider value={placement}>
-      <FrameCommentTarget frame={frame} />
+      <FrameCommentTarget frame={frame} wheel />
       {active && (
         <div className="pointer-events-none absolute inset-0 z-30 overflow-hidden">
           <Pins f={f} lit={lit} a={a} />

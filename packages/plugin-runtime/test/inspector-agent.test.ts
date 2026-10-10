@@ -257,6 +257,30 @@ test("tracks elements' boxes as they move, scroll, remount and go, until told to
   expect(sent.length).toBe(stopped)
 })
 
+test("scrolls what a wheel over it would: the nearest box that can go that way, or the page", () => {
+  const scrolled: string[] = []
+  const scrollable = (el: Element, { top = 0, height = 100, view = 50, overflow = "auto" } = {}) => {
+    ;(el as HTMLElement).style.overflowY = overflow
+    Object.defineProperties(el, {
+      scrollTop: { configurable: true, value: top },
+      scrollHeight: { configurable: true, value: height },
+      clientHeight: { configurable: true, value: view },
+    })
+    el.scrollBy = ((o: ScrollToOptions) => void scrolled.push(`${el.localName}.${el.className || el.id} ${o.top}`)) as Element["scrollBy"]
+  }
+  const page = document.scrollingElement ?? document.documentElement
+  scrollable(page, { overflow: "" })
+  scrollable($(".card"))
+  at = $("h3")
+  ask({ type: "scroll", id: 1, x: 5, y: 5, dx: 0, dy: 30 })
+  // At its top, the card can't go up: the page does.
+  ask({ type: "scroll", id: 2, x: 5, y: 5, dx: 0, dy: -30 })
+  // Nothing under the point: the page.
+  at = null
+  ask({ type: "scroll", id: 3, x: 5, y: 5, dx: 0, dy: 30 })
+  expect(scrolled).toEqual(["div.card 30", "html. -30", "html. 30"])
+})
+
 // Paragraphs written one per line, from line `first`, as a remount renders them.
 const paragraphs = (first: number, texts: string[]) => {
   const list = document.createElement("div")

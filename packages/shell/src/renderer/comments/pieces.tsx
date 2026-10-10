@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import type { ElementInfo } from "@antidrawapp/runtime/inspector";
 import { cn } from "@/renderer/lib/utils";
-import { elementAt } from "@/renderer/inspector/bridge";
+import { elementAt, scrollAt, wheelPixels } from "@/renderer/inspector/bridge";
 import { samePick, useInspectorStore } from "@/renderer/inspector/store";
 import { Box, BoxModel, COLORS } from "@/renderer/inspector/FrameInspector";
 import { useCommentStore, type Pos } from "./store";
@@ -76,8 +76,9 @@ export const CommentBoxAt = ({ at, add, send, preset = "", onClose }: { at: At; 
 // Over each frame while the Comment tool is on: a crosshair, the element
 // under the pointer drawn as Inspect draws it, and a click opens the box
 // there, on that element, which stays outlined while the box is open. A click
-// while a comment is open only closes it, like Figma.
-export const FrameCommentTarget = ({ frame, zoom = 1 }: { frame: string; zoom?: number }) => {
+// while a comment is open only closes it, like Figma. In a frame's own
+// window the wheel goes on to the frame (`wheel`), as FrameInspector's does.
+export const FrameCommentTarget = ({ frame, zoom = 1, wheel = false }: { frame: string; zoom?: number; wheel?: boolean }) => {
   const active = useCommentStore((s) => s.active);
   const boxed = useCommentStore((s) => (s.box?.frame === frame ? s.box.element : null));
   const [hover, setHover] = useState<ElementInfo | null>(null);
@@ -100,6 +101,18 @@ export const FrameCommentTarget = ({ frame, zoom = 1 }: { frame: string; zoom?: 
     const r = el.getBoundingClientRect();
     const scale = el.offsetWidth / r.width;
     return { x: Math.round((e.clientX - r.left) * scale), y: Math.round((e.clientY - r.top) * scale) };
+  };
+
+  const hoverSoon = () => {
+    raf.current ||= requestAnimationFrame(() => {
+      raf.current = 0;
+      const p = point.current;
+      if (!p || !ready()) return;
+      const id = ++asked.current;
+      void elementAt(frame, p.x, p.y).then((info) => {
+        if (asked.current === id) setHover(info);
+      });
+    });
   };
 
   const click = (e: MouseEvent<HTMLDivElement>) => {
@@ -125,15 +138,15 @@ export const FrameCommentTarget = ({ frame, zoom = 1 }: { frame: string; zoom?: 
       className="nodrag nopan absolute inset-0 z-20 cursor-crosshair"
       onPointerMove={(e) => {
         point.current = toFrame(e);
-        raf.current ||= requestAnimationFrame(() => {
-          raf.current = 0;
-          const p = point.current;
-          if (!p || !ready()) return;
-          const id = ++asked.current;
-          void elementAt(frame, p.x, p.y).then((info) => {
-            if (asked.current === id) setHover(info);
-          });
-        });
+        hoverSoon();
+      }}
+      onWheel={(e) => {
+        if (!wheel) return;
+        const p = (point.current = toFrame(e));
+        const { dx, dy } = wheelPixels(e, e.currentTarget.offsetHeight);
+        scrollAt(frame, p.x, p.y, dx, dy);
+        // What's under the pointer now that the page moved under it.
+        hoverSoon();
       }}
       onPointerLeave={() => {
         point.current = null;

@@ -106,6 +106,31 @@ export function startInspector(container: HTMLElement, componentName: string): (
     }
   }
 
+  // What a wheel at a point scrolls, along one axis: the nearest box around
+  // the point that can still go that way, or the page.
+  const canScroll = (el: Element, axis: "x" | "y", d: number) => {
+    const page = el === (document.scrollingElement ?? document.documentElement)
+    const cs = getComputedStyle(el)
+    if (!page && !/auto|scroll|overlay/.test(axis === "y" ? cs.overflowY : cs.overflowX)) return false
+    const [at, size, view] =
+      axis === "y" ? [el.scrollTop, el.scrollHeight, el.clientHeight] : [el.scrollLeft, el.scrollWidth, el.clientWidth]
+    return d < 0 ? at > 0 : at + view < size - 0.5
+  }
+  const scrollAt = (x: number, y: number, dx: number, dy: number) => {
+    if (![x, y, dx, dy].every(Number.isFinite)) return
+    const page = document.scrollingElement ?? document.documentElement
+    const under = document.elementsFromPoint(x, y)[0] ?? null
+    const along = (axis: "x" | "y", d: number) => {
+      if (!d) return null
+      for (let el: Element | null = under; el; el = el.parentElement) if (canScroll(el, axis, d)) return el
+      return page
+    }
+    const [sx, sy] = [along("x", dx), along("y", dy)]
+    if (sx && sx === sy) return sx.scrollBy({ left: dx, top: dy })
+    sx?.scrollBy({ left: dx })
+    sy?.scrollBy({ top: dy })
+  }
+
   const withLoc = (loc: string) =>
     [...document.querySelectorAll(`[${SOURCE_ATTRIBUTE}="${CSS.escape(loc)}"]`)].filter(inside)
 
@@ -423,6 +448,8 @@ export function startInspector(container: HTMLElement, componentName: string): (
         })
       case "track":
         return post({ type: "tracked", id: msg.id, rects: track(msg.refs) })
+      case "scroll":
+        return scrollAt(msg.x, msg.y, msg.dx, msg.dy)
     }
   }
   window.addEventListener("message", onMessage)

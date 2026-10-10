@@ -164,6 +164,17 @@ export function trackElements(frame: string, refs: ElementRef[], on: (rects: (Re
   };
 }
 
+// A wheel over a frame that an overlay caught, in the frame's CSS pixels:
+// the frame scrolls as the wheel would have. Unanswered.
+export const scrollAt = (frame: string, x: number, y: number, dx: number, dy: number) =>
+  void post(frame, { type: "scroll", id: nextId++, x, y, dx, dy });
+
+// A wheel's deltas in pixels: some mice count lines, or pages.
+export const wheelPixels = (e: { deltaX: number; deltaY: number; deltaMode: number }, page: number) => {
+  const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? page : 1;
+  return { dx: e.deltaX * unit, dy: e.deltaY * unit };
+};
+
 function askTrack(frame: string) {
   const t = trackers.get(frame);
   if (t) post(frame, { type: "track", id: nextId++, refs: t.refs });

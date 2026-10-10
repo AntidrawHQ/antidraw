@@ -1,12 +1,15 @@
 import { useEffect, useRef, type CSSProperties, type MouseEvent } from "react";
 import { useStore } from "@xyflow/react";
 import type { ElementInfo, Sides } from "@antidrawapp/runtime/inspector";
-import { clearHover, hoverAt, registerFrame, selectAt } from "./bridge";
+import { clearHover, hoverAt, registerFrame, scrollAt, selectAt, wheelPixels } from "./bridge";
 import { samePick, useInspectorStore } from "./store";
 
 // The inspector over one frame: catches the pointer while inspecting, asks
 // the frame what's under it, and draws the answer. It lives in the frame's
-// node, so frame pixels are its own pixels and the canvas zoom applies.
+// node, so frame pixels are its own pixels and the canvas zoom applies. A
+// frame's own window (PreviewWindow) puts it over its frame at zoom 1, and
+// passes the wheel on to the frame (`wheel`), which scrolls there: on the
+// canvas a frame is its component's full height, and the wheel pans.
 // Placeholder visuals: the DevTools box model, and an outline for the selection.
 
 // Also the Comment tool's, over the same frames (comments/CommentFlow).
@@ -48,7 +51,17 @@ export const BoxModel = ({ info }: { info: ElementInfo }) => {
   );
 };
 
-export const FrameInspector = ({ frame, iframe }: { frame: string; iframe: HTMLIFrameElement | null }) => {
+export const FrameInspector = ({
+  frame,
+  iframe,
+  zoom = 1,
+  wheel = false,
+}: {
+  frame: string;
+  iframe: HTMLIFrameElement | null;
+  zoom?: number;
+  wheel?: boolean;
+}) => {
   useEffect(() => (iframe ? registerFrame(frame, iframe) : undefined), [frame, iframe]);
 
   const active = useInspectorStore((s) => s.active && !!s.frames[frame]?.ready);
@@ -63,6 +76,13 @@ export const FrameInspector = ({ frame, iframe }: { frame: string; iframe: HTMLI
 
   if (!active) return null;
 
+  const hoverSoon = () => {
+    raf.current ||= requestAnimationFrame(() => {
+      raf.current = 0;
+      if (point.current) void hoverAt(frame, point.current.x, point.current.y);
+    });
+  };
+
   const toFrame = (e: MouseEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
     const r = el.getBoundingClientRect();
@@ -75,10 +95,15 @@ export const FrameInspector = ({ frame, iframe }: { frame: string; iframe: HTMLI
       className="nodrag nopan absolute inset-0 z-20 cursor-crosshair"
       onPointerMove={(e) => {
         point.current = toFrame(e);
-        raf.current ||= requestAnimationFrame(() => {
-          raf.current = 0;
-          if (point.current) void hoverAt(frame, point.current.x, point.current.y);
-        });
+        hoverSoon();
+      }}
+      onWheel={(e) => {
+        if (!wheel) return;
+        point.current = toFrame(e);
+        const { dx, dy } = wheelPixels(e, e.currentTarget.offsetHeight);
+        scrollAt(frame, point.current.x, point.current.y, dx, dy);
+        // What's under the pointer now that the page moved under it.
+        hoverSoon();
       }}
       onPointerLeave={() => {
         point.current = null;

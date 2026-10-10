@@ -91,6 +91,10 @@ export type ToFrame =
   // scrolls, appears or goes. A "track" replaces the last; an empty one stops.
   // A frame from before it doesn't answer.
   | { type: "track"; id: number; refs: ElementRef[] }
+  // A wheel over the frame, which the canvas's overlay caught: scroll as the
+  // wheel would have, the nearest box under the point that can still go that
+  // way, or the page. No answer. A frame from before it doesn't scroll.
+  | { type: "scroll"; id: number; x: number; y: number; dx: number; dy: number }
 
 // Frame to canvas. "ready" is sent on start and in answer to "hello";
 // "selection-changed" and "selection-lost" whenever a re-render (an edit, a
