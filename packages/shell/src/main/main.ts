@@ -206,7 +206,8 @@ app.whenReady().then(async () => {
     previewWindows.add(contents);
     previewWindow.on("closed", () => previewWindows.delete(contents));
 
-    previewWindow.loadURL(`${APP_PAGE}preview-window.html?url=${encodeURIComponent(url)}`);
+    // The app's /preview route; hash routing reads its search from inside the hash.
+    previewWindow.loadURL(`${APP_PAGE}#/preview?${new URLSearchParams({ url })}`);
     stayOnApp(previewWindow);
   });
 

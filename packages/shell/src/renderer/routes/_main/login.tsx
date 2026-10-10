@@ -33,6 +33,6 @@ const LoginPage = () => {
   );
 };
 
-export const Route = createFileRoute("/login")({
+export const Route = createFileRoute("/_main/login")({
   component: LoginPage,
 });

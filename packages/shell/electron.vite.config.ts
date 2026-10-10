@@ -56,13 +56,6 @@ export default defineConfig({
   renderer: {
     build: {
       outDir: "dist/renderer",
-      rollupOptions: {
-        input: {
-          index: path.resolve(__dirname, "src/renderer/index.html"),
-          // A frame's own window (renderer/PreviewWindow.tsx).
-          "preview-window": path.resolve(__dirname, "src/renderer/preview-window.html"),
-        },
-      },
     },
     resolve: {
       alias: {
