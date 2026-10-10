@@ -5,7 +5,7 @@ import { parse } from "@babel/parser"
 import MagicString from "magic-string"
 import { normalizePath, transformWithEsbuild } from "vite"
 import type { Plugin, ResolvedConfig, ViteDevServer } from "vite"
-import { SOURCE_ATTRIBUTE } from "./src/inspector/protocol"
+import { SOURCE_ATTRIBUTE, USE_ATTRIBUTE } from "./src/inspector/protocol"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const certsDir = path.resolve(__dirname, "../certs")
@@ -178,9 +178,13 @@ const tolerateUnparsableSource = (): Plugin => {
 // Stamps each element in the workspace's JSX with where it is written, for
 // the canvas's inspector: <div className="card"> becomes
 // <div data-ad-loc="src/components/user-components/Card.tsx:12:5" className="card">.
-// Only elements that render a DOM node are stamped (<div>, <motion.div>);
-// on a component (<Card>) the attribute would be just another prop. Dev
-// server only: a build would publish this machine's file layout.
+// An element that renders a DOM node (<div>, <motion.div>) gets data-ad-loc.
+// A component (<Button>) gets data-ad-use, where it's used: just another
+// prop, which reaches the DOM where the component passes its props on, as
+// shadcn's do ({...props}). Put ahead of the element's own attributes, a
+// caller's spread replaces it, so the DOM node carries the outermost use
+// that got through. Fragments take no props. Dev server only: a build would
+// publish this machine's file layout.
 const tagSource = (): Plugin => {
   let root: string
 
@@ -194,10 +198,14 @@ const tagSource = (): Plugin => {
       else if (isNode(value)) visit(value, fn)
     }
   }
-  const rendersDomNode = (name: Node): boolean =>
-    name.type === "JSXIdentifier"
-      ? /^[a-z]/.test(name.name as string)
-      : name.type === "JSXMemberExpression" && rendersDomNode(name.property as Node)
+  // The stamp an element's name takes: lowercase renders a DOM node, as does
+  // a member ending in one (motion.div); other names are components.
+  const stampFor = (name: Node): string | null => {
+    if (name.type === "JSXMemberExpression") return stampFor(name.property as Node)
+    if (name.type !== "JSXIdentifier") return null
+    if (/^[a-z]/.test(name.name as string)) return SOURCE_ATTRIBUTE
+    return name.name === "Fragment" ? null : USE_ATTRIBUTE
+  }
 
   return {
     name: "antidraw:tag-source",
@@ -241,14 +249,16 @@ const tagSource = (): Plugin => {
         }
         const s = new MagicString(code)
         visit(ast.program as unknown as Node, (node) => {
-          if (node.type !== "JSXOpeningElement" || !rendersDomNode(node.name as Node)) return
+          if (node.type !== "JSXOpeningElement") return
+          const stamp = stampFor(node.name as Node)
+          if (!stamp) return
           const attributes = node.attributes as Node[]
-          const named = (a: Node) => a.type === "JSXAttribute" && (a.name as Node & { name: unknown }).name === SOURCE_ATTRIBUTE
+          const named = (a: Node) => a.type === "JSXAttribute" && (a.name as Node & { name: unknown }).name === stamp
           if (attributes.some(named)) return
           const { line, column } = position(node.start)
           // After the name and any type arguments (<motion.div<Props>>).
           const after = ((node.typeArguments ?? node.typeParameters ?? node.name) as Node).end
-          s.appendLeft(after, ` ${SOURCE_ATTRIBUTE}={${JSON.stringify(`${relative}:${line}:${column}`)}}`)
+          s.appendLeft(after, ` ${stamp}={${JSON.stringify(`${relative}:${line}:${column}`)}}`)
         })
         if (!s.hasChanged()) return null
         return { code: s.toString(), map: s.generateMap({ hires: "boundary", source: file, includeContent: true }) }
