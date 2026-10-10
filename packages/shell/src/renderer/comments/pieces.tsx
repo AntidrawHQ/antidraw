@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import type { ElementInfo } from "@antidrawapp/runtime/inspector";
 import { cn } from "@/renderer/lib/utils";
-import { elementAt, scrollAt, wheelPixels } from "@/renderer/inspector/bridge";
+import { elementAt } from "@/renderer/inspector/bridge";
+import { useFrameWheel } from "@/renderer/inspector/frame-wheel";
 import { samePick, useInspectorStore } from "@/renderer/inspector/store";
 import { Box, BoxModel, COLORS } from "@/renderer/inspector/FrameInspector";
 import { useCommentStore, type Pos } from "./store";
@@ -93,26 +94,28 @@ export const FrameCommentTarget = ({ frame, zoom = 1, wheel = false }: { frame: 
     if (!active) setHover(null);
   }, [active]);
 
-  if (!active) return null;
-
+  // What's under the pointer once a wheel stops, the page having moved.
+  const wheelTo = useFrameWheel(frame, () => hoverSoon());
   const ready = () => !!useInspectorStore.getState().frames[frame]?.ready;
-  const toFrame = (e: MouseEvent<HTMLDivElement>) => {
-    const el = e.currentTarget;
-    const r = el.getBoundingClientRect();
-    const scale = el.offsetWidth / r.width;
-    return { x: Math.round((e.clientX - r.left) * scale), y: Math.round((e.clientY - r.top) * scale) };
-  };
-
   const hoverSoon = () => {
     raf.current ||= requestAnimationFrame(() => {
       raf.current = 0;
       const p = point.current;
-      if (!p || !ready()) return;
+      if (!p || !ready() || wheelTo.busy()) return;
       const id = ++asked.current;
       void elementAt(frame, p.x, p.y).then((info) => {
         if (asked.current === id) setHover(info);
       });
     });
+  };
+
+  if (!active) return null;
+
+  const toFrame = (e: MouseEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    const r = el.getBoundingClientRect();
+    const scale = el.offsetWidth / r.width;
+    return { x: Math.round((e.clientX - r.left) * scale), y: Math.round((e.clientY - r.top) * scale) };
   };
 
   const click = (e: MouseEvent<HTMLDivElement>) => {
@@ -142,11 +145,13 @@ export const FrameCommentTarget = ({ frame, zoom = 1, wheel = false }: { frame: 
       }}
       onWheel={(e) => {
         if (!wheel) return;
-        const p = (point.current = toFrame(e));
-        const { dx, dy } = wheelPixels(e, e.currentTarget.offsetHeight);
-        scrollAt(frame, p.x, p.y, dx, dy);
-        // What's under the pointer now that the page moved under it.
-        hoverSoon();
+        point.current = toFrame(e);
+        // No hover while it scrolls: its box would trail the page.
+        if (!wheelTo.busy()) {
+          asked.current++;
+          setHover(null);
+        }
+        wheelTo.onWheel(point.current, e, e.currentTarget.offsetHeight);
       }}
       onPointerLeave={() => {
         point.current = null;

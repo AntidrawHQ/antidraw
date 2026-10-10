@@ -1,7 +1,8 @@
 import { useEffect, useRef, type CSSProperties, type MouseEvent } from "react";
 import { useStore } from "@xyflow/react";
 import type { ElementInfo, Sides } from "@antidrawapp/runtime/inspector";
-import { clearHover, hoverAt, registerFrame, scrollAt, selectAt, wheelPixels } from "./bridge";
+import { clearHover, hoverAt, registerFrame, selectAt } from "./bridge";
+import { useFrameWheel } from "./frame-wheel";
 import { samePick, useInspectorStore } from "./store";
 
 // The inspector over one frame: catches the pointer while inspecting, asks
@@ -73,15 +74,17 @@ export const FrameInspector = ({
   const point = useRef<{ x: number; y: number } | null>(null);
   const raf = useRef(0);
   useEffect(() => () => cancelAnimationFrame(raf.current), []);
-
-  if (!active) return null;
+  // What's under the pointer once a wheel stops, the page having moved.
+  const wheelTo = useFrameWheel(frame, () => hoverSoon());
 
   const hoverSoon = () => {
     raf.current ||= requestAnimationFrame(() => {
       raf.current = 0;
-      if (point.current) void hoverAt(frame, point.current.x, point.current.y);
+      if (point.current && !wheelTo.busy()) void hoverAt(frame, point.current.x, point.current.y);
     });
   };
+
+  if (!active) return null;
 
   const toFrame = (e: MouseEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
@@ -100,10 +103,9 @@ export const FrameInspector = ({
       onWheel={(e) => {
         if (!wheel) return;
         point.current = toFrame(e);
-        const { dx, dy } = wheelPixels(e, e.currentTarget.offsetHeight);
-        scrollAt(frame, point.current.x, point.current.y, dx, dy);
-        // What's under the pointer now that the page moved under it.
-        hoverSoon();
+        // No hover while it scrolls: its box would trail the page.
+        if (!wheelTo.busy()) clearHover(frame);
+        wheelTo.onWheel(point.current, e, e.currentTarget.offsetHeight);
       }}
       onPointerLeave={() => {
         point.current = null;
