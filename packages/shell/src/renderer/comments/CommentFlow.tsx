@@ -1,31 +1,23 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useStore, useStoreApi } from "@xyflow/react";
 import { useQueryClient } from "@tanstack/react-query";
-import { ArrowUp, ArrowUpRight, ChevronDown, CornerDownRight, Pencil, X } from "lucide-react";
-import type { ChatPhase, Comment, CommentState } from "@/main/api";
+import { ArrowUpRight, Pencil } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
-import { Ring } from "@/renderer/components/ui/tool";
-import { Beam } from "@/renderer/components/AskUserQuestionCard";
 import { frameNodeId, useFocusComponent } from "@/renderer/canvas/Canvas";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
 import { useComposerModel } from "@/renderer/hooks/use-composer-model";
 import { useConversationMessages } from "@/renderer/lib/claude-code-ops";
 import { queryKeys } from "@/renderer/lib/query-keys";
+import { useCommentsChanged } from "@/renderer/lib/comment-ops";
 import type { CommentList } from "@/renderer/lib/api";
-import { beside, BOX, CommentBoxAt, FLOAT, floatShadow, FrameCommentTarget, Kbd, useCloseOnClickAway } from "./pieces";
-import {
-  useAddComment,
-  useClearCompleted,
-  useComments,
-  useCommentsChanged,
-  useEditComment,
-  useRemoveComment,
-  useSendComments,
-} from "@/renderer/lib/comment-ops";
+import { beside, BOX, CommentBoxAt, FLOAT, floatShadow, FrameCommentTarget, Kbd, TextBtn, useCloseOnClickAway } from "./pieces";
+import { LABEL, type Actions, type Cmt, type Flow } from "./model";
+import { useCommentActions } from "./use-comment-actions";
 import { setCanvasTool, useCommentStore, type Pos } from "./store";
 
 // Comments for Claude, on the canvas, with the Comment tool on (design:
-// CommentFlow, variation A — the box by the pin, the list at the top right).
+// CommentFlow, variation A — the box by the pin; the list is the chat panel's,
+// above the composer: ChatComments).
 //  - Click a frame to drop a pin there, on the element under it; the box
 //    opens by it. ↵ adds a comment to the list; nothing reaches Claude until
 //    Send.
@@ -43,69 +35,7 @@ import { setCanvasTool, useCommentStore, type Pos } from "./store";
 //    completed" in the footer removes completed comments.
 //  - A new chat is handed the earlier sets' comments and notes as history.
 
-/* ── Model ─────────────────────────────────────────────────────────────── */
-
-type CState = CommentState;
-// `frame` is the component whose frame the pin is on.
-type Cmt = { id: number; text: string; state: CState; pos: Pos; frame: string };
-type Phase = ChatPhase;
-type Send = { n: number; phase: Phase; conversationId: string; comments: Cmt[] };
-type Flow = { draft: Cmt[]; sends: Send[] };
-
-const isActive = (s: Send) => s.phase === "opening" || s.phase === "running";
-const count = (s: Send, st: CState) => s.comments.filter((c) => c.state === st).length;
-const allDone = (s: Send) => s.phase === "ended" && s.comments.every((c) => c.state === "done");
-
-const cmt = (c: Comment): Cmt => ({ id: c.id, text: c.text, state: c.state, pos: { x: c.x, y: c.y }, frame: c.componentName });
-
-const toFlow = (list: CommentList | undefined): Flow => {
-  if (!list) return { draft: [], sends: [] };
-  return {
-    draft: list.comments.filter((c) => c.state === "draft").map(cmt),
-    sends: list.chats
-      .map((ch) => ({ ...ch, comments: list.comments.filter((c) => c.conversationId === ch.conversationId).map(cmt) }))
-      .filter((s) => s.comments.length),
-  };
-};
-
-/* ── Look ──────────────────────────────────────────────────────────────── */
-
-const Pending = () => (
-  <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeDasharray="2.6 3.2" strokeLinecap="round">
-    <circle cx="12" cy="12" r="8.5" strokeOpacity=".6" />
-  </svg>
-);
-
-const TextBtn = ({ children, onClick, className }: { children: ReactNode; onClick?: () => void; className?: string }) => (
-  <button
-    type="button"
-    onClick={(e) => {
-      e.stopPropagation();
-      onClick?.();
-    }}
-    className={cn("cursor-pointer text-[12px] text-neutral-400 hover:text-neutral-100", className)}
-  >
-    {children}
-  </button>
-);
-
 /* ── Pieces ────────────────────────────────────────────────────────────── */
-
-type Actions = {
-  add: (t: string) => void;
-  send: () => void;
-  remove: (id: number) => void;
-  edit: (id: number, t: string) => void;
-  dismiss: (n: number, id: number) => void;
-  clearDone: () => void;
-  // Hovering a row lights up its pin.
-  point: (id: number | null) => void;
-  // Opens a comment on the canvas, to read or (not sent only) to edit.
-  open: (id: number, edit?: boolean) => void;
-  opened: number | null;
-  // Goes to a set's chat, in the side panel.
-  chat: (conversationId: string) => void;
-};
 
 // Where a frame is on screen, and the canvas's zoom and width, so pins and
 // the box can be placed by it. Null while the frame isn't on the canvas.
@@ -194,11 +124,12 @@ const CommentCard = ({ f, id, editing, a, onClose }: { f: Flow; id: number; edit
   const w = useStore((st) => st.width);
   if (!c) return null;
   // Its frame isn't on the canvas (the component's gone, often by the
-  // comment's own doing): beside the list instead, at the top.
-  const { left, top } = at ?? { left: w - 16 - TRAY_W - 8 - BOX, top: 16 };
+  // comment's own doing): at the canvas's top right instead, inside it.
+  const { left, top } = at ?? { left: Math.max(16, w - 16 - BOX), top: 16 };
   const save = () => {
-    if (v.trim()) a.edit(c.id, v);
-    else a.remove(c.id);
+    // Emptied, it's gone, and so is its card.
+    if (!v.trim()) return a.remove(c.id);
+    a.edit(c.id, v);
     a.open(c.id, false);
   };
   const cancel = () => {
@@ -286,165 +217,6 @@ const CommentCard = ({ f, id, editing, a, onClose }: { f: Flow; id: number; edit
   );
 };
 
-// A not-sent comment: its number and text. Click opens it on the canvas;
-// on hover, the pencil opens it for editing and × drops it.
-const DraftRow = ({ i, c, a }: { i: number; c: Cmt; a: Actions }) => (
-  <div
-    onClick={() => a.open(c.id)}
-    onMouseEnter={() => a.point(c.id)}
-    onMouseLeave={() => a.point(null)}
-    className={cn("group flex cursor-pointer items-baseline gap-2 rounded px-1.5 py-1.5", a.opened === c.id ? "bg-white/[0.07]" : "hover:bg-white/[0.03]")}
-  >
-    <span className="grid w-4 shrink-0 place-items-center font-mono text-[10.5px] text-neutral-500">{i}</span>
-    <span className="min-w-0 flex-1 break-words text-[13px] leading-[18px] text-neutral-100">{c.text}</span>
-    <span className={cn("flex shrink-0 items-center gap-0.5 self-center", a.opened === c.id ? "opacity-100" : "opacity-0 group-hover:opacity-100")}>
-      <button
-        type="button"
-        aria-label="Edit comment"
-        title="Edit"
-        onClick={(e) => {
-          e.stopPropagation();
-          a.open(c.id, true);
-        }}
-        className="grid size-5 cursor-pointer place-items-center rounded text-neutral-400 hover:bg-white/[0.06] hover:text-neutral-100"
-      >
-        <Pencil className="size-3" />
-      </button>
-      <button
-        type="button"
-        aria-label="Remove comment"
-        title="Delete"
-        onClick={(e) => {
-          e.stopPropagation();
-          a.remove(c.id);
-        }}
-        className="grid size-5 cursor-pointer place-items-center rounded text-neutral-400 hover:bg-white/[0.06] hover:text-neutral-100"
-      >
-        <X className="size-3" />
-      </button>
-    </span>
-  </div>
-);
-
-const LABEL: Record<CState, string> = { draft: "", sent: "Sent", done: "Completed" };
-
-// A comment in a set. Claude's note goes to the next chat's history, not
-// here. One still Sent after its chat ended gets × on hover; otherwise it
-// waits for Claude, from the chat.
-const SentRow = ({ c, n, phase, a }: { c: Cmt; n: number; phase: Phase; a: Actions }) => (
-  <div
-    onClick={() => a.open(c.id)}
-    onMouseEnter={() => a.point(c.id)}
-    onMouseLeave={() => a.point(null)}
-    className={cn("group flex cursor-pointer gap-2 rounded px-1.5 py-1.5", a.opened === c.id ? "bg-white/[0.07]" : "hover:bg-white/[0.03]")}
-  >
-    <span className="grid w-4 shrink-0 place-items-start pt-px text-neutral-500">{c.state === "done" ? <Ring failed={false} /> : <Pending />}</span>
-    <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-      <div className="flex items-baseline gap-2">
-        <span className={cn("min-w-0 flex-1 break-words text-[13px] leading-[18px]", c.state === "done" ? "text-neutral-400" : "text-neutral-200")}>{c.text}</span>
-        <span className={cn("shrink-0 text-[11px]", c.state === "done" ? "text-neutral-500" : "text-neutral-400")}>{LABEL[c.state]}</span>
-        {phase === "ended" && c.state === "sent" && (
-          <button
-            type="button"
-            aria-label="Remove comment"
-            onClick={(e) => {
-              e.stopPropagation();
-              a.dismiss(n, c.id);
-            }}
-            className="grid size-4 shrink-0 cursor-pointer place-items-center self-center rounded-sm text-neutral-500 opacity-0 hover:text-neutral-200 group-hover:opacity-100"
-          >
-            <X className="size-3" />
-          </button>
-        )}
-      </div>
-    </div>
-  </div>
-);
-
-// What sits before "Chat N" on a set's header.
-const chatIcon = <CornerDownRight className="size-3.5" strokeWidth={1.75} />;
-
-// One set: its chat, where it's got to, and its comments. Open while there's
-// anything to watch or act on; folds once every comment is completed.
-const SendGroup = ({ s, a }: { s: Send; a: Actions }) => {
-  const complete = allDone(s);
-  const [pin, setPin] = useState<boolean | null>(null);
-  const open = pin ?? !complete;
-  // No completed count: each row shows its own. Only what the rows can't say.
-  // A send resumes the chat it goes to, or starts it: either way it opens.
-  const label = s.phase === "opening" ? "Opening chat…" : null;
-  return (
-    <div className="flex flex-col">
-      <div className="flex items-center gap-2 rounded px-1.5 py-1.5 hover:bg-white/[0.03]">
-        <button type="button" onClick={() => setPin(!open)} className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left">
-          <span className="grid w-4 shrink-0 place-items-center text-neutral-400">{chatIcon}</span>
-          <span className="shrink-0 text-[12.5px] font-medium text-neutral-200">Chat {s.n}</span>
-          {label && <span className={cn("min-w-0 truncate text-[12px]", isActive(s) ? "auq-shimmer" : "text-neutral-500")}>{label}</span>}
-          <ChevronDown className={cn("size-3.5 shrink-0 text-neutral-500 transition-transform", !open && "-rotate-90")} />
-        </button>
-        <TextBtn onClick={() => a.chat(s.conversationId)} className="flex shrink-0 items-center gap-1 font-medium text-neutral-400">
-          <ArrowUpRight className="size-3.5" />
-          Open
-        </TextBtn>
-      </div>
-      {open && (
-        <div className="flex flex-col pl-6">
-          {s.comments.map((c) => (
-            <SentRow key={c.id} c={c} n={s.n} phase={s.phase} a={a} />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-};
-
-// The list, at the top right. Hidden until there's something in it.
-const TRAY_W = 392;
-const Tray = ({ f, a, sending }: { f: Flow; a: Actions; sending: boolean }) => {
-  if (!f.draft.length && !f.sends.length) return null;
-  const hasDone = f.sends.some((s) => s.phase === "ended" && count(s, "done") > 0);
-  return (
-    <div data-comment-ui onClick={(e) => e.stopPropagation()} className="pointer-events-auto absolute right-4 top-4 z-30 w-[392px]">
-      <Beam active={f.sends.some((s) => s.phase === "opening")} radius={12}>
-        <div className={cn("flex flex-col gap-0.5 p-1.5", FLOAT)} style={floatShadow}>
-          <div className="flex min-h-[20px] items-center gap-2 px-1.5 pb-1 pt-1.5">
-            <span className="text-[13px] font-medium text-neutral-100">Comments</span>
-          </div>
-          <div className="flex max-h-[300px] flex-col gap-0.5 overflow-y-auto">
-            {f.sends.map((s) => (
-              <SendGroup key={s.n} s={s} a={a} />
-            ))}
-            {/* Under the chats, a heading for what hasn't gone out. */}
-            {f.sends.length > 0 && f.draft.length > 0 && <p className="m-0 px-1.5 pb-0.5 pt-2.5 text-[12px] text-neutral-500">Not sent yet</p>}
-            {f.draft.map((c, i) => (
-              <DraftRow key={c.id} i={i + 1} c={c} a={a} />
-            ))}
-          </div>
-          {(f.draft.length > 0 || hasDone) && (
-            <div className="flex items-center gap-2 px-1 pb-0.5 pt-1.5">
-              {hasDone && (
-                <button type="button" onClick={a.clearDone} className="flex h-[26px] cursor-pointer items-center rounded-md px-2 text-[13px] text-neutral-300 transition-colors hover:bg-white/[0.06] hover:text-neutral-50">
-                  Clear completed
-                </button>
-              )}
-              <span className="flex-1" />
-              <button
-                type="button"
-                disabled={!f.draft.length || sending}
-                onClick={a.send}
-                className="flex h-[26px] shrink-0 cursor-pointer items-center gap-1.5 rounded-lg bg-[#e0e0e0] px-2.5 text-[13px] font-medium text-neutral-900 transition-colors hover:bg-white disabled:cursor-default disabled:opacity-25"
-              >
-                Send to chat
-                <ArrowUp className="size-3.5" />
-              </button>
-            </div>
-          )}
-        </div>
-      </Beam>
-    </div>
-  );
-};
-
 /* ── On the canvas ─────────────────────────────────────────────────────── */
 
 // The click target over a canvas frame, at the canvas's zoom.
@@ -466,26 +238,20 @@ export const CommentFlow = () => {
   const box = useCommentStore((s) => s.box);
   const opened = useCommentStore((s) => s.opened);
   const lit = useCommentStore((s) => s.lit);
-  const { setBox, setOpened, setLit } = useCommentStore.getState();
+  const { setBox, setOpened } = useCommentStore.getState();
+  const queryClient = useQueryClient();
 
   useCommentsChanged(workspaceId);
-  const { data } = useComments(workspaceId);
-  const f = toFlow(data);
-
-  const queryClient = useQueryClient();
-  const addComment = useAddComment(workspaceId);
-  const editComment = useEditComment(workspaceId);
-  const removeComment = useRemoveComment(workspaceId);
-  const clearCompleted = useClearCompleted(workspaceId);
-  const sendComments = useSendComments(workspaceId);
-  // Sends go to the chat that's open, with its model and effort, as the
-  // composer's would; with none open, to a new chat.
+  // Sends from here (the box's ⌘↵, a frame window's) go to the chat that's
+  // open, with its model and effort, as its composer's would.
   const activeConversationId = useWorkspaceStore((s) => s.activeConversationId);
   const { data: activeConversation } = useConversationMessages(activeConversationId);
   const composer = useComposerModel(activeConversationId, activeConversation);
+  const { f, a, sendDrafts } = useCommentActions({ model: composer.selectedModelId, effort: composer.effort });
 
-  // A comment opened from the list whose pin is off screen: the canvas goes
-  // to its frame first, as the component list's View does.
+  // An opened comment whose pin is off screen: the canvas goes to its frame,
+  // as the component list's View does. A comment opened from the chat's list
+  // is the usual case.
   const flow = useStoreApi();
   const focusComponent = useFocusComponent();
   const reveal = (id: number) => {
@@ -499,36 +265,38 @@ export const CommentFlow = () => {
     const y = (at.y + c.pos.y) * k + ty;
     if (x < 0 || y < 0 || x > width || y > height) focusComponent(c.frame);
   };
-
-  // ⌘↵ adds and sends at once: the send waits for the adds still in flight.
-  const adding = useRef(new Set<Promise<unknown>>());
+  const openedId = opened?.id;
+  const revealRef = useRef(reveal);
+  revealRef.current = reveal;
+  useEffect(() => {
+    if (openedId !== undefined) revealRef.current(openedId);
+  }, [openedId]);
 
   useCloseOnClickAway();
 
-  // Every draft to a new chat, once the adds in flight have landed.
-  const sendDrafts = async () => {
-    await Promise.allSettled([...adding.current]);
-    const list = queryClient.getQueryData<CommentList>(queryKeys.comments.byWorkspace(workspaceId));
-    const drafts = list?.comments.filter((c) => c.state === "draft") ?? [];
-    // To the open chat, or a new one that then opens, so the next send
-    // joins it rather than starting another.
-    return sendComments.send({ drafts, model: composer.selectedModelId, effort: composer.effort });
-  };
-
   // A frame's own window asking to show a comment it added (its Show), or
   // to send (its ⌘↵): this window has the list, and every frame to describe
-  // the drafts' elements. A send opens its chat here.
+  // the drafts' elements. A send opens its chat here. Only for this
+  // workspace: a frame window outlives a workspace switch, and its comment
+  // is another workspace's, as the drafts here would be to it.
   const latest = useRef({ sendDrafts, reveal });
   latest.current = { sendDrafts, reveal };
   useEffect(
     () =>
       // Optional: a renderer hot-reloaded over an older preload lacks it.
-      window.electronAPI.onCommentsShown?.(({ commentId, send }) => {
+      window.electronAPI.onCommentsShown?.((request) => {
+        if (request.workspaceId !== workspaceId) return;
+        const { commentId, send } = request;
         setCanvasTool("comment");
         void (async () => {
-          await queryClient.refetchQueries({ queryKey: queryKeys.comments.byWorkspace(workspaceId) });
+          const queryKey = queryKeys.comments.byWorkspace(workspaceId);
+          await queryClient.refetchQueries({ queryKey });
           latest.current.reveal(commentId);
           if (!send) return;
+          // The send is for the comment the frame window just added: without
+          // it among the drafts, there's nothing it asked to send.
+          const list = queryClient.getQueryData<CommentList>(queryKey);
+          if (!list?.comments.some((c) => c.id === commentId && c.state === "draft")) return;
           const conversationId = await latest.current.sendDrafts();
           if (conversationId) showConversation(conversationId);
         })().catch(console.error);
@@ -536,43 +304,15 @@ export const CommentFlow = () => {
     [queryClient, workspaceId, showConversation],
   );
 
-  const a: Actions = {
-    add: (t) => {
-      if (box && t.trim()) {
-        const p = addComment.mutateAsync({ componentName: box.frame, x: box.pos.x, y: box.pos.y, text: t, element: box.element });
-        adding.current.add(p);
-        void p.catch(console.error).finally(() => adding.current.delete(p));
-      }
-      setBox(null);
-    },
-    send: () => void sendDrafts().catch(console.error),
-    remove: (id) => removeComment.mutate(id),
-    edit: (id, t) => (t.trim() ? editComment.mutate({ commentId: id, text: t }) : removeComment.mutate(id)),
-    dismiss: (_n, id) => removeComment.mutate(id),
-    clearDone: () => clearCompleted.mutate(),
-    point: setLit,
-    // From the list with another tool on, it switches to Comment: the card
-    // sits by the pin, and pins are the Comment tool's.
-    open: (id, edit = false) => {
-      if (!useCommentStore.getState().active) setCanvasTool("comment");
-      setBox(null);
-      setOpened({ id, edit });
-      reveal(id);
-    },
-    opened: opened?.id ?? null,
-    chat: showConversation,
-  };
-
-  // The list shows whatever the tool, while there's something in it, so
-  // Claude's progress stays in sight. Pins, the box and the open comment are
-  // the Comment tool's.
+  // The list is the chat panel's (ChatComments). Here: the pins, the box and
+  // the open comment, all the Comment tool's.
+  if (!active) return null;
   return (
     <div className="pointer-events-none absolute inset-0 z-[5] overflow-hidden">
-      {active && <Pins f={f} lit={lit} a={a} />}
-      {active && box && <CommentBox key={`${box.frame},${box.pos.x},${box.pos.y}`} frame={box.frame} pos={box.pos} a={a} onClose={() => setBox(null)} />}
-      {active && opened && <CommentCard key={`${opened.id}-${opened.edit}`} f={f} id={opened.id} editing={opened.edit} a={a} onClose={() => setOpened(null)} />}
-      <Tray f={f} a={a} sending={sendComments.isPending} />
-      {active && !box && !f.sends.length && (
+      <Pins f={f} lit={lit} a={a} />
+      {box && <CommentBox key={`${box.frame},${box.pos.x},${box.pos.y}`} frame={box.frame} pos={box.pos} a={a} onClose={() => setBox(null)} />}
+      {opened && <CommentCard key={`${opened.id}-${opened.edit}`} f={f} id={opened.id} editing={opened.edit} a={a} onClose={() => setOpened(null)} />}
+      {!box && !f.sends.length && (
         <p className="pointer-events-none absolute left-1/2 top-4 m-0 -translate-x-1/2 rounded-full bg-black/40 px-3 py-1 text-[12px] text-neutral-300">Click a frame to comment</p>
       )}
     </div>

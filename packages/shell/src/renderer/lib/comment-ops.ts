@@ -33,6 +33,10 @@ export const useComments = (workspaceId: string | null) =>
       : skipToken,
   });
 
+// One stream per workspace, however many surfaces show its comments (the
+// canvas, the chat panel): the last to unmount closes it.
+const watching = new Map<string, { users: number; stop: () => void }>();
+
 // The list's news, from the workspace's comments event stream: any write,
 // the user's or Claude's, or a comment chat moving on. Each refetches.
 export const useCommentsChanged = (workspaceId: string | null) => {
@@ -40,7 +44,17 @@ export const useCommentsChanged = (workspaceId: string | null) => {
   useEffect(() => {
     if (!workspaceId) return;
     const queryKey = queryKeys.comments.byWorkspace(workspaceId);
-    return watchComments(workspaceId, () => void queryClient.invalidateQueries({ queryKey }));
+    const watch = watching.get(workspaceId) ?? {
+      users: 0,
+      stop: watchComments(workspaceId, () => void queryClient.invalidateQueries({ queryKey })),
+    };
+    watch.users++;
+    watching.set(workspaceId, watch);
+    return () => {
+      if (--watch.users > 0) return;
+      watch.stop();
+      watching.delete(workspaceId);
+    };
   }, [workspaceId, queryClient]);
 };
 

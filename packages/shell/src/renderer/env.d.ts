@@ -11,9 +11,9 @@ declare global {
       /** In the main window: elements tagged in preview windows. */
       onElementTagged: (callback: (pick: Picked, url: string) => void) => () => void;
       /** From a preview window: show a comment it added in the main window, and with `send`, send the drafts there. */
-      showComments: (request: { commentId: number; send: boolean }) => Promise<void>;
+      showComments: (request: { workspaceId: string; commentId: number; send: boolean }) => Promise<void>;
       /** In the main window: a preview window's showComments. */
-      onCommentsShown: (callback: (request: { commentId: number; send: boolean }) => void) => () => void;
+      onCommentsShown: (callback: (request: { workspaceId: string; commentId: number; send: boolean }) => void) => () => void;
       getUpdateStatus: () => Promise<{ pendingVersion: string | null }>;
       installUpdate: () => Promise<void>;
       onUpdateDownloaded: (callback: (version: string) => void) => () => void;

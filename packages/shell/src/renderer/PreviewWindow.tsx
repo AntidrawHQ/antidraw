@@ -100,7 +100,7 @@ export const PreviewWindow = ({ url, workspaceId = null }: { url: string; worksp
                 <button
                   type="button"
                   onClick={() => {
-                    void window.electronAPI.showComments({ commentId: commented, send: false });
+                    if (workspaceId) void window.electronAPI.showComments({ workspaceId, commentId: commented, send: false });
                     setCommented(null);
                   }}
                   className="shrink-0 rounded-md px-1.5 py-0.5 text-neutral-200 hover:bg-white/[0.06] hover:text-white"

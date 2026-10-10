@@ -227,12 +227,16 @@ app.whenReady().then(async () => {
   // forward, show the comment, and with `send`, send the drafts there.
   ipcMain.handle("comments:show", (event, request: unknown) => {
     if (!previewWindows.has(event.sender) || !mainWindow) return;
-    const { commentId, send } = (request ?? {}) as { commentId?: unknown; send?: unknown };
-    if (typeof commentId !== "number") return;
+    const { workspaceId, commentId, send } = (request ?? {}) as {
+      workspaceId?: unknown;
+      commentId?: unknown;
+      send?: unknown;
+    };
+    if (typeof workspaceId !== "string" || !UUID_RE.test(workspaceId) || typeof commentId !== "number") return;
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.show();
     mainWindow.focus();
-    mainWindow.webContents.send("comments:shown", { commentId, send: send === true });
+    mainWindow.webContents.send("comments:shown", { workspaceId, commentId, send: send === true });
   });
 
   // Cleanup any orphaned dev servers from previous crash (non-blocking)
