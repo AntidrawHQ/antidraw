@@ -7,8 +7,9 @@ import type { Plugin } from "vite"
 import { antidraw } from "@antidrawapp/runtime/plugin"
 
 // Random TSX through the source tagger. Each case is a tree of JSX, rendered
-// to source while noting where every DOM element's "<" is and where its name
-// ends: where its stamp must point, and where it must go.
+// to source while noting where every element's "<" is and where its name
+// ends: where its stamp must point, and where it must go. DOM elements take
+// a location (data-ad-loc), components a use (data-ad-use), fragments none.
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const fixture = path.join(here, "fixture")
@@ -44,11 +45,13 @@ type Child = { gap: string; node: Node }
 type Decl = { kind: "const" | "generic-arrow" | "function"; value: Value }
 
 const KEPT = `data-ad-loc="kept"`
+const KEPT_USE = `data-ad-use="kept"`
 
 // Lowercase tags, and members ending in one (motion.div), render DOM nodes.
 const DOM = ["div", "span", "li", "button", "svg", "path", "motion.div", "ui.icon.arrow"]
 const COMPONENTS = ["Card", "UI.Card", "React.Fragment", "motion.Div"]
 const isDom = (name: string) => /^[a-z]/.test(name.split(".").pop()!)
+const stampOf = (name: string) => (isDom(name) ? "loc" : name === "React.Fragment" ? null : "use")
 
 // Between attributes: spaces, line breaks, and comments holding tags or
 // characters Babel ends a line at but editors don't (a lone \r, U+2029).
@@ -58,6 +61,7 @@ const plainAttr = fc.constantFrom(
   `className="a b"`,
   "{...props}",
   KEPT,
+  KEPT_USE,
   "disabled",
   `title={"<b>"}`,
   `style={{ color: "red" }}`,
@@ -111,7 +115,7 @@ const { value } = fc.letrec<{ el: El; fragment: Fragment; value: Value; node: No
   value: fc.oneof({ depthSize: "small" }, tie("el"), tie("fragment")),
 }))
 
-type Element = { start: number; nameEnd: number }
+type Element = { start: number; nameEnd: number; stamp: "loc" | "use" }
 
 const render = (decls: Decl[], root: Value, eol: string) => {
   let code = ""
@@ -123,8 +127,10 @@ const render = (decls: Decl[], root: Value, eol: string) => {
     const start = code.length
     emit(`<${e.name}`)
     if (e.typeArgs) emit("<{ a: 1 }>")
-    if (isDom(e.name) && !e.attrs.some(({ attr }) => attr.kind === "plain" && attr.code === KEPT)) {
-      stamped.push({ start, nameEnd: code.length })
+    const stamp = stampOf(e.name)
+    const kept = stamp === "loc" ? KEPT : KEPT_USE
+    if (stamp && !e.attrs.some(({ attr }) => attr.kind === "plain" && attr.code === kept)) {
+      stamped.push({ start, nameEnd: code.length, stamp })
     }
     for (const { gap, attr } of e.attrs) {
       emit(gap)
@@ -202,7 +208,7 @@ const source = fc
   })
   .map(({ file, eol, decls, root }) => ({ file, ...render(decls, root, eol) }))
 
-const STAMP = / data-ad-loc=\{"((?:[^"\\]|\\.)*)"\}/g
+const STAMP = / data-ad-(loc|use)=\{"((?:[^"\\]|\\.)*)"\}/g
 
 // The line and column of an offset as editors and the agent's Read tool
 // count them: lines end only at \n or \r\n (not where Babel also ends them,
@@ -212,7 +218,7 @@ const lineColumn = (code: string, offset: number) => {
   return `${lines.length}:${lines.at(-1)!.length + 1}`
 }
 
-test("stamps each DOM element once, after its name, with where its < is, and changes nothing else", () => {
+test("stamps each element once, after its name, with where its < is, and changes nothing else", () => {
   const transform = tagSource()
   fc.assert(
     fc.property(source, ({ file, code, stamped }) => {
@@ -224,15 +230,18 @@ test("stamps each DOM element once, after its name, with where its < is, and cha
       // It only adds: without the stamps, it's the source.
       expect(out.replace(STAMP, "")).toBe(code)
 
-      // One per DOM element, and none for components and fragments: right after
-      // its name (and type arguments), naming the line and column of its "<".
+      // One per element, a location or a use, and none for fragments: right
+      // after its name (and type arguments), naming the line and column of
+      // its "<".
       let added = 0
       const stamps = [...out.matchAll(STAMP)].map((m) => {
         const at = m.index - added
         added += m[0].length
-        return { at, loc: JSON.parse(`"${m[1]}"`) as string }
+        return { at, stamp: m[1], loc: JSON.parse(`"${m[2]}"`) as string }
       })
-      expect(stamps).toEqual(stamped.map((e) => ({ at: e.nameEnd, loc: `${file}:${lineColumn(code, e.start)}` })))
+      expect(stamps).toEqual(
+        stamped.map((e) => ({ at: e.nameEnd, stamp: e.stamp, loc: `${file}:${lineColumn(code, e.start)}` })),
+      )
 
       // Run again, it finds nothing left to stamp.
       expect(transform(out, file)).toBeNull()
@@ -249,6 +258,9 @@ test("generates the cases that matter", () => {
   expect(seen((s) => s.stamped.length >= 5)).toBeGreaterThan(25)
   expect(seen((s) => /icon=\{<[a-z]/.test(s.code))).toBeGreaterThan(25)
   expect(seen((s) => s.code.includes(KEPT))).toBeGreaterThan(25)
+  expect(seen((s) => s.code.includes(KEPT_USE))).toBeGreaterThan(25)
+  expect(seen((s) => s.stamped.some((e) => e.stamp === "use"))).toBeGreaterThan(25)
+  expect(seen((s) => s.code.includes("<React.Fragment"))).toBeGreaterThan(25)
   expect(seen((s) => s.code.includes("\r\n"))).toBeGreaterThan(25)
   expect(seen((s) => /[\u2028\u2029]|\r(?!\n)/.test(s.code))).toBeGreaterThan(25)
   expect(seen((s) => /<[a-z.]+<\{ a: 1 \}>/.test(s.code))).toBeGreaterThan(25)

@@ -6,8 +6,9 @@ import { createServer, type Plugin } from "vite"
 import react from "@vitejs/plugin-react"
 import { antidraw } from "@antidrawapp/runtime/plugin"
 
-// The dev server stamps each DOM element in the workspace's JSX with where it
-// is written (data-ad-loc), for the canvas's inspector.
+// The dev server stamps each element in the workspace's JSX with where it is
+// written, for the canvas's inspector: a DOM element's location (data-ad-loc),
+// a component's use (data-ad-use).
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const fixture = path.join(here, "fixture")
@@ -21,7 +22,7 @@ const tagSource = () => {
   return (code: string, file: string) => plugin.transform.handler(code, path.join(fixture, file))?.code ?? null
 }
 
-test("stamps DOM elements with file, line and column, and leaves components alone", () => {
+test("stamps DOM elements with where they're written, components with where they're used, and fragments not at all", () => {
   const transform = tagSource()
   const code = `const motion = { div: (props: object) => null }
 function Button(props: object) {
@@ -33,8 +34,10 @@ export default function List<T>({ items }: { items: T[] }) {
       <Button />
       <motion.div<{ a: 1 }> />
       <li data-ad-loc="kept" />
+      <Button data-ad-use="kept" />
       {items.map((_, i) => <li key={i}>{String(i)}</li>)}
       <>text</>
+      <React.Fragment key="a"><Fragment /></React.Fragment>
     </ul>
   )
 }
@@ -47,11 +50,13 @@ export default function List<T>({ items }: { items: T[] }) {
     export default function List<T>({ items }: { items: T[] }) {
       return (
         <ul data-ad-loc={"src/components/user-components/List.tsx:7:5"} className="list">
-          <Button />
+          <Button data-ad-use={"src/components/user-components/List.tsx:8:7"} />
           <motion.div<{ a: 1 }> data-ad-loc={"src/components/user-components/List.tsx:9:7"} />
           <li data-ad-loc="kept" />
-          {items.map((_, i) => <li data-ad-loc={"src/components/user-components/List.tsx:11:28"} key={i}>{String(i)}</li>)}
+          <Button data-ad-use="kept" />
+          {items.map((_, i) => <li data-ad-loc={"src/components/user-components/List.tsx:12:28"} key={i}>{String(i)}</li>)}
           <>text</>
+          <React.Fragment key="a"><Fragment /></React.Fragment>
         </ul>
       )
     }
@@ -84,7 +89,7 @@ test("skips files that aren't JSX, aren't the workspace's, or don't parse", () =
   expect(transform(`export const a = <div />`, "src/lib/a.ts")).toBeNull()
   expect(transform(`export const A = () => <div />`, "node_modules/pkg/A.tsx")).toBeNull()
   expect(transform(`export const A = () => <div`, "src/components/user-components/A.tsx")).toBeNull()
-  expect(transform(`export const A = () => <Card />`, "src/components/user-components/A.tsx")).toBeNull()
+  expect(transform(`export const A = () => <Fragment><React.Fragment /></Fragment>`, "src/components/user-components/A.tsx")).toBeNull()
 })
 
 test("is part of the dev server only, after which the element still gets the attribute", async () => {

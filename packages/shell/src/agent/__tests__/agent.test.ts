@@ -120,7 +120,7 @@ test("tells repeated elements apart by index, and finds them again from a ref", 
   const ref = msg.info!.ref
   expect(ask({ type: "context", id: 2, refs: [ref, { loc: "gone.tsx:1:1", index: 0, path: [9], tag: "p" }] }).msg).toMatchObject({
     type: "context",
-    contexts: [{ text: "two", repeat: { index: 1, count: 2, keys: [] } }, null],
+    contexts: [{ html: `<li data-ad-loc="${OWN}:6:28">two</li>`, repeat: { index: 1, count: 2 } }, null],
   })
 })
 
@@ -129,34 +129,20 @@ const contextOf = (el: Element) => {
   return (ask({ type: "context", id: 2, refs: [ref] }).msg as Extract<FromFrame, { type: "context" }>).contexts[0]
 }
 
-test("tells an agent where an element is written, what it is and how it's used", () => {
+test("tells an agent what an element is, with where it's written, as its markup", () => {
   $(".btn").setAttribute("data-slot", "button")
   $(".btn").setAttribute("aria-expanded", "false")
   $(".btn").setAttribute("style", "padding: 4px 8px")
   expect(contextOf($(".btn"))).toMatchInlineSnapshot(`
     {
-      "attributes": {
-        "aria-expanded": "false",
-        "data-slot": "button",
-      },
       "border": [
         0,
         0,
         0,
         0,
       ],
-      "components": [
-        {
-          "loc": "src/components/user-components/Card.tsx:3:5",
-          "name": "Card",
-        },
-        {
-          "loc": "src/components/ui/button.tsx:8:10",
-          "name": "button",
-        },
-      ],
       "element": "button.btn",
-      "loc": "src/components/ui/button.tsx:8:10",
+      "html": "<button class="btn" data-ad-loc="src/components/ui/button.tsx:8:10" data-slot="button" aria-expanded="false" style="padding: 4px 8px">Upgrade</button>",
       "margin": [
         0,
         0,
@@ -174,7 +160,6 @@ test("tells an agent where an element is written, what it is and how it's used",
         0,
         0,
       ],
-      "text": "Upgrade",
       "viewport": [
         1024,
         768,
@@ -187,10 +172,11 @@ test("tells an agent where an element is written, what it is and how it's used",
 test("places an element without a location of its own inside the nearest one that has one", () => {
   $(".btn").innerHTML = `<span><svg></svg><svg><path></path></svg></span>`
   expect(contextOf($(".btn path"))).toMatchObject({
-    loc: null,
-    within: { loc: `${BUTTON}:8:10`, path: "span > svg:nth-of-type(2) > path" },
-    components: [{ name: "Card" }, { name: "button", loc: `${BUTTON}:8:10` }],
+    html: "<path></path>",
+    within: `<button class="btn" data-ad-loc="${BUTTON}:8:10">`,
   })
+  // One with a location of its own needs none.
+  expect(contextOf($(".btn"))).toMatchObject({ within: null })
 })
 
 test("only counts elements inside the component, and ignores other windows", () => {
@@ -322,7 +308,7 @@ test("finds a remounted element again when a line added above moves every locati
   expect(lastSelection()).toMatchInlineSnapshot(`"selection-changed: "b" at src/components/user-components/Card.tsx:13:5"`)
   // And a tag refreshed on send, with the ref from before.
   const reply = ask({ type: "context", id: 2, refs: [info!.ref] }).msg as Extract<FromFrame, { type: "context" }>
-  expect(`${reply.contexts[0]?.text} at ${reply.contexts[0]?.loc}`).toMatchInlineSnapshot(`"b at src/components/user-components/Card.tsx:13:5"`)
+  expect(reply.contexts[0]?.html).toMatchInlineSnapshot(`"<p data-ad-loc="src/components/user-components/Card.tsx:13:5">b</p>"`)
 })
 
 test("keeps a remounted element by its location when a sibling before it is hidden", async () => {

@@ -9,7 +9,7 @@ import type { Comment } from "@/main/api";
 // The canvas's frame of Card, which finds a different <li> at the same ref.
 vi.mock("@/renderer/inspector/bridge", () => ({
   frameUrl: (frame: string) => `https://frame.test/preview?componentName=${frame}`,
-  getElementContext: vi.fn(async (picks: unknown[]) => picks.map(() => context({ text: "Walk dog" }))),
+  getElementContext: vi.fn(async (picks: unknown[]) => picks.map(() => context({ html: `<li class="item">Walk dog</li>` }))),
 }));
 
 const { getElementContext } = await import("@/renderer/inspector/bridge");
@@ -34,12 +34,9 @@ function context(over: Partial<ElementContext> = {}): ElementContext {
   return {
     viewport: [1280, 800],
     element: "li.item",
-    text: "",
-    loc: `${OWN}:7:9`,
+    html: `<li class="item" data-ad-loc="${OWN}:7:9"></li>`,
     within: null,
-    components: [],
     repeat: null,
-    attributes: {},
     size: [300, 32],
     margin: [0, 0, 0, 0],
     border: [0, 0, 0, 0],
@@ -52,7 +49,7 @@ const draft = (id: number, element: Record<string, unknown> | null) =>
   ({ id, componentName: "Card", x: 10, y: 20, text: "Make it bold", state: "draft", element }) as unknown as Comment;
 
 it("asks the canvas's frame only about elements pinned there, and takes a frame window's as it saw them", async () => {
-  const seen = context({ viewport: [1440, 900], text: "Banana", size: [400, 32] });
+  const seen = context({ viewport: [1440, 900], html: `<li class="item">Banana</li>`, size: [400, 32] });
   const described = await describeElements([
     draft(1, { ...info() }),
     draft(2, { ...info(), seen }),
@@ -60,10 +57,10 @@ it("asks the canvas's frame only about elements pinned there, and takes a frame 
     draft(4, null),
   ]);
   expect(vi.mocked(getElementContext)).toHaveBeenCalledExactlyOnceWith([{ frame: "Card", info: info() }]);
-  expect(described.map((d) => [d.id, d.frame, d.element?.match(/^element: .*$/m)?.[0], /as last seen/.test(d.element ?? "")])).toEqual([
-    [1, "1280×800", 'element: li.item "Walk dog"', false],
-    [2, "1440×900", 'element: li.item "Banana"', false],
-    [3, null, 'element: li.item "Banana"', true],
+  expect(described.map((d) => [d.id, d.frame, /Walk dog|Banana/.exec(d.element ?? "")?.[0], /as last seen/.test(d.element ?? "")])).toEqual([
+    [1, "1280×800", "Walk dog", false],
+    [2, "1440×900", "Banana", false],
+    [3, null, "Banana", true],
     [4, null, undefined, false],
   ]);
 });

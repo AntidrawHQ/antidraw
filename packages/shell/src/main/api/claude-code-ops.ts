@@ -309,11 +309,12 @@ IMPORTANT RULES:
 
 ELEMENTS THE USER POINTS AT:
 When the user picks elements on the canvas, their message starts with a <canvas-selection> block. "This", "here" and "it" in the message mean those elements. They're grouped by the component whose frame they were picked in: <component> gives its name, its file, the URL its preview loads, and the frame's size; one <element> follows for each element picked in it.
-- written at: the file, line and column of its JSX. "none of its own" means a library rendered it; the location is the nearest element around it that has one, and the selector path leads down from there.
-- rendered by: the components whose code produced it, from the previewed component in, each with the nearest place in its code. An element written in any other component's file, including another one in src/components/user-components/, may appear wherever that component is used: change it there only if the user means every use, otherwise change how the previewed component uses it.
-- repeated: one of several rendered from the same place (a .map()); the item number and React keys (outer list first) say which.
-- attributes and box: what it is and what state it's in, and its rendered size, margin, border and padding in CSS pixels, at the frame's size.
-- "as last seen": its frame didn't answer, so only what the canvas last knew is given. used at: the nearest place in the previewed component's file around it, not necessarily where it's written.
+- element: its tag, id and first classes. Below it, indented, its markup as rendered now, cut short: children a few levels down ("…", "… 3 more"), long text and values clipped, an <svg>'s drawing left out (its class names the icon).
+- data-ad-loc, on it or in its markup: the file, line and column of the JSX that element is written at. data-ad-use: where the component that rendered it is used, e.g. the <Button> in the previewed component behind a button written in src/components/ui/button.tsx. An element written in any other component's file, including another one in src/components/user-components/, may appear wherever that component is used: change that file only if the user means every use, otherwise change how the previewed component uses it (at data-ad-use). The dev server adds these attributes; they aren't in the code.
+- inside: it has no data-ad-loc of its own (a library rendered it, or a component through a variable, as shadcn's <Comp>), so this is the opening tag of the nearest element around it that has one.
+- repeated: one of several written in the same place and used from the same place (a .map()); the item number says which, and its text which item of the data it is.
+- box: its rendered size, margin, border and padding in CSS pixels, at the frame's size.
+- "as last seen": its frame didn't answer, so only what the canvas last knew is given. written at: where its JSX is. used at: the nearest place in the previewed component's file around it, not necessarily where it's written.
 Locations were read when the message was sent; read the file before editing.
 
 COMMENTS THE USER LEAVES:

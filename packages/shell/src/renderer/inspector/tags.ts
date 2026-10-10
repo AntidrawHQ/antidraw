@@ -13,7 +13,10 @@ export const elementName = (info: ElementInfo) =>
   info.tag + (info.id ? `#${info.id}` : "") + info.classes.map((c) => `.${c}`).join("");
 
 // Inside the block, nothing may read as a tag. Only "<" is escaped: the
-// values are quoted, not XML, and an "&amp;" would read as the text.
+// values are quoted, not XML, and an "&amp;" would read as the text. The
+// element's markup is the exception, being markup: its "<" is a tag's and
+// its text's is escaped, and each line of it is indented, so none starts
+// with one.
 const escape = (v: string) => v.replace(/</g, "&lt;");
 const quote = (v: string) => JSON.stringify(v);
 
@@ -38,22 +41,11 @@ const lines = (...all: (string | null | false)[]) => all.filter((l): l is string
 export function describeContext(c: ElementContext) {
   return [
     "<element>",
+    ...lines(`element: ${c.element}`),
+    ...c.html.split("\n").map((line) => `  ${line}`),
+    ...(c.within ? [`inside: ${c.within}`] : []),
     ...lines(
-      `element: ${c.element}${c.text ? ` ${quote(c.text)}` : ""}`,
-      c.loc
-        ? `written at: ${c.loc}`
-        : c.within && `written at: none of its own; inside ${c.within.loc}, at ${c.within.path}`,
-      c.components.length > 0 &&
-        `rendered by: ${c.components.map((x) => (x.loc ? `${x.name} (${x.loc})` : x.name)).join(" > ")}`,
-      c.repeat &&
-        `repeated: item ${c.repeat.index + 1} of ${c.repeat.count} rendered from there` +
-          (c.repeat.keys.length
-            ? `, ${c.repeat.keys.length > 1 ? "keys" : "key"} ${c.repeat.keys.map(quote).join(" > ")}`
-            : ""),
-      Object.keys(c.attributes).length > 0 &&
-        `attributes: ${Object.entries(c.attributes)
-          .map(([k, v]) => `${k}=${quote(v)}`)
-          .join(" ")}`,
+      c.repeat && `repeated: item ${c.repeat.index + 1} of ${c.repeat.count} rendered from there`,
       `box: ${[c.size.join("×"), sides("margin", c.margin), sides("border", c.border), sides("padding", c.padding)]
         .filter(Boolean)
         .join(", ")}`,
