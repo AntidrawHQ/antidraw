@@ -7,11 +7,14 @@
 // published share page) is unaffected.
 
 export const INSPECTOR_NS = "antidraw-inspector"
-export const INSPECTOR_PROTOCOL = 1
+export const INSPECTOR_PROTOCOL = 2
 
 // Set on each element by the runtime's Vite plugin while the dev server
 // compiles it: "src/components/user-components/Card.tsx:12:5".
 export const SOURCE_ATTRIBUTE = "data-ad-loc"
+// Set on each component in that JSX (<Button>), where it's used. A prop like
+// any other, it reaches the DOM where the component passes its props on.
+export const USE_ATTRIBUTE = "data-ad-use"
 
 export type Sides = [top: number, right: number, bottom: number, left: number]
 
@@ -46,28 +49,24 @@ export type ElementInfo = {
 }
 
 // What an agent needs to find one element in the code and tell it from the
-// ones like it, beyond what it can read there itself (no computed styles).
-// The canvas knows which component's frame it's from.
+// ones like it: its markup, which carries where it's written and used (the
+// stamps above), and what the markup can't say. The canvas knows which
+// component's frame it's from.
 export type ElementContext = {
   // The frame's size.
   viewport: [width: number, height: number]
   // Its tag, id and first classes: "button#buy.btn.primary".
   element: string
-  text: string
-  // Where it's written. Without one (a library rendered it), the nearest
-  // element around it that has one, and the way down from there.
-  loc: string | null
-  within: { loc: string; path: string } | null
-  // The components whose code rendered it, from the previewed one in, each
-  // with the nearest place in its code around it (the element's own location
-  // for the innermost). Library components without one are left out.
-  components: { name: string; loc: string | null }[]
-  // One of several rendered from the same place, by way of the same places
-  // in the components around it (a .map()): which, and the React keys on and
-  // around it, outermost first.
-  repeat: { index: number; count: number; keys: string[] } | null
-  // The attributes that say what it is or what state it's in.
-  attributes: Record<string, string>
+  // Its markup as rendered now, cut short: children a few levels down, long
+  // text and values clipped, an <svg>'s drawing left out. One element or
+  // text per line, nested two spaces.
+  html: string
+  // Without a location of its own (a library rendered it), the opening tag
+  // of the nearest element around it that has one.
+  within: string | null
+  // One of several rendered from the same place and used from the same
+  // place (a .map()): which.
+  repeat: { index: number; count: number } | null
   size: [width: number, height: number]
   margin: Sides
   border: Sides

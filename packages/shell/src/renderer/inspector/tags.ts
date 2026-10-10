@@ -13,8 +13,13 @@ export const elementName = (info: ElementInfo) =>
   info.tag + (info.id ? `#${info.id}` : "") + info.classes.map((c) => `.${c}`).join("");
 
 // Inside the block, nothing may read as a tag. Only "<" is escaped: the
-// values are quoted, not XML, and an "&amp;" would read as the text.
+// values are quoted, not XML, and an "&amp;" would read as the text. The
+// element's markup is the exception, being markup: its "<" is a tag's and
+// its text's is escaped, and each line of it is indented, so none starts
+// with one. A line break in a one-line field (an id may hold one) would
+// start a line of its own, so it reads as a space.
 const escape = (v: string) => v.replace(/</g, "&lt;");
+const oneLine = (v: string) => v.replace(/\r\n|[\r\n]/g, " ");
 const quote = (v: string) => JSON.stringify(v);
 
 // As CSS writes them: "8", "8 16", "8 16 4", "8 16 4 0". Nothing when all are 0.
@@ -33,27 +38,17 @@ const sides = (name: string, [top, right, bottom, left]: Sides) => {
 
 const attr = (name: string, value: string | null | undefined) => (value ? ` ${name}=${quote(escape(value))}` : "");
 
-const lines = (...all: (string | null | false)[]) => all.filter((l): l is string => !!l).map(escape);
+const lines = (...all: (string | null | false)[]) =>
+  all.filter((l): l is string => !!l).map((l) => escape(oneLine(l)));
 
 export function describeContext(c: ElementContext) {
   return [
     "<element>",
+    ...lines(`element: ${c.element}`),
+    ...c.html.split("\n").map((line) => `  ${line}`),
+    ...(c.within ? [`inside: ${oneLine(c.within)}`] : []),
     ...lines(
-      `element: ${c.element}${c.text ? ` ${quote(c.text)}` : ""}`,
-      c.loc
-        ? `written at: ${c.loc}`
-        : c.within && `written at: none of its own; inside ${c.within.loc}, at ${c.within.path}`,
-      c.components.length > 0 &&
-        `rendered by: ${c.components.map((x) => (x.loc ? `${x.name} (${x.loc})` : x.name)).join(" > ")}`,
-      c.repeat &&
-        `repeated: item ${c.repeat.index + 1} of ${c.repeat.count} rendered from there` +
-          (c.repeat.keys.length
-            ? `, ${c.repeat.keys.length > 1 ? "keys" : "key"} ${c.repeat.keys.map(quote).join(" > ")}`
-            : ""),
-      Object.keys(c.attributes).length > 0 &&
-        `attributes: ${Object.entries(c.attributes)
-          .map(([k, v]) => `${k}=${quote(v)}`)
-          .join(" ")}`,
+      c.repeat && `repeated: item ${c.repeat.index + 1} of ${c.repeat.count} rendered from there`,
       `box: ${[c.size.join("×"), sides("margin", c.margin), sides("border", c.border), sides("padding", c.padding)]
         .filter(Boolean)
         .join(", ")}`,
@@ -109,7 +104,9 @@ export function splitTagged(message: string): { tags: string[]; text: string } {
   for (const line of block[1]!.split("\n")) {
     const component = /^<component name=("(?:[^"\\]|\\.)*")/.exec(line);
     if (component) frame = unescape(JSON.parse(component[1]!) as string);
-    const element = /^element: (\S+)/.exec(line);
+    // All of it but the text a last-seen block quotes after it. Any
+    // character: an id may hold a line separator.
+    const element = /^element: ([\s\S]+?)(?: "(?:[^"\\]|\\.)*")?$/.exec(line);
     if (element) tags.push(`${frame} · ${unescape(element[1]!)}`);
   }
   return { tags, text: message.slice(block[0].length) };

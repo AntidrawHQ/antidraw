@@ -2,6 +2,7 @@ import {
   INSPECTOR_NS,
   INSPECTOR_PROTOCOL,
   SOURCE_ATTRIBUTE,
+  USE_ATTRIBUTE,
   type ElementContext,
   type ElementInfo,
   type ElementRef,
@@ -11,7 +12,8 @@ import {
   type ToFrame,
   type WalkDirection,
 } from "./protocol"
-import { keysOf, ownersOf, reactParent, renderedWithin } from "./react"
+import { markupOf, openingTag } from "./markup"
+import { reactParent, renderedWithin } from "./react"
 
 // The inspector's half that runs in a preview frame: it finds, measures and
 // keeps track of elements for the canvas, which draws and owns the input.
@@ -19,29 +21,6 @@ import { keysOf, ownersOf, reactParent, renderedWithin } from "./react"
 
 const USER_COMPONENTS_DIR = "src/components/user-components/"
 const LOC_RE = /:\d+:\d+$/
-
-// The attributes that say what an element is (data-slot names a shadcn part)
-// or what state it's in.
-const ATTRIBUTES = [
-  "data-slot",
-  "role",
-  "aria-label",
-  "name",
-  "type",
-  "placeholder",
-  "alt",
-  "title",
-  "href",
-  "src",
-  "data-state",
-  "aria-expanded",
-  "aria-selected",
-  "aria-checked",
-  "aria-current",
-  "disabled",
-  "checked",
-  "open",
-]
 
 // As the user reads it: innerText breaks between blocks, where textContent
 // runs "Pro" and "Choose" together. Without it (an SVG), text by text.
@@ -56,8 +35,6 @@ const textOf = (el: Element) => {
   return text.replace(/\s+/g, " ").trim().slice(0, 80)
 }
 
-const clip = (s: string, max = 80) => (s.length > max ? `${s.slice(0, max - 1)}…` : s)
-const fileOf = (loc: string) => loc.replace(LOC_RE, "")
 
 const px = (v: string) => parseFloat(v) || 0
 const sides = (cs: CSSStyleDeclaration, prop: (side: string) => string): Sides =>
@@ -89,7 +66,6 @@ export function startInspector(container: HTMLElement, componentName: string): (
     if (parent === container || inside(parent)) return parent
     return container.contains(el) ? null : reactParent(el, container)
   }
-  const isPortalTop = (el: Element) => !container.contains(el) && !inside(el.parentElement)
 
   // What's under a point, as DevTools sees it: pointer-events: none hides
   // nothing (a disabled button, the page behind an open modal dialog).
@@ -172,92 +148,55 @@ export function startInspector(container: HTMLElement, componentName: string): (
 
   // ── What an agent is told about an element ───────────────────────────────
 
-  const stampedAround = (el: Element) => {
-    for (let node = parentOf(el); inside(node); node = parentOf(node))
-      if (node.hasAttribute(SOURCE_ATTRIBUTE)) return node
+  // The nearest element at or around `el` that `has` says is stamped.
+  const nearest = (el: Element, has: (node: Element) => boolean) => {
+    for (let node: Element | null = el; inside(node); node = parentOf(node)) if (has(node)) return node
     return null
   }
+  const located = (node: Element) => node.hasAttribute(SOURCE_ATTRIBUTE)
+  const stamped = (node: Element) => located(node) || node.hasAttribute(USE_ATTRIBUTE)
 
-  // From `from` down to `el`, as a selector; a step into a portal is
-  // marked, since no selector crosses one.
-  const pathFrom = (from: Element, el: Element) => {
-    const steps: string[] = []
-    for (let node: Element | null = el; node && node !== from; node = parentOf(node)) {
-      if (isPortalTop(node)) {
-        steps.unshift(`(portal) ${node.localName}`)
-        continue
-      }
-      const like = [...node.parentElement!.children].filter((c) => c.localName === node!.localName)
-      steps.unshift(like.length > 1 ? `${node.localName}:nth-of-type(${like.indexOf(node) + 1})` : node.localName)
+  // The uses on the way out from `el`: the places in the code it's rendered
+  // inside of, as far as they reached the DOM.
+  const usesAround = (el: Element) => {
+    const uses: string[] = []
+    for (let node = parentOf(el); inside(node); node = parentOf(node)) {
+      const use = node.getAttribute(USE_ATTRIBUTE)
+      if (use) uses.push(use)
     }
-    return steps.join(" > ")
+    return uses.join("\0")
   }
 
-  // The nearest location at or around `el` that `owns` says is its code.
-  const ownedLoc = (el: Element, owns: (node: Element) => boolean) => {
-    for (let node: Element | null = el; inside(node); node = parentOf(node)) {
-      const loc = node.getAttribute(SOURCE_ATTRIBUTE)
-      if (loc && owns(node)) return loc
-    }
-    return null
-  }
-
-  const componentsOf = (el: Element): ElementContext["components"] => {
-    const owners = ownersOf(el, container)
-    if (owners.length) {
-      const all = owners.map((o) => ({ name: o.name, loc: ownedLoc(el, o.owns) }))
-      return all.filter((c, i) => c.loc || i === 0 || i === all.length - 1)
-    }
-    // No React internals to read: each file the stamps around it pass
-    // through on the way out, up to the previewed component's.
-    const files: ElementContext["components"] = []
-    for (let node: Element | null = el; inside(node); node = parentOf(node)) {
-      const loc = node.getAttribute(SOURCE_ATTRIBUTE)
-      if (!loc || (files[0]?.loc && fileOf(files[0].loc) === fileOf(loc))) continue
-      files.unshift({ name: fileOf(loc).split("/").pop()!.replace(/\.[jt]sx$/, ""), loc })
-      if (fileOf(loc) === ownFile) break
-    }
-    return files
+  // The others written in the same place and used from the same places: a
+  // .map()'s items, and the items of a list inside one, counted as one list.
+  // A shared component's button used twice is used from two places, and so
+  // is everything inside it. (One that doesn't pass its props on carries no
+  // use: the same place twice is taken as a list.)
+  const repeatOf = (el: Element): ElementContext["repeat"] => {
+    const anchor = nearest(el, stamped)
+    if (!anchor) return null
+    const loc = anchor.getAttribute(SOURCE_ATTRIBUTE)
+    const use = anchor.getAttribute(USE_ATTRIBUTE)
+    const around = usesAround(anchor)
+    const matches = (
+      loc
+        ? withLoc(loc).filter((m) => m.getAttribute(USE_ATTRIBUTE) === use)
+        : [...document.querySelectorAll(`[${USE_ATTRIBUTE}="${CSS.escape(use!)}"]`)].filter(
+            (m) => inside(m) && !located(m),
+          )
+    ).filter((m) => usesAround(m) === around)
+    return matches.length > 1 ? { index: matches.indexOf(anchor), count: matches.length } : null
   }
 
   const contextFor = (el: Element): ElementContext => {
     const info = infoFor(el)
-    const loc = el.getAttribute(SOURCE_ATTRIBUTE)
-    const anchor = loc ? el : stampedAround(el)
-    // The others rendered from the same place by the same places around it:
-    // a shared component's button used twice isn't a list. Nor is one
-    // written twice in the same place: a list's items differ by key. (Without
-    // React's data there are no keys; the same place twice is taken as a list.)
-    const where = (node: Element) => componentsOf(node).map((c) => c.loc).join(" ")
-    const here = anchor && where(anchor)
-    const matches = anchor
-      ? withLoc(anchor.getAttribute(SOURCE_ATTRIBUTE)!).filter((m) => m === anchor || where(m) === here)
-      : []
-    const listed =
-      matches.length > 1 &&
-      (!ownersOf(anchor!, container).length || new Set(matches.map((m) => keysOf(m, container).join("\0"))).size > 1)
-    const attributes: Record<string, string> = {}
-    for (const name of ATTRIBUTES) {
-      const value = el.getAttribute(name)
-      if (value !== null) attributes[name] = clip(value)
-    }
-    // React sets the checked attribute once; the property is what's on screen.
-    if (el instanceof HTMLInputElement && (el.type === "checkbox" || el.type === "radio")) {
-      if (el.checked) attributes.checked = ""
-      else delete attributes.checked
-    }
+    const around = located(el) ? null : nearest(el, located)
     return {
       viewport: [window.innerWidth, window.innerHeight],
       element: el.localName + (el.id ? `#${el.id}` : "") + [...el.classList].slice(0, 6).map((c) => `.${c}`).join(""),
-      text: info.text,
-      loc,
-      within: !loc && anchor ? { loc: anchor.getAttribute(SOURCE_ATTRIBUTE)!, path: pathFrom(anchor, el) } : null,
-      components: componentsOf(el),
-      repeat:
-        listed
-          ? { index: matches.indexOf(anchor!), count: matches.length, keys: keysOf(el, container) }
-          : null,
-      attributes,
+      html: markupOf(el),
+      within: around && openingTag(around),
+      repeat: repeatOf(el),
       size: [Math.round(info.rect.width), Math.round(info.rect.height)],
       margin: info.margin,
       border: info.border,

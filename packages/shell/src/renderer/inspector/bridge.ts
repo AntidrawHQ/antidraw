@@ -195,10 +195,12 @@ export function clearSelection() {
 
 // What an agent is told about each pick (see ElementContext), as its frame
 // sees it now: an edit may have moved it. Null where the frame can't find it
-// or doesn't answer.
+// or doesn't answer. Only a frame that speaks this protocol is asked: one on
+// an older runtime would answer in another shape.
 export async function getElementContext(picks: Picked[]): Promise<(ElementContext | null)[]> {
   const byFrame = new Map<string, Picked[]>();
-  for (const p of picks) byFrame.set(p.frame, [...(byFrame.get(p.frame) ?? []), p]);
+  const { frames } = store.getState();
+  for (const p of picks) if (frames[p.frame]?.ready) byFrame.set(p.frame, [...(byFrame.get(p.frame) ?? []), p]);
   const contexts = new Map<Picked, ElementContext>();
   await Promise.all(
     [...byFrame].map(async ([frame, group]) => {
