@@ -9,7 +9,7 @@ import { Beam } from "@/renderer/components/AskUserQuestionCard";
 import { frameNodeId, useFocusComponent } from "@/renderer/canvas/Canvas";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
 import { useComposerModel } from "@/renderer/hooks/use-composer-model";
-import { useGenerateTitle } from "@/renderer/lib/claude-code-ops";
+import { useConversationMessages, useGenerateTitle } from "@/renderer/lib/claude-code-ops";
 import { queryKeys } from "@/renderer/lib/query-keys";
 import type { CommentList } from "@/renderer/lib/api";
 import { beside, BOX, CommentBoxAt, FLOAT, floatShadow, FrameCommentTarget, Kbd, useCloseOnClickAway } from "./pieces";
@@ -32,7 +32,10 @@ import { setCanvasTool, useCommentStore, type Pos } from "./store";
 //  - Clicking a comment — its row or its pin — opens it on the canvas. Edit
 //    is an explicit action there (or the row's pencil); only not-sent
 //    comments can be edited.
-//  - Every send opens a new chat right away. Chats run side by side.
+//  - Send goes to the chat that's open, as a message typed there would
+//    (queued if it's mid-turn), so Claude has that chat's context; with none
+//    open, to a new chat. A chat's comments are its set. Chats run side by
+//    side.
 //  - A sent comment reads Sent until Claude marks it Completed (with a
 //    note). One it doesn't mark just stays Sent: open the chat and carry on
 //    there. × removes it.
@@ -368,7 +371,8 @@ const SendGroup = ({ s, a }: { s: Send; a: Actions }) => {
   const [pin, setPin] = useState<boolean | null>(null);
   const open = pin ?? !complete;
   // No completed count: each row shows its own. Only what the rows can't say.
-  const label = s.phase === "opening" ? "Opening a new chat…" : null;
+  // A send resumes the chat it goes to, or starts it: either way it opens.
+  const label = s.phase === "opening" ? "Opening chat…" : null;
   return (
     <div className="flex flex-col">
       <div className="flex items-center gap-2 rounded px-1.5 py-1.5 hover:bg-white/[0.03]">
@@ -475,8 +479,11 @@ export const CommentFlow = () => {
   const clearCompleted = useClearCompleted(workspaceId);
   const sendComments = useSendComments(workspaceId);
   const generateTitle = useGenerateTitle();
-  // A new chat's model and effort, as the composer's would be.
-  const composer = useComposerModel(null, undefined);
+  // Sends go to the chat that's open, with its model and effort, as the
+  // composer's would; with none open, to a new chat.
+  const activeConversationId = useWorkspaceStore((s) => s.activeConversationId);
+  const { data: activeConversation } = useConversationMessages(activeConversationId);
+  const composer = useComposerModel(activeConversationId, activeConversation);
 
   // A comment opened from the list whose pin is off screen: the canvas goes
   // to its frame first, as the component list's View does.
@@ -505,8 +512,17 @@ export const CommentFlow = () => {
     const list = queryClient.getQueryData<CommentList>(queryKeys.comments.byWorkspace(workspaceId));
     const drafts = list?.comments.filter((c) => c.state === "draft") ?? [];
     if (!drafts.length || !workspaceId) return;
-    const { conversation } = await sendComments.mutateAsync({ drafts, model: composer.selectedModelId, effort: composer.effort });
-    generateTitle.mutate({ conversationId: conversation.id, workspaceId, firstMessage: drafts.map((c) => c.text).join("\n") });
+    const { conversation } = await sendComments.mutateAsync({
+      drafts,
+      conversationId: activeConversationId ?? undefined,
+      model: composer.selectedModelId,
+      effort: composer.effort,
+    });
+    // A new chat opens, so the next send joins it rather than starting another.
+    if (!activeConversationId) showConversation(conversation.id);
+    // A chat still untitled (new, or opened with + New) is named by them.
+    if (!conversation.title && !conversation.summary)
+      generateTitle.mutate({ conversationId: conversation.id, workspaceId, firstMessage: drafts.map((c) => c.text).join("\n") });
     return conversation;
   };
 

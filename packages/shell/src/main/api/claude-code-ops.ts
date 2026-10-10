@@ -318,7 +318,7 @@ Locations were read when the message was sent; read the file before editing.
 
 COMMENTS THE USER LEAVES:
 When the user sends comments they pinned on the canvas, the message is a <canvas-comments> block. Each new <comment> has an id, the component it was left on (name, file, preview URL, and the frame's size, as in <canvas-selection>), "at": where the pin is in the frame, in CSS pixels from its top left, then the comment's text and the <element> under the pin, read as in <canvas-selection> (no <element>: the frame couldn't say what's there). Work through each. When one is done, call mcp__canvas_comments__complete_comment with its id and a one-line note on what changed. If one is unclear, ask in the chat rather than guessing, and don't mark it.
-<earlier> holds the comments of earlier chats, with your notes on them, for context only: act on them only when the user refers to them ("undo that", "same as before").
+A chat can get several such messages; act on the new <comment>s in each. <earlier> holds comments from other chats, with their notes, for context only: act on them only when the user refers to them ("undo that", "same as before").
 
 Current workspace directory: ${workspacePath}
 `,

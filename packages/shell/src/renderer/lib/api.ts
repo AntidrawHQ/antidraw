@@ -1037,6 +1037,7 @@ export const sendComments = (
   workspaceId: string,
   params: {
     context: { id: number; element: string | null; preview: string | null; frame: string | null }[];
+    conversationId?: string;
     model?: string;
     effort?: EffortLevel;
   },

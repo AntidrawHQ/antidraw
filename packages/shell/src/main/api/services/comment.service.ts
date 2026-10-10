@@ -168,17 +168,26 @@ export const clearCompleted = async (workspaceId: string) => {
   }
 };
 
-// Hands the drafts to a new conversation: they're sent from here on. Returns
-// it, and its first message, which carries them and the earlier sets. The
-// canvas describes the elements (`context`): only the frames can.
+// Hands the drafts to a chat: the workspace's `into`, or a new one when
+// there's none. They're sent from here on, and that chat's set. Returns the
+// chat, and the message for it, which carries them and the other chats'
+// earlier sets (`into` has its own). The canvas describes the elements
+// (`context`): only the frames can.
 export const sendComments = async (
   workspaceId: string,
   context: { id: number; element: string | null; preview: string | null; frame?: string | null }[],
+  into?: string,
 ) => {
   try {
-    const conversationId = crypto.randomUUID();
+    const conversationId = into ?? crypto.randomUUID();
     const sent = await db.transaction(async (tx) => {
-      await tx.insert(conversations).values({ id: conversationId, workspaceId });
+      if (into) {
+        const [chat] = await tx
+          .select({ id: conversations.id })
+          .from(conversations)
+          .where(and(eq(conversations.id, into), eq(conversations.workspaceId, workspaceId)));
+        if (!chat) tx.rollback();
+      } else await tx.insert(conversations).values({ id: conversationId, workspaceId });
       const rows = await tx
         .update(comments)
         .set({ state: "sent", conversationId, sentAt: new Date() })
@@ -190,7 +199,7 @@ export const sendComments = async (
           ),
         )
         .returning();
-      // None left to send (another send took them): no chat either.
+      // None left to send (another send took them): no new chat either.
       if (!rows.length) tx.rollback();
       return rows;
     });
@@ -221,7 +230,7 @@ export const sendComments = async (
     }));
     return ok({ conversationId, comments: sent, prompt: describeComments(fresh, earlier) });
   } catch (e) {
-    if (e instanceof TransactionRollbackError) return notFound("No comments to send");
+    if (e instanceof TransactionRollbackError) return notFound("No comments to send, or no such chat");
     return dbError("Failed to send comments");
   }
 };
