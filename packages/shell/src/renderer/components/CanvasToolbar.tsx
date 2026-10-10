@@ -22,6 +22,48 @@ const railShadow = "0 4px 16px rgba(0,0,0,.4), 0 0 0 1px rgba(255,255,255,.06)";
 const idle = "text-white/50 hover:bg-white/[0.05] hover:text-white/85";
 const on = "text-white/95";
 
+// One tool: also the preview window's titlebar's (PreviewWindow).
+export const ToolButton = ({
+  label,
+  Icon,
+  active,
+  onClick,
+  size,
+  tooltipSide,
+}: {
+  label: string;
+  Icon: typeof MousePointer2;
+  active: boolean;
+  onClick: () => void;
+  size: number;
+  tooltipSide: "right" | "bottom";
+}) => (
+  <Tooltip>
+    <TooltipTrigger asChild>
+      <button
+        type="button"
+        // A click picks the tool without taking focus, which would ring it
+        // once a key is pressed: Tab still focuses (and rings) it.
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={onClick}
+        aria-pressed={active}
+        aria-label={label}
+        className={cn("relative grid place-items-center rounded-[8px]", active ? on : idle)}
+        style={{ width: size, height: size }}
+      >
+        {active && (
+          <span className="absolute inset-0 rounded-[8px] bg-white/[0.1] ring-1 ring-white/[0.06]" />
+        )}
+        <Icon size={16} strokeWidth={1.75} className="relative" />
+      </button>
+    </TooltipTrigger>
+    {/* No animation, so moving between tools never lags. */}
+    <TooltipContent side={tooltipSide} sideOffset={4} style={{ animation: "none" }}>
+      {label}
+    </TooltipContent>
+  </Tooltip>
+);
+
 export const CanvasToolbar = () => {
   const mode = useCanvasTool();
 

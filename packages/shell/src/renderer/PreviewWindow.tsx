@@ -117,6 +117,8 @@ export const PreviewWindow = ({ url, workspaceId = null }: { url: string; worksp
                 <button
                   type="button"
                   aria-label="Refresh"
+                  // As the tools': a click doesn't take focus (ToolButton).
+                  onMouseDown={(e) => e.preventDefault()}
                   onClick={() => setReloads((n) => n + 1)}
                   className="grid size-[26px] shrink-0 place-items-center rounded-[8px] text-white/50 hover:bg-white/[0.05] hover:text-white/85"
                   style={noDrag}

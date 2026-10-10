@@ -35,3 +35,11 @@ it("has only Refresh in its titlebar", () => {
   expect(host.querySelectorAll("button[aria-pressed]")).toHaveLength(0);
   expect([...host.querySelectorAll("button")].map((b) => b.getAttribute("aria-label"))).toEqual(["Refresh"]);
 });
+
+it("doesn't take focus from a click on a titlebar button, which would ring it", () => {
+  for (const label of ["Pointer", "Inspect", "Refresh"]) {
+    const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    act(() => void host.querySelector(`button[aria-label="${label}"]`)!.dispatchEvent(down));
+    expect([label, down.defaultPrevented]).toEqual([label, true]);
+  }
+});
