@@ -28,6 +28,9 @@ export type ElementRef = {
   text?: string
 }
 
+// In the frame's own CSS pixels, from its top left.
+export type Rect = { x: number; y: number; width: number; height: number }
+
 export type ElementInfo = {
   ref: ElementRef
   // The nearest source location (this element's or an ancestor's) in the
@@ -38,8 +41,7 @@ export type ElementInfo = {
   id: string
   classes: string[]
   text: string
-  // In the frame's own CSS pixels, from its top left.
-  rect: { x: number; y: number; width: number; height: number }
+  rect: Rect
   margin: Sides
   border: Sides
   padding: Sides
@@ -84,6 +86,11 @@ export type ToFrame =
   | { type: "select"; id: number; ref: ElementRef | null }
   | { type: "walk"; id: number; dir: WalkDirection }
   | { type: "context"; id: number; refs: ElementRef[] }
+  // Where these elements are, now and as they move (a comment's pin on its
+  // element): answered at once, then again whenever one moves, resizes,
+  // scrolls, appears or goes. A "track" replaces the last; an empty one stops.
+  // A frame from before it doesn't answer.
+  | { type: "track"; id: number; refs: ElementRef[] }
 
 // Frame to canvas. "ready" is sent on start and in answer to "hello";
 // "selection-changed" and "selection-lost" whenever a re-render (an edit, a
@@ -93,6 +100,9 @@ export type FromFrame =
   | { type: "hover"; id: number; info: ElementInfo | null }
   | { type: "selected"; id: number; info: ElementInfo | null }
   | { type: "context"; id: number; contexts: (ElementContext | null)[] }
+  // The tracked elements' boxes, in "track"'s order: null for one not found.
+  // With the id in answer to "track"; without, when one has moved.
+  | { type: "tracked"; id?: number; rects: (Rect | null)[] }
   | { type: "selection-changed"; info: ElementInfo }
   | { type: "selection-lost" }
 

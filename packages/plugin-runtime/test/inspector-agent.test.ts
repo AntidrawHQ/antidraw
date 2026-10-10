@@ -210,6 +210,53 @@ test("follows the selection when it moves without the DOM changing", async () =>
   expect(sent.at(-1)!.msg).toMatchObject({ type: "selection-changed", info: { rect: { x: 0, y: 12, width: 120, height: 30 } } })
 })
 
+test("tracks elements' boxes as they move, scroll, remount and go, until told to stop", async () => {
+  const refs = (["h3", ".btn"] as const).map((s) => {
+    at = $(s)
+    return (ask({ type: "hit", id: 1, x: 0, y: 0 }).msg as Extract<FromFrame, { type: "hover" }>).info!.ref
+  })
+  const box = (el: Element, x: number, y: number) => vi.spyOn(el, "getBoundingClientRect").mockReturnValue(new DOMRect(x, y, 120, 30))
+  box($("h3"), 0, 10)
+  box($(".btn"), 0, 50)
+  const missing = { loc: `${OWN}:99:1`, index: 0, path: [9], tag: "p" }
+  expect(ask({ type: "track", id: 2, refs: [...refs, missing] }).msg).toMatchObject({
+    type: "tracked",
+    id: 2,
+    rects: [{ x: 0, y: 10 }, { x: 0, y: 50 }, null],
+  })
+  // Nothing moved: nothing said.
+  const said = sent.length
+  await frames()
+  expect(sent.length).toBe(said)
+  // The page scrolls by 40.
+  box($("h3"), 0, -30)
+  box($(".btn"), 0, 10)
+  await frames()
+  expect(sent.at(-1)!.msg).toEqual({
+    ns: INSPECTOR_NS,
+    type: "tracked",
+    rects: [
+      { x: 0, y: -30, width: 120, height: 30 },
+      { x: 0, y: 10, width: 120, height: 30 },
+      null,
+    ],
+  })
+  // The heading remounts; the button goes.
+  const fresh = document.createElement("h3")
+  fresh.setAttribute("data-ad-loc", `${OWN}:4:7`)
+  box(fresh, 0, 99)
+  $("h3").replaceWith(fresh)
+  $(".btn").remove()
+  await frames()
+  expect(sent.at(-1)!.msg).toMatchObject({ type: "tracked", rects: [{ y: 99 }, null, null] })
+  // Stopped: no more.
+  expect(ask({ type: "track", id: 3, refs: [] }).msg).toMatchObject({ type: "tracked", id: 3, rects: [] })
+  box(fresh, 0, 5)
+  const stopped = sent.length
+  await frames()
+  expect(sent.length).toBe(stopped)
+})
+
 // Paragraphs written one per line, from line `first`, as a remount renders them.
 const paragraphs = (first: number, texts: string[]) => {
   const list = document.createElement("div")

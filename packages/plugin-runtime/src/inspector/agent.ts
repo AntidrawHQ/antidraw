@@ -7,6 +7,7 @@ import {
   type ElementRef,
   type Envelope,
   type FromFrame,
+  type Rect,
   type Sides,
   type ToFrame,
   type WalkDirection,
@@ -330,6 +331,45 @@ export function startInspector(container: HTMLElement, componentName: string): (
   mutations.observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true })
   window.addEventListener("resize", schedule)
 
+  // ── Tracked elements, followed as the selection is ─────────────────────
+
+  // Each element found once and kept while it's still there (React keeps the
+  // node), found again by its ref when it isn't. Their boxes are read every
+  // frame, so a scroll or a layout shift moves them as an edit does.
+  let tracking: ElementRef[] = []
+  let tracked: (Element | null)[] = []
+  let lastRects = ""
+  let trackWatch = 0
+  const rectOf = (el: Element | null): Rect | null => {
+    if (!el) return null
+    const r = el.getBoundingClientRect()
+    return { x: r.x, y: r.y, width: r.width, height: r.height }
+  }
+  const trackedRects = () => {
+    tracked = tracking.map((ref, i) => {
+      const el = tracked[i]
+      return el?.isConnected && inside(el) ? el : find(ref)
+    })
+    return tracked.map(rectOf)
+  }
+  const watchTracked = () => {
+    trackWatch = requestAnimationFrame(watchTracked)
+    const rects = trackedRects()
+    const key = JSON.stringify(rects)
+    if (key === lastRects) return
+    lastRects = key
+    post({ type: "tracked", rects })
+  }
+  const track = (refs: ElementRef[]) => {
+    tracking = refs
+    tracked = []
+    cancelAnimationFrame(trackWatch)
+    trackWatch = refs.length ? requestAnimationFrame(watchTracked) : 0
+    const rects = trackedRects()
+    lastRects = JSON.stringify(rects)
+    return rects
+  }
+
   const walk = (dir: WalkDirection) => {
     if (!selected) return null
     const next = {
@@ -381,6 +421,8 @@ export function startInspector(container: HTMLElement, componentName: string): (
             return el && contextFor(el)
           }),
         })
+      case "track":
+        return post({ type: "tracked", id: msg.id, rects: track(msg.refs) })
     }
   }
   window.addEventListener("message", onMessage)
@@ -395,5 +437,6 @@ export function startInspector(container: HTMLElement, componentName: string): (
     mutations.disconnect()
     cancelAnimationFrame(frame)
     cancelAnimationFrame(watching)
+    cancelAnimationFrame(trackWatch)
   }
 }
