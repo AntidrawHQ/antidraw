@@ -545,3 +545,10 @@ test("looks through a layer laid over its parent that holds nothing there, to wh
   expect(pickAt(".grain")).toBe("div")
   expect((sent.at(-1)!.msg as Selected).info?.classes).toEqual(["grain"])
 })
+
+test("says the pointer came in however it came: a wheel over the frame too", () => {
+  tool("inspect")
+  catcher().dispatchEvent(new WheelEvent("wheel", { bubbles: true, composed: true, cancelable: true, clientX: 3, clientY: 4, deltaY: 5 }))
+  catcher().dispatchEvent(new PointerEvent("pointermove", { bubbles: true, composed: true, clientX: 5, clientY: 9 }))
+  expect(sent.filter((s) => s.msg.type === "hovering")).toHaveLength(1)
+})

@@ -424,6 +424,12 @@ export function startInspector(container: HTMLElement, componentName: string): (
     "mousedown", "mouseup", "mousemove", "mouseover", "mouseout", "click", "dblclick", "auxclick",
     "contextmenu", "touchstart", "touchend", "touchmove", "wheel",
   ]
+  // Where the pointer is. Coming in, the shell is told: it tells this frame
+  // when the pointer has gone, which the frame isn't always told itself.
+  const pointAt = (e: MouseEvent) => {
+    if (!point) post({ type: "hovering" })
+    point = { x: e.clientX, y: e.clientY }
+  }
   const onPointer = (e: Event) => {
     if (!e.composedPath().includes(overlay.catcher)) return
     e.stopImmediatePropagation()
@@ -432,8 +438,7 @@ export function startInspector(container: HTMLElement, componentName: string): (
     const m = e as MouseEvent
     switch (e.type) {
       case "pointermove":
-        if (!point) post({ type: "hovering" })
-        point = { x: m.clientX, y: m.clientY }
+        pointAt(m)
         return
       case "pointerleave":
         point = null
@@ -447,7 +452,7 @@ export function startInspector(container: HTMLElement, componentName: string): (
       }
       case "wheel": {
         const w = e as WheelEvent
-        point = { x: w.clientX, y: w.clientY }
+        pointAt(w)
         if (wheelMode === "scroll") {
           // Some mice count lines, or pages.
           const unit = w.deltaMode === 1 ? 16 : w.deltaMode === 2 ? window.innerHeight : 1
