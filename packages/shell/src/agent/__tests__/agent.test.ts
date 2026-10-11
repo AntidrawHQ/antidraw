@@ -491,3 +491,21 @@ test("never picks its own overlay, when it's inside the component (a modal dialo
   expect(click($(".btn")).msg).toMatchObject({ type: "comment-at", info: { tag: "button" } })
   expect(ask({ type: "walk", id: 1, dir: "next" })).toBeTruthy()
 })
+
+test("says when the pointer comes in, and stops drawing what it hovered when the shell says it left", async () => {
+  vi.spyOn($("h3"), "getBoundingClientRect").mockReturnValue(new DOMRect(4, 8, 120, 30))
+  tool("inspect")
+  at = $("h3")
+  const move = () => catcher().dispatchEvent(new PointerEvent("pointermove", { bubbles: true, composed: true, clientX: 5, clientY: 9 }))
+  move()
+  move()
+  expect(sent.filter((s) => s.msg.type === "hovering")).toHaveLength(1)
+  await frames(1)
+  expect(shown()).toHaveLength(4)
+  // It never heard the pointer leave (fast, into the next frame).
+  ask({ type: "leave", id: 1 })
+  await frames(1)
+  expect(shown()).toEqual([])
+  move()
+  expect(sent.filter((s) => s.msg.type === "hovering")).toHaveLength(2)
+})

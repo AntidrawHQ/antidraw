@@ -528,3 +528,35 @@ it("gives each size a frame was measured at its own <component>: a frame window'
     `<component name="Card" file="src/components/user-components/Card.tsx" preview="${ORIGIN}/preview?componentName=Card" frame="1440×900">`,
   ]);
 });
+
+it("tells a frame the pointer has left it when another frame or the shell has it: a frame isn't always told", () => {
+  const other = document.createElement("iframe");
+  other.src = `${ORIGIN}/preview?componentName=Pricing`;
+  document.body.append(other);
+  const toOther: Record<string, unknown>[] = [];
+  vi.spyOn(other.contentWindow!, "postMessage").mockImplementation(((msg: Record<string, unknown>) => {
+    toOther.push(msg);
+  }) as Window["postMessage"]);
+  const unregisterOther = registerFrame("Pricing", other);
+  const otherSays = (msg: FromFrame) =>
+    window.dispatchEvent(new MessageEvent("message", { data: { ns: AGENT_NS, ...msg }, origin: ORIGIN, source: other.contentWindow }));
+  const left = () => asked.filter((a) => a.msg.type === "leave").length;
+  const otherLeft = () => toOther.filter((m) => m.type === "leave").length;
+
+  // Into Card, then straight into Pricing.
+  frameSays({ type: "hovering" });
+  otherSays({ type: "hovering" });
+  expect([left(), otherLeft()]).toEqual([1, 0]);
+  // The shell has the pointer over Pricing's iframe (its edge): still Pricing's.
+  other.dispatchEvent(new PointerEvent("pointermove", { bubbles: true }));
+  expect(otherLeft()).toBe(0);
+  // Out over the canvas.
+  document.body.dispatchEvent(new PointerEvent("pointermove", { bubbles: true }));
+  expect(otherLeft()).toBe(1);
+  // Nothing hovered: nothing to tell.
+  document.body.dispatchEvent(new PointerEvent("pointermove", { bubbles: true }));
+  expect([left(), otherLeft()]).toEqual([1, 1]);
+
+  unregisterOther();
+  other.remove();
+});

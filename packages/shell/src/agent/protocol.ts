@@ -116,6 +116,9 @@ export type ToFrame =
   // element): answered at once, then again whenever one moves, resizes,
   // scrolls, appears or goes. A "track" replaces the last; an empty one stops.
   | { type: "track"; id: number; refs: ElementRef[] }
+  // The pointer is elsewhere: what it hovered isn't any more. A frame isn't
+  // always told when the pointer leaves it (fast, or into the next frame).
+  | { type: "leave"; id: number }
 
 // Frame to shell. "ready" is sent on start and in answer to "hello"
 // "selection-changed" and "selection-lost" whenever a re-render (an edit, a
@@ -136,6 +139,9 @@ export type FromFrame =
   // The page is going (a reload): until the next one's agent is ready, it
   // can't pick.
   | { type: "gone" }
+  // The pointer has come in, with a tool on: the shell has it leave the
+  // frame it was in before.
+  | { type: "hovering" }
   // While a tool is on, the frame has the pointer, and the keys if it had
   // focus. They're the shell's: the wheel (with "pass") at a point in the
   // frame, and each key pressed and let go (not those with Cmd, Ctrl or Alt).

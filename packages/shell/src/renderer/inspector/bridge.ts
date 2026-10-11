@@ -129,6 +129,10 @@ function onMessage(event: MessageEvent) {
       leaveTyping();
       commentClicks.get(frame)?.({ x: data.x, y: data.y }, data.info);
       return;
+    case "hovering":
+      if (hovering !== frame) leave();
+      hovering = frame;
+      return;
     case "gone":
       s.setFrame(frame, { ready: false, tagged: s.frames[frame]?.tagged ?? false });
       return;
@@ -168,12 +172,26 @@ function leaveTyping() {
     el.blur();
 }
 
+// The frame the pointer is in, with a tool on. A frame isn't always told when
+// the pointer leaves it (fast, or straight into the next frame), so the
+// shell tells it: when another frame has the pointer, or the shell does,
+// anywhere but on that frame.
+let hovering: string | null = null;
+const leave = () => {
+  if (hovering) post(hovering, { type: "leave", id: nextId++ });
+  hovering = null;
+};
+const onShellPointer = (e: PointerEvent) => {
+  if (hovering && e.target !== iframes.get(hovering)) leave();
+};
+
 let listening = false;
 
 // The canvas calls this for each frame's iframe. Returns the unregister.
 export function registerFrame(frame: string, iframe: HTMLIFrameElement) {
   if (!listening) {
     window.addEventListener("message", onMessage);
+    window.addEventListener("pointermove", onShellPointer, true);
     listening = true;
   }
   iframes.set(frame, iframe);
@@ -185,6 +203,7 @@ export function registerFrame(frame: string, iframe: HTMLIFrameElement) {
     iframe.removeEventListener("load", hello);
     if (iframes.get(frame) !== iframe) return;
     iframes.delete(frame);
+    if (hovering === frame) hovering = null;
     tools.delete(frame);
     marks.delete(frame);
     store.getState().setFrame(frame, null);

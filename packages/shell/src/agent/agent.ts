@@ -417,6 +417,7 @@ export function startInspector(container: HTMLElement, componentName: string): (
     const m = e as MouseEvent
     switch (e.type) {
       case "pointermove":
+        if (!point) post({ type: "hovering" })
         point = { x: m.clientX, y: m.clientY }
         return
       case "pointerleave":
@@ -529,6 +530,9 @@ export function startInspector(container: HTMLElement, componentName: string): (
         return post({ type: "selected", id: msg.id, info: select(msg.ref && find(msg.ref)) })
       case "walk":
         return post({ type: "selected", id: msg.id, info: select(walk(msg.dir)) })
+      case "leave":
+        point = null
+        return
       case "mark":
         markedRef = msg.ref
         marked = msg.ref && find(msg.ref)
