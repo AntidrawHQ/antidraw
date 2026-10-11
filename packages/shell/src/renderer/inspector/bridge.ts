@@ -121,24 +121,51 @@ function onMessage(event: MessageEvent) {
     case "selected":
       if (data.id !== undefined || !s.active) return;
       latestSelect = nextId++;
+      leaveTyping();
       takeSelection(frame, data.info);
       return;
     case "comment-at":
-      if (Number.isFinite(data.x) && Number.isFinite(data.y)) commentClicks.get(frame)?.({ x: data.x, y: data.y }, data.info);
+      if (!Number.isFinite(data.x) || !Number.isFinite(data.y)) return;
+      leaveTyping();
+      commentClicks.get(frame)?.({ x: data.x, y: data.y }, data.info);
+      return;
+    case "gone":
+      s.setFrame(frame, { ready: false, tagged: s.frames[frame]?.tagged ?? false });
       return;
     case "wheel":
-      wheels.get(frame)?.(data);
+      if (tools.get(frame)?.tool) wheels.get(frame)?.(data);
       return;
-    // A key pressed in the frame, as if pressed on it here: the tools' keys
-    // (InspectorControls, CommentControls) take it from there.
+    // A key pressed or let go in the frame, as if on it here: the tools' keys
+    // (InspectorControls, CommentControls) take it from there. One let go
+    // always counts: whatever has it as held must hear of it.
     case "key": {
+      if (data.kind !== "up" && !tools.get(frame)?.tool) return;
       const { key, code, ctrlKey, metaKey, shiftKey, altKey, repeat } = data;
       iframes.get(frame)?.dispatchEvent(
-        new KeyboardEvent("keydown", { key, code, ctrlKey, metaKey, shiftKey, altKey, repeat, bubbles: true, cancelable: true }),
+        new KeyboardEvent(data.kind === "up" ? "keyup" : "keydown", {
+          key,
+          code,
+          ctrlKey,
+          metaKey,
+          shiftKey,
+          altKey,
+          repeat,
+          bubbles: true,
+          cancelable: true,
+        }),
       );
       return;
     }
   }
+}
+
+// A pick in a frame leaves the keys to the tools (InspectorControls): a
+// text field the shell had focused would keep them, and Enter there would
+// send the chat's draft instead of tagging the pick.
+function leaveTyping() {
+  const el = document.activeElement;
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || (el instanceof HTMLElement && el.isContentEditable))
+    el.blur();
 }
 
 let listening = false;

@@ -70,7 +70,7 @@ const tool = (on: Tool | null, wheel: WheelMode = "pass", zoom = 1) => ask({ typ
 // A click on what's at the point, with the tool on.
 const click = (el: Element | null) => {
   at = el
-  catcher().dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, clientX: 10.4, clientY: 20.6 }))
+  catcher().dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true, cancelable: true, clientX: 10.4, clientY: 20.6 }))
   return sent.at(-1)!
 }
 type Selected = Extract<FromFrame, { type: "selected" }>
@@ -286,7 +286,7 @@ test("scrolls what a wheel over it would: the nearest box that can go that way, 
   // In a frame's own window, with a tool on.
   tool("inspect", "scroll")
   const wheel = (deltaY: number, deltaMode = 0) =>
-    catcher().dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY, deltaMode }))
+    catcher().dispatchEvent(new WheelEvent("wheel", { bubbles: true, composed: true, cancelable: true, deltaY, deltaMode }))
   at = $("h3")
   wheel(30)
   // At its top, the card can't go up: the page does.
@@ -378,7 +378,7 @@ test("draws the element under the pointer, and the one picked, every frame", asy
   vi.spyOn($(".btn"), "getBoundingClientRect").mockReturnValue(new DOMRect(4, 50, 80, 24))
   tool("inspect", "pass", 0.5)
   at = $("h3")
-  catcher().dispatchEvent(new PointerEvent("pointermove", { clientX: 5, clientY: 9 }))
+  catcher().dispatchEvent(new PointerEvent("pointermove", { bubbles: true, composed: true, clientX: 5, clientY: 9 }))
   await frames(1)
   // The box model: margin, border, padding and content.
   expect(shown()).toHaveLength(4)
@@ -392,7 +392,7 @@ test("draws the element under the pointer, and the one picked, every frame", asy
   await frames(1)
   expect(shown()).toHaveLength(1)
   expect(shown()[0]!.style.outline).toBe("4px solid #3b82f6")
-  catcher().dispatchEvent(new PointerEvent("pointerleave"))
+  catcher().dispatchEvent(new PointerEvent("pointerleave", { composed: true }))
   at = null
   await frames(1)
   expect(shown()).toHaveLength(1)
@@ -415,7 +415,7 @@ test("a click with the Comment tool says where and on what, and outlines what th
 
 test("passes the wheel to the shell, whose canvas pans with it", () => {
   tool("comment")
-  const wheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, clientX: 3, clientY: 4, deltaY: 12, ctrlKey: true })
+  const wheel = new WheelEvent("wheel", { bubbles: true, composed: true, cancelable: true, clientX: 3, clientY: 4, deltaY: 12, ctrlKey: true })
   catcher().dispatchEvent(wheel)
   expect(wheel.defaultPrevented).toBe(true)
   expect(sent.at(-1)!.msg).toEqual({
@@ -433,19 +433,61 @@ test("passes the wheel to the shell, whose canvas pans with it", () => {
   })
 })
 
-test("passes the keys to the shell while a tool is on, and keeps them from the page", () => {
+test("passes the tools' keys to the shell, down and up, and leaves the browser's alone", () => {
   const page = vi.fn()
   window.addEventListener("keydown", page)
   tool("inspect")
-  const key = new KeyboardEvent("keydown", { key: "ArrowUp", code: "ArrowUp", bubbles: true, cancelable: true })
-  document.body.dispatchEvent(key)
-  expect(key.defaultPrevented).toBe(true)
+  const press = (type: "keydown" | "keyup", key: string, init: KeyboardEventInit = {}) => {
+    const e = new KeyboardEvent(type, { key, code: key, bubbles: true, cancelable: true, ...init })
+    document.body.dispatchEvent(e)
+    return e.defaultPrevented
+  }
+  const keys = () => sent.filter((s) => s.msg.type === "key").map((s) => {
+    const k = s.msg as Extract<FromFrame, { type: "key" }>
+    return `${k.kind} ${k.key}`
+  })
+  expect(press("keydown", "ArrowUp")).toBe(true)
+  expect(press("keyup", "ArrowUp")).toBe(true)
   expect(page).not.toHaveBeenCalled()
-  expect(sent.at(-1)!.msg).toMatchObject({ type: "key", key: "ArrowUp", code: "ArrowUp", shiftKey: false })
+  // The app's menu's, the system's, and a modifier alone: the browser's.
+  expect(press("keydown", "w", { metaKey: true })).toBe(false)
+  expect(press("keydown", "Shift")).toBe(false)
+  expect(press("keydown", "Tab")).toBe(false)
+  // Held when the tool goes off: let go there too.
+  press("keydown", " ")
   tool(null)
+  expect(keys()).toEqual(["down ArrowUp", "up ArrowUp", "down  ", "up  "])
   const said = sent.length
-  document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "i", bubbles: true }))
+  expect(press("keydown", "i")).toBe(false)
   expect(sent.length).toBe(said)
-  expect(page).toHaveBeenCalledTimes(1)
   window.removeEventListener("keydown", page)
+})
+
+test("keeps the tool's clicks from the page: a menu that closes on a click outside it stays open", () => {
+  const outside = vi.fn()
+  document.addEventListener("pointerdown", outside)
+  document.addEventListener("click", outside, true)
+  tool("comment")
+  at = $(".btn")
+  catcher().dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, composed: true, cancelable: true }))
+  click($(".btn"))
+  expect(outside).not.toHaveBeenCalled()
+  expect(sent.at(-1)!.msg.type).toBe("comment-at")
+  document.removeEventListener("pointerdown", outside)
+  document.removeEventListener("click", outside, true)
+})
+
+test("says so when the page goes, and lets go of any key held", () => {
+  tool("inspect")
+  document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", code: "ArrowDown", bubbles: true, cancelable: true }))
+  window.dispatchEvent(new Event("pagehide"))
+  expect(sent.slice(-2).map((s) => s.msg)).toMatchObject([{ type: "key", kind: "up", key: "ArrowDown" }, { type: "gone" }])
+})
+
+test("never picks its own overlay, when it's inside the component (a modal dialog of the page's)", () => {
+  tool("comment")
+  // Where the overlay goes while the page has a modal dialog open.
+  $(".card").append(host()!)
+  expect(click($(".btn")).msg).toMatchObject({ type: "comment-at", info: { tag: "button" } })
+  expect(ask({ type: "walk", id: 1, dir: "next" })).toBeTruthy()
 })

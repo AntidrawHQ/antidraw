@@ -28,7 +28,7 @@ test("has no agent on the page's full-screen view", async () => {
   expect(sent).toEqual([])
 })
 
-test("starts on the page's root until the component's element is there, then on that, and only once a page", async () => {
+test("starts on what the page's root holds until the component's element is there, then on that, and only once a page", async () => {
   history.replaceState(null, "", "/preview?componentName=Card")
   document.body.innerHTML = `<div id="root"><p>Loading</p></div>`
   const sent = readies()
@@ -39,6 +39,17 @@ test("starts on the page's root until the component's element is there, then on 
   document.getElementById("root")!.innerHTML = `<div data-ad-preview="Card"><h3 data-ad-loc="src/components/user-components/Card.tsx:3:5">Pro</h3></div>`
   await settle()
   expect(sent.at(-1)).toEqual({ ns: AGENT_NS, type: "ready", componentName: "Card", tagged: true })
+
+  // A render error swaps the component's element for an error: no agent
+  // (not the page's root, where the selection can't be found), until it's
+  // back.
+  const before = sent.length
+  document.getElementById("root")!.innerHTML = `<div class="error">Component "Card" not found</div>`
+  await settle()
+  expect(sent.length).toBe(before)
+  document.getElementById("root")!.innerHTML = `<div data-ad-preview="Card"><h3 data-ad-loc="src/components/user-components/Card.tsx:3:5">Pro</h3></div>`
+  await settle()
+  expect(sent.length).toBe(before + 1)
 
   // Run again (a second injection into the same page): nothing more.
   vi.resetModules()

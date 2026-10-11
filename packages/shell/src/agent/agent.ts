@@ -80,11 +80,14 @@ export function startInspector(container: HTMLElement, componentName: string): (
     window.parent.postMessage({ ns: AGENT_NS, ...msg } satisfies Envelope<FromFrame>, origin)
   }
 
+  const overlay = createOverlay()
+
   // The component's elements: those inside the container, and those it
   // rendered into a portal (a dialog, a menu, a tooltip), which sit under
-  // <body> in the DOM but under the component in React's tree.
+  // <body> in the DOM but under the component in React's tree. Not the
+  // overlay, which goes inside the page's open modal dialog.
   const inside = (el: Element | null): el is Element =>
-    !!el && el !== container && (container.contains(el) || renderedWithin(el, container))
+    !!el && el !== container && !overlay.owns(el) && (container.contains(el) || renderedWithin(el, container))
 
   // Its parent among them: the DOM parent, and at the top of a portal the
   // element the portal was rendered from.
@@ -94,8 +97,6 @@ export function startInspector(container: HTMLElement, componentName: string): (
     return container.contains(el) ? null : reactParent(el, container)
   }
   const isPortalTop = (el: Element) => !container.contains(el) && !inside(el.parentElement)
-
-  const overlay = createOverlay()
 
   // What's under a point, as DevTools sees it: while a tool is on, the
   // overlay has pointer-events: none hide nothing (a disabled button, the
@@ -123,9 +124,11 @@ export function startInspector(container: HTMLElement, componentName: string): (
       return page
     }
     const [sx, sy] = [along("x", dx), along("y", dy)]
-    if (sx && sx === sy) return sx.scrollBy({ left: dx, top: dy })
-    sx?.scrollBy({ left: dx })
-    sy?.scrollBy({ top: dy })
+    // At once: a page's scroll-behavior: smooth would restart its animation
+    // at every turn of the wheel, and lose most of each.
+    if (sx && sx === sy) return sx.scrollBy({ left: dx, top: dy, behavior: "instant" })
+    sx?.scrollBy({ left: dx, behavior: "instant" })
+    sy?.scrollBy({ top: dy, behavior: "instant" })
   }
 
   const withLoc = (loc: string) =>
@@ -407,9 +410,9 @@ export function startInspector(container: HTMLElement, componentName: string): (
 
   // The overlay has the page's pointer. What's under it is found and drawn
   // here, every frame, asking nothing of the shell. A click picks it (Inspect
-  // selects it, Comment says where), and the wheel and the keys are the
-  // shell's: its canvas pans with the wheel, or here the page scrolls with
-  // it (a frame's own window, where nothing pans).
+  // selects it, Comment says where), and the wheel is the shell's: its canvas
+  // pans with it, or here the page scrolls with it (a frame's own window,
+  // where nothing pans).
   let tool: Tool | null = null
   let wheelMode: WheelMode = "pass"
   let zoom = 1
@@ -426,48 +429,77 @@ export function startInspector(container: HTMLElement, componentName: string): (
     const hovered = point ? elementAt(point.x, point.y) : null
     if (markedRef && !marked?.isConnected) marked = find(markedRef)
     const picked = tool === "inspect" ? selected : marked
+    overlay.keepOnTop()
     overlay.draw(hovered === picked ? null : hovered, picked, zoom)
   }
 
-  const onMove = (e: PointerEvent) => {
-    point = { x: e.clientX, y: e.clientY }
-  }
-  const onLeave = () => {
-    point = null
-  }
-  // The page doesn't take focus, or start selecting text.
-  const onDown = (e: PointerEvent) => e.preventDefault()
-  const onClick = (e: MouseEvent) => {
-    e.preventDefault()
-    const el = elementAt(e.clientX, e.clientY)
-    if (tool === "inspect") post({ type: "selected", info: select(el) })
-    else if (tool === "comment")
-      post({ type: "comment-at", x: Math.round(e.clientX), y: Math.round(e.clientY), info: el && infoFor(el) })
-  }
-  const onWheel = (e: WheelEvent) => {
-    e.preventDefault()
-    point = { x: e.clientX, y: e.clientY }
-    if (wheelMode === "scroll") {
-      // Some mice count lines, or pages.
-      const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? window.innerHeight : 1
-      return scrollAt(e.clientX, e.clientY, e.deltaX * unit, e.deltaY * unit)
+  // The overlay's events, taken at the window before anything of the page's
+  // sees them: a menu, popover or dialog that closes on a pointerdown outside
+  // it (Radix's, Headless UI's) stays open to be picked from.
+  const POINTER = [
+    "pointerdown", "pointerup", "pointermove", "pointerover", "pointerout", "pointerenter", "pointerleave",
+    "mousedown", "mouseup", "mousemove", "mouseover", "mouseout", "click", "dblclick", "auxclick",
+    "contextmenu", "touchstart", "touchend", "touchmove", "wheel",
+  ]
+  const onPointer = (e: Event) => {
+    if (!e.composedPath().includes(overlay.catcher)) return
+    e.stopImmediatePropagation()
+    // No focus taken in the page, no text selected, no menu, no page scroll.
+    if (e.type !== "pointermove" && e.type !== "mousemove" && e.cancelable) e.preventDefault()
+    const m = e as MouseEvent
+    switch (e.type) {
+      case "pointermove":
+        point = { x: m.clientX, y: m.clientY }
+        return
+      case "pointerleave":
+        point = null
+        return
+      case "click": {
+        const el = elementAt(m.clientX, m.clientY)
+        if (tool === "inspect") post({ type: "selected", info: select(el) })
+        else if (tool === "comment")
+          post({ type: "comment-at", x: Math.round(m.clientX), y: Math.round(m.clientY), info: el && infoFor(el) })
+        return
+      }
+      case "wheel": {
+        const w = e as WheelEvent
+        point = { x: w.clientX, y: w.clientY }
+        if (wheelMode === "scroll") {
+          // Some mice count lines, or pages.
+          const unit = w.deltaMode === 1 ? 16 : w.deltaMode === 2 ? window.innerHeight : 1
+          return scrollAt(w.clientX, w.clientY, w.deltaX * unit, w.deltaY * unit)
+        }
+        const { deltaX, deltaY, deltaMode, ctrlKey, metaKey, shiftKey, altKey } = w
+        post({ type: "wheel", x: w.clientX, y: w.clientY, deltaX, deltaY, deltaMode, ctrlKey, metaKey, shiftKey, altKey })
+      }
     }
-    const { deltaX, deltaY, deltaMode, ctrlKey, metaKey, shiftKey, altKey } = e
-    post({ type: "wheel", x: e.clientX, y: e.clientY, deltaX, deltaY, deltaMode, ctrlKey, metaKey, shiftKey, altKey })
   }
-  // A click leaves the keys here: they're the shell's tools', not the page's.
+
+  // Keys pressed while the frame has focus (it took it before the tool was
+  // on) are the shell's tools': each goes there, down and up, so what the
+  // shell holds as pressed is let go too. Not those with Cmd, Ctrl or Alt,
+  // which are the app's menu's and the system's, nor Tab, nor a modifier on
+  // its own: the browser keeps those.
+  const MODIFIERS = new Set(["Shift", "Meta", "Control", "Alt", "AltGraph", "CapsLock", "Fn", "Tab"])
+  const down = new Map<string, KeyboardEvent>()
+  const sendKey = (e: KeyboardEvent, kind: "down" | "up") => {
+    const { key, code, ctrlKey, metaKey, shiftKey, altKey, repeat } = e
+    post({ type: "key", kind, key, code, ctrlKey, metaKey, shiftKey, altKey, repeat })
+  }
   const onKey = (e: KeyboardEvent) => {
-    if (e.isComposing) return
+    if (e.isComposing || e.metaKey || e.ctrlKey || e.altKey || MODIFIERS.has(e.key)) return
+    if (e.type === "keyup" && !down.has(e.code)) return
     e.preventDefault()
     e.stopImmediatePropagation()
-    const { key, code, ctrlKey, metaKey, shiftKey, altKey, repeat } = e
-    post({ type: "key", key, code, ctrlKey, metaKey, shiftKey, altKey, repeat })
+    if (e.type === "keydown") down.set(e.code, e)
+    else down.delete(e.code)
+    sendKey(e, e.type === "keydown" ? "down" : "up")
   }
-  overlay.catcher.addEventListener("pointermove", onMove)
-  overlay.catcher.addEventListener("pointerleave", onLeave)
-  overlay.catcher.addEventListener("pointerdown", onDown)
-  overlay.catcher.addEventListener("click", onClick)
-  overlay.catcher.addEventListener("wheel", onWheel, { passive: false })
+  // Whatever's still held goes up: the shell would hold it forever.
+  const letGo = () => {
+    for (const e of down.values()) sendKey(e, "up")
+    down.clear()
+  }
 
   const setTool = (next: Tool | null, wheel: WheelMode, at: number) => {
     wheelMode = wheel
@@ -480,13 +512,28 @@ export function startInspector(container: HTMLElement, componentName: string): (
       cancelAnimationFrame(drawing)
       drawing = 0
       point = null
+      for (const type of POINTER) window.removeEventListener(type, onPointer, true)
       window.removeEventListener("keydown", onKey, true)
+      window.removeEventListener("keyup", onKey, true)
+      window.removeEventListener("blur", letGo)
+      letGo()
       return
     }
     overlay.show()
+    for (const type of POINTER) window.addEventListener(type, onPointer, { capture: true, passive: false })
     window.addEventListener("keydown", onKey, true)
+    window.addEventListener("keyup", onKey, true)
+    window.addEventListener("blur", letGo)
     if (!drawing) drawing = requestAnimationFrame(draw)
   }
+
+  // The page is going (a reload, Vite's full reload): the shell keeps the
+  // pointer off it until the agent is back in the next one.
+  const onHide = () => {
+    letGo()
+    post({ type: "gone" })
+  }
+  window.addEventListener("pagehide", onHide)
 
   // ── Messages ───────────────────────────────────────────────────────────
 
@@ -539,6 +586,7 @@ export function startInspector(container: HTMLElement, componentName: string): (
 
   return () => {
     setTool(null, wheelMode, zoom)
+    window.removeEventListener("pagehide", onHide)
     window.removeEventListener("message", onMessage)
     window.removeEventListener("resize", schedule)
     mutations.disconnect()

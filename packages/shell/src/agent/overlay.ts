@@ -114,22 +114,48 @@ export function createOverlay() {
     outline.style.outline = `${2 / zoom}px solid ${COLORS.picked}`
   }
 
+  const showOnTop = () => {
+    try {
+      host.popover = "manual"
+      if (host.matches(":popover-open")) host.hidePopover()
+      host.showPopover()
+    } catch {
+      // No top layer: the z-index still puts it over most of the page.
+    }
+  }
+
+  // A modal <dialog> the page opens makes everything outside it inert, the
+  // overlay too, and goes over it. So the overlay goes inside the topmost
+  // one, shown again above it, and back out when it closes.
+  let holder: Element | null = null
+  const topModal = () => {
+    try {
+      return [...document.querySelectorAll("dialog:modal")].at(-1) ?? null
+    } catch {
+      return null
+    }
+  }
+
   return {
     host,
     catcher,
     // Is this the overlay (what a hit-test finds first while it's up)?
     owns: (el: Element) => el === host,
     show() {
-      if (!host.isConnected) document.documentElement.append(host)
+      holder = topModal()
+      if (host.parentElement !== (holder ?? document.documentElement)) (holder ?? document.documentElement).append(host)
       if (!everything.isConnected) document.head.append(everything)
-      try {
-        host.popover = "manual"
-        if (!host.matches(":popover-open")) host.showPopover()
-      } catch {
-        // No top layer: the z-index still puts it over most of the page.
-      }
+      showOnTop()
+    },
+    keepOnTop() {
+      const modal = topModal()
+      if (modal === holder && host.isConnected) return
+      holder = modal
+      ;(modal ?? document.documentElement).append(host)
+      showOnTop()
     },
     hide() {
+      holder = null
       host.remove()
       everything.remove()
     },

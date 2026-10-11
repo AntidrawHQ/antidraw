@@ -124,9 +124,12 @@ export type FromFrame =
   | { type: "tracked"; id?: number; rects: (Rect | null)[] }
   | { type: "selection-changed"; info: ElementInfo }
   | { type: "selection-lost" }
-  // While a tool is on, the frame has the pointer and, once clicked, the
-  // keys. They're the shell's: the wheel (with "pass") at a point in the
-  // frame, and each key pressed.
+  // The page is going (a reload): until the next one's agent is ready, it
+  // can't pick.
+  | { type: "gone" }
+  // While a tool is on, the frame has the pointer, and the keys if it had
+  // focus. They're the shell's: the wheel (with "pass") at a point in the
+  // frame, and each key pressed and let go (not those with Cmd, Ctrl or Alt).
   | {
       type: "wheel"
       x: number
@@ -141,6 +144,7 @@ export type FromFrame =
     }
   | {
       type: "key"
+      kind: "down" | "up"
       key: string
       code: string
       ctrlKey: boolean

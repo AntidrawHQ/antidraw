@@ -115,25 +115,63 @@ it("tells a frame its tool and the element its comment box is on, and gives them
   expect(asked.map((a) => a.msg)).toMatchObject([{ type: "tool", tool: null, wheel: "scroll" }]);
 });
 
-it("hands a frame's comment clicks and wheel to whoever listens, and its keys to the page as if pressed on the frame", () => {
+it("hands a frame's comment clicks and wheel to whoever listens, and its keys to the page as if on the frame, only while it has a tool", () => {
   const clicks: unknown[] = [];
   const wheels: number[] = [];
   const stopClicks = onCommentClick("Card", (at, picked) => clicks.push([at, picked?.text ?? null]));
   const stopWheel = onFrameWheel("Card", (w) => wheels.push(w.deltaY));
+  const keys: string[] = [];
+  const onKey = (e: KeyboardEvent) => keys.push(`${e.type} ${e.key} on ${(e.target as Element).localName}`);
+  window.addEventListener("keydown", onKey);
+  window.addEventListener("keyup", onKey);
+  const wheel = { type: "wheel", x: 1, y: 2, deltaX: 0, deltaY: 9, deltaMode: 0, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false } as const;
+  const key = (kind: "down" | "up") =>
+    frameSays({ type: "key", kind, key: "Escape", code: "Escape", ctrlKey: false, metaKey: false, shiftKey: false, altKey: false, repeat: false });
+
+  // No tool: no wheel, no key down; a key let go still counts.
+  frameSays(wheel);
+  key("down");
+  key("up");
+  setFrameTool("Card", "comment", "pass", 1);
   frameSays({ type: "comment-at", x: 3, y: 4, info: info() });
   frameSays({ type: "comment-at", x: NaN, y: 4, info: null });
-  const wheel = { type: "wheel", x: 1, y: 2, deltaX: 0, deltaY: 9, deltaMode: 0, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false } as const;
   frameSays(wheel);
-  const keys: string[] = [];
-  const onKey = (e: KeyboardEvent) => keys.push(`${e.key} on ${(e.target as Element).localName}`);
-  window.addEventListener("keydown", onKey);
-  frameSays({ type: "key", key: "Escape", code: "Escape", ctrlKey: false, metaKey: false, shiftKey: false, altKey: false, repeat: false });
-  window.removeEventListener("keydown", onKey);
+  key("down");
+  key("up");
   stopClicks();
   stopWheel();
   frameSays({ type: "comment-at", x: 5, y: 6, info: null });
   frameSays(wheel);
-  expect({ clicks, wheels, keys }).toEqual({ clicks: [[{ x: 3, y: 4 }, "Pro plan"]], wheels: [9], keys: ["Escape on iframe"] });
+  window.removeEventListener("keydown", onKey);
+  window.removeEventListener("keyup", onKey);
+  expect({ clicks, wheels, keys }).toEqual({
+    clicks: [[{ x: 3, y: 4 }, "Pro plan"]],
+    wheels: [9],
+    keys: ["keyup Escape on iframe", "keydown Escape on iframe", "keyup Escape on iframe"],
+  });
+});
+
+it("leaves the keys to the tools after a pick: a chat draft being typed doesn't get Enter", () => {
+  const draft = document.createElement("textarea");
+  document.body.append(draft);
+  draft.focus();
+  frameSays({ type: "selected", info: info() });
+  expect(document.activeElement).not.toBe(draft);
+  draft.focus();
+  frameSays({ type: "comment-at", x: 1, y: 1, info: null });
+  expect(document.activeElement).not.toBe(draft);
+  draft.remove();
+});
+
+it("takes a page that's going as not ready until its agent is back, and gives it its tool again", () => {
+  frameSays(ready);
+  setFrameTool("Card", "inspect", "pass", 1);
+  frameSays({ type: "gone" });
+  expect(useInspectorStore.getState().frames.Card).toEqual({ ready: false, tagged: true });
+  asked.length = 0;
+  frameSays(ready);
+  expect(useInspectorStore.getState().frames.Card?.ready).toBe(true);
+  expect(asked.map((a) => a.msg)).toMatchObject([{ type: "tool", tool: "inspect" }]);
 });
 
 it("follows the selection the frame reports, and gives it back after a reload", async () => {

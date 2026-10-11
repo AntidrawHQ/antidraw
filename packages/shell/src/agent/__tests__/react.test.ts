@@ -96,7 +96,7 @@ const ask = (msg: object) =>
 // A click with Inspect on, on what elementsFromPoint says is there.
 const click = () => {
   ask({ type: "tool", id: 0, tool: "inspect", wheel: "pass", zoom: 1 })
-  document.querySelector("antidraw-agent")!.shadowRoot!.querySelector(".catcher")!.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+  document.querySelector("antidraw-agent")!.shadowRoot!.querySelector(".catcher")!.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true }))
 }
 
 // The context of an element, picked as the shell does, without what jsdom
