@@ -76,8 +76,23 @@ export function startInspector(container: HTMLElement, componentName: string): (
 
   // What's under a point, as DevTools sees it: while a tool is on, the
   // overlay has pointer-events: none hide nothing (a disabled button, the
-  // page behind an open modal dialog).
-  const elementAt = (x: number, y: number) => document.elementsFromPoint(x, y).find(inside) ?? null
+  // page behind an open modal dialog). But a layer laid over its parent that
+  // holds nothing there (a paper grain, a tint, a frame for a corner's
+  // ornament) is looked through to what's under it, as it would be clicked
+  // through: otherwise every pick is that layer.
+  const CONTENT = new Set(["img", "svg", "video", "canvas", "picture", "iframe", "input", "textarea", "select", "button"])
+  const isLayer = (el: Element, under: Element[]) => {
+    const parent = el.parentElement
+    if (!parent || CONTENT.has(el.localName)) return false
+    if ([...el.childNodes].some((n) => n.nodeType === Node.TEXT_NODE && n.nodeValue?.trim())) return false
+    if ([...el.children].some((c) => under.includes(c))) return false
+    const r = el.getBoundingClientRect()
+    const p = parent.getBoundingClientRect()
+    if (!r.width || !r.height) return false
+    return r.left <= p.left + 1 && r.top <= p.top + 1 && r.right >= p.right - 1 && r.bottom >= p.bottom - 1
+  }
+  const topOf = (under: Element[]) => under.find((el, i) => i === under.length - 1 || !isLayer(el, under)) ?? null
+  const elementAt = (x: number, y: number) => topOf(document.elementsFromPoint(x, y).filter(inside))
 
   // What a wheel at a point scrolls, along one axis: the nearest box around
   // the point that can still go that way, or the page. The overlay takes the
@@ -93,7 +108,7 @@ export function startInspector(container: HTMLElement, componentName: string): (
   const scrollAt = (x: number, y: number, dx: number, dy: number) => {
     if (![x, y, dx, dy].every(Number.isFinite)) return
     const page = document.scrollingElement ?? document.documentElement
-    const under = document.elementsFromPoint(x, y).find((el) => !overlay.owns(el)) ?? null
+    const under = topOf(document.elementsFromPoint(x, y).filter((el) => !overlay.owns(el)))
     const along = (axis: "x" | "y", d: number) => {
       if (!d) return null
       for (let el: Element | null = under; el; el = el.parentElement) if (canScroll(el, axis, d)) return el

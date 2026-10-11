@@ -509,3 +509,39 @@ test("says when the pointer comes in, and stops drawing what it hovered when the
   move()
   expect(sent.filter((s) => s.msg.type === "hovering")).toHaveLength(2)
 })
+
+test("looks through a layer laid over its parent that holds nothing there, to what's under it", () => {
+  // A poster with a paper grain over all of it, and a corner ornament in a
+  // layer of its own, both pointer-events: none in the page (which the
+  // tool's hit-testing doesn't see).
+  container.innerHTML = `
+    <div class="poster" data-ad-loc="${OWN}:2:5">
+      <h1 data-ad-loc="${OWN}:3:7">51A(b)</h1>
+      <button class="buy" disabled data-ad-loc="${OWN}:4:7">Buy</button>
+      <div class="corner"><svg class="star"></svg></div>
+      <div class="grain"></div>
+    </div>`
+  const box = (s: string, x: number, y: number, w: number, h: number) =>
+    vi.spyOn($(s), "getBoundingClientRect").mockReturnValue(new DOMRect(x, y, w, h))
+  box(".poster", 0, 0, 400, 600)
+  box(".grain", 0, 0, 400, 600)
+  box(".corner", 0, 0, 400, 600)
+  box("h1", 20, 20, 200, 60)
+  box(".buy", 20, 100, 80, 30)
+  box(".star", 360, 10, 20, 20)
+  const pickAt = (...stack: string[]) => {
+    document.elementsFromPoint = () => [...stack.map($), container, document.body, document.documentElement]
+    catcher().dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true }))
+    return (sent.at(-1)!.msg as Selected).info?.tag
+  }
+  tool("inspect")
+  // Over the heading, the disabled button, an empty spot, the ornament.
+  expect(pickAt(".grain", ".corner", "h1", ".poster")).toBe("h1")
+  expect(pickAt(".grain", ".corner", ".buy", ".poster")).toBe("button")
+  expect(pickAt(".grain", ".corner", ".poster")).toBe("div")
+  expect((sent.at(-1)!.msg as Selected).info?.classes).toEqual(["poster"])
+  expect(pickAt(".grain", ".star", ".corner", ".poster")).toBe("svg")
+  // Nothing under the layer: the layer.
+  expect(pickAt(".grain")).toBe("div")
+  expect((sent.at(-1)!.msg as Selected).info?.classes).toEqual(["grain"])
+})
