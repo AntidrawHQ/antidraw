@@ -14,6 +14,7 @@ import { markupOf, openingTag } from "../markup"
 const DEPTH = 3
 const CHILDREN = 8
 const LINES = 60
+const CHARS = 6000
 const TEXT = 80
 const VALUE = 200
 
@@ -440,7 +441,7 @@ const kindOf = (item: Item | Node) =>
 // The read-back element `b` against the element `a` it came from, `depth`
 // levels below the root: same tag, same attributes in the same order with
 // their values clipped, and its children a start of a's, the rest counted.
-const expectPruned = (a: Element, b: Element, depth: number) => {
+const expectPruned = (a: Element, b: Element, depth: number, out: string[]) => {
   const where = `${a.localName} at depth ${depth}`
   expect(b.localName, where).toBe(a.localName)
   const want = attributesOf(a)
@@ -472,14 +473,18 @@ const expectPruned = (a: Element, b: Element, depth: number) => {
     expect(more.count, where).toBeGreaterThan(0)
     expect(shown, where).toBeGreaterThanOrEqual(0)
     // Cut short only by the limit across, or by the whole having reached its
-    // lines before this count was written.
-    expect(shown === CHILDREN || more.line >= LINES, `${where}: ${shown} shown, count on line ${more.line}`).toBe(true)
+    // lines, or its characters, before this count was written.
+    const charsBefore = out.slice(0, more.line).reduce((n, line) => n + line.length + 1, 0)
+    expect(
+      shown === CHILDREN || more.line >= LINES || charsBefore >= CHARS,
+      `${where}: ${shown} shown, count on line ${more.line} after ${charsBefore} characters`,
+    ).toBe(true)
   }
   const kept = children.slice(0, shown)
   expect(got.map(kindOf), where).toEqual(kept.map(kindOf))
   kept.forEach((child, i) => {
     const item = got[i]!
-    if (item.kind === "el") expectPruned(child as Element, item.el, depth + 1)
+    if (item.kind === "el") expectPruned(child as Element, item.el, depth + 1, out)
     else if (item.kind === "text") expectClipped(item.text, collapse(child.nodeValue!), TEXT, `${where} text ${i}`)
   })
 }
@@ -542,6 +547,24 @@ test("reaches that bound: a count and a close for each of three open elements", 
   ])
 })
 
+test("stops adding at six thousand characters too, long before sixty lines of long ones", () => {
+  // Eight across, three down, each with a long class, as Tailwind's are.
+  const cls = Array.from({ length: 40 }, (_, i) => `px-${i}`).join(" ")
+  const node = (depth: number): Element => {
+    const el = document.createElement("div")
+    el.className = cls
+    if (depth < 3) for (let i = 0; i < 8; i++) el.append(node(depth + 1))
+    return el
+  }
+  const lines = markupOf(node(0)).split("\n")
+  const chars = lines.reduce((n, line) => n + line.length + 1, 0)
+  expect(lines.length).toBeLessThan(LINES)
+  // A child is only started under the budget; one started then adds at most
+  // its own subtree's few lines.
+  expect(chars).toBeLessThan(CHARS + 12 * (VALUE + 40))
+  expect(lines.filter((line) => MORE.test(line)).length).toBeGreaterThan(0)
+})
+
 test("nests two spaces a level, at most three levels down, one line each", () => {
   fc.assert(
     fc.property(tree, (model) => {
@@ -579,7 +602,8 @@ test("prunes the tree and invents nothing: read back, it's the start of each ele
   fc.assert(
     fc.property(tree, (model) => {
       const el = rootOf(model)
-      expectPruned(el, parse(markupOf(el)), 0)
+      const out = markupOf(el)
+      expectPruned(el, parse(out), 0, out.split("\n"))
     }),
     { numRuns: RUNS },
   )
@@ -689,12 +713,16 @@ test("generates the cases that matter", () => {
   const depth = (el: Element): number => 1 + Math.max(0, ...[...el.children].map(depth))
   const more = (s: (typeof samples)[number]) => s.lines.flatMap((line, i) => (MORE.test(line) ? [i] : []))
 
-  // The limits: lines, across (a count before the line budget is spent),
-  // down, and small trees too.
-  expect(seen((s) => s.lines.length > LINES)).toBeGreaterThan(30)
-  expect(seen((s) => s.lines.length === LINES + 2 * DEPTH)).toBeGreaterThan(5)
-  expect(seen((s) => more(s).some((i) => i >= LINES))).toBeGreaterThan(30)
-  expect(seen((s) => more(s).some((i) => i < LINES))).toBeGreaterThan(30)
+  // The limits: the whole's (lines or characters; the exact line bound has
+  // its own test, as random trees' long values spend the characters first),
+  // across (a count before the whole's budget is spent), down, and small
+  // trees too.
+  const charsBefore = (s: (typeof samples)[number], i: number) =>
+    s.lines.slice(0, i).reduce((n, line) => n + line.length + 1, 0)
+  const spent = (s: (typeof samples)[number], i: number) => i >= LINES || charsBefore(s, i) >= CHARS
+  expect(seen((s) => more(s).some((i) => spent(s, i)))).toBeGreaterThan(30)
+  expect(seen((s) => more(s).some((i) => charsBefore(s, i) >= CHARS && i < LINES))).toBeGreaterThan(15)
+  expect(seen((s) => more(s).some((i) => !spent(s, i)))).toBeGreaterThan(30)
   expect(
     seen((s) => s.lines.some((line) => /^ {6}<(?!svg|script|style|template)[^/].*>…<\//.test(line))),
   ).toBeGreaterThan(30)

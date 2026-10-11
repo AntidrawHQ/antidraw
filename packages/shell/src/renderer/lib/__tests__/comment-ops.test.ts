@@ -35,8 +35,11 @@ function context(over: Partial<ElementContext> = {}): ElementContext {
     viewport: [1280, 800],
     element: "li.item",
     html: `<li class="item" data-ad-loc="${OWN}:7:9"></li>`,
+    text: "",
     within: null,
-    repeat: null,
+    path: [],
+    repeat: [],
+    sibling: null,
     size: [300, 32],
     margin: [0, 0, 0, 0],
     border: [0, 0, 0, 0],
@@ -63,4 +66,12 @@ it("asks the canvas's frame only about elements pinned there, and takes a frame 
     [3, null, "Banana", true],
     [4, null, undefined, false],
   ]);
+});
+
+it("describes a comment saved by an earlier version, whose window saw it in another shape, as last seen", async () => {
+  // Before the element's markup: what React's internals said.
+  const old = { viewport: [1440, 900], element: "li.item", text: "Banana", loc: `${OWN}:7:9`, components: [], attributes: {} };
+  const [described] = await describeElements([draft(5, { ...info(), seen: old })]);
+  expect(described!.element).toContain("as last seen");
+  expect(described!.frame).toBeNull();
 });

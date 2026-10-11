@@ -7,17 +7,15 @@ import { startInspector } from "../agent"
 import { AGENT_NS, type ElementContext, type FromFrame } from "../protocol"
 
 // What an agent is told about elements of a real React tree: their markup,
-// with where each is written and used, and which item of a list it is. The
-// stamps are written by hand here, as the dev server's tagger would: a DOM
-// element's location, and a component's use, which a shared component
-// passes on to its element ({...props}, as shadcn's do).
+// with where each is written, the path out to the previewed component, and
+// which item of a list it is. The stamps are written by hand here, as the
+// dev server's tagger would: each DOM element's location.
 
 const CARD = "src/components/user-components/Card.tsx"
 const BUTTON = "src/components/ui/button.tsx"
 const BOX = "src/components/ui/box.tsx"
 const MENU = "src/components/ui/dropdown-menu.tsx"
 const loc = (file: string, line: number) => ({ "data-ad-loc": `${file}:${line}:5` })
-const use = (file: string, line: number) => ({ "data-ad-use": `${file}:${line}:9` })
 type Props = { children?: ReactNode; [attribute: `data-${string}`]: string }
 
 // A library icon: nothing the dev server stamped.
@@ -39,7 +37,7 @@ const Row = memo(function Row({ plan, features }: { plan: string; features: stri
     loc(CARD, 9),
     h("h4", loc(CARD, 10), plan),
     h("ul", loc(CARD, 11), features.map((f) => h("li", { ...loc(CARD, 12), key: f }, f))),
-    h(Button, use(CARD, 13), "Choose"),
+    h(Button, null, "Choose"),
   )
 })
 function Card() {
@@ -51,8 +49,8 @@ function Card() {
       { ...loc(CARD, 4), id: "title", className: "text-lg font-semibold tracking-tight text-neutral-900 dark:text-white leading-6 mb-2" },
       "Pro plan",
     ),
-    h("div", { ...loc(CARD, 5), className: "actions" }, h(Box, null, h(Button, use(CARD, 5), "Buy"), h("span", loc(CARD, 6), "Billed yearly"))),
-    h(Trigger, use(CARD, 7), "Options"),
+    h("div", { ...loc(CARD, 5), className: "actions" }, h(Box, null, h(Button, null, "Buy"), h("span", loc(CARD, 6), "Billed yearly"))),
+    h(Trigger, null, "Options"),
     h(
       "ul",
       loc(CARD, 8),
@@ -122,7 +120,10 @@ test("an element written in the previewed component", () => {
     {
       "element": "h3#title.text-lg.font-semibold.tracking-tight.text-neutral-900.dark:text-white.leading-6",
       "html": "<h3 data-ad-loc="src/components/user-components/Card.tsx:4:5" id="title" class="text-lg font-semibold tracking-tight text-neutral-900 dark:text-white leading-6 mb-2">Pro plan</h3>",
-      "repeat": null,
+      "path": [],
+      "repeat": [],
+      "sibling": null,
+      "text": "Pro plan",
       "within": null,
     }
   `)
@@ -132,11 +133,30 @@ test("a shared component's element, used inside a wrapper that didn't render it"
   expect(contextOf(withText(".btn", "Buy"))).toMatchInlineSnapshot(`
     {
       "element": "button.btn",
-      "html": "<button data-ad-loc="src/components/ui/button.tsx:3:5" class="btn" data-slot="button" data-ad-use="src/components/user-components/Card.tsx:5:9">
+      "html": "<button data-ad-loc="src/components/ui/button.tsx:3:5" class="btn" data-slot="button">
       <svg>…</svg>
       Buy
     </button>",
-      "repeat": null,
+      "path": [
+        {
+          "count": 1,
+          "index": 0,
+          "loc": "src/components/ui/button.tsx:3:5",
+        },
+        {
+          "count": 1,
+          "index": 0,
+          "loc": "src/components/ui/box.tsx:2:5",
+        },
+        {
+          "count": 1,
+          "index": 0,
+          "loc": "src/components/user-components/Card.tsx:5:5",
+        },
+      ],
+      "repeat": [],
+      "sibling": null,
+      "text": "Buy",
       "within": null,
     }
   `)
@@ -147,7 +167,10 @@ test("an element the previewed component passes into a wrapper", () => {
     {
       "element": "span",
       "html": "<span data-ad-loc="src/components/user-components/Card.tsx:6:5">Billed yearly</span>",
-      "repeat": null,
+      "path": [],
+      "repeat": [],
+      "sibling": null,
+      "text": "Billed yearly",
       "within": null,
     }
   `)
@@ -157,8 +180,22 @@ test("a forwardRef component's element, with its open state", () => {
   expect(contextOf(withText("button", "Options"))).toMatchInlineSnapshot(`
     {
       "element": "button",
-      "html": "<button data-ad-loc="src/components/ui/dropdown-menu.tsx:7:5" data-slot="dropdown-menu-trigger" data-state="open" aria-expanded="true" data-ad-use="src/components/user-components/Card.tsx:7:9">Options</button>",
-      "repeat": null,
+      "html": "<button data-ad-loc="src/components/ui/dropdown-menu.tsx:7:5" data-slot="dropdown-menu-trigger" data-state="open" aria-expanded="true">Options</button>",
+      "path": [
+        {
+          "count": 1,
+          "index": 0,
+          "loc": "src/components/ui/dropdown-menu.tsx:7:5",
+        },
+        {
+          "count": 1,
+          "index": 0,
+          "loc": "src/components/user-components/Card.tsx:3:5",
+        },
+      ],
+      "repeat": [],
+      "sibling": null,
+      "text": "Options",
       "within": null,
     }
   `)
@@ -174,15 +211,21 @@ test("a row of a list, rendered by a memo component", () => {
         <li data-ad-loc="src/components/user-components/Card.tsx:12:5">sync</li>
         <li data-ad-loc="src/components/user-components/Card.tsx:12:5">export</li>
       </ul>
-      <button data-ad-loc="src/components/ui/button.tsx:3:5" class="btn" data-slot="button" data-ad-use="src/components/user-components/Card.tsx:13:9">
+      <button data-ad-loc="src/components/ui/button.tsx:3:5" class="btn" data-slot="button">
         <svg>…</svg>
         Choose
       </button>
     </li>",
-      "repeat": {
-        "count": 2,
-        "index": 1,
-      },
+      "path": [],
+      "repeat": [
+        {
+          "count": 2,
+          "index": 1,
+          "loc": "src/components/user-components/Card.tsx:9:5",
+        },
+      ],
+      "sibling": null,
+      "text": "pro sync export Choose",
       "within": null,
     }
   `)
@@ -193,10 +236,21 @@ test("an item of a list inside an item of a list", () => {
     {
       "element": "li",
       "html": "<li data-ad-loc="src/components/user-components/Card.tsx:12:5">export</li>",
-      "repeat": {
-        "count": 4,
-        "index": 3,
-      },
+      "path": [],
+      "repeat": [
+        {
+          "count": 2,
+          "index": 1,
+          "loc": "src/components/user-components/Card.tsx:12:5",
+        },
+        {
+          "count": 2,
+          "index": 1,
+          "loc": "src/components/user-components/Card.tsx:9:5",
+        },
+      ],
+      "sibling": null,
+      "text": "export",
       "within": null,
     }
   `)
@@ -207,11 +261,22 @@ test("a library's element inside a shared component, in a list", () => {
     {
       "element": "path",
       "html": "<path></path>",
-      "repeat": {
-        "count": 2,
-        "index": 1,
-      },
-      "within": "<button data-ad-loc="src/components/ui/button.tsx:3:5" class="btn" data-slot="button" data-ad-use="src/components/user-components/Card.tsx:13:9">",
+      "path": [
+        {
+          "count": 1,
+          "index": 0,
+          "loc": "src/components/ui/button.tsx:3:5",
+        },
+        {
+          "count": 2,
+          "index": 1,
+          "loc": "src/components/user-components/Card.tsx:9:5",
+        },
+      ],
+      "repeat": [],
+      "sibling": null,
+      "text": "",
+      "within": "<button data-ad-loc="src/components/ui/button.tsx:3:5" class="btn" data-slot="button">",
     }
   `)
 })
@@ -225,7 +290,10 @@ test("an element in a frame the dev server didn't tag", async () => {
     {
       "element": "span.badge",
       "html": "<span class="badge">New</span>",
-      "repeat": null,
+      "path": [],
+      "repeat": [],
+      "sibling": null,
+      "text": "New",
       "within": null,
     }
   `)
@@ -233,16 +301,30 @@ test("an element in a frame the dev server didn't tag", async () => {
 
 test("a shared component used twice isn't a list", async () => {
   await render(h(function Toolbar() {
-    return h("div", loc(CARD, 3), h(Button, use(CARD, 4), "Save"), h(Button, use(CARD, 5), "Cancel"))
+    return h("div", loc(CARD, 3), h(Button, null, "Save"), h(Button, null, "Cancel"))
   }))
   expect(contextOf(withText(".btn", "Cancel"))).toMatchInlineSnapshot(`
     {
       "element": "button.btn",
-      "html": "<button data-ad-loc="src/components/ui/button.tsx:3:5" class="btn" data-slot="button" data-ad-use="src/components/user-components/Card.tsx:5:9">
+      "html": "<button data-ad-loc="src/components/ui/button.tsx:3:5" class="btn" data-slot="button">
       <svg>…</svg>
       Cancel
     </button>",
-      "repeat": null,
+      "path": [
+        {
+          "count": 2,
+          "index": 1,
+          "loc": "src/components/ui/button.tsx:3:5",
+        },
+        {
+          "count": 1,
+          "index": 0,
+          "loc": "src/components/user-components/Card.tsx:3:5",
+        },
+      ],
+      "repeat": [],
+      "sibling": null,
+      "text": "Cancel",
       "within": null,
     }
   `)
@@ -254,26 +336,41 @@ test("nor is it when the previewed component's root is a shared component", asyn
     return h(
       Panel,
       null,
-      h(Panel, null, h(Button, use(CARD, 5), "Email")),
-      h(Panel, null, h(Button, use(CARD, 6), "Cancel"), h(Button, use(CARD, 7), "Save")),
+      h(Panel, null, h(Button, null, "Email")),
+      h(Panel, null, h(Button, null, "Cancel"), h(Button, null, "Save")),
     )
   }))
   expect(contextOf(withText(".btn", "Save"))).toMatchInlineSnapshot(`
     {
       "element": "button.btn",
-      "html": "<button data-ad-loc="src/components/ui/button.tsx:3:5" class="btn" data-slot="button" data-ad-use="src/components/user-components/Card.tsx:7:9">
+      "html": "<button data-ad-loc="src/components/ui/button.tsx:3:5" class="btn" data-slot="button">
       <svg>…</svg>
       Save
     </button>",
-      "repeat": null,
+      "path": [
+        {
+          "count": 2,
+          "index": 1,
+          "loc": "src/components/ui/button.tsx:3:5",
+        },
+        {
+          "count": 3,
+          "index": 2,
+          "loc": "src/components/ui/box.tsx:2:5",
+        },
+      ],
+      "repeat": [],
+      "sibling": null,
+      "text": "Save",
       "within": null,
     }
   `)
 })
 
-test("a list of a shared component that renders through a variable: told apart by its use", async () => {
+test("a list of a shared component that renders through a variable: told apart among its siblings", async () => {
   // shadcn's `const Comp = asChild ? Slot : "span"`: the tagger can't stamp
-  // <Comp> as a DOM element, so only the use reaches it.
+  // <Comp> as a DOM element, so it has no location, and is placed inside the
+  // nearest element that has one, by which of its kind it is there.
   const Chip = ({ children, ...props }: Props) => {
     const Comp = "span"
     return h(Comp, { className: "chip", ...props }, children)
@@ -282,18 +379,21 @@ test("a list of a shared component that renders through a variable: told apart b
     return h(
       "div",
       loc(CARD, 3),
-      ["new", "sale", "hot"].map((t) => h(Chip, { key: t, ...use(CARD, 4) }, t)),
-      h(Chip, use(CARD, 5), "more"),
+      ["new", "sale", "hot"].map((t) => h(Chip, { key: t }, t)),
+      h(Chip, null, "more"),
     )
   }))
   expect(contextOf(withText(".chip", "sale"))).toMatchInlineSnapshot(`
     {
       "element": "span.chip",
-      "html": "<span class="chip" data-ad-use="src/components/user-components/Card.tsx:4:9">sale</span>",
-      "repeat": {
-        "count": 3,
+      "html": "<span class="chip">sale</span>",
+      "path": [],
+      "repeat": [],
+      "sibling": {
+        "count": 4,
         "index": 1,
       },
+      "text": "sale",
       "within": "<div data-ad-loc="src/components/user-components/Card.tsx:3:5">",
     }
   `)
@@ -334,7 +434,10 @@ test("an element a portal put under <body>: the component's all the same", async
     {
       "element": "button.save",
       "html": "<button data-ad-loc="src/components/user-components/Card.tsx:9:5" class="save">Save</button>",
-      "repeat": null,
+      "path": [],
+      "repeat": [],
+      "sibling": null,
+      "text": "Save",
       "within": null,
     }
   `)
@@ -349,7 +452,13 @@ test("a library's element in a portal, placed from the element the portal was re
       <h2 data-ad-loc="src/components/user-components/Card.tsx:7:5">Edit profile</h2>
       <button data-ad-loc="src/components/user-components/Card.tsx:9:5" class="save">Save</button>
     </div>",
-      "repeat": null,
+      "path": [],
+      "repeat": [],
+      "sibling": {
+        "count": 2,
+        "index": 1,
+      },
+      "text": "Edit profile Save",
       "within": "<section data-ad-loc="src/components/user-components/Card.tsx:3:5">",
     }
   `)

@@ -83,3 +83,38 @@ test("gives an opening tag alone", () => {
     `<div data-ad-loc="src/a.tsx:3:5" class="row">`,
   )
 })
+
+test("gives what a form holds as it is on screen, but a secret's value", () => {
+  const form = html(`<form>
+    <input name="email" value="first">
+    <input type="password" value="hunter2">
+    <input type="hidden" name="csrf" value="tok_SECRET">
+    <input autocomplete="cc-number" value="4111111111111111">
+    <select><option value="a" selected>A</option><option value="b">B</option></select>
+    <textarea>first draft</textarea>
+  </form>`)
+  // Typed since, as React's controlled fields are: the properties change,
+  // the attributes don't.
+  form.querySelector<HTMLInputElement>('[name="email"]')!.value = "now@example.com"
+  form.querySelector<HTMLInputElement>('[type="password"]')!.value = "hunter3"
+  form.querySelector("select")!.value = "b"
+  form.querySelector("textarea")!.value = "second draft"
+  expect(markupOf(form)).toMatchInlineSnapshot(`
+    "<form>
+      <input name="email" value="now@example.com">
+      <input type="password">
+      <input type="hidden" name="csrf">
+      <input autocomplete="cc-number">
+      <select>
+        <option value="a">A</option>
+        <option value="b" selected>B</option>
+      </select>
+      <textarea>second draft</textarea>
+    </form>"
+  `)
+})
+
+test("leaves out an element of the inspector's own", () => {
+  const dialog = html(`<dialog><button>Delete</button><antidraw-agent></antidraw-agent></dialog>`)
+  expect(markupOf(dialog, (el) => el.localName === "antidraw-agent")).toBe("<dialog>\n  <button>Delete</button>\n</dialog>")
+})

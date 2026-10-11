@@ -9,20 +9,19 @@ import type { ComponentType } from "react"
 import type { Plugin } from "vite"
 import { afterAll, beforeAll, expect, test, vi } from "vitest"
 
-// Tagged code, run. The tagger stamps each element where it's written: a DOM
-// element with its location (data-ad-loc), a component with its use
-// (data-ad-use), which is just another prop. Put right after the name, a
-// caller's {...props} written later replaces it, so a component that passes
-// its props on hands its DOM node the outermost use that got through. Here
-// random workspaces of a few modules go through the real tagger, compile as
-// the dev server compiles JSX, and render with React in jsdom. A small
-// interpreter of the same generated code says what every DOM node must
-// carry, and the DOM must carry exactly that.
+// Tagged code, run. The tagger stamps each DOM element with where it's
+// written (data-ad-loc), and nothing else: a component gets no prop it
+// didn't ask for, so none can refuse one (Headless UI's Fragment-rendering
+// Menu throws on an extra prop). Here random workspaces of a few modules go
+// through the real tagger, compile as the dev server compiles JSX, and
+// render with React in jsdom. A small interpreter of the same generated code
+// says what every DOM node must carry, and the DOM must carry exactly that,
+// with React logging nothing.
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 // Where the generated workspace is said to be. Nothing is written there: the
 // tagger only needs files under a root to name them from it.
-const workspaceRoot = path.join(here, "tag-use")
+const workspaceRoot = path.join(here, "tag-render")
 
 // esbuild wants TextEncoder's bytes to be the global Uint8Array, as it loads
 // and as it talks to its service, and under jsdom the global one is the
@@ -428,7 +427,7 @@ const tagName = (t: Tag) =>
 // What the tagger stamps a name with.
 const stampOf = (name: string) => {
   const last = name.split(".").pop()!
-  return /^[a-z]/.test(last) ? "loc" : last === "Fragment" ? null : "use"
+  return /^[a-z]/.test(last) ? "loc" : null
 }
 const BUILTIN_PROPS: Record<Builtin, string> = {
   Suspense: "",
@@ -749,11 +748,7 @@ const model = (w: Workspace, locs: Map<El, string>) => {
     // warns about: such cases are left out.
     if ((s.tag === "a" || s.tag === "button") && ancestors.includes(s.tag)) nested = true
     if (s.tag === "input" && props.children != null) throw new Error("children reached an <input>")
-    const file = (stamp: string | null) => stamp?.replace(/:\d+:\d+$/, "")
-    if (s.use && s.use !== "kept" && s.loc && s.loc !== "kept" && file(s.use) !== file(s.loc)) facts.add("dom: use from another file")
-    if (s.use && s.use !== "kept" && !s.loc) facts.add("dom: use, no loc")
     if (s.loc && s.loc !== "kept" && s.loc !== v.own) facts.add("dom: loc from a call site")
-    if (s.use && calls.length - calls.lastIndexOf(s.use) >= 2 && calls.includes(s.use)) facts.add("dom: use passed through 2+ components")
     render(props.children, out, [...ancestors, s.tag], calls)
   }
   render(invoke(w.gen, {}), dom, [], [])
@@ -959,10 +954,7 @@ test("generates the cases that matter", () => {
     ),
     "modules: 2",
     "modules: 3",
-    "dom: use from another file",
-    "dom: use, no loc",
     "dom: loc from a call site",
-    "dom: use passed through 2+ components",
     "rendered: asChild",
     ...["child-wins", "slot-wins"].flatMap((m) => [`rendered: ${m} onto dom`, `rendered: ${m} onto comp`]),
   ]
@@ -1002,7 +994,7 @@ export default function Gen() {
 let serverDir: string
 beforeAll(() => {
   // Inside the package, so the server finds React in node_modules.
-  serverDir = fs.mkdtempSync(path.join(here, ".tag-use-"))
+  serverDir = fs.mkdtempSync(path.join(here, ".tag-render-"))
   for (const [file, code] of Object.entries(SERVER_FILES)) {
     fs.mkdirSync(path.dirname(path.join(serverDir, file)), { recursive: true })
     fs.writeFileSync(path.join(serverDir, file), code)
@@ -1012,7 +1004,7 @@ afterAll(() => {
   fs.rmSync(serverDir, { recursive: true, force: true })
 })
 
-test("a real dev server compiles the stamps the same way: each ahead of the spread", async () => {
+test("a real dev server compiles the stamps the same way: on DOM elements, ahead of the spread, and none on components", async () => {
   const server = await createServer({
     root: serverDir,
     configFile: false,
@@ -1024,7 +1016,7 @@ test("a real dev server compiles the stamps the same way: each ahead of the spre
   try {
     const button = await server.transformRequest("/src/components/ui/button.tsx")
     expect(button!.code).toMatch(
-      /jsxDEV\(Comp, \{ "data-ad-use": "src\/components\/ui\/button\.tsx:3:10", "data-slot": "button", className, \.\.\.props \}/,
+      /jsxDEV\(Comp, \{ "data-slot": "button", className, \.\.\.props \}/,
     )
     const { default: Gen } = (await server.ssrLoadModule("/src/components/user-components/Gen.tsx")) as { default: ComponentType }
     const served = await run(Gen)
@@ -1039,12 +1031,12 @@ test("a real dev server compiles the stamps the same way: each ahead of the spre
         {
           "loc": null,
           "tag": "button",
-          "use": "src/components/user-components/Gen.tsx:7:7",
+          "use": null,
         },
         {
           "loc": null,
           "tag": "button",
-          "use": "src/components/user-components/Gen.tsx:8:7",
+          "use": null,
         },
         {
           "loc": "src/components/user-components/Gen.tsx:9:9",

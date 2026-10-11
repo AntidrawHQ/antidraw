@@ -1,7 +1,6 @@
 import {
   AGENT_NS,
   SOURCE_ATTRIBUTE,
-  USE_ATTRIBUTE,
   type ElementContext,
   type ElementInfo,
   type ElementRef,
@@ -25,6 +24,7 @@ import { reactParent, renderedWithin } from "./react"
 
 const USER_COMPONENTS_DIR = "src/components/user-components/"
 const LOC_RE = /:\d+:\d+$/
+const fileOf = (loc: string) => loc.replace(LOC_RE, "")
 
 // As the user reads it: innerText breaks between blocks, where textContent
 // runs "Pro" and "Choose" together. Without it (an SVG), text by text.
@@ -174,55 +174,84 @@ export function startInspector(container: HTMLElement, componentName: string): (
 
   // ── What an agent is told about an element ───────────────────────────────
 
-  // The nearest element at or around `el` that `has` says is stamped.
-  const nearest = (el: Element, has: (node: Element) => boolean) => {
-    for (let node: Element | null = el; inside(node); node = parentOf(node)) if (has(node)) return node
+  // The nearest element at or around `el` with a location.
+  const located = (node: Element) => node.hasAttribute(SOURCE_ATTRIBUTE)
+  const nearest = (el: Element) => {
+    for (let node: Element | null = el; inside(node); node = parentOf(node)) if (located(node)) return node
     return null
   }
-  const located = (node: Element) => node.hasAttribute(SOURCE_ATTRIBUTE)
-  const stamped = (node: Element) => located(node) || node.hasAttribute(USE_ATTRIBUTE)
-
-  // The uses on the way out from `el`: the places in the code it's rendered
-  // inside of, as far as they reached the DOM.
-  const usesAround = (el: Element) => {
-    const uses: string[] = []
-    for (let node = parentOf(el); inside(node); node = parentOf(node)) {
-      const use = node.getAttribute(USE_ATTRIBUTE)
-      if (use) uses.push(use)
-    }
-    return uses.join("\0")
+  const locOf = (el: Element) => el.getAttribute(SOURCE_ATTRIBUTE)!
+  const inOwnFile = (el: Element) => fileOf(locOf(el)) === ownFile
+  // Which of the elements written where `el` is it is, inside `scope` (the
+  // whole component without one), in document order.
+  const ordinal = (el: Element, scope: Element | null) => {
+    const all = withLoc(locOf(el)).filter((m) => !scope || scope.contains(m) || isWithin(m, scope))
+    return { index: all.indexOf(el), count: all.length }
+  }
+  // Inside `scope` as React has it: in its DOM, or in a portal rendered from it.
+  const isWithin = (el: Element, scope: Element) => {
+    for (let node: Element | null = el; inside(node); node = parentOf(node)) if (node === scope) return true
+    return false
   }
 
-  // The others written in the same place and used from the same places: a
-  // .map()'s items, and the items of a list inside one, counted as one list.
-  // A shared component's button used twice is used from two places, and so
-  // is everything inside it. (One that doesn't pass its props on carries no
-  // use: the same place twice is taken as a list.)
-  const repeatOf = (el: Element): ElementContext["repeat"] => {
-    const anchor = nearest(el, stamped)
-    if (!anchor) return null
-    const loc = anchor.getAttribute(SOURCE_ATTRIBUTE)
-    const use = anchor.getAttribute(USE_ATTRIBUTE)
-    const around = usesAround(anchor)
-    const matches = (
-      loc
-        ? withLoc(loc).filter((m) => m.getAttribute(USE_ATTRIBUTE) === use)
-        : [...document.querySelectorAll(`[${USE_ATTRIBUTE}="${CSS.escape(use!)}"]`)].filter(
-            (m) => inside(m) && !located(m),
-          )
-    ).filter((m) => usesAround(m) === around)
-    return matches.length > 1 ? { index: matches.indexOf(anchor), count: matches.length } : null
+  // From where it's written out to the previewed component: the located
+  // elements it's inside, the first in each file on the way out, ending at
+  // the first in the previewed component's file, where it's used (or the
+  // component holding it is). Each with which of the elements written there
+  // it is, inside the next one out (the last, in the whole component: a
+  // .map()'s rows each holding one). Read off the DOM alone: whether a
+  // component passes its props on doesn't matter.
+  const pathOf = (anchor: Element): ElementContext["path"] => {
+    const steps: Element[] = [anchor]
+    for (let node = parentOf(anchor); inside(node) && !inOwnFile(steps.at(-1)!); node = parentOf(node))
+      if (located(node) && fileOf(locOf(node)) !== fileOf(locOf(steps.at(-1)!))) steps.push(node)
+    if (steps.length === 1 && inOwnFile(anchor)) return []
+    return steps.map((step, i) => ({ loc: locOf(step), ...ordinal(step, steps[i + 1] ?? null) }))
+  }
+
+  // Written in the previewed component, one of several rendered from there:
+  // a .map()'s items. Counted inside the nearest item of a list around it,
+  // so a list in a list counts each inner list on its own, and that outer
+  // item is said too, out to the outermost list.
+  const repeatOf = (anchor: Element): ElementContext["repeat"] => {
+    if (!inOwnFile(anchor)) return []
+    const isItem = (node: Element) => located(node) && inOwnFile(node) && withLoc(locOf(node)).length > 1
+    const levels: ElementContext["repeat"] = []
+    let item: Element | null = anchor
+    while (item) {
+      let scope: Element | null = null
+      for (let node = parentOf(item); inside(node); node = parentOf(node))
+        if (isItem(node)) {
+          scope = node
+          break
+        }
+      const { index, count } = ordinal(item, scope)
+      if (count > 1) levels.push({ loc: locOf(item), index, count })
+      item = scope
+    }
+    return levels
+  }
+
+  // One with no location of its own (a library rendered it): which of the
+  // elements of its kind its parent holds, as the stars of a rating.
+  const siblingOf = (el: Element): ElementContext["sibling"] => {
+    if (located(el) || !el.parentElement) return null
+    const like = [...el.parentElement.children].filter((c) => c.localName === el.localName)
+    return like.length > 1 ? { index: like.indexOf(el), count: like.length } : null
   }
 
   const contextFor = (el: Element): ElementContext => {
     const info = infoFor(el)
-    const around = located(el) ? null : nearest(el, located)
+    const anchor = nearest(el)
     return {
       viewport: [window.innerWidth, window.innerHeight],
       element: el.localName + (el.id ? `#${el.id}` : "") + [...el.classList].slice(0, 6).map((c) => `.${c}`).join(""),
-      html: markupOf(el),
-      within: around && openingTag(around),
-      repeat: repeatOf(el),
+      html: markupOf(el, overlay.owns),
+      text: info.text,
+      within: anchor && anchor !== el ? openingTag(anchor) : null,
+      path: anchor ? pathOf(anchor) : [],
+      repeat: anchor ? repeatOf(anchor) : [],
+      sibling: siblingOf(el),
       size: [Math.round(info.rect.width), Math.round(info.rect.height)],
       margin: info.margin,
       border: info.border,

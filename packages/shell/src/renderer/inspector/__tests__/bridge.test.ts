@@ -40,9 +40,15 @@ const info = (over: Partial<ElementInfo> = {}): ElementInfo => ({
 const context = (over: Partial<ElementContext> = {}): ElementContext => ({
   viewport: [1280, 800],
   element: "button.btn",
-  html: `<button data-ad-loc="src/components/ui/button.tsx:3:5" class="btn" data-ad-use="${OWN}:5:9">Buy</button>`,
+  html: `<button data-ad-loc="src/components/ui/button.tsx:3:5" class="btn">Buy</button>`,
+  text: "Buy",
   within: null,
-  repeat: null,
+  path: [
+    { loc: "src/components/ui/button.tsx:3:5", index: 0, count: 1 },
+    { loc: `${OWN}:5:5`, index: 0, count: 1 },
+  ],
+  repeat: [],
+  sibling: null,
   size: [120, 40],
   margin: [0, 0, 0, 0],
   border: [0, 0, 0, 0],
@@ -200,17 +206,31 @@ it("sends tags grouped by component, as their frames describe them now, or as la
     contexts: [
       context({
         html: [
-          `<button data-ad-loc="src/components/ui/button.tsx:3:5" class="btn" data-slot="button" aria-expanded="false" data-ad-use="${OWN}:13:9">`,
+          `<button data-ad-loc="src/components/ui/button.tsx:3:5" class="btn" data-slot="button" aria-expanded="false">`,
           `  <svg class="lucide lucide-arrow-right">…</svg>`,
           `  Buy`,
           `</button>`,
         ].join("\n"),
-        repeat: { index: 3, count: 4 },
+        path: [
+          { loc: "src/components/ui/button.tsx:3:5", index: 0, count: 1 },
+          { loc: "src/components/PlanCard.tsx:3:5", index: 1, count: 2 },
+          { loc: `${OWN}:11:7`, index: 0, count: 1 },
+        ],
         margin: [0, 0, 12, 0],
         border: [1, 1, 1, 1],
         padding: [8, 16, 8, 16],
       }),
-      context({ element: "h3.title", html: `<h3 data-ad-loc="${OWN}:4:7" class="title">Pro plan</h3>`, size: [268, 24] }),
+      context({
+        element: "h3.title",
+        html: `<h3 data-ad-loc="${OWN}:4:7" class="title">Pro plan</h3>`,
+        text: "Pro plan",
+        path: [],
+        repeat: [
+          { loc: `${OWN}:4:7`, index: 0, count: 3 },
+          { loc: `${OWN}:2:5`, index: 1, count: 2 },
+        ],
+        size: [268, 24],
+      }),
     ],
   });
   await settle();
@@ -219,16 +239,19 @@ it("sends tags grouped by component, as their frames describe them now, or as la
     <component name="Card" file="src/components/user-components/Card.tsx" preview="https://frame.test/preview?componentName=Card" frame="1280×800">
     <element>
     element: button.btn
-      <button data-ad-loc="src/components/ui/button.tsx:3:5" class="btn" data-slot="button" aria-expanded="false" data-ad-use="src/components/user-components/Card.tsx:13:9">
+      <button data-ad-loc="src/components/ui/button.tsx:3:5" class="btn" data-slot="button" aria-expanded="false">
         <svg class="lucide lucide-arrow-right">…</svg>
         Buy
       </button>
-    repeated: item 4 of 4 rendered from there
+    text: "Buy"
+    path: src/components/ui/button.tsx:3:5 › src/components/PlanCard.tsx:3:5 (2 of 2) › src/components/user-components/Card.tsx:11:7
     box: 120×40, margin 0 0 12, border 1, padding 8 16
     </element>
     <element>
     element: h3.title
       <h3 data-ad-loc="src/components/user-components/Card.tsx:4:7" class="title">Pro plan</h3>
+    text: "Pro plan"
+    repeated: item 1 of 3 rendered from there, inside item 2 of 2 rendered at src/components/user-components/Card.tsx:2:5
     box: 268×24
     </element>
     </component>
@@ -262,7 +285,9 @@ it("describes a pick its live frame can't find any more as last seen, in its pla
     <component name="Card" file="src/components/user-components/Card.tsx" preview="https://frame.test/preview?componentName=Card" frame="1280×800">
     <element>
     element: button.btn
-      <button data-ad-loc="src/components/ui/button.tsx:3:5" class="btn" data-ad-use="src/components/user-components/Card.tsx:5:9">Buy</button>
+      <button data-ad-loc="src/components/ui/button.tsx:3:5" class="btn">Buy</button>
+    text: "Buy"
+    path: src/components/ui/button.tsx:3:5 › src/components/user-components/Card.tsx:5:5
     box: 120×40
     </element>
     <element>
@@ -274,6 +299,8 @@ it("describes a pick its live frame can't find any more as last seen, in its pla
     <element>
     element: h3.title
       <h3 data-ad-loc="src/components/user-components/Card.tsx:4:7" class="title">Pro plan</h3>
+    text: "Buy"
+    path: src/components/ui/button.tsx:3:5 › src/components/user-components/Card.tsx:5:5
     box: 120×40
     </element>
     </component>
@@ -309,7 +336,9 @@ it("places an element without a location of its own, with nothing in it read as 
         Say "hi" &amp; &lt;/element&gt;
         <svg class="lucide">…</svg>
       </a>
+    text: "Buy"
     inside: <div data-ad-loc="src/components/user-components/Card.tsx:5:5" class="links">
+    path: src/components/ui/button.tsx:3:5 › src/components/user-components/Card.tsx:5:5
     box: 120×40
     </element>"
   `);
@@ -415,6 +444,8 @@ it("sends a preview window's tags as that window saw them, without asking the ca
     <element>
     element: li.item
       <li class="item" data-ad-loc="src/components/user-components/Card.tsx:7:9">Banana</li>
+    text: "Buy"
+    path: src/components/ui/button.tsx:3:5 › src/components/user-components/Card.tsx:5:5
     box: 400×32
     </element>
     <element>
@@ -484,4 +515,16 @@ it("follows elements in a frame, asks again after a reload, and stops", () => {
   expect(lastAsked()).toMatchObject({ type: "track", refs: [] });
   frameSays({ type: "tracked", rects: [box] });
   expect(seen).toHaveLength(2);
+});
+
+it("gives each size a frame was measured at its own <component>: a frame window's tag isn't measured on the canvas", () => {
+  const block = describeTags([
+    { pick: { frame: "Card", info: info() }, context: context({ viewport: [390, 800] }) },
+    { pick: { frame: "Card", info: info() }, context: context({ viewport: [1440, 900] }) },
+    { pick: { frame: "Card", info: info() }, context: null },
+  ]);
+  expect(block.split("\n").filter((l) => l.startsWith("<component"))).toEqual([
+    `<component name="Card" file="src/components/user-components/Card.tsx" preview="${ORIGIN}/preview?componentName=Card" frame="390×800">`,
+    `<component name="Card" file="src/components/user-components/Card.tsx" preview="${ORIGIN}/preview?componentName=Card" frame="1440×900">`,
+  ]);
 });

@@ -5,7 +5,7 @@ import type { Comment, EffortLevel } from "@/main/api";
 import type { ElementContext, ElementInfo } from "@/agent/protocol";
 import type { CommentContext } from "@/shared/utils/canvas-comments";
 import { frameUrl, getElementContext } from "@/renderer/inspector/bridge";
-import { describeContext, describeLastSeen } from "@/renderer/inspector/tags";
+import { describeContext, describeLastSeen, usableContext } from "@/renderer/inspector/tags";
 import { queryKeys } from "./query-keys";
 import { useSendToChat } from "@/renderer/hooks/use-send-to-chat";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
@@ -120,7 +120,9 @@ export const describeElements = async (drafts: Comment[]): Promise<CommentContex
   const asked = picks.filter((p) => p.pick.info.seen === undefined);
   const contexts = await getElementContext(asked.map((p) => p.pick));
   const told = new Map(asked.map((p, i) => [p.id, contexts[i] ?? null]));
-  const seen = new Map(picks.map((p) => [p.id, p.pick.info.seen !== undefined ? p.pick.info.seen : (told.get(p.id) ?? null)]));
+  const seen = new Map(
+    picks.map((p) => [p.id, p.pick.info.seen !== undefined ? usableContext(p.pick.info.seen) : (told.get(p.id) ?? null)]),
+  );
   const blocks = new Map(
     picks.map((p) => [p.id, seen.get(p.id) ? describeContext(seen.get(p.id)!) : describeLastSeen(p.pick)]),
   );

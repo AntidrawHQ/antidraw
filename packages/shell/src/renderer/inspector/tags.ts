@@ -41,14 +41,32 @@ const attr = (name: string, value: string | null | undefined) => (value ? ` ${na
 const lines = (...all: (string | null | false)[]) =>
   all.filter((l): l is string => !!l).map((l) => escape(oneLine(l)));
 
+// A context as a frame's agent gives it now. One saved with a comment by an
+// earlier version (a frame window's `seen`) may be in another shape: it's
+// taken as none, and the comment described as last seen.
+export const usableContext = (c: unknown): ElementContext | null =>
+  !!c && typeof c === "object" && typeof (c as ElementContext).html === "string" ? (c as ElementContext) : null;
+
+const ofCount = ({ index, count }: { index: number; count: number }) => `${index + 1} of ${count}`;
+
 export function describeContext(c: ElementContext) {
+  const path = c.path ?? [];
+  const repeat = Array.isArray(c.repeat) ? c.repeat : [];
   return [
     "<element>",
     ...lines(`element: ${c.element}`),
     ...c.html.split("\n").map((line) => `  ${line}`),
+    ...lines(c.text && `text: ${quote(c.text)}`),
     ...(c.within ? [`inside: ${oneLine(c.within)}`] : []),
     ...lines(
-      c.repeat && `repeated: item ${c.repeat.index + 1} of ${c.repeat.count} rendered from there`,
+      path.length > 0 && `path: ${path.map((p) => (p.count > 1 ? `${p.loc} (${ofCount(p)})` : p.loc)).join(" › ")}`,
+      repeat.length > 0 &&
+        `repeated: item ${ofCount(repeat[0]!)} rendered from there` +
+          repeat
+            .slice(1)
+            .map((r) => `, inside item ${ofCount(r)} rendered at ${r.loc}`)
+            .join(""),
+      c.sibling && `among: ${ofCount(c.sibling)} ${c.element.split(/[#.]/)[0]} elements in its parent`,
       `box: ${[c.size.join("×"), sides("margin", c.margin), sides("border", c.border), sides("padding", c.padding)]
         .filter(Boolean)
         .join(", ")}`,
@@ -73,17 +91,24 @@ export function describeLastSeen({ frame, info }: Picked) {
 }
 
 // Picks with what their frames said about them (null: nothing), grouped by
-// frame in the order they were first picked.
+// frame in the order they were first picked, and by the frame's size: one
+// picked in a frame's own window was measured at another than the canvas's.
+// One the frame couldn't describe joins its frame's first group.
 export function describeTags(picks: { pick: Picked; context: ElementContext | null }[]) {
-  const frames = [...new Set(picks.map((p) => p.pick.frame))];
+  const sizeOf = (p: (typeof picks)[number]) =>
+    p.context?.viewport.join("×") ??
+    picks.find((q) => q.pick.frame === p.pick.frame && q.context)?.context?.viewport.join("×") ??
+    "";
+  const keyOf = (p: (typeof picks)[number]) => JSON.stringify([p.pick.frame, sizeOf(p)]);
+  const groups = [...new Set(picks.map(keyOf))];
   return [
     "<canvas-selection>",
-    ...frames.flatMap((frame) => {
-      const inFrame = picks.filter((p) => p.pick.frame === frame);
-      const viewport = inFrame.find((p) => p.context)?.context?.viewport;
+    ...groups.flatMap((group) => {
+      const [frame, size] = JSON.parse(group) as [string, string];
+      const inGroup = picks.filter((p) => keyOf(p) === group);
       return [
-        `<component${attr("name", frame)}${attr("file", componentFile(frame))}${attr("preview", frameUrl(frame))}${attr("frame", viewport?.join("×"))}>`,
-        ...inFrame.map((p) => (p.context ? describeContext(p.context) : describeLastSeen(p.pick))),
+        `<component${attr("name", frame)}${attr("file", componentFile(frame))}${attr("preview", frameUrl(frame))}${attr("frame", size)}>`,
+        ...inGroup.map((p) => (p.context ? describeContext(p.context) : describeLastSeen(p.pick))),
         "</component>",
       ];
     }),
@@ -118,8 +143,16 @@ export function splitTagged(message: string): { tags: string[]; text: string } {
 export async function describePendingTags() {
   const { tags } = useInspectorStore.getState();
   if (!tags.length) return { block: "", tags };
-  const contexts = await getElementContext(tags);
-  return { block: describeTags(tags.map((pick, i) => ({ pick, context: contexts[i] ?? null }))), tags };
+  // A frame window's tags are as that window saw them (see Picked).
+  const asked = tags.filter((t) => t.seen === undefined);
+  const contexts = await getElementContext(asked);
+  const told = new Map(asked.map((t, i) => [t, contexts[i] ?? null]));
+  return {
+    block: describeTags(
+      tags.map((pick) => ({ pick, context: pick.seen !== undefined ? usableContext(pick.seen) : (told.get(pick) ?? null) })),
+    ),
+    tags,
+  };
 }
 
 export const untagTags = (sent: Picked[]) => {

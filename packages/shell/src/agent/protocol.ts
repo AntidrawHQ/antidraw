@@ -16,9 +16,6 @@ export const AGENT_NS = "antidraw-agent"
 // Set on each element by the runtime's Vite plugin while the dev server
 // compiles it: "src/components/user-components/Card.tsx:12:5".
 export const SOURCE_ATTRIBUTE = "data-ad-loc"
-// Set on each component in that JSX (<Button>), where it's used. A prop like
-// any other, it reaches the DOM where the component passes its props on.
-export const USE_ATTRIBUTE = "data-ad-use"
 // On the element the runtime's preview page renders the component into
 // (0.7 on). Before it, the page's root stands in.
 export const PREVIEW_ATTRIBUTE = "data-ad-preview"
@@ -58,9 +55,9 @@ export type ElementInfo = {
 }
 
 // What an agent needs to find one element in the code and tell it from the
-// ones like it: its markup, which carries where it's written and used (the
-// stamps above), and what the markup can't say. The shell knows which
-// component's frame it's from.
+// ones like it: its markup, which carries where it's written (the stamps
+// above), and what the markup can't say. The shell knows which component's
+// frame it's from.
 export type ElementContext = {
   // The frame's size.
   viewport: [width: number, height: number]
@@ -70,12 +67,25 @@ export type ElementContext = {
   // text and values clipped, an <svg>'s drawing left out. One element or
   // text per line, nested two spaces.
   html: string
+  // Its visible text, clipped: the markup's can be cut off.
+  text: string
   // Without a location of its own (a library rendered it), the opening tag
   // of the nearest element around it that has one.
   within: string | null
-  // One of several rendered from the same place and used from the same
-  // place (a .map()): which.
-  repeat: { index: number; count: number } | null
+  // From where it's written (its location, or within's) out to the
+  // previewed component: the location in each file on the way, the last in
+  // the previewed component's file, where it's used (or the component
+  // holding it is). Each with which of the elements written there it is,
+  // inside the next one out (the last, in the whole component). Empty when
+  // it's written in the previewed component.
+  path: { loc: string; index: number; count: number }[]
+  // Written in the previewed component and one of several rendered from
+  // there (a .map()): which, counted inside the nearest item of a list
+  // around it, then that item, out to the outermost list.
+  repeat: { loc: string; index: number; count: number }[]
+  // No location of its own: which of the elements of its kind its parent
+  // holds.
+  sibling: { index: number; count: number } | null
   size: [width: number, height: number]
   margin: Sides
   border: Sides

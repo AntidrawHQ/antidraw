@@ -93,6 +93,10 @@ const side = fc.oneof(fc.constant(0), fc.nat(64), fc.double({ min: 0, max: 64, n
 const sides: fc.Arbitrary<Sides> = fc.tuple(side, side, side, side);
 const pair = fc.tuple(fc.nat(4000), fc.nat(4000));
 
+const loc = fc
+  .tuple(fc.constantFrom("src/components/user-components/Card.tsx", "src/components/ui/button.tsx"), fc.nat(500), fc.nat(120))
+  .map(([file, l, c]) => `${file}:${l}:${c}`);
+
 // What a frame says about an element. The markup is anything, line by line:
 // it is carried verbatim, so nothing in it is the frame misbehaving.
 const contextWith = (el: fc.Arbitrary<string>, within: fc.Arbitrary<string | null>): fc.Arbitrary<ElementContext> =>
@@ -100,18 +104,18 @@ const contextWith = (el: fc.Arbitrary<string>, within: fc.Arbitrary<string | nul
     viewport: pair,
     element: el,
     html: multiline,
+    text: fc.oneof(fc.constant(""), multiline),
     within,
-    repeat: fc.option(fc.record({ index: fc.nat(50), count: fc.nat(50) }), { nil: null }),
+    // A frame's locations are its own to say: anything, line breaks too.
+    path: fc.array(fc.record({ loc: fc.oneof(loc, multiline), index: fc.nat(50), count: fc.nat(50) }), { maxLength: 3 }),
+    repeat: fc.array(fc.record({ loc: fc.oneof(loc, multiline), index: fc.nat(50), count: fc.nat(50) }), { maxLength: 3 }),
+    sibling: fc.option(fc.record({ index: fc.nat(50), count: fc.nat(50) }), { nil: null }),
     size: pair,
     margin: sides,
     border: sides,
     padding: sides,
   });
 const context = contextWith(element, fc.option(openingTag, { nil: null }));
-
-const loc = fc
-  .tuple(fc.constantFrom("src/components/user-components/Card.tsx", "src/components/ui/button.tsx"), fc.nat(500), fc.nat(120))
-  .map(([file, l, c]) => `${file}:${l}:${c}`);
 
 // What the canvas knows of a pick, from the frame's hover or selection.
 const infoWith = (id: fc.Arbitrary<string>, where: fc.Arbitrary<string | null>): fc.Arbitrary<ElementInfo> =>
@@ -199,11 +203,18 @@ const rest = fc.option(
 
 // ── Expectations ─────────────────────────────────────────────────────────
 
-const framesOf = (all: Pick[]) => [...new Set(all.map((p) => p.pick.frame))];
+// Grouped by frame and the size it was measured at, in first-pick order; a
+// pick its frame didn't describe goes with its frame's first described one.
+const groupOf = (all: Pick[]) => (p: Pick) => {
+  const size = (p.context ?? all.find((q) => q.pick.frame === p.pick.frame && q.context)?.context)?.viewport.join("×") ?? "";
+  return JSON.stringify([p.pick.frame, size]);
+};
+const groupsOf = (all: Pick[]) => [...new Set(all.map(groupOf(all)))];
+const inGroup = (all: Pick[], g: string) => all.filter((p) => groupOf(all)(p) === g);
 const nameOf = (p: Pick) => (p.context ? p.context.element : elementName(p.pick.info));
-// Grouped by frame in first-pick order, "<frame> · <element>".
+// "<frame> · <element>", group by group.
 const chipsOf = (all: Pick[]) =>
-  framesOf(all).flatMap((f) => all.filter((p) => p.pick.frame === f).map((p) => `${f} · ${nameOf(p)}`));
+  groupsOf(all).flatMap((g) => inGroup(all, g).map((p) => `${p.pick.frame} · ${nameOf(p)}`));
 
 const startsTag = (text: string) => text.split("\n").filter((l) => l.startsWith("<"));
 
@@ -213,9 +224,9 @@ const shapeOfTags = (message: string) =>
   startsTag(message).map((l) => (/^<component name="[^<]*>$/.test(l) ? "<component>" : l));
 const expectedTagShape = (all: Pick[]) => [
   "<canvas-selection>",
-  ...framesOf(all).flatMap((f) => [
+  ...groupsOf(all).flatMap((g) => [
     "<component>",
-    ...all.filter((p) => p.pick.frame === f).flatMap(() => ["<element>", "</element>"]),
+    ...inGroup(all, g).flatMap(() => ["<element>", "</element>"]),
     "</component>",
   ]),
   "</canvas-selection>",
@@ -273,7 +284,8 @@ describe("an element's block", () => {
         const lines = describeContext(c).split("\n");
         expect(lines[0]).toBe("<element>");
         expect(lines[1]).toBe(`element: ${c.element.replace(/</g, "&lt;")}`);
-        const after = (c.within ? 1 : 0) + (c.repeat ? 1 : 0) + 2;
+        const after =
+          (c.text ? 1 : 0) + (c.within ? 1 : 0) + (c.path.length ? 1 : 0) + (c.repeat.length ? 1 : 0) + (c.sibling ? 1 : 0) + 2;
         const markup = lines.slice(2, lines.length - after);
         for (const l of markup) expect(l.startsWith("  ")).toBe(true);
         expect(markup.map((l) => l.slice(2)).join("\n")).toBe(c.html);
@@ -303,7 +315,7 @@ describe("<canvas-selection>", () => {
     );
   });
 
-  it("reads back into its chips, grouped by frame in first-pick order, and exactly what the user wrote", () => {
+  it("reads back into its chips, grouped by frame and size in first-pick order, and exactly what the user wrote", () => {
     fc.assert(
       fc.property(picks, userText, (all, text) => {
         expect(splitTagged(`${describeTags(all)}\n\n${text}`)).toEqual({ tags: chipsOf(all), text });
@@ -508,13 +520,17 @@ it("generates the cases that matter", () => {
   expect(seen(context, (c) => c.html.endsWith("\n"))).toBeGreaterThan(25);
   expect(seen(context, (c) => htmlLines(c).length >= 4)).toBeGreaterThan(25);
   expect(seen(context, (c) => !!c.within && c.within.includes("&quot;"))).toBeGreaterThan(5);
-  expect(seen(context, (c) => !!c.repeat)).toBeGreaterThan(25);
+  expect(seen(context, (c) => c.repeat.length > 1)).toBeGreaterThan(25);
+  expect(seen(context, (c) => c.path.some((p) => /[\r\n]/.test(p.loc)))).toBeGreaterThan(25);
+  expect(seen(context, (c) => /[\r\n]/.test(c.text))).toBeGreaterThan(25);
+  expect(seen(context, (c) => !!c.sibling)).toBeGreaterThan(25);
   expect(seen(context, (c) => c.element.includes("<"))).toBeGreaterThan(25);
 
   expect(seen(picks, (p) => p.some((x) => !x.context) && p.some((x) => x.context))).toBeGreaterThan(25);
   // Interleaved: a frame picked again after another, so grouping reorders.
   expect(seen(picks, (p) => chipsOf(p).join() !== p.map((x) => `${x.pick.frame} · ${nameOf(x)}`).join())).toBeGreaterThan(25);
-  expect(seen(picks, (p) => framesOf(p).length >= 3)).toBeGreaterThan(25);
+  expect(seen(picks, (p) => new Set(p.map((x) => x.pick.frame)).size >= 3)).toBeGreaterThan(25);
+  expect(seen(picks, (p) => groupsOf(p).length > new Set(p.map((x) => x.pick.frame)).size)).toBeGreaterThan(25);
   expect(seen(picks, (p) => p.some((x) => /[<"\\]/.test(x.pick.frame)))).toBeGreaterThan(25);
   expect(seen(picks, (p) => p.some((x) => x.pick.frame.includes("\n")))).toBeGreaterThan(5);
 

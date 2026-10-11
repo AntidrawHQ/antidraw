@@ -120,7 +120,7 @@ test("tells repeated elements apart by index, and finds them again from a ref", 
   const ref = msg.info!.ref
   expect(ask({ type: "context", id: 2, refs: [ref, { loc: "gone.tsx:1:1", index: 0, path: [9], tag: "p" }] }).msg).toMatchObject({
     type: "context",
-    contexts: [{ html: `<li data-ad-loc="${OWN}:6:28">two</li>`, repeat: { index: 1, count: 2 } }, null],
+    contexts: [{ html: `<li data-ad-loc="${OWN}:6:28">two</li>`, text: "two", repeat: [{ loc: `${OWN}:6:28`, index: 1, count: 2 }] }, null],
   })
 })
 
@@ -155,11 +155,25 @@ test("tells an agent what an element is, with where it's written, as its markup"
         4,
         8,
       ],
-      "repeat": null,
+      "path": [
+        {
+          "count": 1,
+          "index": 0,
+          "loc": "src/components/ui/button.tsx:8:10",
+        },
+        {
+          "count": 1,
+          "index": 0,
+          "loc": "src/components/user-components/Card.tsx:3:5",
+        },
+      ],
+      "repeat": [],
+      "sibling": null,
       "size": [
         0,
         0,
       ],
+      "text": "Upgrade",
       "viewport": [
         1024,
         768,
