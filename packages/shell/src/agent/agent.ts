@@ -436,8 +436,12 @@ export function startInspector(container: HTMLElement, componentName: string): (
     // so its wheels land outside what it shows, and the pan would stop.
     if (e.type !== "wheel" && !e.composedPath().includes(overlay.catcher)) return
     e.stopImmediatePropagation()
-    // No focus taken in the page, no text selected, no menu, no page scroll.
-    if (e.type !== "pointermove" && e.type !== "mousemove" && e.cancelable) e.preventDefault()
+    // No focus taken in the page, no text selected, no menu. A wheel on the
+    // canvas isn't cancelled: a frame that cancels one takes the gesture,
+    // and the glide after the fingers lift never comes, so the pan stops
+    // dead. The page can't scroll with it meanwhile (overlay.holdStill).
+    const keep = e.type === "pointermove" || e.type === "mousemove" || (e.type === "wheel" && wheelMode === "pass")
+    if (!keep && e.cancelable) e.preventDefault()
     const m = e as MouseEvent
     switch (e.type) {
       case "pointermove":
@@ -499,6 +503,7 @@ export function startInspector(container: HTMLElement, componentName: string): (
   const setTool = (next: Tool | null, wheel: WheelMode, at: number) => {
     wheelMode = wheel
     zoom = Number.isFinite(at) && at > 0 ? at : 1
+    overlay.holdStill(!!next && wheel === "pass")
     if (next === tool) return
     tool = next
     marked = markedRef = null

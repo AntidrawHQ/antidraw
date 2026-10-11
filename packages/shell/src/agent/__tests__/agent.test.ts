@@ -413,11 +413,26 @@ test("a click with the Comment tool says where and on what, and outlines what th
   expect(shown()).toEqual([])
 })
 
-test("passes the wheel to the shell, whose canvas pans with it", () => {
+test("passes the wheel to the shell, whose canvas pans with it, not cancelled: the glide after the fingers lift must come too", () => {
+  const page = vi.fn()
+  window.addEventListener("wheel", page)
   tool("comment")
+  // The page doesn't scroll meanwhile.
+  expect(document.head.innerHTML).toContain("overflow: hidden !important")
   const wheel = new WheelEvent("wheel", { bubbles: true, composed: true, cancelable: true, clientX: 3, clientY: 4, deltaY: 12, ctrlKey: true })
   catcher().dispatchEvent(wheel)
-  expect(wheel.defaultPrevented).toBe(true)
+  expect(wheel.defaultPrevented).toBe(false)
+  expect(page).not.toHaveBeenCalled()
+  window.removeEventListener("wheel", page)
+  // In a frame's own window the frame scrolls itself, and nothing else does.
+  tool("comment", "scroll")
+  expect(document.head.innerHTML).not.toContain("overflow: hidden")
+  const own = new WheelEvent("wheel", { bubbles: true, composed: true, cancelable: true, deltaY: 12 })
+  catcher().dispatchEvent(own)
+  expect(own.defaultPrevented).toBe(true)
+  tool("comment")
+  sent.length = 0
+  catcher().dispatchEvent(new WheelEvent("wheel", { bubbles: true, composed: true, cancelable: true, clientX: 3, clientY: 4, deltaY: 12, ctrlKey: true }))
   expect(sent.at(-1)!.msg).toEqual({
     ns: AGENT_NS,
     type: "wheel",
@@ -559,12 +574,12 @@ test("passes on every wheel while a tool is on, one landing outside what the fra
   // from under the pointer: its wheels land on the page, past the catcher.
   const wheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, clientX: -40, clientY: 30, deltaX: 12 })
   document.documentElement.dispatchEvent(wheel)
-  expect(wheel.defaultPrevented).toBe(true)
   expect(sent.at(-1)!.msg).toMatchObject({ type: "wheel", x: -40, y: 30, deltaX: 12 })
   // Not a pointer in this frame.
   expect(sent.filter((s) => s.msg.type === "hovering")).toHaveLength(0)
   // No tool: the page's.
   tool(null)
+  expect(document.head.innerHTML).not.toContain("overflow: hidden")
   const said = sent.length
   document.documentElement.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 5 }))
   expect(sent.length).toBe(said)

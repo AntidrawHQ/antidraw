@@ -72,6 +72,9 @@ export function createOverlay() {
   // can't take the pointer meanwhile anyway: the catcher has it.
   const everything = document.createElement("style")
   everything.textContent = "* { pointer-events: auto !important; }"
+  // While the canvas pans with the wheel, the page doesn't scroll with it.
+  const still = document.createElement("style")
+  still.textContent = "html, body { overflow: hidden !important; }"
 
   const place = (el: HTMLElement, x: number, y: number, w: number, h: number, widths?: Sides) => {
     el.hidden = false
@@ -153,6 +156,10 @@ export function createOverlay() {
       holder = modal
       ;(modal ?? document.documentElement).append(host)
       showOnTop()
+    },
+    holdStill(on: boolean) {
+      if (on && !still.isConnected) document.head.append(still)
+      else if (!on) still.remove()
     },
     hide() {
       holder = null
