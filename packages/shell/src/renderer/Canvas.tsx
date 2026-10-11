@@ -14,8 +14,9 @@ import { InspectorControls } from "./inspector/InspectorControls";
 import { tagFromPreview } from "./inspector/bridge";
 import { CommentFlow, renderFrameComments } from "./comments/CommentFlow";
 import { CommentControls } from "./comments/CommentControls";
+import { useCanvasTool } from "./comments/store";
 
-// Over each frame: the inspector, and the Comment tool's click target.
+// Over each frame: the tools (the inspector's and the Comment tool's).
 const renderFrameLayers: FrameLayer = (frame) => (
   <>
     {renderFrameInspector(frame)}
@@ -57,6 +58,8 @@ const WorkspaceCanvas = ({
   className?: string;
 }) => {
   const setCodePanelComponentName = useWorkspaceStore((s) => s.setCodePanelComponentName);
+  // Inspect and Comment pick in the frames themselves.
+  const picking = useCanvasTool() !== "pointer";
 
   const frameUrl = useCallback(
     (componentName: string) =>
@@ -80,6 +83,7 @@ const WorkspaceCanvas = ({
       onFullscreen={openFullscreen}
       onSeeCode={setCodePanelComponentName}
       frameLayer={renderFrameLayers}
+      framesTakePointer={picking}
       className={className}
     >
       <FocusRequestedComponent />

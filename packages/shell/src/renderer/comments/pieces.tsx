@@ -1,15 +1,12 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
-import type { ElementInfo } from "@antidrawapp/runtime/inspector";
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { cn } from "@/renderer/lib/utils";
-import { elementAt } from "@/renderer/inspector/bridge";
-import { useFrameWheel } from "@/renderer/inspector/frame-wheel";
-import { samePick, useInspectorStore } from "@/renderer/inspector/store";
-import { Box, BoxModel, COLORS } from "@/renderer/inspector/FrameInspector";
-import { useCommentStore, type Pos } from "./store";
+import { markElement, onCommentClick } from "@/renderer/inspector/bridge";
+import { useInspectorStore } from "@/renderer/inspector/store";
+import { useCommentStore } from "./store";
 
 // The Comment tool's pieces that work over any frame, on the canvas
-// (CommentFlow) or in a frame's own window (PreviewComments): the box, the
-// click target over a frame, and closing on a click away. Nothing here knows
+// (CommentFlow) or in a frame's own window (PreviewComments): the box, each
+// frame's part (its clicks), and closing on a click away. Nothing here knows
 // the canvas.
 
 
@@ -74,117 +71,46 @@ export const CommentBoxAt = ({ at, add, send, preset = "", onClose }: { at: At; 
   );
 };
 
-// Over each frame while the Comment tool is on: a crosshair, the element
-// under the pointer drawn as Inspect draws it, and a click opens the box
-// there, on that element, which stays outlined while the box is open. A click
-// while a comment is open only closes it, like Figma. In a frame's own
-// window the wheel goes on to the frame (`wheel`), as FrameInspector's does.
-export const FrameCommentTarget = ({ frame, zoom = 1, wheel = false }: { frame: string; zoom?: number; wheel?: boolean }) => {
-  const active = useCommentStore((s) => s.active);
+// Each frame's part in the Comment tool, while it's on: the frame draws the
+// element under the pointer as Inspect does (@/agent), and a click there
+// opens the box at that point, on that element, which the frame outlines
+// while the box is open. A click while a comment is open only closes it,
+// like Figma.
+export const FrameCommentTarget = ({ frame }: { frame: string }) => {
   const boxed = useCommentStore((s) => (s.box?.frame === frame ? s.box.element : null));
-  const [hover, setHover] = useState<ElementInfo | null>(null);
+  const ready = useInspectorStore((s) => !!s.frames[frame]?.ready);
 
-  // At most one hover question per animation frame, and only the latest
-  // answer counts.
-  const point = useRef<Pos | null>(null);
-  const raf = useRef(0);
-  const asked = useRef(0);
-  useEffect(() => () => cancelAnimationFrame(raf.current), []);
-  useEffect(() => {
-    if (!active) setHover(null);
-  }, [active]);
-
-  // What's under the pointer once a wheel stops, the page having moved.
-  const wheelTo = useFrameWheel(frame, () => hoverSoon());
-  const ready = () => !!useInspectorStore.getState().frames[frame]?.ready;
-  const hoverSoon = () => {
-    raf.current ||= requestAnimationFrame(() => {
-      raf.current = 0;
-      const p = point.current;
-      if (!p || !ready() || wheelTo.busy()) return;
-      const id = ++asked.current;
-      void elementAt(frame, p.x, p.y).then((info) => {
-        if (asked.current === id) setHover(info);
-      });
-    });
-  };
-
-  if (!active) return null;
-
-  const toFrame = (e: MouseEvent<HTMLDivElement>) => {
-    const el = e.currentTarget;
-    const r = el.getBoundingClientRect();
-    const scale = el.offsetWidth / r.width;
-    return { x: Math.round((e.clientX - r.left) * scale), y: Math.round((e.clientY - r.top) * scale) };
-  };
-
-  const click = (e: MouseEvent<HTMLDivElement>) => {
-    const s = useCommentStore.getState();
-    if (s.box || s.opened) {
-      s.setBox(null);
-      s.setOpened(null);
-      return;
-    }
-    const pos = toFrame(e);
-    const box = { frame, pos, element: null };
-    s.setBox(box);
-    // The element comes after: the box doesn't wait on the frame.
-    if (ready())
-      void elementAt(frame, pos.x, pos.y).then((element) => {
-        if (useCommentStore.getState().box === box) useCommentStore.getState().setBox({ ...box, element });
-      });
-  };
-
-  return (
-    <div
-      data-comment-target
-      className="nodrag nopan absolute inset-0 z-20 cursor-crosshair"
-      onPointerMove={(e) => {
-        point.current = toFrame(e);
-        hoverSoon();
-      }}
-      onWheel={(e) => {
-        if (!wheel) return;
-        point.current = toFrame(e);
-        // No hover while it scrolls: its box would trail the page.
-        if (!wheelTo.busy()) {
-          asked.current++;
-          setHover(null);
+  useEffect(
+    () =>
+      onCommentClick(frame, (pos, element) => {
+        const s = useCommentStore.getState();
+        if (!s.active) return;
+        if (s.box || s.opened) {
+          s.setBox(null);
+          s.setOpened(null);
+          return;
         }
-        wheelTo.onWheel(point.current, e, e.currentTarget.offsetHeight);
-      }}
-      onPointerLeave={() => {
-        point.current = null;
-        asked.current++;
-        setHover(null);
-      }}
-      onClick={click}
-    >
-      <div className="pointer-events-none absolute inset-0 overflow-hidden">
-        {hover && !(boxed && samePick({ frame, info: hover }, { frame, info: boxed })) && <BoxModel info={hover} />}
-        {boxed && (
-          <Box
-            x={boxed.rect.x}
-            y={boxed.rect.y}
-            w={boxed.rect.width}
-            h={boxed.rect.height}
-            style={{ outline: `${2 / zoom}px solid ${COLORS.selected}` }}
-          />
-        )}
-      </div>
-    </div>
+        s.setBox({ frame, pos, element });
+      }),
+    [frame],
   );
+
+  useEffect(() => {
+    if (ready) markElement(frame, boxed?.ref ?? null);
+  }, [frame, ready, boxed]);
+
+  return null;
 };
 
 
-// A click away from the comment UI closes it. A frame's own click does that
-// itself (FrameCommentTarget).
+// A click away from the comment UI closes it. A click in a frame does that
+// itself (FrameCommentTarget): the frame has it.
 export const useCloseOnClickAway = () => {
   const open = useCommentStore((s) => !!(s.box || s.opened));
   useEffect(() => {
     if (!open) return;
     const onDown = (e: PointerEvent) => {
-      if (e.target instanceof Element && e.target.closest("[data-comment-ui], [data-comment-target]")) return;
+      if (e.target instanceof Element && e.target.closest("[data-comment-ui]")) return;
       useCommentStore.getState().setBox(null);
       useCommentStore.getState().setOpened(null);
     };

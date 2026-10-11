@@ -27,6 +27,7 @@ import { installNodeShim } from "./lib/node-shim";
 import { runMigrations } from "./db/migrate";
 import { shutdownPostHog } from "./lib/posthog";
 import { APP_KEY, APP_KEY_ARG } from "@/main/lib/app-key";
+import { injectFrameAgent } from "./frame-agent";
 import { verifyCertificate } from "@/main/lib/certificate-verify";
 
 // Keep the renderer responsive when the window is unfocused or occluded.
@@ -107,6 +108,7 @@ const createWindow = () => {
     },
   });
 
+  injectFrameAgent(win.webContents);
   win.loadURL(APP_PAGE);
   stayOnApp(win);
 };
@@ -202,6 +204,7 @@ app.whenReady().then(async () => {
     });
     const contents = previewWindow.webContents;
     previewWindows.add(contents);
+    injectFrameAgent(contents);
     previewWindow.on("closed", () => previewWindows.delete(contents));
 
     // The app's /preview route; hash routing reads its search from inside

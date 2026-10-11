@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import type { WalkDirection } from "@antidrawapp/runtime/inspector";
+import type { WalkDirection } from "@/agent/protocol";
 import { clearSelection, walk } from "./bridge";
 import { useInspectorStore } from "./store";
 import { setCanvasTool } from "../comments/store";

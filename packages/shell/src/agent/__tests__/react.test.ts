@@ -3,8 +3,8 @@ import { act, createElement as h, forwardRef, lazy, memo, Suspense, useState, ty
 import { createPortal } from "react-dom"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, expect, test, vi } from "vitest"
-import { startInspector } from "../src/inspector/agent"
-import { INSPECTOR_NS, type ElementContext, type FromFrame } from "../src/inspector/protocol"
+import { startInspector } from "../agent"
+import { AGENT_NS, type ElementContext, type FromFrame } from "../protocol"
 
 // What an agent is told about elements of a real React tree: where each is
 // written, which components rendered it, and which item of a list it is.
@@ -91,16 +91,20 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-// The context of an element, picked as the canvas does, without what jsdom
+const ask = (msg: object) =>
+  window.dispatchEvent(new MessageEvent("message", { data: { ns: AGENT_NS, ...msg }, origin: "https://canvas.test", source: window }))
+// A click with Inspect on, on what elementsFromPoint says is there.
+const click = () => {
+  ask({ type: "tool", id: 0, tool: "inspect", wheel: "pass", zoom: 1 })
+  document.querySelector("antidraw-agent")!.shadowRoot!.querySelector(".catcher")!.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+}
+
+// The context of an element, picked as the shell does, without what jsdom
 // can't measure (sizes and the viewport).
 const contextOf = (el: Element | undefined) => {
   if (!el) throw new Error("no such element")
   document.elementsFromPoint = () => [el, container]
-  const ask = (msg: object) =>
-    window.dispatchEvent(
-      new MessageEvent("message", { data: { ns: INSPECTOR_NS, ...msg }, origin: "https://canvas.test", source: window }),
-    )
-  ask({ type: "select-at", id: 1, x: 0, y: 0 })
+  click()
   const ref = (sent.at(-1) as Extract<FromFrame, { type: "selected" }>).info!.ref
   ask({ type: "context", id: 2, refs: [ref] })
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -514,16 +518,12 @@ test("a library's element in a portal, placed from the element the portal was re
 
 test("walks out of a portal to the element it was rendered from, and finds a portal's element again", async () => {
   await render(h(Settings))
-  const ask = (msg: object) =>
-    window.dispatchEvent(
-      new MessageEvent("message", { data: { ns: INSPECTOR_NS, ...msg }, origin: "https://canvas.test", source: window }),
-    )
   const said = () => {
     const info = (sent.at(-1) as Extract<FromFrame, { type: "selected" }>).info
     return info && `${info.tag} ${JSON.stringify(info.text)} at ${info.ref.loc}, path ${info.ref.path.join("/")}`
   }
   document.elementsFromPoint = () => [inPortal(".save"), document.body]
-  ask({ type: "select-at", id: 1, x: 0, y: 0 })
+  click()
   const ref = (sent.at(-1) as Extract<FromFrame, { type: "selected" }>).info!.ref
   const steps = [said()]
   for (const id of [2, 3, 4]) {
@@ -550,9 +550,8 @@ test("looks under the point as DevTools does: pointer-events: none hides nothing
     forced = [...document.head.querySelectorAll("style")].some((s) => s.textContent?.includes("pointer-events: auto !important"))
     return [inPortal(".save"), document.body]
   }
-  window.dispatchEvent(
-    new MessageEvent("message", { data: { ns: INSPECTOR_NS, type: "hit", id: 1, x: 0, y: 0 }, origin: "https://canvas.test", source: window }),
-  )
+  click()
+  ask({ type: "tool", id: 1, tool: null, wheel: "pass", zoom: 1 })
   expect({ forcedWhileLooking: forced, leftBehind: document.head.querySelectorAll("style").length }).toMatchInlineSnapshot(`
     {
       "forcedWhileLooking": true,

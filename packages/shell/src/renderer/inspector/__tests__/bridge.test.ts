@@ -1,13 +1,24 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { INSPECTOR_NS, type ElementContext, type ElementInfo, type FromFrame } from "@antidrawapp/runtime/inspector";
-import { clearHover, clearSelection, getSelectedElementContext, hoverAt, registerFrame, selectAt, tagFromPreview, trackElements, walk } from "../bridge";
+import { AGENT_NS, type ElementContext, type ElementInfo, type FromFrame } from "@/agent/protocol";
+import {
+  clearSelection,
+  getSelectedElementContext,
+  markElement,
+  onCommentClick,
+  onFrameWheel,
+  registerFrame,
+  setFrameTool,
+  tagFromPreview,
+  trackElements,
+  walk,
+} from "../bridge";
 import { useInspectorStore } from "../store";
 import { useWorkspaceStore } from "../../store/workspace";
 import { describeContext, describePendingTags, describeTags, retagTags, splitTagged, untagTags } from "../tags";
 
-// The canvas side of the inspector, against a frame played by the test: what
-// it asks, and which answers it believes.
+// The shell's side of its agent, against a frame played by the test: what it
+// asks, and which answers and news it believes.
 
 const ORIGIN = "https://frame.test";
 const OWN = "src/components/user-components/Card.tsx";
@@ -50,12 +61,12 @@ let unregister: () => void;
 let asked: { msg: Record<string, unknown>; origin: string }[];
 
 const frameSays = (msg: FromFrame, { origin = ORIGIN, source = iframe.contentWindow } = {}) =>
-  window.dispatchEvent(new MessageEvent("message", { data: { ns: INSPECTOR_NS, ...msg }, origin, source }));
+  window.dispatchEvent(new MessageEvent("message", { data: { ns: AGENT_NS, ...msg }, origin, source }));
 const lastAsked = () => asked.at(-1)!.msg as { type: string; id: number };
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 beforeEach(() => {
-  useInspectorStore.setState({ active: true, frames: {}, hover: null, selection: null, tags: [] });
+  useInspectorStore.setState({ active: true, frames: {}, selection: null, tags: [] });
   iframe = document.createElement("iframe");
   iframe.src = `${ORIGIN}/preview?componentName=Card`;
   document.body.append(iframe);
@@ -73,45 +84,65 @@ afterEach(() => {
 });
 
 it("says hello to the frame's origin, and believes only that frame from that origin", () => {
-  expect(asked).toEqual([{ msg: { ns: INSPECTOR_NS, type: "hello", id: expect.any(Number) }, origin: ORIGIN }]);
-  const ready = { type: "ready", protocol: 1, componentName: "Card", tagged: true } as const;
+  expect(asked).toEqual([{ msg: { ns: AGENT_NS, type: "hello", id: expect.any(Number) }, origin: ORIGIN }]);
+  const ready = { type: "ready", componentName: "Card", tagged: true } as const;
   frameSays(ready, { origin: "https://elsewhere.test" });
   frameSays(ready, { source: window });
   expect(useInspectorStore.getState().frames).toEqual({});
   frameSays(ready);
   expect(useInspectorStore.getState().frames).toEqual({ Card: { ready: true, tagged: true } });
-  frameSays({ ...ready, protocol: 2 });
   unregister();
   expect(useInspectorStore.getState().frames).toEqual({});
 });
 
-it("hovers what the frame answers, and drops answers to an older question", async () => {
-  const first = hoverAt("Card", 5, 6);
-  const firstId = lastAsked().id;
-  expect(lastAsked()).toMatchObject({ type: "hit", x: 5, y: 6 });
-  const second = hoverAt("Card", 7, 8);
-  const secondId = lastAsked().id;
-  frameSays({ type: "hover", id: secondId, info: info({ text: "new" }) });
-  frameSays({ type: "hover", id: firstId, info: info({ text: "old" }) });
-  await Promise.all([first, second]);
-  expect(useInspectorStore.getState().hover?.info.text).toBe("new");
+const ready = { type: "ready", componentName: "Card", tagged: true } as const;
 
-  const third = hoverAt("Card", 1, 1);
-  const thirdId = lastAsked().id;
-  clearHover("Card");
-  frameSays({ type: "hover", id: thirdId, info: info({ text: "late" }) });
-  await third;
-  expect(useInspectorStore.getState().hover).toBeNull();
+it("tells a frame its tool and the element its comment box is on, and gives them back after a reload", () => {
+  setFrameTool("Card", "comment", "pass", 0.5);
+  expect(lastAsked()).toMatchObject({ type: "tool", tool: "comment", wheel: "pass", zoom: 0.5 });
+  markElement("Card", info().ref);
+  expect(lastAsked()).toMatchObject({ type: "mark", ref: info().ref });
+  asked.length = 0;
+  frameSays(ready);
+  expect(asked.map((a) => a.msg)).toMatchObject([
+    { type: "tool", tool: "comment", zoom: 0.5 },
+    { type: "mark", ref: info().ref },
+  ]);
+  markElement("Card", null);
+  setFrameTool("Card", null, "scroll", 1);
+  asked.length = 0;
+  frameSays(ready);
+  expect(asked.map((a) => a.msg)).toMatchObject([{ type: "tool", tool: null, wheel: "scroll" }]);
+});
+
+it("hands a frame's comment clicks and wheel to whoever listens, and its keys to the page as if pressed on the frame", () => {
+  const clicks: unknown[] = [];
+  const wheels: number[] = [];
+  const stopClicks = onCommentClick("Card", (at, picked) => clicks.push([at, picked?.text ?? null]));
+  const stopWheel = onFrameWheel("Card", (w) => wheels.push(w.deltaY));
+  frameSays({ type: "comment-at", x: 3, y: 4, info: info() });
+  frameSays({ type: "comment-at", x: NaN, y: 4, info: null });
+  const wheel = { type: "wheel", x: 1, y: 2, deltaX: 0, deltaY: 9, deltaMode: 0, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false } as const;
+  frameSays(wheel);
+  const keys: string[] = [];
+  const onKey = (e: KeyboardEvent) => keys.push(`${e.key} on ${(e.target as Element).localName}`);
+  window.addEventListener("keydown", onKey);
+  frameSays({ type: "key", key: "Escape", code: "Escape", ctrlKey: false, metaKey: false, shiftKey: false, altKey: false, repeat: false });
+  window.removeEventListener("keydown", onKey);
+  stopClicks();
+  stopWheel();
+  frameSays({ type: "comment-at", x: 5, y: 6, info: null });
+  frameSays(wheel);
+  expect({ clicks, wheels, keys }).toEqual({ clicks: [[{ x: 3, y: 4 }, "Pro plan"]], wheels: [9], keys: ["Escape on iframe"] });
 });
 
 it("follows the selection the frame reports, and gives it back after a reload", async () => {
-  const selecting = selectAt("Card", 5, 6);
-  frameSays({ type: "selected", id: lastAsked().id, info: info() });
-  await selecting;
+  // A click with Inspect.
+  frameSays({ type: "selected", info: info() });
   frameSays({ type: "selection-changed", info: info({ ref: { loc: `${OWN}:6:7`, index: 0, path: [0, 0], tag: "h3" } }) });
   expect(useInspectorStore.getState().selection?.info.ref.loc).toBe(`${OWN}:6:7`);
 
-  frameSays({ type: "ready", protocol: 1, componentName: "Card", tagged: true });
+  frameSays(ready);
   expect(lastAsked()).toMatchObject({ type: "select", ref: { loc: `${OWN}:6:7` } });
 
   frameSays({ type: "selection-lost" });
@@ -257,7 +288,7 @@ it("untags what a message took when it's sent, and tags it again if the send fai
   `);
 });
 
-it("takes only the latest selection's answer, and deselects in a frame the selection leaves", async () => {
+it("takes a click's selection, deselects in a frame the selection leaves, and drops answers a later one overtook", async () => {
   const other = document.createElement("iframe");
   other.src = `${ORIGIN}/preview?componentName=Pricing`;
   document.body.append(other);
@@ -267,27 +298,32 @@ it("takes only the latest selection's answer, and deselects in a frame the selec
   }) as Window["postMessage"]);
   const unregisterOther = registerFrame("Pricing", other);
   const otherSays = (msg: FromFrame) =>
-    window.dispatchEvent(new MessageEvent("message", { data: { ns: INSPECTOR_NS, ...msg }, origin: ORIGIN, source: other.contentWindow }));
+    window.dispatchEvent(new MessageEvent("message", { data: { ns: AGENT_NS, ...msg }, origin: ORIGIN, source: other.contentWindow }));
   const selected = () => {
     const s = useInspectorStore.getState().selection;
     return s && `${s.frame}: ${s.info.text}`;
   };
 
-  // A click in Card, then in Pricing; Card, busy, answers last.
-  const inCard = selectAt("Card", 1, 1);
-  const cardAsk = lastAsked().id;
-  const inPricing = selectAt("Pricing", 1, 1);
-  otherSays({ type: "selected", id: toOther.at(-1)!.id as number, info: info({ text: "Team" }) });
-  frameSays({ type: "selected", id: cardAsk, info: info({ text: "Pro plan" }) });
-  await Promise.all([inCard, inPricing]);
+  // A click in Card, then in Pricing: Card is told to let go of its element.
+  frameSays({ type: "selected", info: info({ text: "Pro plan" }) });
+  otherSays({ type: "selected", info: info({ text: "Team" }) });
   expect(selected()).toMatchInlineSnapshot(`"Pricing: Team"`);
+  expect(lastAsked()).toMatchObject({ type: "select", ref: null });
 
-  // Back to Card: Pricing is told to let go of its element.
-  const back = selectAt("Card", 2, 2);
-  frameSays({ type: "selected", id: lastAsked().id, info: info({ text: "Buy" }) });
-  await back;
+  // A walk in Pricing, overtaken by a click back in Card before it's answered.
+  const overtaken = walk("parent");
+  const overtakenAsk = toOther.at(-1)!.id as number;
+  frameSays({ type: "selected", info: info({ text: "Buy" }) });
+  otherSays({ type: "selected", id: overtakenAsk, info: info({ text: "Pricing" }) });
+  await overtaken;
   expect(selected()).toMatchInlineSnapshot(`"Card: Buy"`);
   expect(toOther.at(-1)).toMatchObject({ type: "select", ref: null });
+
+  // Not inspecting: a late click doesn't count.
+  useInspectorStore.setState({ active: false });
+  otherSays({ type: "selected", info: info({ text: "Late" }) });
+  expect(selected()).toMatchInlineSnapshot(`"Card: Buy"`);
+  useInspectorStore.setState({ active: true });
 
   // A walk answered after Escape cleared the selection.
   const walking = walk("parent");
@@ -301,17 +337,55 @@ it("takes only the latest selection's answer, and deselects in a frame the selec
   other.remove();
 });
 
-it("drops tags, the selection and the hover when the workspace changes", () => {
+it("takes a preview window's tag only for a frame it has, from the same dev server", () => {
+  const pick = { frame: "Card", info: info() };
+  const url = `${ORIGIN}/preview?componentName=Card`;
+  tagFromPreview({ frame: "Pricing", info: info() }, `${ORIGIN}/preview?componentName=Pricing`);
+  tagFromPreview(pick, "https://other-workspace.test/preview?componentName=Card");
+  tagFromPreview(pick, "not a url");
+  expect(useInspectorStore.getState().tags).toEqual([]);
+  tagFromPreview(pick, url);
+  tagFromPreview({ frame: "Card", info: info() }, url);
+  // As the window saw it: null, it couldn't say.
+  expect(useInspectorStore.getState().tags).toEqual([{ ...pick, seen: null }]);
+});
+
+it("sends a preview window's tags as that window saw them, without asking the canvas's frame", async () => {
+  const url = `${ORIGIN}/preview?componentName=Card`;
+  const seen = context({ viewport: [1440, 900], element: "li.item", text: "Banana", loc: `${OWN}:7:9`, components: [], size: [400, 32] });
+  tagFromPreview({ frame: "Card", info: info({ tag: "li", classes: ["item"], text: "Banana" }), seen }, url);
+  tagFromPreview({ frame: "Card", info: info({ ref: { loc: `${OWN}:8:9`, index: 0, path: [1], tag: "p" } }) }, url);
+  const before = asked.length;
+  expect(await describePendingTags().then((t) => t.block)).toMatchInlineSnapshot(`
+    "<canvas-selection>
+    <component name="Card" file="src/components/user-components/Card.tsx" preview="https://frame.test/preview?componentName=Card" frame="1440×900">
+    <element>
+    element: li.item "Banana"
+    written at: src/components/user-components/Card.tsx:7:9
+    box: 400×32
+    </element>
+    <element>
+    element: h3.title "Pro plan"
+    written at: src/components/user-components/Card.tsx:8:9
+    used at: src/components/user-components/Card.tsx:4:7
+    (as last seen: the frame didn't answer)
+    </element>
+    </component>
+    </canvas-selection>"
+  `);
+  expect(asked.length).toBe(before);
+});
+
+it("drops tags and the selection when the workspace changes", () => {
   const pick = { frame: "Card", info: info() };
   useWorkspaceStore.setState({ activeWorkspaceId: "a" });
-  useInspectorStore.setState({ tags: [pick], selection: pick, hover: pick });
+  useInspectorStore.setState({ tags: [pick], selection: pick });
   useWorkspaceStore.setState({ activeWorkspaceId: "a" });
   expect(useInspectorStore.getState().tags).toHaveLength(1);
   useWorkspaceStore.getState().setActiveWorkspaceId("b");
-  const { tags, selection, hover } = useInspectorStore.getState();
-  expect({ tags, selection, hover }).toMatchInlineSnapshot(`
+  const { tags, selection } = useInspectorStore.getState();
+  expect({ tags, selection }).toMatchInlineSnapshot(`
     {
-      "hover": null,
       "selection": null,
       "tags": [],
     }
@@ -351,7 +425,7 @@ it("follows elements in a frame, asks again after a reload, and stops", () => {
   frameSays({ type: "tracked", rects: [] });
   expect(seen).toEqual([[box], [{ ...box, y: 0 }]]);
   // A reload forgets: asked again.
-  frameSays({ type: "ready", protocol: 1, componentName: "Card", tagged: true });
+  frameSays(ready);
   expect(lastAsked()).toMatchObject({ type: "track", refs });
   stop();
   expect(lastAsked()).toMatchObject({ type: "track", refs: [] });

@@ -1,4 +1,4 @@
-import type { ElementContext, ElementInfo, Sides } from "@antidrawapp/runtime/inspector";
+import type { ElementContext, ElementInfo, Sides } from "@/agent/protocol";
 import { frameUrl, getElementContext } from "./bridge";
 import { samePick, useInspectorStore, type Picked } from "./store";
 

@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { ElementInfo } from "@antidrawapp/runtime/inspector";
+import type { ElementInfo } from "@/agent/protocol";
 import { useInspectorStore } from "../inspector/store";
 import { useWorkspaceStore } from "../store/workspace";
 

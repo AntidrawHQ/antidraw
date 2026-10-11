@@ -1,5 +1,5 @@
 import { expect, it, vi } from "vitest";
-import type { ElementContext, ElementInfo } from "@antidrawapp/runtime/inspector";
+import type { ElementContext, ElementInfo } from "@/agent/protocol";
 import type { Comment } from "@/main/api";
 
 // What a send tells Claude about each draft's element: the canvas's frame

@@ -12,7 +12,7 @@ import { toFlow, type Actions } from "./model";
 import { setCanvasTool, useCommentStore } from "./store";
 
 // The Comment tool in a frame's own window (PreviewWindow), at zoom 1 over
-// the frame: the click target and the box, and this frame's pins, each on
+// the frame: its clicks and the box, and this frame's pins, each on
 // its element as this window shows it, with the comment a pin opens. The
 // list is the main window's, which a comment added here joins (by the
 // comments event stream). ⌘↵ hands the send to the main window, which has
@@ -109,7 +109,7 @@ export const PreviewComments = ({
 
   return (
     <PlacementContext.Provider value={placement}>
-      <FrameCommentTarget frame={frame} wheel />
+      <FrameCommentTarget frame={frame} />
       {active && (
         <div className="pointer-events-none absolute inset-0 z-30 overflow-hidden">
           <Pins f={f} lit={lit} a={a} />

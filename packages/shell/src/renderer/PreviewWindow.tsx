@@ -146,7 +146,7 @@ export const PreviewWindow = ({ url, workspaceId = null }: { url: string; worksp
               allow="clipboard-read; clipboard-write; fullscreen"
             />
           )}
-          <FrameInspector frame={componentName} iframe={iframe} wheel />
+          <FrameInspector frame={componentName} iframe={iframe} wheel="scroll" />
           {workspaceId && (
             <PreviewComments
               frame={componentName}

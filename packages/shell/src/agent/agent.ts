@@ -1,6 +1,5 @@
 import {
-  INSPECTOR_NS,
-  INSPECTOR_PROTOCOL,
+  AGENT_NS,
   SOURCE_ATTRIBUTE,
   type ElementContext,
   type ElementInfo,
@@ -10,13 +9,17 @@ import {
   type Rect,
   type Sides,
   type ToFrame,
+  type Tool,
   type WalkDirection,
+  type WheelMode,
 } from "./protocol"
+import { createOverlay } from "./overlay"
 import { keysOf, ownersOf, reactParent, renderedWithin } from "./react"
 
-// The inspector's half that runs in a preview frame: it finds, measures and
-// keeps track of elements for the canvas, which draws and owns the input.
-// See protocol.ts. Only elements inside `container` (the component) count.
+// The shell's agent in a preview frame: it finds, measures and keeps track
+// of elements for the shell, and while one of the shell's tools is on, takes
+// the pointer and picks them, drawing what it picks over the page. See
+// protocol.ts. Only elements inside `container` (the component) count.
 
 const USER_COMPONENTS_DIR = "src/components/user-components/"
 const LOC_RE = /:\d+:\d+$/
@@ -66,7 +69,7 @@ const sides = (cs: CSSStyleDeclaration, prop: (side: string) => string): Sides =
 
 export function startInspector(container: HTMLElement, componentName: string): () => void {
   const ownFile = `${USER_COMPONENTS_DIR}${componentName}.tsx`
-  // Where the canvas talks from; answers go only there.
+  // Where the shell talks from; answers go only there.
   let canvasOrigin: string | null = null
   let selected: Element | null = null
   let selectedRef: ElementRef | null = null
@@ -74,7 +77,7 @@ export function startInspector(container: HTMLElement, componentName: string): (
 
   const post = (msg: FromFrame, origin = canvasOrigin) => {
     if (!origin) return
-    window.parent.postMessage({ ns: INSPECTOR_NS, ...msg } satisfies Envelope<FromFrame>, origin)
+    window.parent.postMessage({ ns: AGENT_NS, ...msg } satisfies Envelope<FromFrame>, origin)
   }
 
   // The component's elements: those inside the container, and those it
@@ -92,22 +95,16 @@ export function startInspector(container: HTMLElement, componentName: string): (
   }
   const isPortalTop = (el: Element) => !container.contains(el) && !inside(el.parentElement)
 
-  // What's under a point, as DevTools sees it: pointer-events: none hides
-  // nothing (a disabled button, the page behind an open modal dialog).
-  const elementAt = (x: number, y: number) => {
-    if (!Number.isFinite(x) || !Number.isFinite(y)) return null
-    const style = document.createElement("style")
-    style.textContent = "* { pointer-events: auto !important; }"
-    document.head.append(style)
-    try {
-      return document.elementsFromPoint(x, y).find(inside) ?? null
-    } finally {
-      style.remove()
-    }
-  }
+  const overlay = createOverlay()
+
+  // What's under a point, as DevTools sees it: while a tool is on, the
+  // overlay has pointer-events: none hide nothing (a disabled button, the
+  // page behind an open modal dialog).
+  const elementAt = (x: number, y: number) => document.elementsFromPoint(x, y).find(inside) ?? null
 
   // What a wheel at a point scrolls, along one axis: the nearest box around
-  // the point that can still go that way, or the page.
+  // the point that can still go that way, or the page. The overlay takes the
+  // wheel from the page, so it scrolls for it.
   const canScroll = (el: Element, axis: "x" | "y", d: number) => {
     const page = el === (document.scrollingElement ?? document.documentElement)
     const cs = getComputedStyle(el)
@@ -119,7 +116,7 @@ export function startInspector(container: HTMLElement, componentName: string): (
   const scrollAt = (x: number, y: number, dx: number, dy: number) => {
     if (![x, y, dx, dy].every(Number.isFinite)) return
     const page = document.scrollingElement ?? document.documentElement
-    const under = document.elementsFromPoint(x, y)[0] ?? null
+    const under = document.elementsFromPoint(x, y).find((el) => !overlay.owns(el)) ?? null
     const along = (axis: "x" | "y", d: number) => {
       if (!d) return null
       for (let el: Element | null = under; el; el = el.parentElement) if (canScroll(el, axis, d)) return el
@@ -406,6 +403,91 @@ export function startInspector(container: HTMLElement, componentName: string): (
     return inside(next) ? next : selected
   }
 
+  // ── Picking, while a tool is on ───────────────────────────────────────
+
+  // The overlay has the page's pointer. What's under it is found and drawn
+  // here, every frame, asking nothing of the shell. A click picks it (Inspect
+  // selects it, Comment says where), and the wheel and the keys are the
+  // shell's: its canvas pans with the wheel, or here the page scrolls with
+  // it (a frame's own window, where nothing pans).
+  let tool: Tool | null = null
+  let wheelMode: WheelMode = "pass"
+  let zoom = 1
+  let point: { x: number; y: number } | null = null
+  // The element an open comment box is on.
+  let marked: Element | null = null
+  let markedRef: ElementRef | null = null
+  let drawing = 0
+
+  const draw = () => {
+    drawing = requestAnimationFrame(draw)
+    // Found again each frame: a scroll or a re-render changes what's under a
+    // still pointer.
+    const hovered = point ? elementAt(point.x, point.y) : null
+    if (markedRef && !marked?.isConnected) marked = find(markedRef)
+    const picked = tool === "inspect" ? selected : marked
+    overlay.draw(hovered === picked ? null : hovered, picked, zoom)
+  }
+
+  const onMove = (e: PointerEvent) => {
+    point = { x: e.clientX, y: e.clientY }
+  }
+  const onLeave = () => {
+    point = null
+  }
+  // The page doesn't take focus, or start selecting text.
+  const onDown = (e: PointerEvent) => e.preventDefault()
+  const onClick = (e: MouseEvent) => {
+    e.preventDefault()
+    const el = elementAt(e.clientX, e.clientY)
+    if (tool === "inspect") post({ type: "selected", info: select(el) })
+    else if (tool === "comment")
+      post({ type: "comment-at", x: Math.round(e.clientX), y: Math.round(e.clientY), info: el && infoFor(el) })
+  }
+  const onWheel = (e: WheelEvent) => {
+    e.preventDefault()
+    point = { x: e.clientX, y: e.clientY }
+    if (wheelMode === "scroll") {
+      // Some mice count lines, or pages.
+      const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? window.innerHeight : 1
+      return scrollAt(e.clientX, e.clientY, e.deltaX * unit, e.deltaY * unit)
+    }
+    const { deltaX, deltaY, deltaMode, ctrlKey, metaKey, shiftKey, altKey } = e
+    post({ type: "wheel", x: e.clientX, y: e.clientY, deltaX, deltaY, deltaMode, ctrlKey, metaKey, shiftKey, altKey })
+  }
+  // A click leaves the keys here: they're the shell's tools', not the page's.
+  const onKey = (e: KeyboardEvent) => {
+    if (e.isComposing) return
+    e.preventDefault()
+    e.stopImmediatePropagation()
+    const { key, code, ctrlKey, metaKey, shiftKey, altKey, repeat } = e
+    post({ type: "key", key, code, ctrlKey, metaKey, shiftKey, altKey, repeat })
+  }
+  overlay.catcher.addEventListener("pointermove", onMove)
+  overlay.catcher.addEventListener("pointerleave", onLeave)
+  overlay.catcher.addEventListener("pointerdown", onDown)
+  overlay.catcher.addEventListener("click", onClick)
+  overlay.catcher.addEventListener("wheel", onWheel, { passive: false })
+
+  const setTool = (next: Tool | null, wheel: WheelMode, at: number) => {
+    wheelMode = wheel
+    zoom = Number.isFinite(at) && at > 0 ? at : 1
+    if (next === tool) return
+    tool = next
+    marked = markedRef = null
+    if (!tool) {
+      overlay.hide()
+      cancelAnimationFrame(drawing)
+      drawing = 0
+      point = null
+      window.removeEventListener("keydown", onKey, true)
+      return
+    }
+    overlay.show()
+    window.addEventListener("keydown", onKey, true)
+    if (!drawing) drawing = requestAnimationFrame(draw)
+  }
+
   // ── Messages ───────────────────────────────────────────────────────────
 
   const ready = (id?: number, origin?: string) =>
@@ -413,7 +495,6 @@ export function startInspector(container: HTMLElement, componentName: string): (
       {
         type: "ready",
         id,
-        protocol: INSPECTOR_PROTOCOL,
         componentName,
         tagged: !!container.querySelector(`[${SOURCE_ATTRIBUTE}]`),
       },
@@ -421,22 +502,22 @@ export function startInspector(container: HTMLElement, componentName: string): (
     )
 
   const onMessage = (event: MessageEvent) => {
-    if (event.source !== window.parent || event.data?.ns !== INSPECTOR_NS) return
+    if (event.source !== window.parent || event.data?.ns !== AGENT_NS) return
     canvasOrigin = event.origin
     const msg = event.data as ToFrame
     switch (msg.type) {
       case "hello":
         return ready(msg.id)
-      case "hit": {
-        const el = elementAt(msg.x, msg.y)
-        return post({ type: "hover", id: msg.id, info: el && infoFor(el) })
-      }
-      case "select-at":
-        return post({ type: "selected", id: msg.id, info: select(elementAt(msg.x, msg.y)) })
+      case "tool":
+        return setTool(msg.tool, msg.wheel, msg.zoom)
       case "select":
         return post({ type: "selected", id: msg.id, info: select(msg.ref && find(msg.ref)) })
       case "walk":
         return post({ type: "selected", id: msg.id, info: select(walk(msg.dir)) })
+      case "mark":
+        markedRef = msg.ref
+        marked = msg.ref && find(msg.ref)
+        return
       case "context":
         return post({
           type: "context",
@@ -448,17 +529,16 @@ export function startInspector(container: HTMLElement, componentName: string): (
         })
       case "track":
         return post({ type: "tracked", id: msg.id, rects: track(msg.refs) })
-      case "scroll":
-        return scrollAt(msg.x, msg.y, msg.dx, msg.dy)
     }
   }
   window.addEventListener("message", onMessage)
 
-  // A canvas that loaded before this started learns of it here. Only "ready"
+  // A shell that loaded before this started learns of it here. Only "ready"
   // goes to any parent: it says no more than the frame's URL does.
   ready(undefined, "*")
 
   return () => {
+    setTool(null, wheelMode, zoom)
     window.removeEventListener("message", onMessage)
     window.removeEventListener("resize", schedule)
     mutations.disconnect()

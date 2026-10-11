@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { ElementInfo } from "@/agent/protocol";
+import { useInspectorStore } from "@/renderer/inspector/store";
 import { PreviewWindow } from "../PreviewWindow";
 
 // A frame's own window: its component under a titlebar that names it.

@@ -1,4 +1,4 @@
-import type { ElementInfo } from "@antidrawapp/runtime/inspector";
+import type { ElementInfo } from "@/agent/protocol";
 import type { ChatPhase, Comment, CommentState } from "@/main/api";
 import type { CommentList } from "@/renderer/lib/api";
 import type { Pos } from "./store";

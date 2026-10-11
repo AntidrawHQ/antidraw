@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { ReactFlowProvider } from "@xyflow/react";
 import { afterEach, beforeEach, expect, it } from "vitest";
-import type { ElementInfo } from "@antidrawapp/runtime/inspector";
+import type { ElementInfo } from "@/agent/protocol";
 import { InspectorControls } from "../InspectorControls";
 import { useInspectorStore } from "../store";
 

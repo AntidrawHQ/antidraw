@@ -1,10 +1,10 @@
 import { create } from "zustand";
-import type { ElementInfo } from "@antidrawapp/runtime/inspector";
+import type { ElementContext, ElementInfo } from "@/agent/protocol";
 import { useWorkspaceStore } from "../store/workspace";
 
-// What the canvas inspector knows: which frames can answer it, the element
-// under the pointer, the selected one, and the elements tagged for the next
-// chat message. The frames themselves are reached through ./bridge.
+// What the canvas inspector knows: which frames can answer it, the selected
+// element, and the elements tagged for the next chat message. The frames
+// themselves are reached through ./bridge.
 
 // An element in a frame, as the frame last described it.
 export type Picked = { frame: string; info: ElementInfo };
@@ -19,12 +19,10 @@ export type FrameStatus = {
 type InspectorStore = {
   active: boolean;
   frames: Record<string, FrameStatus>;
-  hover: Picked | null;
   selection: Picked | null;
   tags: Picked[];
   setActive: (active: boolean) => void;
   setFrame: (frame: string, status: FrameStatus | null) => void;
-  setHover: (hover: Picked | null) => void;
   setSelection: (selection: Picked | null) => void;
   addTag: (tag: Picked) => void;
   removeTag: (tag: Picked) => void;
@@ -41,10 +39,9 @@ export const samePick = (a: Picked, b: Picked) =>
 export const useInspectorStore = create<InspectorStore>((set) => ({
   active: false,
   frames: {},
-  hover: null,
   selection: null,
   tags: [],
-  setActive: (active) => set(active ? { active } : { active, hover: null }),
+  setActive: (active) => set({ active }),
   setFrame: (frame, status) =>
     set((s) => {
       const frames = { ...s.frames };
@@ -52,7 +49,6 @@ export const useInspectorStore = create<InspectorStore>((set) => ({
       else delete frames[frame];
       return { frames };
     }),
-  setHover: (hover) => set({ hover }),
   setSelection: (selection) => set({ selection }),
   addTag: (tag) =>
     set((s) => (s.tags.some((t) => samePick(t, tag)) ? s : { tags: [...s.tags, tag] })),
@@ -64,5 +60,5 @@ export const useInspectorStore = create<InspectorStore>((set) => ({
 // something else in another workspace: switching drops them.
 useWorkspaceStore.subscribe((s, prev) => {
   if (s.activeWorkspaceId !== prev.activeWorkspaceId)
-    useInspectorStore.setState({ hover: null, selection: null, tags: [] });
+    useInspectorStore.setState({ selection: null, tags: [] });
 });

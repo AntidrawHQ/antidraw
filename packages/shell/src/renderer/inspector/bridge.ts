@@ -1,19 +1,22 @@
 import {
-  INSPECTOR_NS,
-  INSPECTOR_PROTOCOL,
+  AGENT_NS,
   type ElementContext,
+  type ElementInfo,
   type ElementRef,
   type Envelope,
   type FromFrame,
   type Rect,
   type ToFrame,
+  type Tool,
   type WalkDirection,
-} from "@antidrawapp/runtime/inspector";
+  type WheelMode,
+} from "@/agent/protocol";
 import { useInspectorStore, type Picked } from "./store";
 
-// The canvas side of the inspector protocol (@antidrawapp/runtime/inspector):
+// The shell's side of its agent in each preview frame (@/agent/protocol):
 // which iframe is which frame, requests and their answers, and the frames'
-// own news (ready, selection moved or gone) written into the store.
+// own news (ready, a pick, selection moved or gone) written into the store
+// or handed to whoever listens for it.
 
 type Request = ToFrame extends infer T ? (T extends ToFrame ? Omit<T, "id"> : never) : never;
 type Reply = Extract<FromFrame, { id?: number }>;
@@ -21,9 +24,16 @@ type Reply = Extract<FromFrame, { id?: number }>;
 const store = useInspectorStore;
 const iframes = new Map<string, HTMLIFrameElement>();
 const pending = new Map<number, { frame: string; resolve: (msg: Reply | null) => void }>();
-const latestHit = new Map<string, number>();
 // The elements followed in each frame (trackElements), and who gets their boxes.
 const trackers = new Map<string, { refs: ElementRef[]; on: (rects: (Rect | null)[]) => void }>();
+// The tool each frame has on (setFrameTool), and the element its comment
+// box is on (markElement): a reload forgets them, so they're given back.
+const tools = new Map<string, Extract<Request, { type: "tool" }>>();
+const marks = new Map<string, ElementRef>();
+// Who hears of each frame's comment clicks and wheel.
+type WheelMsg = Extract<FromFrame, { type: "wheel" }>;
+const commentClicks = new Map<string, (at: { x: number; y: number }, info: ElementInfo | null) => void>();
+const wheels = new Map<string, (wheel: WheelMsg) => void>();
 // The selection request whose answer counts: a later one, or a clear, makes
 // an earlier one's answer stale.
 let latestSelect = 0;
@@ -42,7 +52,7 @@ function post(frame: string, msg: ToFrame) {
   const target = iframe?.contentWindow;
   const origin = iframe && originOf(iframe);
   if (!target || !origin) return false;
-  target.postMessage({ ns: INSPECTOR_NS, ...msg } satisfies Envelope<ToFrame>, origin);
+  target.postMessage({ ns: AGENT_NS, ...msg } satisfies Envelope<ToFrame>, origin);
   return true;
 }
 
@@ -67,7 +77,7 @@ function request(frame: string, msg: Request, timeout = 1000): Promise<Reply | n
 
 function onMessage(event: MessageEvent) {
   const data = event.data as Envelope<FromFrame> | undefined;
-  if (data?.ns !== INSPECTOR_NS) return;
+  if (data?.ns !== AGENT_NS) return;
   // Only a registered frame, from its own origin.
   let frame: string | undefined;
   for (const [name, iframe] of iframes)
@@ -85,9 +95,12 @@ function onMessage(event: MessageEvent) {
   const s = store.getState();
   switch (data.type) {
     case "ready": {
-      if (data.protocol !== INSPECTOR_PROTOCOL) return;
       s.setFrame(frame, { ready: true, tagged: data.tagged });
-      // A reload lost what it followed too.
+      // A reload lost its tool, and what it followed.
+      const tool = tools.get(frame);
+      if (tool) post(frame, { ...tool, id: nextId++ });
+      const mark = marks.get(frame);
+      if (mark) post(frame, { type: "mark", id: nextId++, ref: mark });
       askTrack(frame);
       // A reload lost the frame's selection; give it back.
       if (s.selection?.frame === frame) void select(frame, s.selection.info.ref);
@@ -102,6 +115,27 @@ function onMessage(event: MessageEvent) {
     case "tracked": {
       const t = trackers.get(frame);
       if (t && data.rects.length === t.refs.length) t.on(data.rects);
+      return;
+    }
+    // A click with Inspect.
+    case "selected":
+      if (data.id !== undefined || !s.active) return;
+      latestSelect = nextId++;
+      takeSelection(frame, data.info);
+      return;
+    case "comment-at":
+      if (Number.isFinite(data.x) && Number.isFinite(data.y)) commentClicks.get(frame)?.({ x: data.x, y: data.y }, data.info);
+      return;
+    case "wheel":
+      wheels.get(frame)?.(data);
+      return;
+    // A key pressed in the frame, as if pressed on it here: the tools' keys
+    // (InspectorControls, CommentControls) take it from there.
+    case "key": {
+      const { key, code, ctrlKey, metaKey, shiftKey, altKey, repeat } = data;
+      iframes.get(frame)?.dispatchEvent(
+        new KeyboardEvent("keydown", { key, code, ctrlKey, metaKey, shiftKey, altKey, repeat, bubbles: true, cancelable: true }),
+      );
       return;
     }
   }
@@ -124,11 +158,40 @@ export function registerFrame(frame: string, iframe: HTMLIFrameElement) {
     iframe.removeEventListener("load", hello);
     if (iframes.get(frame) !== iframe) return;
     iframes.delete(frame);
-    const s = store.getState();
-    s.setFrame(frame, null);
-    if (s.hover?.frame === frame) s.setHover(null);
+    tools.delete(frame);
+    marks.delete(frame);
+    store.getState().setFrame(frame, null);
   };
 }
+
+// The tool a frame has on, or none: with one, the frame has the pointer and
+// picks (Inspect's click selects, Comment's goes to onCommentClick). Its
+// wheel goes to onFrameWheel ("pass") or scrolls it ("scroll").
+export function setFrameTool(frame: string, tool: Tool | null, wheel: WheelMode, zoom: number) {
+  const msg = { type: "tool", tool, wheel, zoom } as const;
+  tools.set(frame, msg);
+  post(frame, { ...msg, id: nextId++ });
+}
+
+// The element a frame's comment box is on, outlined there, or none.
+export function markElement(frame: string, ref: ElementRef | null) {
+  if (ref) marks.set(frame, ref);
+  else marks.delete(frame);
+  post(frame, { type: "mark", id: nextId++, ref });
+}
+
+// Each listens to one frame, the last to ask; each returns its stop.
+const listen = <T>(map: Map<string, T>, frame: string, on: T) => {
+  map.set(frame, on);
+  return () => {
+    if (map.get(frame) === on) map.delete(frame);
+  };
+};
+// A click in a frame with the Comment tool: where, in its CSS pixels, and on what.
+export const onCommentClick = (frame: string, on: (at: { x: number; y: number }, info: ElementInfo | null) => void) =>
+  listen(commentClicks, frame, on);
+// The wheel over a frame with a tool on and "pass".
+export const onFrameWheel = (frame: string, on: (wheel: WheelMsg) => void) => listen(wheels, frame, on);
 
 // The URL a frame previews its component at.
 export const frameUrl = (frame: string) => iframes.get(frame)?.src ?? null;
@@ -164,17 +227,6 @@ export function trackElements(frame: string, refs: ElementRef[], on: (rects: (Re
   };
 }
 
-// A wheel over a frame that an overlay caught, in the frame's CSS pixels:
-// the frame scrolls as the wheel would have. Unanswered.
-export const scrollAt = (frame: string, x: number, y: number, dx: number, dy: number) =>
-  void post(frame, { type: "scroll", id: nextId++, x, y, dx, dy });
-
-// A wheel's deltas in pixels: some mice count lines, or pages.
-export const wheelPixels = (e: { deltaX: number; deltaY: number; deltaMode: number }, page: number) => {
-  const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? page : 1;
-  return { dx: e.deltaX * unit, dy: e.deltaY * unit };
-};
-
 function askTrack(frame: string) {
   const t = trackers.get(frame);
   if (t) post(frame, { type: "track", id: nextId++, refs: t.refs });
@@ -182,44 +234,24 @@ function askTrack(frame: string) {
 
 // ── What the canvas asks ─────────────────────────────────────────────────
 
-// Hover at a point in the frame's CSS pixels. Answers that arrive after a
-// later hover are dropped.
-export async function hoverAt(frame: string, x: number, y: number) {
-  // The id request() is about to use.
-  const id = nextId;
-  latestHit.set(frame, id);
-  const reply = await request(frame, { type: "hit", x, y });
-  if (reply?.type !== "hover" || latestHit.get(frame) !== id) return;
-  if (!store.getState().active) return;
-  store.getState().setHover(reply.info && { frame, info: reply.info });
+// A frame's selection, taken. A frame the selection leaves stops following
+// (and outlining) it.
+function takeSelection(frame: string, info: ElementInfo | null) {
+  const previous = store.getState().selection;
+  if (previous && previous.frame !== frame) post(previous.frame, { type: "select", id: nextId++, ref: null });
+  store.getState().setSelection(info && { frame, info });
 }
-
-// The element at a point in the frame's CSS pixels, without hovering or
-// selecting it (a comment's pin). Null where there's none, or no answer.
-export async function elementAt(frame: string, x: number, y: number) {
-  const reply = await request(frame, { type: "hit", x, y });
-  return reply?.type === "hover" ? reply.info : null;
-}
-
-export const clearHover = (frame: string) => {
-  latestHit.set(frame, nextId++);
-  if (store.getState().hover?.frame === frame) store.getState().setHover(null);
-};
 
 // Asks a frame to select, and takes its answer unless a later selection or
-// a clear came first. A frame the selection leaves stops following it.
+// a clear came first.
 async function selecting(frame: string, msg: Request) {
   // The id request() is about to use.
   const id = nextId;
   latestSelect = id;
   const reply = await request(frame, msg);
   if (reply?.type !== "selected" || latestSelect !== id) return;
-  const previous = store.getState().selection;
-  if (previous && previous.frame !== frame) post(previous.frame, { type: "select", id: nextId++, ref: null });
-  store.getState().setSelection(reply.info && { frame, info: reply.info });
+  takeSelection(frame, reply.info);
 }
-
-export const selectAt = (frame: string, x: number, y: number) => selecting(frame, { type: "select-at", x, y });
 
 export const select = (frame: string, ref: ElementRef | null) => selecting(frame, { type: "select", ref });
 

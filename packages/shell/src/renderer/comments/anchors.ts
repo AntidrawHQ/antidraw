@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { Rect } from "@antidrawapp/runtime/inspector";
+import type { Rect } from "@/agent/protocol";
 import { trackElements } from "@/renderer/inspector/bridge";
 import type { Cmt, Flow } from "./model";
 import type { Pos } from "./store";

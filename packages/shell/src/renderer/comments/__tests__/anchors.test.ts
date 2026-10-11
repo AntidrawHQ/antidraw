@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import type { ElementInfo } from "@antidrawapp/runtime/inspector";
+import type { ElementInfo } from "@/agent/protocol";
 import { pinIn } from "../anchors";
 import type { Cmt } from "../model";
 

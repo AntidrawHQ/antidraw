@@ -67,14 +67,8 @@ const CommentBox = ({ frame, pos, a, preset, onClose }: { frame: string; pos: Po
 
 /* ── On the canvas ─────────────────────────────────────────────────────── */
 
-// The click target over a canvas frame, at the canvas's zoom.
-const CanvasFrameCommentTarget = ({ frame }: { frame: string }) => {
-  const zoom = useStore((s) => s.transform[2]);
-  return <FrameCommentTarget frame={frame} zoom={zoom} />;
-};
-
 export const renderFrameComments = ({ componentName }: { componentName: string }) => (
-  <CanvasFrameCommentTarget frame={componentName} />
+  <FrameCommentTarget frame={componentName} />
 );
 
 // The pins, the box, the open comment and the list, over the canvas. Mounted

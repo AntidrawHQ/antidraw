@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { Result } from "neverthrow";
 import { skipToken, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Comment, EffortLevel } from "@/main/api";
-import type { ElementContext, ElementInfo } from "@antidrawapp/runtime/inspector";
+import type { ElementContext, ElementInfo } from "@/agent/protocol";
 import type { CommentContext } from "@/shared/utils/canvas-comments";
 import { frameUrl, getElementContext } from "@/renderer/inspector/bridge";
 import { describeContext, describeLastSeen } from "@/renderer/inspector/tags";
