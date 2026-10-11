@@ -552,3 +552,20 @@ test("says the pointer came in however it came: a wheel over the frame too", () 
   catcher().dispatchEvent(new PointerEvent("pointermove", { bubbles: true, composed: true, clientX: 5, clientY: 9 }))
   expect(sent.filter((s) => s.msg.type === "hovering")).toHaveLength(1)
 })
+
+test("passes on every wheel while a tool is on, one landing outside what the frame shows too: a pan carries on", () => {
+  tool("comment")
+  // A gesture that began over this frame, which the pan has since moved
+  // from under the pointer: its wheels land on the page, past the catcher.
+  const wheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, clientX: -40, clientY: 30, deltaX: 12 })
+  document.documentElement.dispatchEvent(wheel)
+  expect(wheel.defaultPrevented).toBe(true)
+  expect(sent.at(-1)!.msg).toMatchObject({ type: "wheel", x: -40, y: 30, deltaX: 12 })
+  // Not a pointer in this frame.
+  expect(sent.filter((s) => s.msg.type === "hovering")).toHaveLength(0)
+  // No tool: the page's.
+  tool(null)
+  const said = sent.length
+  document.documentElement.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 5 }))
+  expect(sent.length).toBe(said)
+})

@@ -431,7 +431,10 @@ export function startInspector(container: HTMLElement, componentName: string): (
     point = { x: e.clientX, y: e.clientY }
   }
   const onPointer = (e: Event) => {
-    if (!e.composedPath().includes(overlay.catcher)) return
+    // Every wheel, wherever it lands: a gesture stays with the frame it began
+    // over, and as the canvas pans that frame slides from under the pointer,
+    // so its wheels land outside what it shows, and the pan would stop.
+    if (e.type !== "wheel" && !e.composedPath().includes(overlay.catcher)) return
     e.stopImmediatePropagation()
     // No focus taken in the page, no text selected, no menu, no page scroll.
     if (e.type !== "pointermove" && e.type !== "mousemove" && e.cancelable) e.preventDefault()
@@ -452,7 +455,10 @@ export function startInspector(container: HTMLElement, componentName: string): (
       }
       case "wheel": {
         const w = e as WheelEvent
-        pointAt(w)
+        // Out past what the frame shows, the pointer is elsewhere.
+        const here = w.clientX >= 0 && w.clientY >= 0 && w.clientX < window.innerWidth && w.clientY < window.innerHeight
+        if (here) pointAt(w)
+        else point = null
         if (wheelMode === "scroll") {
           // Some mice count lines, or pages.
           const unit = w.deltaMode === 1 ? 16 : w.deltaMode === 2 ? window.innerHeight : 1
