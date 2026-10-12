@@ -5,6 +5,7 @@ import {
   type ElementRef,
   type Envelope,
   type FromFrame,
+  type PreviewItem,
   type Rect,
   type ToFrame,
   type Tool,
@@ -30,6 +31,8 @@ const trackers = new Map<string, { refs: ElementRef[]; on: (rects: (Rect | null)
 // box is on (markElement): a reload forgets them, so they're given back.
 const tools = new Map<string, Extract<Request, { type: "tool" }>>();
 const marks = new Map<string, ElementRef>();
+// The design edits each frame previews (previewStyles), given back the same way.
+const previews = new Map<string, PreviewItem[]>();
 // Who hears of each frame's comment clicks and wheel.
 type WheelMsg = Extract<FromFrame, { type: "wheel" }>;
 const commentClicks = new Map<string, (at: { x: number; y: number }, info: ElementInfo | null) => void>();
@@ -101,6 +104,8 @@ function onMessage(event: MessageEvent) {
       if (tool) post(frame, { ...tool, id: nextId++ });
       const mark = marks.get(frame);
       if (mark) post(frame, { type: "mark", id: nextId++, ref: mark });
+      const shown = previews.get(frame);
+      if (shown?.length) post(frame, { type: "preview", id: nextId++, items: shown });
       askTrack(frame);
       // A reload lost the frame's selection; give it back. On the page's root
       // standing in, before the component's element is there, not finding
@@ -114,6 +119,9 @@ function onMessage(event: MessageEvent) {
       return;
     case "selection-lost":
       if (s.selection?.frame === frame) s.setSelection(null);
+      return;
+    case "previewed":
+      if (previews.has(frame)) s.setMissing(frame, data.missing);
       return;
     case "tracked": {
       const t = trackers.get(frame);
@@ -211,7 +219,9 @@ export function registerFrame(frame: string, iframe: HTMLIFrameElement) {
     if (hovering === frame) hovering = null;
     tools.delete(frame);
     marks.delete(frame);
+    previews.delete(frame);
     store.getState().setFrame(frame, null);
+    store.getState().setMissing(frame, null);
   };
 }
 
@@ -229,6 +239,18 @@ export function markElement(frame: string, ref: ElementRef | null) {
   if (ref) marks.set(frame, ref);
   else marks.delete(frame);
   post(frame, { type: "mark", id: nextId++, ref });
+}
+
+// The design edits a frame shows over its page, replacing the last; none
+// ends them. Said only when they change: a frame that reloads is given them
+// again when it's back. What it can't find goes in the store's `missing`.
+export function previewStyles(frame: string, items: PreviewItem[]) {
+  const was = previews.get(frame) ?? [];
+  if (JSON.stringify(was) === JSON.stringify(items)) return;
+  if (items.length) previews.set(frame, items);
+  else previews.delete(frame);
+  if (!items.length) store.getState().setMissing(frame, null);
+  post(frame, { type: "preview", id: nextId++, items });
 }
 
 // Each listens to one frame, the last to ask; each returns its stop.
@@ -332,6 +354,14 @@ export async function tagSelection() {
   if (!selection) return;
   const [seen] = await getElementContext([selection]);
   store.getState().addTag({ ...selection, seen: seen ?? null });
+}
+
+// An element's styles as the Design panel edits them, as its frame shows it
+// now (previews and all). Null where the frame can't find it or doesn't answer.
+export async function getStyle(frame: string, ref: ElementRef) {
+  if (!store.getState().frames[frame]?.ready) return null;
+  const reply = await request(frame, { type: "style", ref }, 500);
+  return reply?.type === "style" && reply.style ? { style: reply.style, text: reply.text } : null;
 }
 
 export async function getSelectedElementContext() {

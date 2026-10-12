@@ -365,6 +365,8 @@ export const sendMessageMutationOptions = (queryClient: QueryClient) =>
       effort?: EffortLevel;
       // Canvas comments the message carries, marked sent by the backend.
       commentIds?: number[];
+      // Design edits it applies, handed to the chat by the backend.
+      editIds?: number[];
       // Whether the conversation was streaming when the user sent, as the
       // caller saw it. Overrides the cache read in onMutate: a send from the
       // error state reopens the stream first, and that writes "streaming"

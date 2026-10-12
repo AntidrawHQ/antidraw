@@ -31,7 +31,7 @@ export const sayNotOnCanvas = (frame: string) =>
 const adding = new Set<Promise<unknown>>();
 
 // The workspace's comments and what can be done with them, for the canvas
-// (CommentFlow) and its list (CommentTray). A send uses `model`/`effort`: the
+// (CommentFlow) and its list (the right panel's, design/Outbox). A send uses `model`/`effort`: the
 // caller's composer's.
 export const useCommentActions = ({ model, effort }: { model?: string; effort?: EffortLevel }) => {
   const workspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);

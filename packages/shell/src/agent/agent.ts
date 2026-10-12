@@ -15,6 +15,7 @@ import {
 } from "./protocol"
 import { markupOf, openingTag } from "./markup"
 import { createOverlay } from "./overlay"
+import { createPreviews, readStyle } from "./design"
 import { reactParent, renderedWithin } from "./react"
 
 // The shell's agent in a preview frame: it finds, measures and keeps track
@@ -166,6 +167,9 @@ export function startInspector(container: HTMLElement, componentName: string, pr
     const moved = withLoc(ref.loc).filter((el) => same(el) && textOf(el) === ref.text)
     return moved.length === 1 ? moved[0]! : found
   }
+
+  // The Design panel's edits, shown on the page until the code has them.
+  const previews = createPreviews(find, (missing) => post({ type: "previewed", missing }))
 
   const callsiteOf = (el: Element) => {
     for (let node: Element | null = el; inside(node); node = parentOf(node)) {
@@ -323,6 +327,8 @@ export function startInspector(container: HTMLElement, componentName: string, pr
 
   const check = () => {
     frame = 0
+    // A previewed element React replaced gets its edits back.
+    previews.heal()
     if (!selected || !selectedRef) return
     // React kept the node (Fast Refresh usually does) or replaced it.
     const el = selected.isConnected ? selected : find(selectedRef)
@@ -588,6 +594,13 @@ export function startInspector(container: HTMLElement, componentName: string, pr
         })
       case "track":
         return post({ type: "tracked", id: msg.id, rects: track(msg.refs) })
+      case "style": {
+        const el = find(msg.ref)
+        const read = el && readStyle(el)
+        return post({ type: "style", id: msg.id, style: read?.style ?? null, text: read?.text ?? false })
+      }
+      case "preview":
+        return previews.set(msg.items)
     }
   }
   window.addEventListener("message", onMessage)
@@ -598,6 +611,7 @@ export function startInspector(container: HTMLElement, componentName: string, pr
 
   return () => {
     setTool(null, wheelMode, zoom)
+    previews.stop()
     window.removeEventListener("pagehide", onHide)
     window.removeEventListener("message", onMessage)
     window.removeEventListener("resize", schedule)

@@ -15,7 +15,8 @@ import { useWorkspaceStore } from "@/renderer/store/workspace";
  * `model`/`effort` are the caller's: the composer's un-sent picks live in its
  * own useComposerModel. `title` is what an untitled chat is named from.
  * `commentIds` are the drafts the prompt carries, which the backend marks
- * sent into the chat before the turn starts (POST /chat/message).
+ * sent into the chat before the turn starts (POST /chat/message); `editIds`,
+ * the design edits it applies, which it hands to the chat the same way.
  * `target` is where to send when the caller chose it before awaiting
  * something (the comments: their prompt is written for that chat), rather
  * than wherever is open by the time it sends; a null chat is a new one.
@@ -33,6 +34,7 @@ export const useSendToChat = () => {
     effort,
     title,
     commentIds,
+    editIds,
     target,
   }: {
     prompt: string;
@@ -41,6 +43,7 @@ export const useSendToChat = () => {
     effort?: EffortLevel;
     title: string;
     commentIds?: number[];
+    editIds?: number[];
     target?: { workspaceId: string; conversationId: string | null };
   }) => {
     const open = useWorkspaceStore.getState();
@@ -88,6 +91,7 @@ export const useSendToChat = () => {
       model,
       effort,
       commentIds,
+      editIds,
       sentMidTurn: isStreaming,
     });
 

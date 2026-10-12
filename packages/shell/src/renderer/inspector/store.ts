@@ -23,12 +23,16 @@ type InspectorStore = {
   frames: Record<string, FrameStatus>;
   selection: Picked | null;
   tags: Picked[];
+  // Per frame, the design previews it can't find an element for, by key
+  // (bridge's previewStyles).
+  missing: Record<string, string[]>;
   setActive: (active: boolean) => void;
   setFrame: (frame: string, status: FrameStatus | null) => void;
   setSelection: (selection: Picked | null) => void;
   addTag: (tag: Picked) => void;
   removeTag: (tag: Picked) => void;
   setTags: (tags: Picked[]) => void;
+  setMissing: (frame: string, keys: string[] | null) => void;
 };
 
 // Two picks name the same element when the frame would find the same one.
@@ -43,6 +47,7 @@ export const useInspectorStore = create<InspectorStore>((set) => ({
   frames: {},
   selection: null,
   tags: [],
+  missing: {},
   setActive: (active) => set({ active }),
   setFrame: (frame, status) =>
     set((s) => {
@@ -56,6 +61,13 @@ export const useInspectorStore = create<InspectorStore>((set) => ({
     set((s) => (s.tags.some((t) => samePick(t, tag)) ? s : { tags: [...s.tags, tag] })),
   removeTag: (tag) => set((s) => ({ tags: s.tags.filter((t) => t !== tag) })),
   setTags: (tags) => set({ tags }),
+  setMissing: (frame, keys) =>
+    set((s) => {
+      const missing = { ...s.missing };
+      if (keys) missing[frame] = keys;
+      else delete missing[frame];
+      return { missing };
+    }),
 }));
 
 // Picks name elements by component name and source location, which mean

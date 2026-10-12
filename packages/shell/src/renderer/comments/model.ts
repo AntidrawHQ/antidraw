@@ -5,12 +5,24 @@ import type { Pos } from "./store";
 
 // The comments as the design (CommentFlow) models them: what hasn't gone out,
 // and the sets that have, each with its chat. Shared by the canvas's pins,
-// box and open comment (CommentFlow) and its list (CommentTray).
+// box and open comment (CommentFlow) and its list (design/Outbox).
 
 export type CState = CommentState;
 // `frame` is the component whose frame the pin is on; `element`, the one
-// under the pin when it was dropped, as the frame described it then.
-export type Cmt = { id: number; text: string; state: CState; pos: Pos; frame: string; element: ElementInfo | null };
+// under the pin when it was dropped, as the frame described it then. `at`:
+// when it was written; `note` and `doneAt`: Claude's line on what it changed,
+// and when, once it marks it done.
+export type Cmt = {
+  id: number;
+  text: string;
+  state: CState;
+  pos: Pos;
+  frame: string;
+  element: ElementInfo | null;
+  at: number;
+  note: string | null;
+  doneAt: number | null;
+};
 export type Phase = ChatPhase;
 export type Send = { n: number; phase: Phase; conversationId: string; comments: Cmt[] };
 export type Flow = { draft: Cmt[]; sends: Send[] };
@@ -28,6 +40,9 @@ const cmt = (c: Comment): Cmt => ({
   pos: { x: c.x, y: c.y },
   frame: c.componentName,
   element: (c.element as ElementInfo | null) ?? null,
+  at: new Date(c.createdAt).getTime(),
+  note: c.note,
+  doneAt: c.completedAt ? new Date(c.completedAt).getTime() : null,
 });
 
 export const toFlow = (list: CommentList | undefined): Flow => {

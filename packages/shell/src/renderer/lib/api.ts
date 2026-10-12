@@ -16,6 +16,7 @@ import type {
 } from "@/main/api";
 import type { ImageAttachment } from "@/shared/utils/message";
 import type { CommentContext } from "@/shared/utils/canvas-comments";
+import type { EditContext, EditedElement, EditList } from "@/shared/utils/canvas-edits";
 import type { AskUserQuestionAnswers } from "@/shared/utils/ask-user-question";
 import { fetchEventSource } from "@microsoft/fetch-event-source";
 import { ok, err } from "neverthrow";
@@ -449,6 +450,9 @@ export const sendMessage = async (params: {
   // Canvas comments the message carries: marked sent into the chat by the
   // backend before the turn starts, or the send is refused.
   commentIds?: number[];
+  // Design edits the message applies: handed to the chat by the backend
+  // before the turn starts, or the send is refused.
+  editIds?: number[];
 }) => {
   try {
     const response = await fetch("antidraw://app/api/chat/message", {
@@ -1053,7 +1057,12 @@ export const commentsPrompt = (
 // once on every (re)connect. Reconnects on its own, backing off, until the
 // returned stop is called. Nothing rides on the events, so a drop loses
 // nothing: the change on reconnect makes up for whatever went by.
-export const watchComments = (workspaceId: string, onChange: () => void) => {
+export const watchComments = (workspaceId: string, onChange: () => void) =>
+  watchChanges(commentsUrl(workspaceId, "/events"), onChange);
+
+// An event stream whose every event means "refetch" (the comments', the
+// edits'), kept open as watchComments says.
+const watchChanges = (url: string, onChange: () => void) => {
   let stopped = false;
   let attempt: AbortController | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1074,7 +1083,7 @@ export const watchComments = (workspaceId: string, onChange: () => void) => {
       timer = setTimeout(connect, delay);
       delay = Math.min(delay * 2, 30_000);
     };
-    fetchEventSource(commentsUrl(workspaceId, "/events"), {
+    fetchEventSource(url, {
       signal: abort.signal,
       openWhenHidden: true,
       onopen: async (response) => {
@@ -1100,6 +1109,46 @@ export const watchComments = (workspaceId: string, onChange: () => void) => {
     attempt?.abort();
   };
 };
+
+// ============================================================================
+// Design edits API
+// ============================================================================
+
+const editsUrl = (workspaceId: string, path = "") =>
+  `antidraw://app/api/workspaces/${workspaceId}/edits${path}`;
+
+export const listEdits = (workspaceId: string) =>
+  commentsRequest<EditList>(editsUrl(workspaceId), "Failed to list edits");
+
+// One element's edits as the panel has them now: its edit, or null once
+// it's back where it started.
+export const putEdit = (workspaceId: string, edit: Omit<EditedElement, "id">) =>
+  commentsRequest<EditedElement | null>(editsUrl(workspaceId), "Failed to save the edit", {
+    method: "PUT",
+    body: edit,
+  });
+
+// One element's edits undone, or (no id) every one: Reset.
+export const removeEdits = (workspaceId: string, id?: number) =>
+  commentsRequest<{ ok: true }>(editsUrl(workspaceId, id === undefined ? "" : `/${id}`), "Failed to undo the edits", {
+    method: "DELETE",
+  });
+
+export const releaseApplied = (workspaceId: string, setId: number) =>
+  commentsRequest<{ ok: true }>(editsUrl(workspaceId, `/applied/${setId}`), "Failed to stop the preview", {
+    method: "DELETE",
+  });
+
+// The message that applies the edits in `context`, and which it carries.
+// Changes nothing: it goes out as a chat message (sendMessage with editIds).
+export const editsPrompt = (workspaceId: string, params: { context: EditContext[] }) =>
+  commentsRequest<{ ids: number[]; prompt: string }>(editsUrl(workspaceId, "/prompt"), "Failed to describe the edits", {
+    method: "POST",
+    body: params,
+  });
+
+export const watchEdits = (workspaceId: string, onChange: () => void) =>
+  watchChanges(editsUrl(workspaceId, "/events"), onChange);
 
 // ============================================================================
 // Cloud account API

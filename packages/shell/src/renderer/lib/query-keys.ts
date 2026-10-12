@@ -48,6 +48,10 @@ export const queryKeys = {
     byWorkspace: (workspaceId: string | null) =>
       ["comments", workspaceId] as const,
   },
+  edits: {
+    byWorkspace: (workspaceId: string | null) =>
+      ["edits", workspaceId] as const,
+  },
   update: {
     status: ["update", "status"] as const,
   },

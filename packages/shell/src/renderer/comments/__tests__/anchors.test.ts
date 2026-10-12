@@ -6,7 +6,7 @@ import type { Cmt } from "../model";
 // A pin keeps its spot in its element, wherever the element is now.
 
 const element = (rect: ElementInfo["rect"]) => ({ rect }) as ElementInfo;
-const cmt = (pos: Cmt["pos"], el: ElementInfo | null): Cmt => ({ id: 1, text: "", state: "draft", pos, frame: "Card", element: el });
+const cmt = (pos: Cmt["pos"], el: ElementInfo | null): Cmt => ({ id: 1, text: "", state: "draft", pos, frame: "Card", element: el, at: 0, note: null, doneAt: null });
 
 it("puts the pin at the same spot in its element, at the element's size now", () => {
   // Dropped 3/4 across and halfway down a 400×40 button at (100, 200)...

@@ -6,6 +6,8 @@
 // element's line. What a form holds is as it is on screen, but a secret:
 // a password, a hidden field, a card number.
 
+import { EDIT_ATTRIBUTE } from "./protocol"
+
 const DEPTH = 3
 const CHILDREN = 8
 const LINES = 60
@@ -38,7 +40,9 @@ const isSecret = (el: HTMLInputElement) =>
 // attribute, an option's selected and an input's value once, and the
 // properties change after. A secret's value is left out.
 const attributesOf = (el: Element) => {
-  let attributes: (readonly [string, string])[] = [...el.attributes].map((a) => [a.name, a.value] as const)
+  let attributes: (readonly [string, string])[] = [...el.attributes]
+    .filter((a) => a.name !== EDIT_ATTRIBUTE)
+    .map((a) => [a.name, a.value] as const)
   const set = (name: string, value: string | null) => {
     attributes = attributes.filter(([n]) => n !== name)
     if (value !== null) attributes.push([name, value])
