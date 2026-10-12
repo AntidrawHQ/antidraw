@@ -1,5 +1,5 @@
 import { EDIT_ATTRIBUTE, type ElementRef, type PreviewItem } from "./protocol"
-import type { Align, Flow, Shadow, Sizing, Stroke, Style, TextAlign } from "../shared/design"
+import type { Align, Corners, Flow, Shadow, Sizing, Stroke, Style, TextAlign } from "../shared/design"
 
 // The Design panel's side in the frame: an element's styles read as the
 // panel shows them (shared/design.ts), and its edits shown on the page before
@@ -61,51 +61,73 @@ const splitTop = (v: string, by: string) => {
   return parts.map((p) => p.trim()).filter(Boolean)
 }
 
-// The first shadow that shows (Tailwind lays empty ones under its own).
-const shadowOf = (v: string): Shadow | null => {
-  if (v === "none") return null
+// The first shadow that shows, which the panel edits, and the other layers
+// as they are (Tailwind stacks two or three, and empty ones under them).
+const shadowsOf = (v: string): { shadow: Shadow | null; rest: string[] } => {
+  if (v === "none") return { shadow: null, rest: [] }
+  let shadow: Shadow | null = null
+  const rest: string[] = []
   for (const one of splitTop(v, ",")) {
     const tokens = splitTop(one, " ")
-    if (tokens.includes("inset")) continue
-    const lengths = tokens.filter((t) => /^-?[\d.]+(px)?$/.test(t)).map(px)
-    const color = colorOf(tokens.find((t) => !/^-?[\d.]+(px)?$/.test(t) && t !== "inset") ?? "")
+    const isLength = (t: string) => /^-?[\d.]+(px)?$/.test(t)
+    const lengths = tokens.filter(isLength).map(px)
+    const color = colorOf(tokens.find((t) => !isLength(t) && t !== "inset") ?? "")
+    // Nothing to see: left out.
     if (!color || lengths.length < 2) continue
+    if (shadow || tokens.includes("inset")) {
+      rest.push(one)
+      continue
+    }
     const [x = 0, y = 0, blur = 0, spread = 0] = lengths
-    return { x: round(x), y: round(y), blur: round(blur), spread: round(spread), color: color.hex, a: color.a }
+    shadow = { x: round(x), y: round(y), blur: round(blur), spread: round(spread), color: color.hex, a: color.a }
   }
-  return null
+  return { shadow, rest }
 }
 
 const strokeOf = (cs: CSSStyleDeclaration): Stroke | null => {
   const border = px(cs.borderTopWidth)
-  if (border > 0 && cs.borderTopStyle !== "none") {
-    const c = colorOf(cs.borderTopColor)
-    if (c) return { color: c.hex, a: c.a, w: round(border), at: "inside" }
-  }
-  const outline = px(cs.outlineWidth)
-  if (outline > 0 && cs.outlineStyle !== "none") {
-    const c = colorOf(cs.outlineColor)
-    const offset = px(cs.outlineOffset)
-    if (c) return { color: c.hex, a: c.a, w: round(outline), at: offset <= -outline ? "inside" : offset < 0 ? "center" : "outside" }
-  }
-  return null
+  if (!(border > 0) || cs.borderTopStyle === "none") return null
+  const c = colorOf(cs.borderTopColor)
+  return c && { color: c.hex, a: c.a, w: round(border) }
 }
 
 const flowOf = (cs: CSSStyleDeclaration): Flow =>
-  !cs.display.includes("flex") ? "none" : cs.flexWrap === "wrap" ? "wrap" : cs.flexDirection.startsWith("column") ? "column" : "row"
-
-const blurOf = (v: string) => round(px(/blur\(([^)]+)\)/.exec(v)?.[1] ?? "0"))
+  cs.display.includes("grid")
+    ? "grid"
+    : !cs.display.includes("flex")
+      ? "none"
+      : cs.flexWrap === "wrap"
+        ? "wrap"
+        : cs.flexDirection.startsWith("column")
+          ? "column"
+          : "row"
 
 const TEXT_ALIGN: Record<string, TextAlign> = { center: "center", right: "right", end: "right", justify: "justify" }
 
-// How it's sized, as near as the page says: CSS doesn't keep whether a
-// width was written or worked out. Filling: as wide (tall) as its parent
-// gives it, or growing in its flex row (column). Hugging: inline, or a flex
-// item that doesn't grow. Otherwise fixed.
+// Its size with `prop` set to `value`, for a moment: set and taken back in
+// the same task, so nothing is painted, and the page's own style kept.
+const sizedAs = (el: Element, prop: "width" | "height", value: string) => {
+  const style = (el as HTMLElement).style
+  if (!style) return null
+  const was = style.getPropertyValue(prop)
+  const priority = style.getPropertyPriority(prop)
+  style.setProperty(prop, value, "important")
+  const r = el.getBoundingClientRect()
+  if (was) style.setProperty(prop, was, priority)
+  else style.removeProperty(prop)
+  return prop === "width" ? r.width : r.height
+}
+
+// How it's sized. CSS doesn't keep whether a size was written or worked
+// out, so it's measured: a size its content gives it hugs, one its parent
+// gives it (or a flex row's grow) fills, and only one neither gives it is
+// fixed.
 const sizingOf = (el: Element, cs: CSSStyleDeclaration) => {
   const r = el.getBoundingClientRect()
+  const [w, h] = [round(r.width), round(r.height)]
   const parent = el.parentElement
-  if (!parent) return { wMode: "fixed" as Sizing, hMode: "hug" as Sizing, w: round(r.width), h: round(r.height) }
+  if (!parent) return { wMode: "fill" as Sizing, hMode: "hug" as Sizing, w, h }
+  const near = (a: number | null, b: number) => a !== null && Math.abs(a - b) < 1
   const ps = getComputedStyle(parent)
   const pr = parent.getBoundingClientRect()
   const innerW = pr.width - px(ps.paddingLeft) - px(ps.paddingRight) - px(ps.borderLeftWidth) - px(ps.borderRightWidth)
@@ -113,23 +135,49 @@ const sizingOf = (el: Element, cs: CSSStyleDeclaration) => {
   const flex = ps.display.includes("flex")
   const row = flex && ps.flexDirection.startsWith("row")
   const grows = px(cs.flexGrow) > 0
-  const inline = cs.display.startsWith("inline")
-  const wide = Math.abs(r.width - innerW) < 1
-  const wMode: Sizing = row ? (grows ? "fill" : "hug") : !inline && wide ? "fill" : inline || flex ? "hug" : "fixed"
-  const hMode: Sizing = flex && !row && grows ? "fill" : row && Math.abs(r.height - innerH) < 1 && cs.alignSelf !== "center" ? "fill" : "hug"
-  return { wMode, hMode, w: round(r.width), h: round(r.height) }
+  const fit = sizedAs(el, "width", "fit-content")
+  const autoW = sizedAs(el, "width", "auto")
+  const autoH = sizedAs(el, "height", "auto")
+  const wMode: Sizing = row
+    ? grows
+      ? "fill"
+      : near(fit, r.width)
+        ? "hug"
+        : "fixed"
+    : cs.display.startsWith("inline")
+      ? near(fit, r.width)
+        ? "hug"
+        : "fixed"
+      : near(autoW, r.width)
+        ? near(fit, r.width) && !near(innerW, r.width)
+          ? "hug"
+          : "fill"
+        : near(fit, r.width)
+          ? "hug"
+          : "fixed"
+  const hMode: Sizing = flex && !row && grows ? "fill" : near(autoH, r.height) ? "hug" : near(innerH, r.height) ? "fill" : "fixed"
+  return { wMode, hMode, w, h }
 }
 
 // Text written right in it, not only inside its children.
 const holdsText = (el: Element) => [...el.childNodes].some((n) => n.nodeType === Node.TEXT_NODE && n.nodeValue?.trim())
+// Its one run of text, which the panel can rewrite; none when it has two
+// ("$24", a <span>, " / month") or none.
+const textNodeOf = (el: Element) => {
+  const runs = [...el.childNodes].filter((n): n is Text => n.nodeType === Node.TEXT_NODE && !!n.nodeValue?.trim())
+  return runs.length === 1 ? runs[0]! : null
+}
 
 export function readStyle(el: Element): { style: Style; text: boolean } {
   const cs = getComputedStyle(el)
   const flow = flowOf(cs)
-  const row = flow === "row" || flow === "wrap"
   const fill = colorOf(cs.backgroundColor)
   const text = colorOf(cs.color) ?? { hex: "#000000", a: 100 }
-  const radius = px(cs.borderTopLeftRadius)
+  const corners = [cs.borderTopLeftRadius, cs.borderTopRightRadius, cs.borderBottomRightRadius, cs.borderBottomLeftRadius].map((c) =>
+    round(px(c)),
+  ) as Corners
+  const radius = Math.max(...corners)
+  const { shadow, rest } = shadowsOf(cs.boxShadow)
   return {
     text: holdsText(el),
     style: {
@@ -137,22 +185,26 @@ export function readStyle(el: Element): { style: Style; text: boolean } {
       main: alignOf(cs.justifyContent),
       cross: alignOf(cs.alignItems),
       between: cs.justifyContent === "space-between",
-      gap: round(px(row ? cs.columnGap : cs.rowGap)),
+      gap: round(px(flow === "column" ? cs.rowGap : cs.columnGap)),
       ...sizingOf(el, cs),
       pt: round(px(cs.paddingTop)),
       pr: round(px(cs.paddingRight)),
       pb: round(px(cs.paddingBottom)),
       pl: round(px(cs.paddingLeft)),
-      clip: cs.overflow.includes("hidden") || cs.overflow.includes("clip"),
+      mt: round(px(cs.marginTop)),
+      mr: round(px(cs.marginRight)),
+      mb: round(px(cs.marginBottom)),
+      ml: round(px(cs.marginLeft)),
+      hidden: cs.display === "none",
       opacity: Math.round(px(cs.opacity) * 100),
-      radius: radius >= 9999 ? 48 : round(radius),
+      radius: radius >= 9999 ? 48 : radius,
+      corners,
       fill: fill?.hex ?? null,
       fillA: fill?.a ?? 100,
+      gradient: cs.backgroundImage !== "none" && cs.backgroundImage !== "",
       stroke: strokeOf(cs),
-      shadow: shadowOf(cs.boxShadow),
-      blur: blurOf(cs.filter),
-      bgBlur: blurOf(cs.backdropFilter),
-      font: (cs.fontFamily.split(",")[0] ?? "").replace(/["']/g, "").trim(),
+      shadow,
+      shadowRest: rest,
       weight: cs.fontWeight,
       size: round(px(cs.fontSize)),
       lh: cs.lineHeight === "normal" ? 0 : round(px(cs.lineHeight)),
@@ -160,6 +212,7 @@ export function readStyle(el: Element): { style: Style; text: boolean } {
       talign: TEXT_ALIGN[cs.textAlign] ?? "left",
       color: text.hex,
       colorA: text.a,
+      content: textNodeOf(el)?.nodeValue?.trim() ?? null,
     },
   }
 }
@@ -180,11 +233,16 @@ const ruleFor = (item: PreviewItem) => {
 }
 
 // The previews in this page. `find` names an element now; `onMissing` hears
-// which items have none, whenever that changes.
+// which items have none, whenever that changes. An item's `text` is written
+// into its element's one run of text, and the run's own put back when the
+// preview goes: React keeps the node and doesn't look at it again until its
+// text in the code changes.
 export function createPreviews(find: (ref: ElementRef) => Element | null, onMissing: (keys: string[]) => void) {
   let items: PreviewItem[] = []
   let found: (Element | null)[] = []
   let marked = new Map<Element, string>()
+  // Each run of text written, with what it said before.
+  const written = new Map<Text, string>()
   // Nothing said until there are previews.
   let lastMissing = "[]"
   const sheet = document.createElement("style")
@@ -201,6 +259,22 @@ export function createPreviews(find: (ref: ElementRef) => Element | null, onMiss
     for (const [el] of marked) if (!want.has(el)) el.removeAttribute(EDIT_ATTRIBUTE)
     for (const [el, keys] of want) if (el.getAttribute(EDIT_ATTRIBUTE) !== keys) el.setAttribute(EDIT_ATTRIBUTE, keys)
     marked = want
+    // The text, the later item's where two write one run, its own spaces kept.
+    const texts = new Map<Text, string>()
+    found.forEach((el, i) => {
+      const text = items[i]!.text
+      const node = el && text !== undefined ? textNodeOf(el) : null
+      if (!node) return
+      if (!written.has(node)) written.set(node, node.nodeValue ?? "")
+      const was = written.get(node)!
+      texts.set(node, was.replace(was.trim(), () => text!))
+    })
+    for (const [node, was] of written)
+      if (!texts.has(node)) {
+        if (node.nodeValue !== was) node.nodeValue = was
+        written.delete(node)
+      }
+    for (const [node, text] of texts) if (node.nodeValue !== text) node.nodeValue = text
     if (items.length && !sheet.isConnected) document.head.append(sheet)
     const missing = items.filter((_, i) => !found[i]).map((item) => item.key)
     const key = JSON.stringify(missing)
@@ -221,6 +295,8 @@ export function createPreviews(find: (ref: ElementRef) => Element | null, onMiss
   }
 
   const stop = () => {
+    for (const [node, was] of written) node.nodeValue = was
+    written.clear()
     for (const [el] of marked) el.removeAttribute(EDIT_ATTRIBUTE)
     marked.clear()
     sheet.remove()

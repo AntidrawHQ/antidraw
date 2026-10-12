@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { changesOf, previewCss, type Style } from "../design";
+import { changesOf, previewCss, previewText, type Style } from "../design";
 
 // An element's styles as the Design panel edits them: what changed, said as
 // a design tool would, and the CSS that previews it.
@@ -18,16 +18,20 @@ const card: Style = {
   pr: 24,
   pb: 24,
   pl: 24,
-  clip: false,
+  mt: 0,
+  mr: 0,
+  mb: 0,
+  ml: 0,
+  hidden: false,
   opacity: 100,
   radius: 16,
+  corners: [16, 16, 16, 16],
   fill: "#FFFFFF",
   fillA: 100,
-  stroke: { color: "#E4E4E7", a: 100, w: 1, at: "inside" },
+  gradient: false,
+  stroke: { color: "#E4E4E7", a: 100, w: 1 },
   shadow: null,
-  blur: 0,
-  bgBlur: 0,
-  font: "Geist",
+  shadowRest: [],
   weight: "400",
   size: 14,
   lh: 20,
@@ -35,6 +39,7 @@ const card: Style = {
   talign: "left",
   color: "#18181B",
   colorA: 100,
+  content: null,
 };
 
 test("previews only what changed, so the rest stays as the code has it", () => {
@@ -53,13 +58,37 @@ test("says each change as a design tool does", () => {
   ]);
 });
 
-test("a full radius, no fill and a stroke over a border", () => {
-  expect(previewCss(card, { ...card, radius: 48, fill: null, stroke: { color: "#000000", a: 50, w: 2, at: "center" } })).toEqual({
+test("a full radius, no fill, and a border as the code would write it", () => {
+  expect(previewCss(card, { ...card, radius: 48, fill: null, stroke: { color: "#000000", a: 50, w: 2 } })).toEqual({
     "border-radius": "9999px",
-    background: "none",
-    // The border it had hides while the outline stands in for it.
-    "border-color": "transparent",
-    outline: "2px solid rgba(0, 0, 0, 0.5)",
-    "outline-offset": "-1px",
+    "background-color": "transparent",
+    border: "2px solid rgba(0, 0, 0, 0.5)",
   });
+});
+
+test("rounds only the corners that were rounded", () => {
+  const top = { ...card, corners: [16, 16, 0, 0] as Style["corners"] };
+  expect(previewCss(top, { ...top, radius: 24 })).toEqual({ "border-radius": "24px 24px 0px 0px" });
+  const square = { ...card, radius: 0, corners: [0, 0, 0, 0] as Style["corners"] };
+  expect(previewCss(square, { ...square, radius: 8 })).toEqual({ "border-radius": "8px" });
+});
+
+test("an edited shadow keeps the layers under it", () => {
+  const shadowed = { ...card, shadow: { x: 0, y: 1, blur: 3, spread: 0, color: "#000000", a: 10 }, shadowRest: ["rgba(0, 0, 0, 0.1) 0px 1px 2px -1px"] };
+  expect(previewCss(shadowed, { ...shadowed, shadow: { ...shadowed.shadow, y: 4 } })).toEqual({
+    "box-shadow": "0px 4px 3px 0px rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0.1) 0px 1px 2px -1px",
+  });
+});
+
+test("text and hiding: said to Claude, the text written in, hiding over the layout", () => {
+  const label = { ...card, content: "Buy" };
+  const now = { ...label, content: "Buy now", flow: "row" as const, hidden: true };
+  expect(changesOf(label, now).map((c) => `${c.group.label}: ${c.from} → ${c.to}`)).toEqual([
+    'Text: "Buy" → "Buy now"',
+    "Auto layout: Vertical → Horizontal",
+    "Visibility: Visible → Hidden",
+  ]);
+  expect(previewCss(label, now).display).toBe("none");
+  expect(previewText(label, now)).toBe("Buy now");
+  expect(previewText(label, { ...label, radius: 4 })).toBeUndefined();
 });

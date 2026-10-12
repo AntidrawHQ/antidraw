@@ -15,7 +15,7 @@ import {
 // The Design panel's edits, held in memory per workspace until Apply hands
 // them to a chat, and shown as being applied until its turn ends.
 
-const base = { radius: 16, gap: 12 } as Style;
+const base = { radius: 16, corners: [16, 16, 16, 16], gap: 12 } as Style;
 const element = (loc: string, path = [0]) => ({ ref: { loc, index: 0, path, tag: "div" } }) as ElementInfo;
 const CARD = "src/components/user-components/Card.tsx:3:5";
 const TITLE = "src/components/user-components/Card.tsx:4:7";

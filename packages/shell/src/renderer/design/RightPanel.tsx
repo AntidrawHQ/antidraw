@@ -55,6 +55,8 @@ const DesignBody = ({ d }: { d: ReturnType<typeof useDesign> }) => (
     text={d.current?.text ?? false}
     set={d.set}
     size={d.selection ? { w: d.selection.info.rect.width, h: d.selection.info.rect.height } : { w: 0, h: 0 }}
+    // The frame's size, as far as a width or height can go.
+    bounds={{ w: d.current?.seen?.viewport[0] ?? 1440, h: d.current?.seen?.viewport[1] ?? 900 }}
   />
 );
 

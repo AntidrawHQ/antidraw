@@ -30,6 +30,9 @@ beforeEach(() => {
     <div id="frame">
       <div class="card" data-ad-loc="${OWN}:3:5" style="display: flex; flex-direction: column; padding: 24px 16px; border-top-left-radius: 16px; background-color: rgb(255, 255, 255); opacity: 0.5">
         <h3 data-ad-loc="${OWN}:4:7">Pro</h3>
+        <button data-ad-loc="${OWN}:5:7"><svg></svg> Buy now </button>
+        <p data-ad-loc="${OWN}:6:7">$24<span>/mo</span> billed yearly</p>
+        <ul data-ad-loc="${OWN}:7:7" style="display: grid; column-gap: 12px; row-gap: 12px; margin-top: 8px; margin-bottom: 16px; background-image: linear-gradient(red, blue); box-shadow: rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0.1) 0px 1px 3px 0px, rgba(0, 0, 0, 0.1) 0px 1px 2px -1px"></ul>
       </div>
     </div>`
   stop = startInspector(document.getElementById("frame")!, "Card")
@@ -67,6 +70,32 @@ test("reads an element's styles as the panel edits them", () => {
   expect(ask({ type: "style", id: 2, ref: { ...ref, loc: `${OWN}:9:9`, path: [7] } })).toMatchObject({ type: "style", id: 2, style: null, text: false })
   // Text written right in it.
   expect(ask({ type: "style", id: 3, ref: { loc: `${OWN}:4:7`, index: 0, path: [0, 0], tag: "h3" } })).toMatchObject({ text: true })
+})
+
+const at = (line: number, tag: string, i: number) => ({ loc: `${OWN}:${line}:7`, index: 0, path: [0, i], tag })
+
+test("reads what the panel shows: its one run of text, margins, a grid, a gradient, stacked shadows", () => {
+  const button = ask({ type: "style", id: 1, ref: at(5, "button", 1) }) as Extract<FromFrame, { type: "style" }>
+  expect([button.text, button.style?.content]).toEqual([true, "Buy now"])
+  // Two runs of text around a <span>: not one the panel can rewrite.
+  expect((ask({ type: "style", id: 2, ref: at(6, "p", 2) }) as Extract<FromFrame, { type: "style" }>).style?.content).toBeNull()
+  const list = (ask({ type: "style", id: 3, ref: at(7, "ul", 3) }) as Extract<FromFrame, { type: "style" }>).style!
+  expect(list).toMatchObject({ flow: "grid", gap: 12, mt: 8, mb: 16, gradient: true })
+  // The first that shows is edited; the other is kept; the empty one goes.
+  expect([list.shadow, list.shadowRest]).toEqual([
+    { x: 0, y: 1, blur: 3, spread: 0, color: "#000000", a: 10 },
+    ["rgba(0, 0, 0, 0.1) 0px 1px 2px -1px"],
+  ])
+})
+
+test("writes an edit's text into the element, and puts its own back", async () => {
+  const button = document.querySelector("button")!
+  ask({ type: "preview", id: 1, items: [{ key: "e1", ref: at(5, "button", 1), css: {}, text: "Start $& trial" }] })
+  // Its spaces and its icon as they were.
+  expect(button.textContent).toBe(" Start $& trial ")
+  expect(button.querySelector("svg")).not.toBeNull()
+  ask({ type: "preview", id: 2, items: [] })
+  expect(button.textContent).toBe(" Buy now ")
 })
 
 test("shows edits from a sheet of its own, on the element React has there now", async () => {

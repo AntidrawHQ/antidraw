@@ -11,6 +11,7 @@ import {
   AlignRight,
   ArrowDown,
   ArrowRight,
+  LayoutGrid,
   Minus,
   MousePointer2,
   Plus,
@@ -20,28 +21,86 @@ import {
   WrapText,
 } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
-import {
-  FULL,
-  WEIGHTS,
-  changedGroups,
-  r1,
-  type Flow,
-  type Shadow,
-  type Sizing,
-  type Stroke,
-  type StrokeAt,
-  type Style as S,
-  type TextAlign,
-} from "@/shared/design";
-import { AlignPad, ColorRow, Folder, IconButton, LabeledRow, MONO, ROW, SURFACE, Segmented, Select, Slider, TextRow, Toggle } from "./dial";
+import { FULL, WEIGHTS, changedGroups, r1, type Flow, type Shadow, type Sizing, type Stroke, type Style as S, type TextAlign } from "@/shared/design";
+import { AlignPad, ColorRow, Folder, IconButton, LabeledRow, ROW, SURFACE, Segmented, Select, Slider, TextRow, Toggle } from "./dial";
 
 export const icon = "size-3.5";
 
-export type EditProps = { s: S; set: (patch: Partial<S>) => void; edited: (key: string) => boolean; size: { w: number; h: number } };
+// Spacing and sizes step along Tailwind's 4px scale, so the code gets
+// `gap-3`, not `gap-[13px]`. Typed values snap to it too.
+const SPACE = 4;
 
-export const LayoutFolder = ({ s, set, edited, size }: EditProps) => {
+// `bounds`: the frame's size, how far a width or height can go.
+export type EditProps = {
+  s: S;
+  set: (patch: Partial<S>) => void;
+  edited: (key: string) => boolean;
+  size: { w: number; h: number };
+  bounds: { w: number; h: number };
+};
+
+// Four sides as two sliders, X and Y, or (`apart`) one each.
+const Sides = ({
+  name,
+  keys,
+  s,
+  set,
+  edited,
+  apart,
+}: {
+  name: string;
+  keys: ["pt" | "mt", "pr" | "mr", "pb" | "mb", "pl" | "ml"];
+  s: S;
+  set: (patch: Partial<S>) => void;
+  edited: boolean;
+  apart: boolean;
+}) => {
+  const [t, r, b, l] = keys;
+  return apart ? (
+    <div className="grid grid-cols-2 gap-1.5">
+      {keys.map((k, i) => (
+        <Slider
+          key={k}
+          label={`${name} ${["top", "right", "bottom", "left"][i]}`}
+          value={s[k]}
+          min={0}
+          max={64}
+          step={SPACE}
+          edited={edited}
+          onChange={(v) => set({ [k]: v } as Partial<S>)}
+        />
+      ))}
+    </div>
+  ) : (
+    <div className="grid grid-cols-2 gap-1.5">
+      <Slider
+        label={`${name} X`}
+        value={s[l]}
+        format={(v) => (s[l] === s[r] ? String(v) : "Mixed")}
+        min={0}
+        max={64}
+        step={SPACE}
+        edited={edited}
+        onChange={(v) => set({ [l]: v, [r]: v } as Partial<S>)}
+      />
+      <Slider
+        label={`${name} Y`}
+        value={s[t]}
+        format={(v) => (s[t] === s[b] ? String(v) : "Mixed")}
+        min={0}
+        max={64}
+        step={SPACE}
+        edited={edited}
+        onChange={(v) => set({ [t]: v, [b]: v } as Partial<S>)}
+      />
+    </div>
+  );
+};
+
+export const LayoutFolder = ({ s, set, edited, size, bounds }: EditProps) => {
   const [apart, setApart] = useState(false);
-  const flex = s.flow !== "none";
+  // A grid's tracks are its code's: the panel only spaces it.
+  const flex = s.flow !== "none" && s.flow !== "grid";
   const direction = s.flow === "column" ? "column" : "row";
   const sizeRow = (axis: "w" | "h") => {
     const mode = axis === "w" ? s.wMode : s.hMode;
@@ -52,7 +111,8 @@ export const LayoutFolder = ({ s, set, edited, size }: EditProps) => {
           label={axis === "w" ? "Width" : "Height"}
           value={at}
           min={0}
-          max={480}
+          max={Math.max(bounds[axis], at)}
+          step={SPACE}
           dim={mode !== "fixed"}
           edited={edited(axis)}
           onChange={(v) => set(axis === "w" ? { wMode: "fixed", w: v } : { hMode: "fixed", h: v })}
@@ -63,17 +123,29 @@ export const LayoutFolder = ({ s, set, edited, size }: EditProps) => {
           edited={edited(axis)}
           onChange={(m) => set(axis === "w" ? { wMode: m, w: m === "fixed" ? at : s.w } : { hMode: m, h: m === "fixed" ? at : s.h })}
           options={[
-            { value: "fixed", label: "Fixed" },
             { value: "hug", label: "Hug" },
             { value: "fill", label: "Fill" },
+            { value: "fixed", label: "Fixed" },
           ]}
           className="w-[78px] shrink-0"
         />
       </div>
     );
   };
+  const gap = (
+    <Slider
+      label="Gap"
+      value={s.gap}
+      min={0}
+      max={64}
+      step={SPACE}
+      format={(v) => (s.between ? "Auto" : String(v))}
+      edited={edited("gap")}
+      onChange={(gap) => set({ gap, between: false })}
+    />
+  );
   return (
-    <Folder title="Layout" dot={["flow", "align", "gap", "w", "h", "pad", "clip"].some(edited)}>
+    <Folder title="Layout" dot={["flow", "align", "gap", "w", "h", "pad", "margin"].some(edited)}>
       <LabeledRow label="Auto layout">
         <Segmented<Flow>
           value={s.flow}
@@ -83,6 +155,8 @@ export const LayoutFolder = ({ s, set, edited, size }: EditProps) => {
             { value: "column", title: "Vertical", label: <ArrowDown className={icon} /> },
             { value: "row", title: "Horizontal", label: <ArrowRight className={icon} /> },
             { value: "wrap", title: "Wrap", label: <WrapText className={icon} /> },
+            // Only for one that is a grid: the panel doesn't make one.
+            ...(s.flow === "grid" ? [{ value: "grid" as const, title: "Grid", label: <LayoutGrid className={icon} /> }] : []),
           ]}
         />
       </LabeledRow>
@@ -97,15 +171,7 @@ export const LayoutFolder = ({ s, set, edited, size }: EditProps) => {
             onChange={(main, cross) => set(s.between ? { cross } : { main, cross })}
           />
           <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-            <Slider
-              label="Gap"
-              value={s.gap}
-              min={0}
-              max={64}
-              format={(v) => (s.between ? "Auto" : String(v))}
-              edited={edited("gap")}
-              onChange={(gap) => set({ gap, between: false })}
-            />
+            {gap}
             <Segmented<"packed" | "between">
               full
               value={s.between ? "between" : "packed"}
@@ -118,55 +184,20 @@ export const LayoutFolder = ({ s, set, edited, size }: EditProps) => {
           </div>
         </div>
       )}
+      {s.flow === "grid" && gap}
       {sizeRow("w")}
       {sizeRow("h")}
-      {apart ? (
-        <div className="grid grid-cols-2 gap-1.5">
-          {(["pt", "pr", "pb", "pl"] as const).map((k) => (
-            <Slider
-              key={k}
-              label={{ pt: "Top", pr: "Right", pb: "Bottom", pl: "Left" }[k]}
-              value={s[k]}
-              min={0}
-              max={64}
-              edited={edited("pad")}
-              onChange={(v) => set({ [k]: v } as Partial<S>)}
-            />
-          ))}
-        </div>
-      ) : (
-        <div className="grid grid-cols-2 gap-1.5">
-          <Slider
-            label="Pad X"
-            value={s.pl}
-            format={(v) => (s.pl === s.pr ? String(v) : "Mixed")}
-            min={0}
-            max={64}
-            edited={edited("pad")}
-            onChange={(v) => set({ pl: v, pr: v })}
-          />
-          <Slider
-            label="Pad Y"
-            value={s.pt}
-            format={(v) => (s.pt === s.pb ? String(v) : "Mixed")}
-            min={0}
-            max={64}
-            edited={edited("pad")}
-            onChange={(v) => set({ pt: v, pb: v })}
-          />
-        </div>
-      )}
       <div className="flex gap-1.5">
         <div className="min-w-0 flex-1">
-          <Toggle label="Clip content" checked={s.clip} edited={edited("clip")} onChange={(clip) => set({ clip })} />
+          <Sides name="Pad" keys={["pt", "pr", "pb", "pl"]} s={s} set={set} edited={edited("pad")} apart={apart} />
         </div>
         <button
           type="button"
-          title="Padding per side"
+          title="Padding and margin per side"
           aria-pressed={apart}
           onClick={() => setApart(!apart)}
           className={cn(
-            "grid w-9 shrink-0 cursor-pointer place-items-center hover:bg-white/10",
+            "grid w-9 shrink-0 cursor-pointer place-items-center self-start hover:bg-white/10",
             ROW,
             SURFACE,
             apart ? "bg-white/[0.11] text-white/95" : "text-white/50",
@@ -175,18 +206,23 @@ export const LayoutFolder = ({ s, set, edited, size }: EditProps) => {
           <Scan className={icon} />
         </button>
       </div>
+      <div className="pr-[42px]">
+        <Sides name="Margin" keys={["mt", "mr", "mb", "ml"]} s={s} set={set} edited={edited("margin")} apart={apart} />
+      </div>
     </Folder>
   );
 };
 
 export const AppearanceFolder = ({ s, set, edited }: EditProps) => (
-  <Folder title="Appearance" dot={edited("opacity") || edited("radius")}>
+  <Folder title="Appearance" dot={["opacity", "radius", "hidden"].some(edited)}>
+    <Toggle label="Visible" checked={!s.hidden} edited={edited("hidden")} onChange={(visible) => set({ hidden: !visible })} />
     <Slider label="Opacity" value={s.opacity} min={0} max={100} unit="%" edited={edited("opacity")} onChange={(opacity) => set({ opacity })} />
     <Slider
-      label="Radius"
+      label={s.corners.some((c) => c !== s.radius) && s.corners.some((c) => c > 0) ? "Radius (rounded corners)" : "Radius"}
       value={s.radius}
       min={0}
       max={FULL}
+      step={2}
       format={(v) => (v >= FULL ? "Full" : String(v))}
       edited={edited("radius")}
       onChange={(radius) => set({ radius })}
@@ -195,8 +231,8 @@ export const AppearanceFolder = ({ s, set, edited }: EditProps) => (
 );
 
 export const TextFolder = ({ s, set, edited }: EditProps) => (
-  <Folder title="Text" dot={["font", "weight", "size", "lh", "ls", "talign", "color"].some(edited)}>
-    <TextRow label="Font" value={s.font} edited={edited("font")} onChange={(font) => set({ font })} />
+  <Folder title="Text" dot={["content", "weight", "size", "lh", "ls", "talign", "color"].some(edited)}>
+    {s.content !== null && <TextRow label="Text" value={s.content} edited={edited("content")} onChange={(content) => set({ content })} />}
     <Select
       label="Weight"
       value={s.weight}
@@ -211,6 +247,7 @@ export const TextFolder = ({ s, set, edited }: EditProps) => (
         value={s.lh}
         min={0}
         max={80}
+        step={SPACE}
         format={(v) => (v ? String(v) : "Auto")}
         edited={edited("lh")}
         onChange={(lh) => set({ lh })}
@@ -239,101 +276,68 @@ export const AddRemove = ({ has, what, onAdd, onRemove }: { has: boolean; what: 
   </IconButton>
 );
 
+// A gradient (or an image) shows as one, and stays the code's to change.
 export const FillFolder = ({ s, set, edited }: EditProps) => (
   <Folder
     title="Fill"
     dot={edited("fill")}
-    actions={<AddRemove has={!!s.fill} what="fill" onAdd={() => set({ fill: "#FFFFFF", fillA: 100 })} onRemove={() => set({ fill: null })} />}
+    actions={
+      !s.gradient && <AddRemove has={!!s.fill} what="fill" onAdd={() => set({ fill: "#FFFFFF", fillA: 100 })} onRemove={() => set({ fill: null })} />
+    }
   >
-    {s.fill && <ColorRow label="Fill" hex={s.fill} alpha={s.fillA} edited={edited("fill")} onChange={(fill, fillA) => set({ fill, fillA })} />}
+    {s.gradient ? (
+      <LabeledRow label="Fill" className="pr-3">
+        <span className="text-[13px] font-medium text-white/40">Gradient</span>
+      </LabeledRow>
+    ) : (
+      s.fill && <ColorRow label="Fill" hex={s.fill} alpha={s.fillA} edited={edited("fill")} onChange={(fill, fillA) => set({ fill, fillA })} />
+    )}
   </Folder>
 );
 
-export const StrokeFolder = ({ s, set, edited }: EditProps) => {
+export const BorderFolder = ({ s, set, edited }: EditProps) => {
   const k = s.stroke;
   const patch = (p: Partial<Stroke>) => k && set({ stroke: { ...k, ...p } });
   return (
     <Folder
-      title="Stroke"
+      title="Border"
       dot={edited("stroke")}
       actions={
-        <AddRemove
-          has={!!k}
-          what="stroke"
-          onAdd={() => set({ stroke: { color: "#000000", a: 100, w: 1, at: "inside" } })}
-          onRemove={() => set({ stroke: null })}
-        />
+        <AddRemove has={!!k} what="border" onAdd={() => set({ stroke: { color: "#000000", a: 100, w: 1 } })} onRemove={() => set({ stroke: null })} />
       }
     >
       {k && <ColorRow label="Color" hex={k.color} alpha={k.a} edited={edited("stroke")} onChange={(color, a) => patch({ color, a })} />}
-      {k && <Slider label="Weight" value={k.w} min={0} max={8} step={0.5} format={r1} edited={edited("stroke")} onChange={(w) => patch({ w })} />}
-      {k && (
-        <Segmented<StrokeAt>
-          full
-          value={k.at}
-          onChange={(at) => patch({ at })}
-          options={[
-            { value: "inside", label: "Inside", title: "Stroke inside" },
-            { value: "center", label: "Center", title: "Stroke on the edge" },
-            { value: "outside", label: "Outside", title: "Stroke outside" },
-          ]}
-        />
-      )}
+      {k && <Slider label="Width" value={k.w} min={0} max={8} step={1} format={r1} edited={edited("stroke")} onChange={(w) => patch({ w })} />}
     </Folder>
   );
 };
 
-// A group inside a folder: dialkit's nested folder, as a quieter heading.
-export const SubHead = ({ title, children }: { title: string; children?: ReactNode }) => (
-  <div className="flex h-7 items-center justify-between pl-0.5 pt-1">
-    <span className="text-[12px] font-medium text-white/50">{title}</span>
-    {children}
-  </div>
-);
-
-export const EffectsFolder = ({ s, set, edited }: EditProps) => {
+// The shadow that shows first; the others under it stay as they are.
+export const ShadowFolder = ({ s, set, edited }: EditProps) => {
   const sh = s.shadow;
   const patch = (p: Partial<Shadow>) => sh && set({ shadow: { ...sh, ...p } });
   return (
-    <Folder title="Effects" dot={["shadow", "blur", "bgBlur"].some(edited)}>
-      <SubHead title="Drop shadow">
+    <Folder
+      title="Shadow"
+      dot={edited("shadow")}
+      actions={
         <AddRemove
           has={!!sh}
-          what="drop shadow"
+          what="shadow"
           onAdd={() => set({ shadow: { x: 0, y: 4, blur: 12, spread: 0, color: "#000000", a: 25 } })}
           onRemove={() => set({ shadow: null })}
         />
-      </SubHead>
+      }
+    >
       {sh && (
-        <>
-          <div className="grid grid-cols-2 gap-1.5">
-            <Slider label="X" value={sh.x} min={-32} max={32} edited={edited("shadow")} onChange={(x) => patch({ x })} />
-            <Slider label="Y" value={sh.y} min={-32} max={32} edited={edited("shadow")} onChange={(y) => patch({ y })} />
-            <Slider label="Blur" value={sh.blur} min={0} max={64} edited={edited("shadow")} onChange={(blur) => patch({ blur })} />
-            <Slider label="Spread" value={sh.spread} min={-24} max={24} edited={edited("shadow")} onChange={(spread) => patch({ spread })} />
-          </div>
-          <ColorRow label="Color" hex={sh.color} alpha={sh.a} edited={edited("shadow")} onChange={(color, a) => patch({ color, a })} />
-        </>
+        <div className="grid grid-cols-2 gap-1.5">
+          <Slider label="X" value={sh.x} min={-32} max={32} edited={edited("shadow")} onChange={(x) => patch({ x })} />
+          <Slider label="Y" value={sh.y} min={-32} max={32} edited={edited("shadow")} onChange={(y) => patch({ y })} />
+          <Slider label="Blur" value={sh.blur} min={0} max={64} edited={edited("shadow")} onChange={(blur) => patch({ blur })} />
+          <Slider label="Spread" value={sh.spread} min={-24} max={24} edited={edited("shadow")} onChange={(spread) => patch({ spread })} />
+        </div>
       )}
-      <SubHead title="Blur" />
-      <Slider
-        label="Layer"
-        value={s.blur}
-        min={0}
-        max={24}
-        format={(v) => (v ? String(v) : "Off")}
-        edited={edited("blur")}
-        onChange={(blur) => set({ blur })}
-      />
-      <Slider
-        label="Background"
-        value={s.bgBlur}
-        min={0}
-        max={40}
-        format={(v) => (v ? String(v) : "Off")}
-        edited={edited("bgBlur")}
-        onChange={(bgBlur) => set({ bgBlur })}
-      />
+      {sh && <ColorRow label="Color" hex={sh.color} alpha={sh.a} edited={edited("shadow")} onChange={(color, a) => patch({ color, a })} />}
     </Folder>
   );
 };
@@ -363,6 +367,7 @@ export const DesignSection = ({
   text,
   set,
   size,
+  bounds,
 }: {
   selected: string | null;
   s: S | null;
@@ -370,6 +375,7 @@ export const DesignSection = ({
   text: boolean;
   set: (patch: Partial<S>) => void;
   size: { w: number; h: number };
+  bounds: { w: number; h: number };
 }) => {
   if (!selected)
     return (
@@ -382,7 +388,7 @@ export const DesignSection = ({
   // Its styles are on their way from its frame.
   if (!s || !base) return null;
   const changed = new Set(changedGroups(base, s).map((g) => g.key));
-  const props: EditProps = { s, set, edited: (k) => changed.has(k), size };
+  const props: EditProps = { s, set, edited: (k) => changed.has(k), size, bounds };
   return (
     <>
       <div key={selected} className="pt-1">
@@ -390,8 +396,8 @@ export const DesignSection = ({
         <AppearanceFolder {...props} />
         {text && <TextFolder {...props} />}
         <FillFolder {...props} />
-        <StrokeFolder {...props} />
-        <EffectsFolder {...props} />
+        <BorderFolder {...props} />
+        <ShadowFolder {...props} />
       </div>
     </>
   );

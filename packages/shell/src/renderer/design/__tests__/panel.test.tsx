@@ -49,16 +49,20 @@ const base = {
   pr: 24,
   pb: 24,
   pl: 24,
-  clip: false,
+  mt: 0,
+  mr: 0,
+  mb: 0,
+  ml: 0,
+  hidden: false,
   opacity: 100,
   radius: 16,
+  corners: [16, 16, 16, 16],
   fill: "#FFFFFF",
   fillA: 100,
+  gradient: false,
   stroke: null,
   shadow: null,
-  blur: 0,
-  bgBlur: 0,
-  font: "Geist",
+  shadowRest: [],
   weight: "400",
   size: 14,
   lh: 20,
@@ -66,6 +70,7 @@ const base = {
   talign: "left",
   color: "#18181B",
   colorA: 100,
+  content: null,
 } satisfies Style;
 
 const edit = (id: number, loc: string, now: Partial<Style>): EditedElement => ({
@@ -203,9 +208,9 @@ it("edits the selected element from where its frame showed it", async () => {
   act(() => setCanvasTool("inspect"));
   useDesignStore.setState({ read: { key: JSON.stringify(["Card", "Card.tsx:3:5", 0]), style: base, text: false, seen: null } });
   await render({ edits: [], applied: [] });
-  for (const folder of ["Layout", "Appearance", "Fill", "Stroke", "Effects"]) expect(text()).toContain(folder);
+  for (const folder of ["Layout", "Appearance", "Fill", "Border", "Shadow"]) expect(text()).toContain(folder);
   expect(text()).not.toContain("Text");
-  // Clip content on: an edit, at once, and to the API.
+  // Hidden: an edit, at once, and to the API.
   await act(async () => {
     host.querySelector<HTMLButtonElement>('[role="switch"]')!.click();
     await new Promise((resolve) => setTimeout(resolve, 50));

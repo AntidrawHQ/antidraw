@@ -5,7 +5,7 @@ import { describeEdits, splitEdits } from "../utils/canvas-edits";
 
 // Design edits as the agent reads them, and read back for the chat's bubble.
 
-const base = { radius: 16, pt: 24, pr: 24, pb: 24, pl: 24 } as Style;
+const base = { radius: 16, corners: [16, 16, 16, 16], pt: 24, pr: 24, pb: 24, pl: 24 } as Style;
 const element = { ref: { loc: "src/components/user-components/Card.tsx:3:5", index: 0, path: [0], tag: "div" } } as ElementInfo;
 
 const message = describeEdits([

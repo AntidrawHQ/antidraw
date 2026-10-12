@@ -99,9 +99,9 @@ export type ElementContext = {
 }
 
 // A design edit the frame shows before the code has it: the element it's
-// on, and the CSS that shows it (shared/design.ts' previewCss). `key` names
-// it in "previewed".
-export type PreviewItem = { key: string; ref: ElementRef; css: Record<string, string> }
+// on, the CSS that shows it (shared/design.ts' previewCss), and its text
+// where the edit rewrote it. `key` names it in "previewed".
+export type PreviewItem = { key: string; ref: ElementRef; css: Record<string, string>; text?: string }
 
 export type WalkDirection = "parent" | "child" | "next" | "prev"
 

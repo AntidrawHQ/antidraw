@@ -1,20 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { ElementInfo, PreviewItem } from "@/agent/protocol";
-import { changesOf, previewCss, type Change, type Style } from "@/shared/design";
+import { changesOf, previewCss, previewText, type Change, type Style } from "@/shared/design";
 import type { EditedElement, EditList } from "@/shared/utils/canvas-edits";
 import { editsPrompt } from "@/renderer/lib/api";
 import { queryKeys } from "@/renderer/lib/query-keys";
-import {
-  editsSettled,
-  elementKey,
-  keyOf,
-  resetEdits,
-  saveEdit,
-  stopPreviewing,
-  useEdits,
-  useEditsChanged,
-} from "@/renderer/lib/edit-ops";
+import { editsSettled, elementKey, keyOf, resetEdits, saveEdit, stopPreviewing, useEdits, useEditsChanged } from "@/renderer/lib/edit-ops";
 import { frameUrl, getElementContext, getStyle, previewStyles } from "@/renderer/inspector/bridge";
 import { useInspectorStore } from "@/renderer/inspector/store";
 import { describeContext, describeLastSeen, usableContext } from "@/renderer/inspector/tags";
@@ -106,8 +97,13 @@ export const useDesign = () => {
       const { ids, prompt } = result.value;
       const taken = edits.filter((e) => ids.includes(e.id));
       await queryClient.cancelQueries({ queryKey });
-      queryClient.setQueryData<EditList>(queryKey, (old) =>
-        old && { edits: old.edits.filter((e) => !ids.includes(e.id)), applied: [...old.applied, { id: -Date.now(), conversationId: "", edits: taken }] },
+      queryClient.setQueryData<EditList>(
+        queryKey,
+        (old) =>
+          old && {
+            edits: old.edits.filter((e) => !ids.includes(e.id)),
+            applied: [...old.applied, { id: -Date.now(), conversationId: "", edits: taken }],
+          },
       );
       setDescribing(false);
       await sendToChat
@@ -165,7 +161,10 @@ export const DesignSync = () => {
   useEffect(() => {
     const byFrame = new Map<string, PreviewItem[]>();
     const add = (key: string, e: EditedElement) =>
-      byFrame.set(e.componentName, [...(byFrame.get(e.componentName) ?? []), { key, ref: e.element.ref, css: previewCss(e.base, e.now) }]);
+      byFrame.set(e.componentName, [
+        ...(byFrame.get(e.componentName) ?? []),
+        { key, ref: e.element.ref, css: previewCss(e.base, e.now), text: previewText(e.base, e.now) },
+      ]);
     for (const set of data.applied) for (const e of set.edits) add(`a${set.id}-${e.id}`, e);
     for (const e of data.edits) add(`e${e.id}`, e);
     for (const frame of shown.current) if (!byFrame.has(frame)) previewStyles(frame, []);
