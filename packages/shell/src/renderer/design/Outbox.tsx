@@ -138,7 +138,7 @@ const Card = ({ a, c, s, n }: { a: Actions; c: Cmt; s: Send | null; n?: number }
       onMouseEnter={() => a.point(c.id)}
       onMouseLeave={() => a.point(null)}
       onClick={() => (open ? useCommentStore.getState().setOpened(null) : a.open(c.id))}
-      className={cn("group flex cursor-pointer gap-2.5 rounded-lg px-2.5 py-2.5 transition-colors", open ? "bg-white/[0.06]" : "hover:bg-white/[0.035]")}
+      className={cn("group flex cursor-pointer gap-2.5 rounded-lg px-2.5 py-2.5", open ? "bg-white/[0.06]" : "hover:bg-white/[0.035]")}
     >
       <You />
       <div className="min-w-0 flex-1">
@@ -214,7 +214,7 @@ const Filter = ({ value, onChange, open, resolved }: { value: "open" | "resolved
         type="button"
         onClick={() => onChange(v)}
         className={cn(
-          "flex h-6 cursor-pointer items-center gap-1.5 rounded-md px-2 text-[12px] font-medium transition-colors",
+          "flex h-6 cursor-pointer items-center gap-1.5 rounded-md px-2 text-[12px] font-medium",
           value === v ? "bg-white/[0.06] text-white/85" : "text-white/40 hover:text-white/65",
         )}
       >
@@ -243,7 +243,7 @@ const SendBar = ({ count, disabled, onSend }: { count: number; disabled: boolean
     disabled={disabled}
     onClick={onSend}
     style={SEND_LOOK}
-    className="flex h-8 w-full cursor-pointer items-center justify-center gap-1.5 rounded-lg text-[13px] font-medium transition-[filter,background-color] hover:brightness-110 active:brightness-95 disabled:cursor-default disabled:opacity-25"
+    className="flex h-8 w-full cursor-pointer items-center justify-center gap-1.5 rounded-lg text-[13px] font-medium hover:brightness-110 active:brightness-95 disabled:cursor-default disabled:opacity-25"
   >
     {count === 1 ? "Send 1 comment to chat" : `Send ${count} comments to chat`}
     <ArrowUp className="size-3.5" />
@@ -284,7 +284,7 @@ export const useOutbox = () => {
             type="button"
             onClick={a.clearDone}
             title="Clear completed: take them off the list"
-            className="flex h-6 shrink-0 cursor-pointer items-center rounded-md bg-white/[0.07] px-2 text-[11.5px] font-medium text-white/70 transition-colors hover:bg-white/[0.12] hover:text-white"
+            className="flex h-6 shrink-0 cursor-pointer items-center rounded-md bg-white/[0.07] px-2 text-[11.5px] font-medium text-white/70 hover:bg-white/[0.12] hover:text-white"
           >
             Clear
           </button>

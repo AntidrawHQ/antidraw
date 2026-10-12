@@ -6,7 +6,6 @@
  * canvas's edit bar (EditBar).
  */
 import { useRef, type CSSProperties } from "react";
-import { AnimatePresence, motion } from "motion/react";
 import { PanelRight, PanelRightClose } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
 import { DesignSection } from "./sections";
@@ -35,17 +34,11 @@ const Tabs = ({ tab, changes, drafts }: { tab: Tab; changes: number; drafts: num
           title={t === "design" ? "Design (I)" : "Comments (C)"}
           onClick={() => setTab(t)}
           className={cn(
-            "relative flex h-6 cursor-pointer items-center gap-1.5 rounded-md px-2 text-[13px] font-medium transition-colors",
+            "relative flex h-6 cursor-pointer items-center gap-1.5 rounded-md px-2 text-[13px] font-medium",
             on ? "text-white/85" : "text-white/40 hover:text-white/65",
           )}
         >
-          {on && (
-            <motion.span
-              layoutId="dense-chip"
-              transition={{ type: "spring", visualDuration: 0.22, bounce: 0.1 }}
-              className="absolute inset-0 rounded-md bg-white/[0.06]"
-            />
-          )}
+          {on && <span className="absolute inset-0 rounded-md bg-white/[0.06]" />}
           <span className="relative">{t === "design" ? "Design" : "Comments"}</span>
           {mark && <span className="relative flex items-center">{mark}</span>}
         </button>
@@ -102,7 +95,6 @@ const ResizeHandle = ({ panel }: { panel: React.RefObject<HTMLElement | null> })
       const right = panel.current.getBoundingClientRect().right;
       width = Math.min(PANEL_W.max, Math.max(PANEL_W.min, right - e.clientX));
       panel.current.style.width = `${width}px`;
-      panel.current.style.setProperty("--panel-w", `${width}px`);
     };
     const up = () => {
       document.body.style.cursor = "";
@@ -115,13 +107,7 @@ const ResizeHandle = ({ panel }: { panel: React.RefObject<HTMLElement | null> })
     document.addEventListener("mousemove", move);
     document.addEventListener("mouseup", up);
   };
-  return (
-    <div
-      ref={handle}
-      onMouseDown={start}
-      className="absolute left-0 top-0 z-10 h-full w-1 cursor-col-resize transition-colors hover:bg-[#2d2d2d]"
-    />
-  );
+  return <div ref={handle} onMouseDown={start} className="absolute left-0 top-0 z-10 h-full w-1 cursor-col-resize hover:bg-[#2d2d2d]" />;
 };
 
 // The panel beside the canvas.
@@ -133,47 +119,32 @@ export const RightPanel = () => {
   const d = useDesign();
   const comments = useOutbox();
   return (
-    <AnimatePresence initial={false}>
-      {panelOpen && (
-        <motion.aside
-          ref={aside}
-          initial={{ width: 0 }}
-          animate={{ width }}
-          exit={{ width: 0 }}
-          transition={{ type: "spring", visualDuration: 0.3, bounce: 0 }}
-          className="dk-root relative shrink-0 overflow-hidden border-l border-[#333] bg-[#2A2A2A] text-white"
-          style={{ "--dk-row": "30px", "--panel-w": `${width}px` } as CSSProperties}
-        >
-          <ResizeHandle panel={aside} />
-          {/* Its own width while the panel opens and closes, so nothing reflows. */}
-          <div className="flex h-full w-[var(--panel-w)] flex-col">
-            {/* As the side panel's header: 13px tabs, p-2, the chrome's border. */}
-            <div className="flex shrink-0 items-center justify-between border-b border-[#333] p-2">
-              <Tabs tab={tab} changes={d.changes.length} drafts={comments.drafts} />
-              <IconButton title="Hide panel" onClick={() => useDesignStore.getState().setPanelOpen(false)} className="text-white/30 hover:text-white/70">
-                <PanelRightClose className="size-3.5" strokeWidth={1.75} />
-              </IconButton>
-            </div>
-            <div className="dk-scroll min-h-0 flex-1 overflow-y-auto">
-              {/* The open section, sliding in from its tab's side. */}
-              <AnimatePresence mode="wait" initial={false}>
-                <motion.div
-                  key={tab}
-                  initial={{ opacity: 0, x: tab === "design" ? -8 : 8 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: tab === "design" ? -8 : 8 }}
-                  transition={{ duration: 0.14, ease: "easeOut" }}
-                  className="pb-3"
-                >
-                  {tab === "design" ? <DesignBody d={d} /> : comments.body}
-                </motion.div>
-              </AnimatePresence>
-            </div>
-            {/* Design's footer is the canvas's edit bar (EditBar). */}
-            {tab === "design" ? null : comments.foot}
+    panelOpen && (
+      <aside
+        ref={aside}
+        className="dk-root relative shrink-0 overflow-hidden border-l border-[#333] bg-[#2A2A2A] text-white"
+        style={{ width, "--dk-row": "30px" } as CSSProperties}
+      >
+        <ResizeHandle panel={aside} />
+        <div className="flex h-full flex-col">
+          {/* As the side panel's header: 13px tabs, p-2, the chrome's border. */}
+          <div className="flex shrink-0 items-center justify-between border-b border-[#333] p-2">
+            <Tabs tab={tab} changes={d.changes.length} drafts={comments.drafts} />
+            <IconButton
+              title="Hide panel"
+              onClick={() => useDesignStore.getState().setPanelOpen(false)}
+              className="text-white/30 hover:text-white/70"
+            >
+              <PanelRightClose className="size-3.5" strokeWidth={1.75} />
+            </IconButton>
           </div>
-        </motion.aside>
-      )}
-    </AnimatePresence>
+          <div className="dk-scroll min-h-0 flex-1 overflow-y-auto">
+            <div className="pb-3">{tab === "design" ? <DesignBody d={d} /> : comments.body}</div>
+          </div>
+          {/* Design's footer is the canvas's edit bar (EditBar). */}
+          {tab === "design" ? null : comments.foot}
+        </div>
+      </aside>
+    )
   );
 };

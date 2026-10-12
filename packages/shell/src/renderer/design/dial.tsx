@@ -9,8 +9,7 @@
  * but not yet applied. The dk- classes (fonts, shimmer, scrollbar) are in
  * index.css.
  */
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { AnimatePresence, motion } from "motion/react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Check, ChevronDown } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
 import { rgba, type Align } from "@/shared/design";
@@ -20,9 +19,6 @@ export const ROW = "h-[var(--dk-row,36px)]";
 export const SURFACE = "rounded-lg bg-white/[0.05]";
 export const MONO = "dk-mono";
 const EDITED = "text-[#93c5fd]";
-
-const spring = { type: "spring" as const, visualDuration: 0.25, bounce: 0.15 };
-const fold = { type: "spring" as const, visualDuration: 0.28, bounce: 0 };
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
 const decimals = (step: number) => (step >= 1 ? 0 : Math.min(3, String(step).split(".")[1]?.length ?? 0));
@@ -52,9 +48,7 @@ export const Folder = ({
     <section className="border-t border-white/[0.06] px-3 first:border-t-0">
       <div className={cn("group flex items-center gap-1", ROW)}>
         <button type="button" onClick={() => setOpen(!open)} className="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2 text-left">
-          <span className="translate-y-[-0.5px] text-[13px] font-semibold tracking-[-0.01em] text-white/70 transition-colors group-hover:text-white/90">
-            {title}
-          </span>
+          <span className="translate-y-[-0.5px] text-[13px] font-semibold tracking-[-0.01em] text-white/70 group-hover:text-white/90">{title}</span>
           {dot && !open && <span className="size-[5px] rounded-full bg-[#60a5fa]" />}
         </button>
         {actions}
@@ -65,23 +59,11 @@ export const Folder = ({
             onClick={() => setOpen(!open)}
             className="grid size-5 cursor-pointer place-items-center text-white/70 opacity-60 hover:opacity-100"
           >
-            <ChevronDown className={cn("size-4 transition-transform duration-200", !open && "-rotate-90")} strokeWidth={2} />
+            <ChevronDown className={cn("size-4", !open && "-rotate-90")} strokeWidth={2} />
           </button>
         )}
       </div>
-      <AnimatePresence initial={false}>
-        {open && !empty && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={fold}
-            className="overflow-y-clip"
-          >
-            <div className="flex flex-col gap-1.5 pb-3">{children}</div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {open && !empty && <div className="flex flex-col gap-1.5 pb-3">{children}</div>}
     </section>
   );
 };
@@ -183,7 +165,7 @@ export const Slider = ({
       >
         {/* fill */}
         <div
-          className={cn("pointer-events-none absolute inset-y-0 left-0 transition-colors", active ? "bg-white/[0.15]" : "bg-white/[0.11]")}
+          className={cn("pointer-events-none absolute inset-y-0 left-0", active ? "bg-white/[0.15]" : "bg-white/[0.11]")}
           style={{ width: `${pct}%` }}
         />
         {/* hashmarks, while active */}
@@ -191,18 +173,20 @@ export const Slider = ({
           <span
             key={i}
             className={cn(
-              "pointer-events-none absolute top-1/2 h-2 w-px -translate-x-1/2 -translate-y-1/2 rounded-full transition-colors duration-200",
+              "pointer-events-none absolute top-1/2 h-2 w-px -translate-x-1/2 -translate-y-1/2 rounded-full",
               active ? "bg-white/[0.15]" : "bg-transparent",
             )}
             style={{ left: `${(i + 1) * 10}%` }}
           />
         ))}
         {/* handle */}
-        <motion.span
+        <span
           className="pointer-events-none absolute top-1/2 h-5 w-[3px] rounded-full bg-white/95"
-          style={{ left: `clamp(4px, ${pct}%, calc(100% - 7px))`, y: "-50%" }}
-          animate={{ opacity: handleOpacity, scaleX: active ? 1 : 0.25, scaleY: active && dodge ? 0.75 : 1 }}
-          transition={{ scaleX: spring, scaleY: spring, opacity: { duration: 0.15 } }}
+          style={{
+            left: `clamp(4px, ${pct}%, calc(100% - 7px))`,
+            opacity: handleOpacity,
+            transform: `translateY(-50%) scale(${active ? 1 : 0.25}, ${active && dodge ? 0.75 : 1})`,
+          }}
         />
         <span
           ref={labelRef}
@@ -217,7 +201,7 @@ export const Slider = ({
             onClick={() => setTyping(String(value))}
             className={cn(
               MONO,
-              "absolute right-3 top-1/2 translate-y-[calc(-50%+0.5px)] cursor-text border-b border-transparent pb-px text-[13px] font-medium tabular-nums transition-colors hover:border-white/50",
+              "absolute right-3 top-1/2 translate-y-[calc(-50%+0.5px)] cursor-text border-b border-transparent pb-px text-[13px] font-medium tabular-nums hover:border-white/50",
               edited ? EDITED : dim ? "text-white/40" : active ? "text-white" : "text-white/70",
             )}
           >
@@ -267,7 +251,6 @@ export const Segmented = <T extends string>({
   full?: boolean;
   className?: string;
 }) => {
-  const id = useId();
   return (
     <div className={cn("relative flex p-0.5", full && cn(SURFACE, ROW, "w-full"), className)}>
       {options.map((o) => {
@@ -281,12 +264,12 @@ export const Segmented = <T extends string>({
             aria-pressed={on}
             onClick={() => !on && onChange(o.value)}
             className={cn(
-              "relative grid cursor-pointer place-items-center px-2 py-1.5 text-[13px] font-medium transition-colors",
+              "relative grid cursor-pointer place-items-center px-2 py-1.5 text-[13px] font-medium",
               full && "flex-1",
               on ? "text-white/95" : "text-white/60 hover:text-white/85",
             )}
           >
-            {on && <motion.span layoutId={id} transition={spring} className="absolute inset-0 rounded-md bg-white/[0.11]" />}
+            {on && <span className="absolute inset-0 rounded-md bg-white/[0.11]" />}
             <span className="relative flex items-center">{o.label}</span>
           </button>
         );
@@ -321,15 +304,11 @@ export const Toggle = ({
     role="switch"
     aria-checked={checked}
     onClick={() => onChange(!checked)}
-    className={cn("flex w-full cursor-pointer select-none items-center justify-between px-3 transition-colors hover:bg-white/10", ROW, SURFACE)}
+    className={cn("flex w-full cursor-pointer select-none items-center justify-between px-3 hover:bg-white/10", ROW, SURFACE)}
   >
-    <span className={cn("text-[13px] font-medium transition-colors", edited ? EDITED : checked ? "text-white/95" : "text-white/70")}>{label}</span>
-    <span className={cn("relative h-5 w-9 rounded-full transition-colors duration-200", checked ? "bg-white/[0.22]" : "bg-white/[0.11]")}>
-      <motion.span
-        className="absolute top-0.5 size-4 rounded-full bg-white/95 shadow-[0_1px_2px_rgba(0,0,0,.3)]"
-        animate={{ left: checked ? 18 : 2 }}
-        transition={spring}
-      />
+    <span className={cn("text-[13px] font-medium", edited ? EDITED : checked ? "text-white/95" : "text-white/70")}>{label}</span>
+    <span className={cn("relative h-5 w-9 rounded-full", checked ? "bg-white/[0.22]" : "bg-white/[0.11]")}>
+      <span className="absolute top-0.5 size-4 rounded-full bg-white/95 shadow-[0_1px_2px_rgba(0,0,0,.3)]" style={{ left: checked ? 18 : 2 }} />
     </span>
   </button>
 );
@@ -374,7 +353,7 @@ export const Select = <T extends string>({
         onClick={() => setOpen(!open)}
         data-open={open}
         className={cn(
-          "flex w-full cursor-pointer items-center justify-between gap-2 text-[13px] font-medium transition-colors hover:bg-white/10",
+          "flex w-full cursor-pointer items-center justify-between gap-2 text-[13px] font-medium hover:bg-white/10",
           label ? "pl-3 pr-2" : "pl-2.5 pr-1.5",
           ROW,
           SURFACE,
@@ -387,38 +366,30 @@ export const Select = <T extends string>({
           <ChevronDown className="size-4 shrink-0 text-white/70 opacity-60" strokeWidth={2} />
         </span>
       </button>
-      <AnimatePresence>
-        {open && (
-          <motion.div
-            initial={{ opacity: 0, y: -4, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -4, scale: 0.98 }}
-            transition={{ duration: 0.14, ease: "easeOut" }}
-            className="absolute right-0 top-[calc(100%+4px)] z-50 min-w-full origin-top rounded-lg border border-white/10 bg-[#212121] p-1 shadow-[0_8px_24px_rgba(0,0,0,.4)]"
-          >
-            {options.map((o) => {
-              const on = o.value === value;
-              return (
-                <button
-                  key={o.value}
-                  type="button"
-                  onClick={() => {
-                    onChange(o.value);
-                    setOpen(false);
-                  }}
-                  className={cn(
-                    "flex min-h-8 w-full cursor-pointer items-center justify-between gap-3 whitespace-nowrap rounded-md px-2.5 text-left text-[13px] font-medium transition-colors hover:bg-white/10",
-                    on ? "bg-white/[0.11] text-white/95" : "text-white/70",
-                  )}
-                >
-                  {o.label}
-                  {on && <Check className="size-3.5 text-white/70" strokeWidth={2} />}
-                </button>
-              );
-            })}
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {open && (
+        <div className="absolute right-0 top-[calc(100%+4px)] z-50 min-w-full origin-top rounded-lg border border-white/10 bg-[#212121] p-1 shadow-[0_8px_24px_rgba(0,0,0,.4)]">
+          {options.map((o) => {
+            const on = o.value === value;
+            return (
+              <button
+                key={o.value}
+                type="button"
+                onClick={() => {
+                  onChange(o.value);
+                  setOpen(false);
+                }}
+                className={cn(
+                  "flex min-h-8 w-full cursor-pointer items-center justify-between gap-3 whitespace-nowrap rounded-md px-2.5 text-left text-[13px] font-medium hover:bg-white/10",
+                  on ? "bg-white/[0.11] text-white/95" : "text-white/70",
+                )}
+              >
+                {o.label}
+                {on && <Check className="size-3.5 text-white/70" strokeWidth={2} />}
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 };
@@ -487,7 +458,7 @@ export const ColorRow = ({
           type="button"
           aria-label={`Pick ${label.toLowerCase()}`}
           onClick={() => picker.current?.click()}
-          className="relative size-5 shrink-0 cursor-pointer overflow-hidden rounded-[5px] border border-white/15 transition-transform hover:scale-[1.08]"
+          className="relative size-5 shrink-0 cursor-pointer overflow-hidden rounded-[5px] border border-white/15"
           style={{
             background: `linear-gradient(${rgba(hex, alpha)}, ${rgba(hex, alpha)}), repeating-conic-gradient(#aaa 0% 25%, #eee 0% 50%) 0 / 8px 8px`,
             boxShadow: "inset 0 0 0 1px rgb(255 255 255 / 8%)",
@@ -575,13 +546,9 @@ export const AlignPad = ({
             className="group relative grid cursor-pointer place-items-center"
           >
             {on ? (
-              <motion.span
-                layout
-                transition={spring}
-                className={cn("rounded-full", edited ? "bg-[#93c5fd]" : "bg-white/95", direction === "row" ? "h-3 w-[3px]" : "h-[3px] w-3")}
-              />
+              <span className={cn("rounded-full", edited ? "bg-[#93c5fd]" : "bg-white/95", direction === "row" ? "h-3 w-[3px]" : "h-[3px] w-3")} />
             ) : (
-              <span className="size-[3px] rounded-full bg-white/30 transition-colors group-hover:bg-white/80" />
+              <span className="size-[3px] rounded-full bg-white/30 group-hover:bg-white/80" />
             )}
           </button>
         );
@@ -612,7 +579,7 @@ export const IconButton = ({
     aria-pressed={active}
     onClick={onClick}
     className={cn(
-      "grid size-6 shrink-0 cursor-pointer place-items-center rounded-md transition-colors hover:bg-white/10",
+      "grid size-6 shrink-0 cursor-pointer place-items-center rounded-md hover:bg-white/10",
       active ? "bg-white/[0.11] text-white/95" : "text-white/50 hover:text-white/90",
       className,
     )}
@@ -627,7 +594,7 @@ export const RowButton = ({ children, onClick, className }: { children: ReactNod
     type="button"
     onClick={onClick}
     className={cn(
-      "flex w-full cursor-pointer items-center justify-center gap-1.5 text-[13px] font-medium text-white/60 transition-colors hover:bg-white/10 hover:text-white/95 active:bg-white/[0.11]",
+      "flex w-full cursor-pointer items-center justify-center gap-1.5 text-[13px] font-medium text-white/60 hover:bg-white/10 hover:text-white/95 active:bg-white/[0.11]",
       ROW,
       SURFACE,
       className,

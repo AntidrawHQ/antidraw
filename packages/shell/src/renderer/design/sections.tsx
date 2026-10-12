@@ -166,7 +166,7 @@ export const LayoutFolder = ({ s, set, edited, size }: EditProps) => {
           aria-pressed={apart}
           onClick={() => setApart(!apart)}
           className={cn(
-            "grid w-9 shrink-0 cursor-pointer place-items-center transition-colors hover:bg-white/10",
+            "grid w-9 shrink-0 cursor-pointer place-items-center hover:bg-white/10",
             ROW,
             SURFACE,
             apart ? "bg-white/[0.11] text-white/95" : "text-white/50",
