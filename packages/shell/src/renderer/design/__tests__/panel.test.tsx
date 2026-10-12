@@ -218,7 +218,7 @@ it("Comments with none yet: how to leave one", async () => {
   act(() => setCanvasTool("comment"));
   await render({ edits: [], applied: [] });
   expect(text()).toContain("No comments yet");
-  expect(text()).toContain("Click anywhere on a frame to pin a note for the agent.");
+  expect(text()).toContain("Pick the Comment tool (C), then click anywhere on a frame");
 });
 
 it("Comments: the drafts by Send, the rest Open or Resolved; Pointer keeps the section", async () => {

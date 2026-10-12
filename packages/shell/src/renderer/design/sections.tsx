@@ -376,7 +376,7 @@ export const DesignSection = ({
       <Empty
         icon={SquareDashedMousePointer}
         title="Select an element"
-        body="Click inside a frame to edit its layout, type, fill and effects. Edits show in the frame at once; Apply hands them to the agent."
+        body="Pick the Inspect tool (I), then click inside a frame to edit its layout, type, fill and effects. Edits show in the frame at once; Apply hands them to the agent."
       />
     );
   // Its styles are on their way from its frame.

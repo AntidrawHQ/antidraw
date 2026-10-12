@@ -301,7 +301,7 @@ export const useOutbox = () => {
       )}
     </div>
   ) : f.draft.length ? null : (
-    <Empty icon={MessageCircle} title="No comments yet" body="Click anywhere on a frame to pin a note for the agent. Nothing goes out until you send." />
+    <Empty icon={MessageCircle} title="No comments yet" body="Pick the Comment tool (C), then click anywhere on a frame to pin a note for the agent. Nothing goes out until you send." />
   );
 
   // Below, by Send: what you've written and not sent, as a composer holds a draft.
