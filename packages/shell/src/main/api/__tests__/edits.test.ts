@@ -89,6 +89,11 @@ describe("edits", () => {
       expect(list(ws).applied).toEqual([]);
       // Two edits, two Applies, the turn's end, the release.
       expect(seen).toHaveLength(6);
+
+      // A turn that fails never goes idle: its error lets the set go.
+      markEditsApplied(ws, "chat-4", [edit(ws, CARD, { radius: 30 })!.id])._unsafeUnwrap();
+      conversationEvents.emit("error", "chat-4", { error: "CLI exited" });
+      expect(list(ws).applied).toEqual([]);
     } finally {
       editEvents.off("changed", on);
     }

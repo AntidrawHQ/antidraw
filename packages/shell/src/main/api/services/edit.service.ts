@@ -102,11 +102,16 @@ export const releaseApplied = (workspaceId: string, setId: number) => {
 };
 
 // Once a chat's turn ends its sets are in the code, which the frames show.
-conversationEvents.on("state", (conversationId, { state }) => {
-  if (state !== "idle") return;
+// A turn that fails ends on "error" and never goes idle: its sets go too,
+// what made it into the code shows, and the chat says what went wrong.
+const releaseChat = (conversationId: string) => {
   for (const [workspaceId, list] of workspaces) {
     if (!list.applied.some((s) => s.conversationId === conversationId)) continue;
     list.applied = list.applied.filter((s) => s.conversationId !== conversationId);
     changed(workspaceId);
   }
+};
+conversationEvents.on("state", (conversationId, { state }) => {
+  if (state === "idle") releaseChat(conversationId);
 });
+conversationEvents.on("error", (conversationId) => releaseChat(conversationId));
