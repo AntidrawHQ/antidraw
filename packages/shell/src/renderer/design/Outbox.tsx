@@ -19,7 +19,7 @@
  */
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import Avatar from "boring-avatars";
-import { ArrowUp, ArrowUpRight, X } from "lucide-react";
+import { ArrowUp, ArrowUpRight, MessageCircle, X } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
 import { useCommentActions } from "@/renderer/comments/use-comment-actions";
 import { useCommentStore } from "@/renderer/comments/store";
@@ -28,6 +28,7 @@ import { useComposerModel } from "@/renderer/hooks/use-composer-model";
 import { useConversationMessages } from "@/renderer/lib/claude-code-ops";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
 import { IconButton, MONO } from "./dial";
+import { Empty } from "./sections";
 import { elementLabel } from "./use-design";
 
 /* ── Authors ───────────────────────────────────────────────────────────── */
@@ -300,7 +301,7 @@ export const useOutbox = () => {
       )}
     </div>
   ) : f.draft.length ? null : (
-    <Hint>Click a frame to leave a comment for the agent. It waits at the bottom until you send it.</Hint>
+    <Empty icon={MessageCircle} title="No comments yet" body="Click anywhere on a frame to pin a note for the agent. Nothing goes out until you send." />
   );
 
   // Below, by Send: what you've written and not sent, as a composer holds a draft.

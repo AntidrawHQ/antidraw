@@ -214,6 +214,13 @@ it("edits the selected element from where its frame showed it", async () => {
   expect(requests).toContainEqual({ url: `antidraw://app/api/workspaces/${WS}/edits`, method: "PUT" });
 });
 
+it("Comments with none yet: how to leave one", async () => {
+  act(() => setCanvasTool("comment"));
+  await render({ edits: [], applied: [] });
+  expect(text()).toContain("No comments yet");
+  expect(text()).toContain("Click anywhere on a frame to pin a note for the agent.");
+});
+
 it("Comments: the drafts by Send, the rest Open or Resolved; Pointer keeps the section", async () => {
   act(() => setCanvasTool("comment"));
   await render({ edits: [], applied: [] }, { comments: [comment(1, "Bigger title"), comment(2, "Softer shadow")], chats: [] });
