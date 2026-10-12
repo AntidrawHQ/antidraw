@@ -6,8 +6,10 @@ import { useWorkspaceStore } from "../store/workspace";
 // element, and the elements tagged for the next chat message. The frames
 // themselves are reached through ./bridge.
 
-// An element in a frame, as the frame last described it.
-export type Picked = { frame: string; info: ElementInfo };
+// An element in a frame, as the frame last described it. A tag also has
+// what its frame said about it when it was tagged (`seen`, null if it
+// couldn't say), and goes to Claude as that, whatever the page does after.
+export type Picked = { frame: string; info: ElementInfo; seen?: ElementContext | null };
 
 export type FrameStatus = {
   // Its runtime answered: it has an inspector.

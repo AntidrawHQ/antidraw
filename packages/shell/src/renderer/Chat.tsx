@@ -590,7 +590,7 @@ function Composer({
     submitting.current = true;
     try {
       // Elements tagged on the canvas lead the message.
-      const tagged = await describePendingTags();
+      const tagged = describePendingTags();
       const prompt = tagged.block ? `${tagged.block}\n\n${input.trim()}` : input.trim();
 
       let imagesToSend: ImageAttachment[] | undefined;

@@ -325,6 +325,15 @@ export async function getElementContext(picks: Picked[]): Promise<(ElementContex
   return picks.map((p) => contexts.get(p) ?? null);
 }
 
+// Tags the selection with what its frame says about it now (see Picked's
+// `seen`).
+export async function tagSelection() {
+  const selection = store.getState().selection;
+  if (!selection) return;
+  const [seen] = await getElementContext([selection]);
+  store.getState().addTag({ ...selection, seen: seen ?? null });
+}
+
 export async function getSelectedElementContext() {
   const selection = store.getState().selection;
   return selection ? (await getElementContext([selection]))[0]! : null;

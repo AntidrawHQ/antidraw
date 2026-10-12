@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import type { WalkDirection } from "@/agent/protocol";
-import { clearSelection, walk } from "./bridge";
+import { clearSelection, tagSelection, walk } from "./bridge";
 import { useInspectorStore } from "./store";
 import { setCanvasTool } from "../comments/store";
 
@@ -42,7 +42,7 @@ export const InspectorControls = () => {
       if (e.key === "i") setCanvasTool("inspect");
       else if (!s.active) return;
       else if (e.key === "v") s.setActive(false);
-      else if (e.key === "Enter" && s.selection) s.addTag(s.selection);
+      else if (e.key === "Enter" && s.selection) void tagSelection();
       else if (ARROWS[e.key] && s.selection) void walk(ARROWS[e.key]!);
       else return;
       e.preventDefault();

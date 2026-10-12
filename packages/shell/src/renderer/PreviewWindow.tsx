@@ -3,6 +3,9 @@ import { RotateCw } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/renderer/components/ui/tooltip";
 import { TOOLS, ToolButton } from "@/renderer/components/CanvasToolbar";
 import { FrameInspector } from "@/renderer/inspector/FrameInspector";
+import { InspectorControls } from "@/renderer/inspector/InspectorControls";
+import { useInspectorStore } from "@/renderer/inspector/store";
+import { elementName } from "@/renderer/inspector/tags";
 import { PreviewComments } from "@/renderer/comments/PreviewComments";
 import { CommentControls } from "@/renderer/comments/CommentControls";
 import { setCanvasTool, useCanvasTool } from "@/renderer/comments/store";
@@ -38,6 +41,25 @@ export const PreviewWindow = ({ url, workspaceId = null }: { url: string; worksp
   useEffect(() => {
     document.title = componentName || "Preview";
   }, [componentName]);
+
+  useEffect(
+    () =>
+      useInspectorStore.subscribe((s) => {
+        if (!s.tags.length) return;
+        // As this window's frame saw it when tagged (see Picked's `seen`).
+        for (const tag of s.tags) void window.electronAPI.tagElement(tag, url);
+        setTagged(elementName(s.tags.at(-1)!.info));
+        setCommented(null);
+        useInspectorStore.setState({ tags: [] });
+      }),
+    [url],
+  );
+
+  useEffect(() => {
+    if (!tagged) return;
+    const timer = setTimeout(() => setTagged(null), 2500);
+    return () => clearTimeout(timer);
+  }, [tagged]);
 
   useEffect(() => {
     if (commented === null) return;

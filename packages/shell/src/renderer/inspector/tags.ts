@@ -1,5 +1,5 @@
 import type { ElementContext, ElementInfo, Sides } from "@/agent/protocol";
-import { frameUrl, getElementContext } from "./bridge";
+import { frameUrl } from "./bridge";
 import { samePick, useInspectorStore, type Picked } from "./store";
 
 // Tagged elements as the agent reads them, at the top of the message,
@@ -139,14 +139,14 @@ export function splitTagged(message: string): { tags: string[]; text: string } {
   return { tags, text: message.slice(block[0].length) };
 }
 
-// The tags as a block for the message being sent, and the tags it holds.
-// They stay tagged until the message is on its way (untagTags), and come
-// back if it fails (retagTags).
-export async function describePendingTags() {
+// The tags as a block for the message being sent, each as its frame saw it
+// when tagged (see Picked), and the tags it holds. They stay tagged until
+// the message is on its way (untagTags), and come back if it fails
+// (retagTags).
+export function describePendingTags() {
   const { tags } = useInspectorStore.getState();
   if (!tags.length) return { block: "", tags };
-  const contexts = await getElementContext(tags);
-  return { block: describeTags(tags.map((pick, i) => ({ pick, context: contexts[i] ?? null }))), tags };
+  return { block: describeTags(tags.map((pick) => ({ pick, context: usableContext(pick.seen) }))), tags };
 }
 
 export const untagTags = (sent: Picked[]) => {

@@ -83,11 +83,17 @@ const unwrap = async <T>(result: Promise<Result<T, { message: string }>>) => {
   return r.value;
 };
 
+// A comment's element with what its frame says about it now (`seen`, null if
+// it couldn't say): the comment goes to Claude as that, whatever the page
+// does after.
+export const withSeen = async (frame: string, element: ElementInfo | null): Promise<SavedElement | null> =>
+  element && { ...element, seen: (await getElementContext([{ frame, info: element }]))[0] ?? null };
+
 export const useAddComment = (workspaceId: string | null) =>
   useCommentMutation(
     workspaceId,
-    (id, c: Pick<Comment, "componentName" | "x" | "y" | "text"> & { element: ElementInfo | null }) =>
-      unwrap(addComment(id, { ...c, element: c.element as Record<string, unknown> | null })),
+    async (id, c: Pick<Comment, "componentName" | "x" | "y" | "text"> & { element: ElementInfo | null }) =>
+      unwrap(addComment(id, { ...c, element: (await withSeen(c.componentName, c.element)) as Record<string, unknown> | null })),
     (list, row) => ({ ...list, comments: [...list.comments, row] }),
   );
 
@@ -105,36 +111,24 @@ export const useRemoveComment = (workspaceId: string | null) =>
 export const useClearCompleted = (workspaceId: string | null) =>
   useCommentMutation(workspaceId, (id, _: void) => unwrap(clearCompletedComments(id)));
 
-// A comment's element as saved. One left in a frame's own window also has
-// what that window said about it then (`seen`, null if it couldn't say).
+// A comment's element as saved, with what its frame said about it then
+// (`seen`, null if it couldn't say; none from before comments kept it).
 type SavedElement = ElementInfo & { seen?: ElementContext | null };
 
-// The <element> under each draft's pin, as its frame sees it now: an edit
-// may have moved it. As last seen, where the frame doesn't answer. One left
-// in a frame's own window is as that window saw it: the canvas's frame is
-// another page, at another size, where its ref can name another element.
-export const describeElements = async (drafts: Comment[]): Promise<CommentContext[]> => {
-  const picks = drafts.flatMap((c) =>
-    c.element ? [{ id: c.id, pick: { frame: c.componentName, info: c.element as unknown as SavedElement } }] : [],
-  );
-  const asked = picks.filter((p) => p.pick.info.seen === undefined);
-  const contexts = await getElementContext(asked.map((p) => p.pick));
-  const told = new Map(asked.map((p, i) => [p.id, contexts[i] ?? null]));
-  const seen = new Map(
-    picks.map((p) => [p.id, p.pick.info.seen !== undefined ? usableContext(p.pick.info.seen) : (told.get(p.id) ?? null)]),
-  );
-  const blocks = new Map(
-    picks.map((p) => [p.id, seen.get(p.id) ? describeContext(seen.get(p.id)!) : describeLastSeen(p.pick)]),
-  );
-  // The frame's size, which the element's box is read at, as Inspect gives it.
-  const viewports = new Map(picks.map((p) => [p.id, seen.get(p.id)?.viewport.join("×") ?? null]));
-  return drafts.map((c) => ({
-    id: c.id,
-    element: blocks.get(c.id) ?? null,
-    preview: frameUrl(c.componentName),
-    frame: viewports.get(c.id) ?? null,
-  }));
-};
+// The <element> under each draft's pin, as its frame saw it when the comment
+// was left. As last seen, where the frame couldn't say.
+export const describeElements = (drafts: Comment[]): CommentContext[] =>
+  drafts.map((c) => {
+    const info = c.element as unknown as SavedElement | null;
+    const seen = usableContext(info?.seen);
+    return {
+      id: c.id,
+      element: info && (seen ? describeContext(seen) : describeLastSeen({ frame: c.componentName, info })),
+      preview: frameUrl(c.componentName),
+      // The frame's size, which the element's box is read at, as Inspect gives it.
+      frame: seen?.viewport.join("×") ?? null,
+    };
+  });
 
 // Sends the drafts to the chat that's open, or a new one if none is, as a
 // chat message: the server writes the message (POST /comments/prompt), and
@@ -153,7 +147,7 @@ export const useSendComments = (workspaceId: string | null) => {
     setDescribing(true);
     let message: { ids: number[]; prompt: string };
     try {
-      const context = await describeElements(drafts);
+      const context = describeElements(drafts);
       message = await unwrap(commentsPrompt(workspaceId, { context, conversationId: into }));
     } finally {
       setDescribing(false);
