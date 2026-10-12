@@ -41,12 +41,13 @@ const frameUrl = (componentName: string) =>
 async function renderCanvas(onLayoutsChange?: (layouts: FrameLayout[]) => void, frameLayer?: FrameLayer) {
   const { Canvas } = await import("../Canvas");
   const container = document.body.appendChild(document.createElement("div"));
-  const render = (onChange: typeof onLayoutsChange) =>
+  const components = [{ name: "Card" }, { name: "Hero Card" }];
+  const render = (onChange: typeof onLayoutsChange, more: { name: string }[] = []) =>
     root!.render(
       <ReactFlowProvider>
         <div style={{ width: 1200, height: 800 }}>
           <Canvas
-            components={[{ name: "Card" }, { name: "Hero Card" }]}
+            components={[...components, ...more]}
             savedLayouts={[{ componentName: "Card", x: 10, y: 20, width: 300, height: 200 }]}
             frameUrl={frameUrl}
             onLayoutsChange={onChange}
@@ -58,7 +59,10 @@ async function renderCanvas(onLayoutsChange?: (layouts: FrameLayout[]) => void, 
     );
   root = createRoot(container);
   await act(async () => render(onLayoutsChange));
-  return { rerender: (onChange: typeof onLayoutsChange) => act(() => render(onChange)) };
+  return {
+    rerender: (onChange: typeof onLayoutsChange) => act(() => render(onChange)),
+    addComponents: (more: { name: string }[]) => act(() => render(onLayoutsChange, more)),
+  };
 }
 
 const frames = () =>
@@ -68,12 +72,20 @@ const frames = () =>
     src: node.querySelector("iframe")?.getAttribute("src"),
   }));
 
-const postSize = (origin: string, width: number, height: number) =>
+const positions = () =>
+  Object.fromEntries(
+    [...document.querySelectorAll<HTMLElement>(".react-flow__node")].map((node) => [
+      node.dataset.id,
+      node.style.transform,
+    ]),
+  );
+
+const postSize = (origin: string, width: number, height: number, componentName = "Card") =>
   act(() => {
     window.dispatchEvent(
       new MessageEvent("message", {
         origin,
-        data: { type: "component-size", componentName: "Card", width, height },
+        data: { type: "component-size", componentName, width, height },
       }),
     );
   });
@@ -109,6 +121,40 @@ it("lets only the frames' origin size them", async () => {
   `);
 });
 
+it("lines new frames up after the others, and keeps them apart as they grow", async () => {
+  const canvas = await renderCanvas();
+  const placed = positions();
+  // The saved frame and the new one size themselves to their components.
+  await postSize(SITE, 640, 480);
+  await postSize(SITE, 900, 300, "Hero Card");
+  const grown = positions();
+  await canvas.addComponents([{ name: "Footer" }]);
+  const added = positions();
+  await postSize(SITE, 1000, 300, "Hero Card");
+  expect({ placed, grown, added, regrown: positions() }).toMatchInlineSnapshot(`
+    {
+      "added": {
+        "Card-1": "translate(10px,20px)",
+        "Footer-1": "translate(1750px,20px)",
+        "Hero Card-1": "translate(750px,20px)",
+      },
+      "grown": {
+        "Card-1": "translate(10px,20px)",
+        "Hero Card-1": "translate(750px,20px)",
+      },
+      "placed": {
+        "Card-1": "translate(10px,20px)",
+        "Hero Card-1": "translate(410px,20px)",
+      },
+      "regrown": {
+        "Card-1": "translate(10px,20px)",
+        "Footer-1": "translate(1850px,20px)",
+        "Hero Card-1": "translate(750px,20px)",
+      },
+    }
+  `);
+});
+
 it("saves a change with the callback given when it happened", async () => {
   vi.useFakeTimers();
   try {
@@ -136,7 +182,7 @@ it("saves a change with the callback given when it happened", async () => {
                 "componentName": "Hero Card",
                 "height": 300,
                 "width": 400,
-                "x": 510,
+                "x": 750,
                 "y": 20,
               },
             ],

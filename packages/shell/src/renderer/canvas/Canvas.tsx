@@ -306,6 +306,63 @@ const MIN_NODE_SIZE = 10;
 
 const clampNodeSize = (size: number) => Math.max(size, MIN_NODE_SIZE);
 
+// A frame's size until its component reports its own.
+const NEW_FRAME_SIZE = { width: 400, height: 300 };
+
+// The space between frames the canvas places itself.
+const FRAME_GAP = 100;
+
+// A resize (by hand, or a component-size message) sets width and height;
+// style keeps the size the frame was created with.
+const frameWidth = (n: IframeReactFlowNode) =>
+  n.width ?? (typeof n.style?.width === "number" ? n.style.width : NEW_FRAME_SIZE.width);
+const frameHeight = (n: IframeReactFlowNode) =>
+  n.height ?? (typeof n.style?.height === "number" ? n.style.height : NEW_FRAME_SIZE.height);
+
+const newFrame = (
+  component: CanvasComponent,
+  frameUrl: (componentName: string) => string,
+): IframeReactFlowNode => ({
+  id: frameNodeId(component.name),
+  type: "iframe" as const,
+  // Set by lineUp.
+  position: { x: 0, y: 0 },
+  style: { ...NEW_FRAME_SIZE },
+  data: {
+    url: frameUrl(component.name),
+    componentName: component.name,
+  },
+});
+
+// Puts the frames the canvas placed (settling, in the order placed) in a row
+// after the rest, a gap apart and level with the rightmost of the rest.
+const lineUp = (nodes: IframeReactFlowNode[], settling: string[]) => {
+  if (settling.length === 0) return nodes;
+  const rightEdge = (n: IframeReactFlowNode) => n.position.x + frameWidth(n);
+  const rightmost = nodes
+    .filter((n) => !settling.includes(n.id))
+    .reduce<IframeReactFlowNode | null>(
+      (acc, n) => (!acc || rightEdge(n) > rightEdge(acc) ? n : acc),
+      null,
+    );
+  let x = rightmost ? rightEdge(rightmost) + FRAME_GAP : 100;
+  const y = rightmost ? rightmost.position.y : 100;
+
+  const positions = new Map<string, { x: number; y: number }>();
+  for (const id of settling) {
+    const node = nodes.find((n) => n.id === id);
+    if (!node) continue;
+    positions.set(id, { x, y });
+    x += frameWidth(node) + FRAME_GAP;
+  }
+  return nodes.map((n) => {
+    const position = positions.get(n.id);
+    return position && (position.x !== n.position.x || position.y !== n.position.y)
+      ? { ...n, position }
+      : n;
+  });
+};
+
 type CanvasProps = {
   components: CanvasComponent[];
   // Where each frame was last placed; components without one are appended.
@@ -337,7 +394,7 @@ export const Canvas = ({
   children,
 }: CanvasProps) => {
   // Create initial nodes once on mount, merging saved layouts with defaults
-  const initialNodes = useMemo<IframeReactFlowNode[]>(() => {
+  const initial = useMemo(() => {
     const layoutMap = new Map(
       (savedLayouts ?? []).map((l) => [l.componentName, l]),
     );
@@ -366,31 +423,24 @@ export const Canvas = ({
       }
     }
 
-    // New components: append to the right of the rightmost existing node,
-    // matching its y so they continue the same row.
-    const rightmost = withLayout.reduce<IframeReactFlowNode | null>(
-      (acc, n) => (!acc || n.position.x > acc.position.x ? n : acc),
-      null,
-    );
-    const baseX = rightmost ? rightmost.position.x : -400;
-    const baseY = rightmost ? rightmost.position.y : 100;
-
-    const newNodes = withoutLayout.map((component, index) => ({
-      id: frameNodeId(component.name),
-      type: "iframe" as const,
-      position: { x: baseX + 500 + index * 600, y: baseY },
-      style: { width: 400, height: 300 },
-      data: {
-        url: frameUrl(component.name),
-        componentName: component.name,
-      },
-    }));
-
-    return [...withLayout, ...newNodes];
+    // New components continue the row of the rightmost saved frame.
+    const settling = withoutLayout.map((component) => frameNodeId(component.name));
+    return {
+      nodes: lineUp(
+        [...withLayout, ...withoutLayout.map((c) => newFrame(c, frameUrl))],
+        settling,
+      ),
+      settling,
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
+  const [nodes, setNodes, onNodesChange] = useNodesState(initial.nodes);
+
+  // The frames the canvas placed, in order, until the user moves a frame.
+  // Each grows to its component once loaded, so they're lined up again then
+  // to keep them from covering each other.
+  const settlingRef = useRef(initial.settling);
 
   // Ref to always hold latest nodes for debounced save
   const nodesRef = useRef(nodes);
@@ -412,10 +462,8 @@ export const Canvas = ({
         componentName: n.data.componentName,
         x: n.position.x,
         y: n.position.y,
-        // A resize (by hand, or a component-size message) sets width and
-        // height; style keeps the size the frame was created with.
-        width: n.width ?? (typeof n.style?.width === "number" ? n.style.width : 400),
-        height: n.height ?? (typeof n.style?.height === "number" ? n.style.height : 300),
+        width: frameWidth(n),
+        height: frameHeight(n),
       }));
       onLayoutsChange(layouts);
     }, 500);
@@ -429,6 +477,11 @@ export const Canvas = ({
   const handleNodesChange = useCallback(
     (changes: NodeChange<IframeReactFlowNode>[]) => {
       onNodesChange(changes);
+
+      // A frame the user moved stays put, and so do the rest from then on.
+      if (changes.some((c) => c.type === "position")) {
+        settlingRef.current = [];
+      }
 
       const hasLayoutChange = changes.some(
         (c) => c.type === "position" || c.type === "dimensions",
@@ -464,6 +517,9 @@ export const Canvas = ({
           setAttributes: true,
         },
       ]);
+      if (settlingRef.current.length > 0) {
+        setNodes((nodes) => lineUp(nodes, settlingRef.current));
+      }
     };
 
     window.addEventListener("message", handleMessage);
@@ -482,20 +538,17 @@ export const Canvas = ({
 
       if (newComponents.length === 0) return currentNodes;
 
-      const maxX = Math.max(...currentNodes.map((n) => n.position.x), 0);
-      return [
-        ...currentNodes,
-        ...newComponents.map((component, index) => ({
-          id: frameNodeId(component.name),
-          type: "iframe" as const,
-          position: { x: maxX + 500 + index * 600, y: 100 },
-          style: { width: 400, height: 300 },
-          data: {
-            url: frameUrl(component.name),
-            componentName: component.name,
-          },
-        })),
+      // A Set, as StrictMode runs this updater twice.
+      settlingRef.current = [
+        ...new Set([
+          ...settlingRef.current,
+          ...newComponents.map((component) => frameNodeId(component.name)),
+        ]),
       ];
+      return lineUp(
+        [...currentNodes, ...newComponents.map((c) => newFrame(c, frameUrl))],
+        settlingRef.current,
+      );
     });
   }, [components, frameUrl, setNodes]);
 
