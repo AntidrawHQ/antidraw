@@ -338,12 +338,6 @@ export const EffectsFolder = ({ s, set, edited }: EditProps) => {
   );
 };
 
-export const Kbd = ({ children }: { children: ReactNode }) => (
-  <span className={cn(MONO, "inline-grid h-5 min-w-5 place-items-center rounded-[5px] bg-white/[0.06] px-1 text-[11px] text-white/60")}>
-    {children}
-  </span>
-);
-
 export const Empty = ({ icon: Icon, title, body, children }: { icon: typeof MousePointer2; title: string; body: string; children?: ReactNode }) => (
   <div className="flex flex-col gap-4 px-3 pt-5">
     <div className="flex flex-col items-start gap-3 px-1">
@@ -358,21 +352,6 @@ export const Empty = ({ icon: Icon, title, body, children }: { icon: typeof Mous
     {children}
   </div>
 );
-
-export const KEYS: [ReactNode, string][] = [
-  [<Kbd key="i">I</Kbd>, "Inspect"],
-  [
-    <span key="a" className="flex gap-0.5">
-      <Kbd>↑</Kbd>
-      <Kbd>↓</Kbd>
-      <Kbd>←</Kbd>
-      <Kbd>→</Kbd>
-    </span>,
-    "Walk the tree",
-  ],
-  [<Kbd key="e">↵</Kbd>, "Tag for chat"],
-  [<Kbd key="x">Esc</Kbd>, "Deselect"],
-];
 
 // The selected element's styles (`s`), against what it had before any edit
 // (`base`); with none selected (`selected`, its key), how to pick one.
@@ -398,18 +377,7 @@ export const DesignSection = ({
         icon={SquareDashedMousePointer}
         title="Select an element"
         body="Click inside a frame to edit its layout, type, fill and effects. Edits show in the frame at once; Apply hands them to the agent."
-      >
-        <div className="flex flex-col gap-1.5">
-          {KEYS.map(([k, label], i) => (
-            <div key={i} className={cn("flex items-center justify-between gap-3 pl-3 pr-2", ROW, SURFACE)}>
-              <span className="min-w-0 truncate text-[13px] font-medium text-white/70" title={label}>
-                {label}
-              </span>
-              <span className="flex shrink-0">{k}</span>
-            </div>
-          ))}
-        </div>
-      </Empty>
+      />
     );
   // Its styles are on their way from its frame.
   if (!s || !base) return null;

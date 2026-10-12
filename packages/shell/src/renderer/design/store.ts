@@ -1,12 +1,12 @@
 import { create } from "zustand";
 import type { ElementContext } from "@/agent/protocol";
 import type { Style } from "@/shared/design";
-import { useCanvasTool, useCommentStore } from "@/renderer/comments/store";
+import { useCommentStore } from "@/renderer/comments/store";
 import { useInspectorStore } from "@/renderer/inspector/store";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
 
-// The right panel's own state: whether it's open, the section Pointer
-// keeps, and the selected element as its frame showed it when picked. The
+// The right panel's own state: whether it's open, how wide, the section it
+// shows, and the selected element as its frame showed it when picked. The
 // edits themselves are server state (lib/edit-ops).
 
 export type Tab = "design" | "comments";
@@ -16,40 +16,42 @@ export type Tab = "design" | "comments";
 // edit starts from this, and hands Claude `seen`.
 export type Read = { key: string; style: Style; text: boolean; seen: ElementContext | null };
 
+// The panel's width, dragged by its left edge.
+export const PANEL_W = { min: 256, max: 480 };
+
 type DesignStore = {
   panelOpen: boolean;
-  lastTab: Tab;
+  width: number;
+  tab: Tab;
   read: Read | null;
   setPanelOpen: (open: boolean) => void;
-  setLastTab: (tab: Tab) => void;
+  setWidth: (width: number) => void;
+  setTab: (tab: Tab) => void;
   setRead: (read: Read | null) => void;
 };
 
 export const useDesignStore = create<DesignStore>((set) => ({
   panelOpen: true,
-  lastTab: "design",
+  width: PANEL_W.min,
+  tab: "design",
   read: null,
   setPanelOpen: (panelOpen) => set({ panelOpen }),
-  setLastTab: (lastTab) => set({ lastTab }),
+  setWidth: (width) => set({ width: Math.round(Math.min(PANEL_W.max, Math.max(PANEL_W.min, width))) }),
+  setTab: (tab) => set({ tab }),
   setRead: (read) => set({ read }),
 }));
 
-// Inspect and Comment each open their section, which Pointer then keeps.
+// Picking Inspect or Comment opens its section. A tab picked in the panel
+// leaves the tool as it is.
 useInspectorStore.subscribe((s, prev) => {
-  if (s.active && !prev.active) useDesignStore.getState().setLastTab("design");
+  if (s.active && !prev.active) useDesignStore.getState().setTab("design");
 });
 useCommentStore.subscribe((s, prev) => {
-  if (s.active && !prev.active) useDesignStore.getState().setLastTab("comments");
+  if (s.active && !prev.active) useDesignStore.getState().setTab("comments");
 });
 
 useWorkspaceStore.subscribe((s, prev) => {
   if (s.activeWorkspaceId !== prev.activeWorkspaceId) useDesignStore.setState({ read: null });
 });
 
-// The tool picks the section: Inspect → Design, Comment → Comments, Pointer
-// keeps the last.
-export const useTab = (): Tab => {
-  const tool = useCanvasTool();
-  const lastTab = useDesignStore((s) => s.lastTab);
-  return tool === "comment" ? "comments" : tool === "inspect" ? "design" : lastTab;
-};
+export const useTab = (): Tab => useDesignStore((s) => s.tab);

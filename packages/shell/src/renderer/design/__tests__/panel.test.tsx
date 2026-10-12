@@ -146,7 +146,7 @@ afterEach(() => {
   act(() => root.unmount());
   setCanvasTool("pointer");
   useInspectorStore.setState({ active: false, frames: {}, selection: null, tags: [], missing: {} });
-  useDesignStore.setState({ panelOpen: true, lastTab: "design", read: null });
+  useDesignStore.setState({ panelOpen: true, tab: "design", read: null });
   vi.unstubAllGlobals();
   MotionGlobalConfig.skipAnimations = false;
 });
@@ -206,7 +206,10 @@ it("edits the selected element from where its frame showed it", async () => {
   for (const folder of ["Layout", "Appearance", "Fill", "Stroke", "Effects"]) expect(text()).toContain(folder);
   expect(text()).not.toContain("Text");
   // Clip content on: an edit, at once, and to the API.
-  await act(async () => host.querySelector<HTMLButtonElement>('[role="switch"]')!.click());
+  await act(async () => {
+    host.querySelector<HTMLButtonElement>('[role="switch"]')!.click();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  });
   expect(text()).toContain("1 unsaved change");
   expect(requests).toContainEqual({ url: `antidraw://app/api/workspaces/${WS}/edits`, method: "PUT" });
 });
@@ -217,8 +220,11 @@ it("Comments: the drafts by Send, the rest Open or Resolved; Pointer keeps the s
   expect(text()).toContain("Not sent yet");
   expect(button("Send 2 comments to chat")).toBeTruthy();
   act(() => setCanvasTool("pointer"));
-  expect(text()).toContain("Comment is off.");
   expect(text()).toContain("Bigger title");
+  // A tab only changes the section: the tool stays.
+  await press("Design (I)");
+  expect(text()).toContain("Select an element");
+  expect(useInspectorStore.getState().active).toBe(false);
   // Hidden, then back from the canvas's corner.
   await press("Hide panel");
   expect(useDesignStore.getState().panelOpen).toBe(false);

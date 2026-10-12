@@ -1,27 +1,24 @@
 /**
- * The right panel, docked at the canvas's right: 256px, DialKit's controls
- * at 30px rows. Two sections, Design and Comments, and the canvas tool picks
- * which: Inspect (I) → Design, Comment (C) → Comments, Pointer (V) keeps the
- * last; clicking a tab picks its tool. Design's footer is the canvas's edit
- * bar (EditBar).
+ * The right panel, docked at the canvas's right: 256px to start, wider by
+ * its left edge, DialKit's controls at 30px rows. Two sections, Design and
+ * Comments. Picking Inspect (I) opens Design and Comment (C) opens Comments;
+ * a tab only changes the section, never the tool. Design's footer is the
+ * canvas's edit bar (EditBar).
  */
-import type { CSSProperties } from "react";
+import { useRef, type CSSProperties } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { PanelRight, PanelRightClose } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
-import { setCanvasTool, useCanvasTool } from "@/renderer/comments/store";
-import { DesignSection, Kbd } from "./sections";
+import { DesignSection } from "./sections";
 import { IconButton, MONO } from "./dial";
 import { useOutbox } from "./Outbox";
-import { useDesignStore, useTab, type Tab } from "./store";
+import { PANEL_W, useDesignStore, useTab, type Tab } from "./store";
 import { useDesign } from "./use-design";
 
-const W = 256;
-
-const setTab = (t: Tab) => setCanvasTool(t === "design" ? "inspect" : "comment");
+const setTab = (t: Tab) => useDesignStore.getState().setTab(t);
 
 // Quiet tabs, as Figma's Design / Prototype and Framer's Agent / Style:
-// 12px medium, no underline; the open one sits on a faint chip that
+// medium, no underline; the open one sits on a faint chip that
 // slides between them, the other reads dim.
 const Tabs = ({ tab, changes, drafts }: { tab: Tab; changes: number; drafts: number }) => (
   <div className="flex items-center gap-0.5">
@@ -38,7 +35,7 @@ const Tabs = ({ tab, changes, drafts }: { tab: Tab; changes: number; drafts: num
           title={t === "design" ? "Design (I)" : "Comments (C)"}
           onClick={() => setTab(t)}
           className={cn(
-            "relative flex h-6 cursor-pointer items-center gap-1.5 rounded-md px-2 text-[12px] font-medium transition-colors",
+            "relative flex h-6 cursor-pointer items-center gap-1.5 rounded-md px-2 text-[13px] font-medium transition-colors",
             on ? "text-white/85" : "text-white/40 hover:text-white/65",
           )}
         >
@@ -56,17 +53,6 @@ const Tabs = ({ tab, changes, drafts }: { tab: Tab; changes: number; drafts: num
     })}
   </div>
 );
-
-// "Inspect is off" while Pointer keeps a section open.
-const OffNotice = ({ tab }: { tab: Tab }) =>
-  useCanvasTool() === "pointer" ? (
-    <div className="flex shrink-0 items-center gap-2 border-b border-white/[0.06] px-3 py-2 text-[12px] text-white/45">
-      {tab === "design" ? "Inspect is off." : "Comment is off."}
-      <button type="button" onClick={() => setTab(tab)} className="flex cursor-pointer items-center gap-1 font-medium text-white/70 hover:text-white">
-        Turn it on <Kbd>{tab === "design" ? "I" : "C"}</Kbd>
-      </button>
-    </div>
-  ) : null;
 
 const DesignBody = ({ d }: { d: ReturnType<typeof useDesign> }) => (
   <DesignSection
@@ -101,9 +87,48 @@ export const ShowPanel = () => {
   );
 };
 
+// The panel's left edge, dragged to widen it, as the side panel's right edge
+// is (components/ui/resizable-panel). The width is written straight to the
+// panel while dragging and kept when let go.
+const ResizeHandle = ({ panel }: { panel: React.RefObject<HTMLElement | null> }) => {
+  const handle = useRef<HTMLDivElement>(null);
+  const start = () => {
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    handle.current?.classList.add("!bg-[#71717a]");
+    let width = useDesignStore.getState().width;
+    const move = (e: MouseEvent) => {
+      if (!panel.current) return;
+      const right = panel.current.getBoundingClientRect().right;
+      width = Math.min(PANEL_W.max, Math.max(PANEL_W.min, right - e.clientX));
+      panel.current.style.width = `${width}px`;
+      panel.current.style.setProperty("--panel-w", `${width}px`);
+    };
+    const up = () => {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      handle.current?.classList.remove("!bg-[#71717a]");
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+      useDesignStore.getState().setWidth(width);
+    };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+  };
+  return (
+    <div
+      ref={handle}
+      onMouseDown={start}
+      className="absolute left-0 top-0 z-10 h-full w-1 cursor-col-resize transition-colors hover:bg-[#2d2d2d]"
+    />
+  );
+};
+
 // The panel beside the canvas.
 export const RightPanel = () => {
   const panelOpen = useDesignStore((s) => s.panelOpen);
+  const width = useDesignStore((s) => s.width);
+  const aside = useRef<HTMLElement>(null);
   const tab = useTab();
   const d = useDesign();
   const comments = useOutbox();
@@ -111,21 +136,24 @@ export const RightPanel = () => {
     <AnimatePresence initial={false}>
       {panelOpen && (
         <motion.aside
+          ref={aside}
           initial={{ width: 0 }}
-          animate={{ width: W }}
+          animate={{ width }}
           exit={{ width: 0 }}
           transition={{ type: "spring", visualDuration: 0.3, bounce: 0 }}
-          className="dk-root shrink-0 overflow-hidden border-l border-[#333] bg-[#2A2A2A] text-white"
-          style={{ "--dk-row": "30px" } as CSSProperties}
+          className="dk-root relative shrink-0 overflow-hidden border-l border-[#333] bg-[#2A2A2A] text-white"
+          style={{ "--dk-row": "30px", "--panel-w": `${width}px` } as CSSProperties}
         >
-          <div className="flex h-full flex-col" style={{ width: W }}>
-            <div className="flex h-9 shrink-0 items-center justify-between border-b border-white/[0.05] pl-2 pr-1.5">
+          <ResizeHandle panel={aside} />
+          {/* Its own width while the panel opens and closes, so nothing reflows. */}
+          <div className="flex h-full w-[var(--panel-w)] flex-col">
+            {/* As the side panel's header: 13px tabs, p-2, the chrome's border. */}
+            <div className="flex shrink-0 items-center justify-between border-b border-[#333] p-2">
               <Tabs tab={tab} changes={d.changes.length} drafts={comments.drafts} />
               <IconButton title="Hide panel" onClick={() => useDesignStore.getState().setPanelOpen(false)} className="text-white/30 hover:text-white/70">
                 <PanelRightClose className="size-3.5" strokeWidth={1.75} />
               </IconButton>
             </div>
-            <OffNotice tab={tab} />
             <div className="dk-scroll min-h-0 flex-1 overflow-y-auto">
               {/* The open section, sliding in from its tab's side. */}
               <AnimatePresence mode="wait" initial={false}>
