@@ -235,14 +235,24 @@ const ruleFor = (item: PreviewItem) => {
 // The previews in this page. `find` names an element now; `onMissing` hears
 // which items have none, whenever that changes. An item's `text` is written
 // into its element's one run of text, and the run's own put back when the
-// preview goes: React keeps the node and doesn't look at it again until its
-// text in the code changes.
+// preview goes. React keeps the node and writes it again only when the text
+// in the code changes: that write is the run's own text from then on, even
+// when it's the same as the preview's (an Apply writes the previewed text).
 export function createPreviews(find: (ref: ElementRef) => Element | null, onMissing: (keys: string[]) => void) {
   let items: PreviewItem[] = []
   let found: (Element | null)[] = []
   let marked = new Map<Element, string>()
-  // Each run of text written, with what it said before.
+  // Each run of text written, with its own text: what the page last wrote
+  // there. The page's writes are heard here; this one's own are taken back
+  // from the queue as they're made.
   const written = new Map<Text, string>()
+  const pageWrites = new MutationObserver((records) => {
+    for (const r of records) if (written.has(r.target as Text)) written.set(r.target as Text, (r.target as Text).nodeValue ?? "")
+  })
+  const write = (node: Text, text: string) => {
+    node.nodeValue = text
+    pageWrites.takeRecords()
+  }
   // Nothing said until there are previews.
   let lastMissing = "[]"
   const sheet = document.createElement("style")
@@ -265,16 +275,19 @@ export function createPreviews(find: (ref: ElementRef) => Element | null, onMiss
       const text = items[i]!.text
       const node = el && text !== undefined ? textNodeOf(el) : null
       if (!node) return
-      if (!written.has(node)) written.set(node, node.nodeValue ?? "")
+      if (!written.has(node)) {
+        written.set(node, node.nodeValue ?? "")
+        pageWrites.observe(node, { characterData: true })
+      }
       const was = written.get(node)!
       texts.set(node, was.replace(was.trim(), () => text!))
     })
-    for (const [node, was] of written)
+    for (const [node, own] of written)
       if (!texts.has(node)) {
-        if (node.nodeValue !== was) node.nodeValue = was
+        if (node.nodeValue !== own) write(node, own)
         written.delete(node)
       }
-    for (const [node, text] of texts) if (node.nodeValue !== text) node.nodeValue = text
+    for (const [node, text] of texts) if (node.nodeValue !== text) write(node, text)
     if (items.length && !sheet.isConnected) document.head.append(sheet)
     const missing = items.filter((_, i) => !found[i]).map((item) => item.key)
     const key = JSON.stringify(missing)
@@ -295,8 +308,9 @@ export function createPreviews(find: (ref: ElementRef) => Element | null, onMiss
   }
 
   const stop = () => {
-    for (const [node, was] of written) node.nodeValue = was
+    for (const [node, own] of written) write(node, own)
     written.clear()
+    pageWrites.disconnect()
     for (const [el] of marked) el.removeAttribute(EDIT_ATTRIBUTE)
     marked.clear()
     sheet.remove()

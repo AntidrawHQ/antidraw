@@ -13,6 +13,10 @@ import {
   type ToFrame,
 } from "../protocol"
 
+// Thousands of random frames each: seconds alone, more beside the rest of
+// the suite.
+vi.setConfig({ testTimeout: 30_000 })
+
 // What the inspector tells an agent about each element of a random frame.
 // Each case is a model of the code (JSX written in the frame's component and
 // in a few others, the call sites of those components, .map()s), rendered to

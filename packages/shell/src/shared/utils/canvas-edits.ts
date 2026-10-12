@@ -41,8 +41,14 @@ export type EditContext = {
   frame: string | null;
 };
 
-const escape = (v: string) => v.replace(/</g, "&lt;");
-const unescape = (v: string) => v.replace(/&lt;/g, "<");
+// Inside the block, nothing may read as a tag, and each change is one line:
+// what the frame read (a weight, a shadow layer, the element's text) is the
+// page's to say, so a line break in it reads as a space. As the renderer's
+// <canvas-selection> (renderer/inspector/tags.ts), whose escape this is: "<",
+// and an "&" only where it starts an escape's spelling.
+const escape = (v: string) => v.replace(/&(?=lt;|amp;)/g, "&amp;").replace(/</g, "&lt;");
+const line = (v: string) => escape(v.replace(/\r\n|[\r\n]/g, " "));
+const unescape = (v: string) => v.replace(/&(lt|amp);/g, (_, e: string) => (e === "lt" ? "<" : "&"));
 const attr = (name: string, value: string | null | undefined) =>
   value ? ` ${name}=${JSON.stringify(escape(value))}` : "";
 
@@ -55,8 +61,8 @@ export function describeEdits(edits: (EditedElement & EditContext)[]) {
     out.push(
       `<edit${attr("id", String(e.id))}${attr("component", e.componentName)}${attr("file", componentFile(e.componentName))}${attr("preview", e.preview)}${attr("frame", e.frame)}>`,
       ...(e.block ? [e.block] : []),
-      ...changesOf(e.base, e.now).map((c) => escape(`${c.group.label}: ${c.from} → ${c.to}`)),
-      escape(`previewed as: ${css}`),
+      ...changesOf(e.base, e.now).map((c) => line(`${c.group.label}: ${c.from} → ${c.to}`)),
+      line(`previewed as: ${css}`),
       "</edit>",
     );
   }
