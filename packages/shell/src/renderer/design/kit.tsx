@@ -12,22 +12,24 @@ import { Check as CheckIcon, ChevronDown, Pipette } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
 import { rgba, type Align, type Sizing } from "@/shared/design";
 
+// Neutral grays, as the app's own chrome (#2A2A2A panels, #333 lines,
+// white at 6% for a chip): no blue in them.
 export const T = {
-  divider: "#3A3A3D",
-  field: "#38383B",
-  fieldHover: "#414144",
-  text: "#F2F2F3",
-  text2: "#A1A1A6",
-  text3: "#78787D",
-  accent: "#E8E8EA",
-  accentSoft: "rgba(232,232,234,0.14)",
+  divider: "#3A3A3A",
+  field: "#373737",
+  fieldHover: "#404040",
+  text: "#F2F2F2",
+  text2: "#A1A1A1",
+  text3: "#787878",
+  accent: "#E8E8E8",
+  accentSoft: "rgba(232,232,232,0.14)",
   edited: "#D6C7A1",
-  popover: "#323235",
-  panel: "#2C2C2E",
+  popover: "#323232",
+  panel: "#2A2A2A",
 };
 
 const MONO = "dk-mono tabular-nums";
-const RING = "pointer-events-none absolute inset-0 rounded-[6px] ring-1 ring-inset ring-transparent group-focus-within/num:ring-[#E8E8EA]";
+const RING = "pointer-events-none absolute inset-0 rounded-[6px] ring-1 ring-inset ring-transparent group-focus-within/num:ring-[#E8E8E8]";
 
 export const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 const decimals = (step: number) => (step >= 1 ? 0 : (String(step).split(".")[1]?.length ?? 0));
@@ -69,7 +71,7 @@ export const Row = ({ label, children, className }: { label?: ReactNode; childre
 );
 
 export const Pop = ({ children, className, style }: { children: ReactNode; className?: string; style?: CSSProperties }) => (
-  <div className={cn("rounded-[10px] p-2", className)} style={{ background: T.popover, boxShadow: "0 12px 32px rgba(0,0,0,.45), 0 0 0 1px #45454A", ...style }}>
+  <div className={cn("rounded-[10px] p-2", className)} style={{ background: T.popover, boxShadow: "0 12px 32px rgba(0,0,0,.45), 0 0 0 1px #454545", ...style }}>
     {children}
   </div>
 );
@@ -128,7 +130,7 @@ export const IconBtn = ({ children, tip, on, onClick, className }: { children: R
     aria-label={tip}
     aria-pressed={on}
     onClick={onClick}
-    className={cn("grid size-7 shrink-0 place-items-center rounded-[6px] transition-colors hover:bg-[#414144] [&_svg]:size-4", className)}
+    className={cn("grid size-7 shrink-0 place-items-center rounded-[6px] transition-colors hover:bg-[#404040] [&_svg]:size-4", className)}
     style={on ? { background: T.accentSoft, color: T.accent } : { color: T.text2 }}
   >
     {children}
@@ -211,7 +213,7 @@ export const Num = ({
             put(cur + (e.key === "ArrowUp" ? 1 : -1) * step * (e.shiftKey ? 10 : 1));
           }
         }}
-        className={cn(MONO, "h-full w-full min-w-0 flex-1 bg-transparent outline-none placeholder:text-[#78787D]")}
+        className={cn(MONO, "h-full w-full min-w-0 flex-1 bg-transparent outline-none placeholder:text-[#787878]")}
         style={{ color: T.text }}
       />
       {unit && (
@@ -279,7 +281,7 @@ export const Seg = <V extends string>({ options, value, onChange, className }: {
         aria-pressed={value === o.v}
         onClick={() => onChange(o.v)}
         className={cn("grid min-w-0 flex-1 place-items-center rounded-[4px] px-1.5 text-[11.5px] transition-colors", value !== o.v && "hover:text-white")}
-        style={value === o.v ? { background: "#4A4A4E", color: T.text, boxShadow: "0 1px 2px rgba(0,0,0,.3)" } : { color: T.text2 }}
+        style={value === o.v ? { background: "#4A4A4A", color: T.text, boxShadow: "0 1px 2px rgba(0,0,0,.3)" } : { color: T.text2 }}
       >
         <span className="truncate">{o.label ?? o.v}</span>
       </button>
@@ -319,7 +321,7 @@ export const Select = <V extends string>({
           const i = options.indexOf(value) + (e.key === "ArrowDown" ? 1 : -1);
           onChange(options[clamp(i, 0, options.length - 1)]!);
         }}
-        className="flex h-7 w-full items-center gap-1.5 rounded-[6px] pl-2 pr-1.5 text-left text-[12px] hover:bg-[#414144] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[#E8E8EA]"
+        className="flex h-7 w-full items-center gap-1.5 rounded-[6px] pl-2 pr-1.5 text-left text-[12px] hover:bg-[#404040] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[#E8E8E8]"
         style={{ background: T.field, color: T.text }}
       >
         <span className="min-w-0 flex-1 truncate">{render ? render(value) : value}</span>

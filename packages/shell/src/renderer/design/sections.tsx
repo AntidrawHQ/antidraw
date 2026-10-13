@@ -51,7 +51,7 @@ import {
 } from "./kit";
 
 // The hairline between sections.
-const LINE = "#333335";
+const LINE = "#333333";
 
 type Put = (patch: Partial<S>) => void;
 
@@ -291,7 +291,7 @@ const LineHeight = ({ s, set }: { s: S; set: Put }) => {
         className="dk-mono h-full min-w-0 flex-1 bg-transparent tabular-nums outline-none"
         style={{ color: s.lh ? T.text : T.text2 }}
       />
-      <span className="pointer-events-none absolute inset-0 rounded-[6px] ring-1 ring-inset ring-transparent group-focus-within/num:ring-[#E8E8EA]" />
+      <span className="pointer-events-none absolute inset-0 rounded-[6px] ring-1 ring-inset ring-transparent group-focus-within/num:ring-[#E8E8E8]" />
     </div>
   );
 };
