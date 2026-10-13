@@ -35,3 +35,13 @@ it("has only Refresh in its titlebar", () => {
   expect(host.querySelectorAll("button[aria-pressed]")).toHaveLength(0);
   expect([...host.querySelectorAll("button")].map((b) => b.getAttribute("aria-label"))).toEqual(["Refresh"]);
 });
+
+it("gives the component the keys once it loads, and again after a Refresh", async () => {
+  host.querySelector("iframe")!.dispatchEvent(new Event("load"));
+  expect(document.activeElement).toBe(host.querySelector("iframe"));
+  const refresh = host.querySelector<HTMLButtonElement>('button[aria-label="Refresh"]')!;
+  await act(async () => refresh.click());
+  refresh.focus();
+  host.querySelector("iframe")!.dispatchEvent(new Event("load"));
+  expect(document.activeElement).toBe(host.querySelector("iframe"));
+});

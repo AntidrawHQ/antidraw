@@ -57,9 +57,13 @@ export const PreviewWindow = ({ url }: { url: string }) => {
               src={url}
               title={componentName}
               className="absolute inset-0 h-full w-full border-0"
+              // Keys go to the component, as on its own page, from when it
+              // loads and after each Refresh.
+              onLoad={(e) => e.currentTarget.focus()}
               // The component works here as it would on its own page: forms
-              // submit, alerts show, links open (main sends them to the
-              // browser) and it can copy. Only the window stays the shell's.
+              // submit, alerts show, links open (main sends any off its dev
+              // server to the browser) and it can copy. Only the window stays
+              // the shell's.
               sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-downloads"
               allow="clipboard-read; clipboard-write; fullscreen"
             />

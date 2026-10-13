@@ -35,7 +35,7 @@ const open = async (href: string) => {
   await router.load();
   root = createRoot(document.getElementById("root")!);
   await act(async () => root!.render(<RouterProvider router={router} />));
-  return document.body;
+  return Object.assign(document.body, { router });
 };
 
 const preview = "https://localhost:5300/preview?componentName=Card";
@@ -53,4 +53,10 @@ it("frames nothing but a dev server's preview page", async () => {
     act(() => root?.unmount());
     root = null;
   }
+});
+
+it("sends a path no page has back to the app, not to a bare Not Found", async () => {
+  const page = await open("/user-content-fn-1");
+  expect(page.router.state.location.pathname).not.toBe("/user-content-fn-1");
+  expect(page.textContent).not.toContain("Not Found");
 });

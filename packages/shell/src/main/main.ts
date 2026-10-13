@@ -68,10 +68,11 @@ protocol.registerSchemesAsPrivileged([
 // browser instead.
 const APP_PAGE = process.env.NODE_ENV === "development" ? "http://localhost:5173/" : "antidraw://app/";
 
+const openInBrowser = (url: string) => {
+  if (/^https?:\/\//.test(url)) shell.openExternal(url).catch(() => {});
+};
+
 const stayOnApp = (win: BrowserWindow) => {
-  const openInBrowser = (url: string) => {
-    if (/^https?:\/\//.test(url)) shell.openExternal(url).catch(() => {});
-  };
   win.webContents.on("will-navigate", (event, url) => {
     if (url.startsWith(APP_PAGE)) return;
     event.preventDefault();
@@ -197,6 +198,17 @@ app.whenReady().then(async () => {
     // The app's /preview route; hash routing reads its search from inside the hash.
     previewWindow.loadURL(`${APP_PAGE}#/preview?${new URLSearchParams({ url })}`);
     stayOnApp(previewWindow);
+    // will-navigate is the window's own page only. The component's frame
+    // stays on its dev server, and a link off it opens in the browser, as on
+    // the main window. Frames the component embeds go where they like.
+    const devServer = parsed.origin;
+    previewWindow.webContents.on("will-frame-navigate", (event) => {
+      const parent = event.frame?.parent;
+      if (event.isMainFrame || !parent || parent.parent) return;
+      if (URL.canParse(event.url) && new URL(event.url).origin === devServer) return;
+      event.preventDefault();
+      openInBrowser(event.url);
+    });
   });
 
   // Cleanup any orphaned dev servers from previous crash (non-blocking)
