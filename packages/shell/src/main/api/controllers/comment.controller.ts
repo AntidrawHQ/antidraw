@@ -139,9 +139,10 @@ commentController.post(
 
 // The list's news: "changed" whenever the workspace's comments do (any
 // write, the user's or Claude's) or one of its comment chats moves on (a
-// set shows its chat's phase). Subscribers refetch the list. Nothing to
-// resume: the list is read whole, so a reconnect only needs a refetch, and
-// the "changed" sent on every open is that.
+// set shows its chat's phase), failing included: a turn that fails says
+// only `error`, and its chat has ended. Subscribers refetch the list.
+// Nothing to resume: the list is read whole, so a reconnect only needs a
+// refetch, and the "changed" sent on every open is that.
 commentController.get(
   "/:workspaceId/comments/events",
   zValidator("param", workspaceParam),
@@ -161,9 +162,11 @@ commentController.get(
       };
       commentEvents.on("changed", onComments);
       conversationEvents.on("state", onState);
+      conversationEvents.on("error", onState);
       const detach = () => {
         commentEvents.off("changed", onComments);
         conversationEvents.off("state", onState);
+        conversationEvents.off("error", onState);
       };
 
       // Both hooks, and the park below, as /chat/:id/stream explains: under

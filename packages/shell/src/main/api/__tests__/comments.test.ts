@@ -17,6 +17,7 @@ import {
 } from "@/main/api/services/comment.service";
 import { createConversation } from "@/main/api/services/chat.service";
 import { commentEvents } from "@/main/lib/comment-events";
+import { conversationEvents } from "@/main/lib/conversation-store";
 import { splitComments } from "@/shared/utils/canvas-comments";
 import { app } from "@/main/api";
 
@@ -149,7 +150,9 @@ describe("comments", () => {
     expect(splitComments(prompt)?.comments).toEqual([{ component: "PricingCard", text: "first <b>line</b>\nsecond" }]);
   });
 
-  test("the events stream says changed on open, and on every write", async () => {
+  test("the events stream says changed on open, on every write, and when a comment chat's turn fails", async () => {
+    const before = [commentEvents.listenerCount("changed"), conversationEvents.listenerCount("error")];
+    const failed = await send([(await add("fails")).id]);
     const abort = new AbortController();
     const res = await app.request(`/api/workspaces/${workspaceId}/comments/events`, { signal: abort.signal });
     const reader = res.body!.getReader();
@@ -158,9 +161,12 @@ describe("comments", () => {
     expect(await next()).toContain('{"type":"changed"}');
     await add("one more");
     expect(await next()).toContain('{"type":"changed"}');
+    // A failed turn ends its chat without a state change.
+    conversationEvents.emit("error", failed.conversationId, { error: "spawn failed" });
+    expect(await next()).toContain('{"type":"changed"}');
 
     abort.abort();
     await reader.cancel().catch(() => {});
-    expect(commentEvents.listenerCount("changed")).toBe(1); // the first test's own
+    expect([commentEvents.listenerCount("changed"), conversationEvents.listenerCount("error")]).toEqual(before);
   });
 });
