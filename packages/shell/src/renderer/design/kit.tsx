@@ -180,6 +180,7 @@ export const Num = ({
 }) => {
   const [text, setText] = useState<string | null>(null);
   const cur = value ?? 0;
+  const shown = value === null ? "" : (format?.(value) ?? String(value));
   const put = (v: number) => onChange(clamp(snap(v, step), min, max));
   const scrub = useScrub(() => cur, put, step);
   return (
@@ -193,12 +194,13 @@ export const Num = ({
         </span>
       )}
       <input
-        value={text ?? (value === null ? "" : (format?.(value) ?? String(value)))}
+        value={text ?? shown}
         placeholder={placeholder ?? "Mixed"}
         onFocus={(e) => (setText(e.target.value), e.target.select())}
         onChange={(e) => setText(e.target.value)}
         onBlur={() => {
-          if (text !== null) {
+          // Left as it was shown: nothing to change.
+          if (text !== null && text !== shown) {
             const v = parseNum(text, cur);
             if (v !== null) put(v);
           }
@@ -366,7 +368,8 @@ export const SizeField = ({
   const fix = (v: number) => onValue(Math.max(0, snap(v, step)));
   const scrub = useScrub(() => shown, fix, step);
   const commit = () => {
-    if (text === null) return;
+    // Left as it was shown, a Hug or Fill size stays one.
+    if (text === null || text === String(shown)) return setText(null);
     const t = text.trim().toLowerCase();
     if (t === "hug" || t === "fill") onMode(t);
     else {
@@ -562,7 +565,7 @@ const HexInput = ({ hex, onChange }: { hex: string; onChange: (h: string) => voi
       onFocus={(e) => (setText(hex.slice(1)), e.target.select())}
       onChange={(e) => setText(e.target.value)}
       onBlur={() => {
-        const h = text !== null ? normHex(text) : null;
+        const h = text !== null && text !== hex.slice(1) ? normHex(text) : null;
         if (h) onChange(h);
         setText(null);
       }}
@@ -586,7 +589,7 @@ const AlphaInput = ({ alpha, onChange }: { alpha: number; onChange: (a: number) 
         onFocus={(e) => (setText(String(alpha)), e.target.select())}
         onChange={(e) => setText(e.target.value)}
         onBlur={() => {
-          const v = parseFloat(text ?? "");
+          const v = text !== null && text !== String(alpha) ? parseFloat(text) : NaN;
           if (Number.isFinite(v)) onChange(clamp(Math.round(v), 0, 100));
           setText(null);
         }}

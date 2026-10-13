@@ -61,3 +61,14 @@ it("doesn't take focus from a click on a titlebar button, which would ring it", 
     expect([label, down.defaultPrevented]).toEqual([label, true]);
   }
 });
+
+it("gives the component the keys once it loads, and again after a Refresh", async () => {
+  await open();
+  host.querySelector("iframe")!.dispatchEvent(new Event("load"));
+  expect(document.activeElement).toBe(host.querySelector("iframe"));
+  const refresh = host.querySelector<HTMLButtonElement>('button[aria-label="Refresh"]')!;
+  await act(async () => refresh.click());
+  refresh.focus();
+  host.querySelector("iframe")!.dispatchEvent(new Event("load"));
+  expect(document.activeElement).toBe(host.querySelector("iframe"));
+});

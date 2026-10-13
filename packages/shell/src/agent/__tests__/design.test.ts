@@ -130,3 +130,39 @@ test("the attribute stays out of the markup an agent is given", () => {
   const reply = ask({ type: "context", id: 2, refs: [ref] }) as Extract<FromFrame, { type: "context" }>
   expect(reply.contexts[0]!.html).not.toContain(EDIT_ATTRIBUTE)
 })
+
+test("measuring an element leaves no style attribute on one that had none", () => {
+  const button = document.querySelector("button")!
+  ask({ type: "style", id: 1, ref: at(5, "button", 1) })
+  expect(button.hasAttribute("style")).toBe(false)
+  const reply = ask({ type: "context", id: 2, refs: [at(5, "button", 1)] }) as Extract<FromFrame, { type: "context" }>
+  expect(reply.contexts[0]!.html).not.toContain(" style")
+})
+
+test("reads its parent's flex direction, and whether its two gaps differ", () => {
+  const h3 = (ask({ type: "style", id: 1, ref: at(4, "h3", 0) }) as Extract<FromFrame, { type: "style" }>).style!
+  expect(h3.parentFlex).toBe("column")
+  expect((ask({ type: "style", id: 2, ref }) as Extract<FromFrame, { type: "style" }>).style!.parentFlex).toBeUndefined()
+  const list = document.querySelector("ul")!
+  expect((ask({ type: "style", id: 3, ref: at(7, "ul", 3) }) as Extract<FromFrame, { type: "style" }>).style!.splitGap).toBe(false)
+  list.style.rowGap = "8px"
+  expect((ask({ type: "style", id: 4, ref: at(7, "ul", 3) }) as Extract<FromFrame, { type: "style" }>).style!.splitGap).toBe(true)
+})
+
+test("a text edit stays on its element, not on a sibling from the same .map() still showing the old text", () => {
+  document.getElementById("frame")!.insertAdjacentHTML(
+    "beforeend",
+    `<ul data-ad-loc="${OWN}:20:5">${`<li data-ad-loc="${OWN}:21:7"><button data-ad-loc="${OWN}:21:11">Buy</button></li>`.repeat(2)}</ul>`,
+  )
+  const buttons = [...document.querySelectorAll("ul button")]
+  const first = { loc: `${OWN}:21:11`, index: 0, path: [1, 0, 0], tag: "button", text: "Buy" }
+  const shown = () => buttons.map((b) => `${b.textContent} ${b.getAttribute(EDIT_ATTRIBUTE)}`)
+  ask({ type: "preview", id: 1, items: [{ key: "e-1", ref: first, css: {}, text: "Purchase" }] })
+  expect(shown()).toEqual(["Purchase e-1", "Buy null"])
+  // Saved: the same edit under its own key.
+  ask({ type: "preview", id: 2, items: [{ key: "e7", ref: first, css: {}, text: "Purchase" }] })
+  expect(shown()).toEqual(["Purchase e7", "Buy null"])
+  // Found again, it's still the one whose own text is "Buy".
+  const style = ask({ type: "style", id: 3, ref: first }) as Extract<FromFrame, { type: "style" }>
+  expect(style.style?.content).toBe("Purchase")
+})

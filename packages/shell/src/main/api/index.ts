@@ -61,7 +61,7 @@ import { accountController } from "./controllers/account.controller";
 import { commentController } from "./controllers/comment.controller";
 import { markCommentsSent } from "./services/comment.service";
 import { editController } from "./controllers/edit.controller";
-import { markEditsApplied } from "./services/edit.service";
+import { checkEditsPending, markEditsApplied, restoreApplied } from "./services/edit.service";
 
 const api = new Hono();
 
@@ -124,10 +124,19 @@ api.post(
 
     const conversation = conversationRes.value;
 
+    // The comments and edits are the workspace's, so the chat must be too.
+    if ((commentIds || editIds) && conversation.workspaceId !== workspaceId)
+      return ctx.json({ error: { code: "CONVERSATION_WORKSPACE_MISMATCH", message: "The chat is another workspace's" } }, 409);
+
+    // Checked before the comments are marked: a send refused for its edits
+    // must leave the comments as they were.
+    const pendingEdits = editIds ? checkEditsPending(workspaceId, editIds) : null;
+    if (pendingEdits?.isErr()) {
+      const { status, code, message } = pendingEdits.error;
+      return ctx.json({ error: { code, message } }, status);
+    }
+
     if (commentIds) {
-      // The comments are the workspace's, so the chat must be too.
-      if (conversation.workspaceId !== workspaceId)
-        return ctx.json({ error: { code: "CONVERSATION_WORKSPACE_MISMATCH", message: "The chat is another workspace's" } }, 409);
       const marked = await markCommentsSent(workspaceId, conversation.id, commentIds);
       if (marked.isErr()) {
         const { status, code, message } = marked.error;
@@ -136,7 +145,9 @@ api.post(
     }
 
     if (editIds) {
-      const applied = markEditsApplied(workspaceId, conversation.id, editIds);
+      // Checked above; marking the comments could have let another send
+      // take them meanwhile, so this can still refuse.
+      const applied = markEditsApplied(workspaceId, conversation.id, editIds, userMessageId);
       if (applied.isErr()) {
         const { status, code, message } = applied.error;
         return ctx.json({ error: { code, message } }, status);
@@ -359,6 +370,8 @@ api.delete(
     if (!cancelled) {
       return ctx.json({ cancelled: false });
     }
+    // Design edits it was applying are pending again.
+    restoreApplied(userMessageId);
 
     const deleted = await deleteMessage(userMessageId);
     if (deleted.isErr()) {

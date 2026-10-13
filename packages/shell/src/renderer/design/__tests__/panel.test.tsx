@@ -11,11 +11,12 @@ import type { EditedElement, EditList } from "@/shared/utils/canvas-edits";
 import type { CommentList } from "@/renderer/lib/api";
 import { queryKeys } from "@/renderer/lib/query-keys";
 import { setCanvasTool, useCommentStore } from "@/renderer/comments/store";
+import { useCommentActions } from "@/renderer/comments/use-comment-actions";
 import { useInspectorStore } from "@/renderer/inspector/store";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
 import { RightPanel } from "../RightPanel";
 import { EditBar } from "../EditBar";
-import { useDesignStore } from "../store";
+import { PANEL_W, useDesignStore } from "../store";
 
 // The right panel and the canvas's edit bar, over what the app's API holds:
 // the edits and the comments.
@@ -105,6 +106,8 @@ let root: Root;
 let host: HTMLElement;
 let client: QueryClient;
 let requests: { url: string; method: string }[];
+// While set, a send's describing the comments waits on it, then fails.
+let hold: Promise<void> | null;
 
 const render = async (edits: EditList, comments: CommentList = { comments: [], chats: [] }) => {
   client.setQueryData(queryKeys.edits.byWorkspace(WS), edits);
@@ -129,13 +132,23 @@ beforeEach(() => {
     disconnect() {}
   } as unknown as typeof ResizeObserver;
   requests = [];
+  hold = null;
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string, init?: RequestInit) => {
       const method = init?.method ?? "GET";
       requests.push({ url, method });
+      if (hold && url.endsWith("/comments/prompt")) {
+        await hold;
+        throw new Error("offline");
+      }
       // The API holds what was written here: a refetch reads it back.
       const body = url.endsWith("/edits") && method === "GET" ? client.getQueryData(queryKeys.edits.byWorkspace(WS)) : method === "PUT" ? null : {};
+      // The comments likewise, less one removed.
+      const key = queryKeys.comments.byWorkspace(WS);
+      if (method === "DELETE" && /\/comments\/\d+$/.test(url))
+        client.setQueryData<CommentList>(key, (l) => l && { ...l, comments: l.comments.filter((c) => !url.endsWith(`/comments/${c.id}`)) });
+      if (url.endsWith("/comments") && method === "GET") return new Response(JSON.stringify(client.getQueryData(key)), { status: 200 });
       return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
     }),
   );
@@ -151,8 +164,9 @@ afterEach(() => {
   act(() => root.unmount());
   setCanvasTool("pointer");
   useInspectorStore.setState({ active: false, frames: {}, selection: null, tags: [], missing: {} });
-  useDesignStore.setState({ panelOpen: true, tab: "design", read: null });
+  useDesignStore.setState({ panelOpen: true, tab: "design", read: null, width: PANEL_W.min });
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   MotionGlobalConfig.skipAnimations = false;
 });
 
@@ -277,4 +291,101 @@ it("⌥⌘B (Ctrl+Alt+B off macOS, as here) hides the panel and brings it back; 
   key({ ctrlKey: true, key: "b" });
   key({ ctrlKey: true, altKey: true, shiftKey: true });
   expect(useDesignStore.getState().panelOpen).toBe(true);
+});
+
+it("× on a comment takes it away, and only that: the tool and what's open stay", async () => {
+  act(() => setCanvasTool("inspect"));
+  await render({ edits: [], applied: [] }, { comments: [comment(1, "Bigger title")], chats: [] });
+  await press("Comments (C)");
+  await press("Delete");
+  expect(requests).toContainEqual({ url: `antidraw://app/api/workspaces/${WS}/comments/1`, method: "DELETE" });
+  expect(useInspectorStore.getState().active).toBe(true);
+  expect(useCommentStore.getState().active).toBe(false);
+  expect(useCommentStore.getState().opened).toBe(null);
+});
+
+// A value typed in, as React hears it.
+const type = (input: HTMLInputElement, value: string) => {
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+};
+
+it("a size clicked and left as it was changes nothing; typed, it's an edit", async () => {
+  // A hugging height, off the 4px grid: committed, it would go Fixed 124.
+  const card = { ...info("Card.tsx:3:5", ["card"]), rect: { x: 0, y: 0, width: 300, height: 123 } };
+  useInspectorStore.setState({ selection: { frame: "Card", info: card } });
+  act(() => setCanvasTool("inspect"));
+  useDesignStore.setState({ read: { key: JSON.stringify(["Card", "Card.tsx:3:5", 0]), style: base, text: false, seen: null } });
+  await render({ edits: [], applied: [] });
+  const height = () => host.querySelector<HTMLInputElement>('input[aria-label="Height"]')!;
+  // The field focused, typed into or not, and left.
+  const field = async (to?: string) => {
+    act(() => height().focus());
+    if (to !== undefined) act(() => type(height(), to));
+    await act(async () => {
+      height().blur();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+  };
+  await field();
+  expect(text()).toContain("No changes yet");
+  expect(requests.filter((r) => r.method === "PUT")).toEqual([]);
+  await field("132");
+  expect(text()).toContain("1 unsaved change");
+});
+
+// What another of the workspace's boxes sends: the canvas's, by ⌘↵.
+const Elsewhere = () => {
+  const { a } = useCommentActions({});
+  return (
+    <button type="button" onClick={a.send}>
+      Send from the canvas
+    </button>
+  );
+};
+
+it("the panel's Send waits while a send from the canvas is going", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  let release!: () => void;
+  hold = new Promise((resolve) => (release = resolve));
+  act(() => setCanvasTool("comment"));
+  client.setQueryData(queryKeys.edits.byWorkspace(WS), { edits: [], applied: [] });
+  client.setQueryData(queryKeys.comments.byWorkspace(WS), { comments: [comment(1, "Bigger title")], chats: [] });
+  await act(async () =>
+    root.render(
+      <QueryClientProvider client={client}>
+        <Elsewhere />
+        <RightPanel />
+      </QueryClientProvider>,
+    ),
+  );
+  expect(button("Send 1 comment to chat").disabled).toBe(false);
+  await press("Send from the canvas");
+  expect(button("Send 1 comment to chat").disabled).toBe(true);
+  // Clicked anyway: the same drafts don't go twice.
+  await act(async () => button("Send 1 comment to chat").click());
+  expect(requests.filter((r) => r.url.endsWith("/comments/prompt"))).toHaveLength(1);
+  await act(async () => {
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  });
+  expect(button("Send 1 comment to chat").disabled).toBe(false);
+});
+
+it("the panel's edge, let go over a frame, stops widening it", async () => {
+  HTMLElement.prototype.setPointerCapture ??= () => {};
+  await render({ edits: [], applied: [] });
+  const aside = host.querySelector("aside")!;
+  aside.getBoundingClientRect = () => ({ right: 1000 }) as DOMRect;
+  const edge = aside.firstElementChild!;
+  const pointer = (type: string, init: MouseEventInit) => act(() => void edge.dispatchEvent(new MouseEvent(type, { bubbles: true, ...init })));
+  pointer("pointerdown", { button: 0, buttons: 1, clientX: 744 });
+  pointer("pointermove", { buttons: 1, clientX: 700 });
+  expect(aside.style.width).toBe("300px");
+  // The release went to the frame's iframe: the next move comes with no button down.
+  pointer("pointermove", { buttons: 0, clientX: 650 });
+  expect(useDesignStore.getState().width).toBe(300);
+  expect(document.body.style.cursor).toBe("");
+  pointer("pointermove", { buttons: 0, clientX: 600 });
+  expect(aside.style.width).toBe("300px");
 });

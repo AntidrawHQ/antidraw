@@ -226,12 +226,14 @@ export const EditBar = () => {
                 The agent is applying {count} {count === 1 ? "change" : "changes"}
                 {els > 1 && <span className="text-white/45"> on {els} elements</span>}…
               </span>
+              {/* Not before the API has the set: only its number can let it go. */}
               <button
                 type="button"
                 onClick={() => d.release(a.id)}
+                disabled={a.id < 0}
                 title="Stop previewing them"
                 aria-label="Stop previewing them"
-                className="grid size-6 cursor-pointer place-items-center rounded-md text-white/45 hover:bg-white/[0.08] hover:text-white"
+                className="grid size-6 cursor-pointer place-items-center rounded-md text-white/45 hover:bg-white/[0.08] hover:text-white disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent"
               >
                 <X className="size-3.5" />
               </button>
