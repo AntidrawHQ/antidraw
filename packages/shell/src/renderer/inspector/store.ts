@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { ElementInfo } from "@/agent/protocol";
+import type { ElementContext, ElementInfo } from "@/agent/protocol";
 import { useWorkspaceStore } from "../store/workspace";
 
 // What the canvas inspector knows: which frames can answer it, the selected
