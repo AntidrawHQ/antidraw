@@ -129,6 +129,26 @@ const contextOf = (el: Element) => {
   return (ask({ type: "context", id: 2, refs: [ref] }).msg as Extract<FromFrame, { type: "context" }>).contexts[0]
 }
 
+test("finds a list item again by its text when an item above it is gone, which moves its index and path alike", () => {
+  container.innerHTML = `<ul data-ad-loc="${OWN}:3:5">${["Buy milk", "Walk dog", "Pay rent"].map((t) => `<li data-ad-loc="${OWN}:4:7">${t}</li>`).join("")}</ul>`
+  const ref = pick(container.querySelectorAll("li")[1]!).info!.ref
+  container.querySelector("li")!.remove()
+  expect(ask({ type: "context", id: 2, refs: [ref] }).msg).toMatchObject({ contexts: [{ text: "Walk dog" }] })
+})
+
+test("counts an element that's alone in its row of a list as its row's only one, inside the row's count", () => {
+  const row = (tags: string[]) => `<section data-ad-loc="${OWN}:4:7">${tags.map((t) => `<b data-ad-loc="${OWN}:5:9">${t}</b>`).join("")}</section>`
+  container.innerHTML = `<div data-ad-loc="${OWN}:3:5">${row(["a", "b"])}${row(["c"])}</div>`
+  expect(contextOf(container.querySelectorAll("b")[2]!)!.repeat).toEqual([
+    { loc: `${OWN}:5:9`, index: 0, count: 1 },
+    { loc: `${OWN}:4:7`, index: 1, count: 2 },
+  ])
+  expect(contextOf(container.querySelectorAll("b")[1]!)!.repeat).toEqual([
+    { loc: `${OWN}:5:9`, index: 1, count: 2 },
+    { loc: `${OWN}:4:7`, index: 0, count: 2 },
+  ])
+})
+
 test("tells an agent what an element is, with where it's written, as its markup", () => {
   $(".btn").setAttribute("data-slot", "button")
   $(".btn").setAttribute("aria-expanded", "false")

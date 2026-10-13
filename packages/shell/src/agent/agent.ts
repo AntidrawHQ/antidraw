@@ -144,7 +144,9 @@ export function startInspector(container: HTMLElement, componentName: string): (
   // location below it, so the old one can name the element written above,
   // of the same kind: when the two disagree, the one whose text is still
   // the ref's wins, and the location otherwise (a sibling shown or hidden
-  // moves the path, not the location).
+  // moves the path, not the location). When they agree on one whose text
+  // isn't the ref's, an item removed or moved above it in a .map() shifted
+  // both: the one element written there that still has the ref's text is it.
   const find = (ref: ElementRef): Element | null => {
     const same = (el: Element | null | undefined): el is Element => inside(el ?? null) && el!.localName === ref.tag
     let byLoc: Element | null = null
@@ -157,8 +159,12 @@ export function startInspector(container: HTMLElement, componentName: string): (
     let node: Element | undefined = portaled ? document.body : container
     for (const i of portaled ? ref.path.slice(1) : ref.path) node = node?.children[i]
     const byPath = same(node) ? node : null
-    if (!byLoc || !byPath || byLoc === byPath || ref.text === undefined) return byLoc ?? byPath
-    return textOf(byLoc) !== ref.text && textOf(byPath) === ref.text ? byPath : byLoc
+    if (ref.text === undefined) return byLoc ?? byPath
+    if (byLoc && byPath && byLoc !== byPath && textOf(byLoc) !== ref.text && textOf(byPath) === ref.text) return byPath
+    const found = byLoc ?? byPath
+    if (!found || !ref.loc || textOf(found) === ref.text) return found
+    const moved = withLoc(ref.loc).filter((el) => same(el) && textOf(el) === ref.text)
+    return moved.length === 1 ? moved[0]! : found
   }
 
   const callsiteOf = (el: Element) => {
@@ -227,7 +233,9 @@ export function startInspector(container: HTMLElement, componentName: string): (
   // Written in the previewed component, one of several rendered from there:
   // a .map()'s items. Counted inside the nearest item of a list around it,
   // so a list in a list counts each inner list on its own, and that outer
-  // item is said too, out to the outermost list.
+  // item is said too, out to the outermost list. Its own count is kept even
+  // when it's 1 (the only tag in its row) if a list is around it, so the
+  // first level is always where it's written.
   const repeatOf = (anchor: Element): ElementContext["repeat"] => {
     if (!inOwnFile(anchor)) return []
     const isItem = (node: Element) => located(node) && inOwnFile(node) && withLoc(locOf(node)).length > 1
@@ -240,11 +248,11 @@ export function startInspector(container: HTMLElement, componentName: string): (
           scope = node
           break
         }
-      const { index, count } = ordinal(item, scope)
-      if (count > 1) levels.push({ loc: locOf(item), index, count })
+      levels.push({ loc: locOf(item), ...ordinal(item, scope) })
       item = scope
     }
-    return levels
+    const kept = levels.filter((l, i) => i === 0 || l.count > 1)
+    return kept.length > 1 || (kept[0]?.count ?? 0) > 1 ? kept : []
   }
 
   // One with no location of its own (a library rendered it): which of the

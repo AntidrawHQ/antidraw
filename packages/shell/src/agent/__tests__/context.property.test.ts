@@ -309,11 +309,11 @@ const truth = (rendered: Rendered[]) => {
     const levels: { loc: string; index: number; count: number }[] = []
     for (let item: Rendered | null = a; item; ) {
       const scope: Rendered | null = arounds(item).find(isItem) ?? null
-      const { index, count } = ordinal(item, scope)
-      if (count > 1) levels.push({ loc: item.loc!, index, count })
+      levels.push({ loc: item.loc!, ...ordinal(item, scope) })
       item = scope
     }
-    return levels
+    const kept = levels.filter((l, i) => i === 0 || l.count > 1)
+    return kept.length > 1 || (kept[0]?.count ?? 0) > 1 ? kept : []
   }
   const path = (a: Rendered) => {
     if (isOwn(a)) return []
