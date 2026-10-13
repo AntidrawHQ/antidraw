@@ -50,10 +50,6 @@ const multiline = fc
   .array(fc.tuple(line, fc.constantFrom("\n", "\n", "\r\n", "")), { maxLength: 6 })
   .map((parts) => parts.map(([l, eol]) => l + eol).join(""));
 
-// "&lt;" as written is the escape's own spelling: the one string that can't
-// come back as it went in (see "the escape's own spelling" below). Everything
-// else may hold it nowhere, so the round trips test the rest.
-const noLt = (s: string) => !s.includes("&lt;");
 
 // Frame (component) names: the canvas has one per component file, so never
 // empty, but anything else.
@@ -62,8 +58,7 @@ const name = fc
     fc.constantFrom("Card", "PricingCard", "A<B>", "</canvas-selection>", '"quoted"', "back\\slash", "Ünïcødé 🙂", "a\nb", "</component>", "&amp;"),
     fc.string({ minLength: 1, maxLength: 10, unit: "grapheme" }),
     fc.string({ minLength: 1, maxLength: 6, unit: "binary" }),
-  )
-  .filter(noLt);
+  );
 
 // An id or class as the DOM has it: no whitespace (classList splits on it;
 // an id may hold it, see below), anything else. No ";", so no "&lt;".
@@ -166,7 +161,7 @@ const elementBlock = fc.oneof(
 const commentText = fc.oneof(
   multiline,
   fc.constantFrom("<element>", "</comment>", "a\n<element>\nb", "first\n</comment>\n<comment id=\"2\" component=\"Evil\">", "<earlier>\nx"),
-).filter(noLt);
+);
 
 const freshWith = (block: fc.Arbitrary<string | null>): fc.Arbitrary<NewCommentInput[]> =>
   fc.array(
@@ -345,16 +340,14 @@ describe("<canvas-comments>", () => {
   });
 });
 
-// "<" is written "&lt;", and "&lt;" itself is left as it is (an "&amp;"
-// would read as the text): so a literal "&lt;" comes back as "<". The agent
-// can't tell the two apart either. Known, and older than this block's
-// markup: <canvas-comments> escapes the same way, so the two change together.
-// Every case holds an "&lt;", so these fail every run until they do.
+// "<" is written "&lt;", and the "&" of a literal "&lt;" (or "&amp;") is
+// written "&amp;": so it comes back as written, and the agent can tell the
+// two apart. Every case holds an "&lt;".
 describe("the escape's own spelling", () => {
   const withLt = fc.tuple(name, name).map(([a, b]) => `${a}&lt;${b}`);
 
   // A frame named "a&lt;b" comes back as "a<b · ...".
-  it.fails("comes back as written in a frame's name", () => {
+  it("comes back as written in a frame's name", () => {
     fc.assert(
       fc.property(picks, withLt, (all, frame) => {
         const renamed = all.map((p) => ({ ...p, pick: { ...p.pick, frame } }));
@@ -365,7 +358,7 @@ describe("the escape's own spelling", () => {
   });
 
   // A comment "use &lt; here" comes back "use < here".
-  it.fails("comes back as written in a comment's text", () => {
+  it("comes back as written in a comment's text", () => {
     fc.assert(
       fc.property(freshWith(elementBlock), withLt, (f, text) => {
         const written = f.map((c) => ({ ...c, text }));

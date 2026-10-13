@@ -124,7 +124,10 @@ export const CommentCard = ({ f, id, editing, a, onClose }: { f: Flow; id: numbe
           value={v}
           onChange={(e) => setV(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Escape") return cancel();
+            if (e.key === "Escape") {
+              e.preventDefault();
+              return cancel();
+            }
             if (e.nativeEvent.isComposing || e.keyCode === 229 || e.key !== "Enter" || e.shiftKey) return;
             e.preventDefault();
             save();

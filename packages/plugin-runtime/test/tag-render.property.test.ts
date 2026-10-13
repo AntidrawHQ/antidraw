@@ -994,7 +994,7 @@ export default function Gen() {
 let serverDir: string
 beforeAll(() => {
   // Inside the package, so the server finds React in node_modules.
-  serverDir = fs.mkdtempSync(path.join(here, ".tag-render-"))
+  serverDir = fs.mkdtempSync(path.join(here, ".tmp-tag-render-"))
   for (const [file, code] of Object.entries(SERVER_FILES)) {
     fs.mkdirSync(path.dirname(path.join(serverDir, file)), { recursive: true })
     fs.writeFileSync(path.join(serverDir, file), code)

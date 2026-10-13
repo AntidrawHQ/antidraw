@@ -89,7 +89,14 @@ export const useCommentActions = ({ model, effort }: { model?: string; effort?: 
       }
       setBox(null);
     },
-    send: () => void sendDrafts().catch(console.error),
+    // The chat it went into is shown, as a frame window's send shows it: the
+    // panel may be on the chat list, the components, or folded away.
+    send: () =>
+      void sendDrafts()
+        .then((id) => {
+          if (id && useWorkspaceStore.getState().activeWorkspaceId === workspaceId) showConversation(id);
+        })
+        .catch(console.error),
     remove: (id) => {
       closeIf(id);
       removeComment.mutate(id);

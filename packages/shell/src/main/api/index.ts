@@ -118,6 +118,9 @@ api.post(
     const conversation = conversationRes.value;
 
     if (commentIds) {
+      // The comments are the workspace's, so the chat must be too.
+      if (conversation.workspaceId !== workspaceId)
+        return ctx.json({ error: { code: "CONVERSATION_WORKSPACE_MISMATCH", message: "The chat is another workspace's" } }, 409);
       const marked = await markCommentsSent(workspaceId, conversation.id, commentIds);
       if (marked.isErr()) {
         const { status, code, message } = marked.error;

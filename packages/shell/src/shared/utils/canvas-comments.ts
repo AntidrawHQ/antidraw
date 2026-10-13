@@ -5,10 +5,12 @@
 // prompt (main/api/claude-code-ops.ts) says what each part means, and how to
 // report back.
 
-// Inside the block, nothing may read as a tag. Only "<" is escaped, as in
-// the renderer's <canvas-selection> (renderer/inspector/tags.ts).
-const escape = (v: string) => v.replace(/</g, "&lt;");
-const unescape = (v: string) => v.replace(/&lt;/g, "<");
+// Inside the block, nothing may read as a tag. Only "<" is escaped, and an
+// "&" only where it starts an escape's spelling ("&lt;", "&amp;"), so a
+// literal "&lt;" comes back as written; as in the renderer's
+// <canvas-selection> (renderer/inspector/tags.ts).
+const escape = (v: string) => v.replace(/&(?=lt;|amp;)/g, "&amp;").replace(/</g, "&lt;");
+const unescape = (v: string) => v.replace(/&(lt|amp);/g, (_, e: string) => (e === "lt" ? "<" : "&"));
 const attr = (name: string, value: string | null | undefined) =>
   value ? ` ${name}=${JSON.stringify(escape(value))}` : "";
 

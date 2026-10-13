@@ -16,7 +16,7 @@ export const completeCommentTool = (conversationId: string) =>
       "user about instead of acting on. Marking one again replaces its note.",
     {
       id: z.number().int().describe("The comment's id, from <comment id>"),
-      note: z.string().min(1).describe("One line on what changed"),
+      note: z.string().trim().min(1).describe("One line on what changed"),
     },
     async ({ id, note }) => {
       const result = await completeComment(conversationId, id, note);

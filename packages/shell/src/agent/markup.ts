@@ -30,7 +30,7 @@ const escapeText = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;")
 const escapeValue = (s: string) => s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;")
 
 // A field whose value isn't the agent's to read.
-const SECRET_AUTOCOMPLETE = /\b(cc-|current-password|new-password|one-time-code)/
+const SECRET_AUTOCOMPLETE = /\b(cc-|current-password|new-password|one-time-code)/i
 const isSecret = (el: HTMLInputElement) =>
   el.type === "password" || el.type === "hidden" || SECRET_AUTOCOMPLETE.test(el.getAttribute("autocomplete") ?? "")
 

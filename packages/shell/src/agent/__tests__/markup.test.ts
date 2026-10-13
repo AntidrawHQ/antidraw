@@ -90,6 +90,7 @@ test("gives what a form holds as it is on screen, but a secret's value", () => {
     <input type="password" value="hunter2">
     <input type="hidden" name="csrf" value="tok_SECRET">
     <input autocomplete="cc-number" value="4111111111111111">
+    <input autocomplete="section-pay billing CC-CSC" value="123">
     <select><option value="a" selected>A</option><option value="b">B</option></select>
     <textarea>first draft</textarea>
   </form>`)
@@ -105,6 +106,7 @@ test("gives what a form holds as it is on screen, but a secret's value", () => {
       <input type="password">
       <input type="hidden" name="csrf">
       <input autocomplete="cc-number">
+      <input autocomplete="section-pay billing CC-CSC">
       <select>
         <option value="a">A</option>
         <option value="b" selected>B</option>

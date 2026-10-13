@@ -13,12 +13,14 @@ export const elementName = (info: ElementInfo) =>
   info.tag + (info.id ? `#${info.id}` : "") + info.classes.map((c) => `.${c}`).join("");
 
 // Inside the block, nothing may read as a tag. Only "<" is escaped: the
-// values are quoted, not XML, and an "&amp;" would read as the text. The
+// values are quoted, not XML, and an "&amp;" for every "&" would read as the
+// text. An "&" is escaped only where it starts an escape's spelling ("&lt;",
+// "&amp;"), so a literal "&lt;" comes back as written. The
 // element's markup is the exception, being markup: its "<" is a tag's and
 // its text's is escaped, and each line of it is indented, so none starts
 // with one. A line break in a one-line field (an id may hold one) would
 // start a line of its own, so it reads as a space.
-const escape = (v: string) => v.replace(/</g, "&lt;");
+const escape = (v: string) => v.replace(/&(?=lt;|amp;)/g, "&amp;").replace(/</g, "&lt;");
 const oneLine = (v: string) => v.replace(/\r\n|[\r\n]/g, " ");
 const quote = (v: string) => JSON.stringify(v);
 
@@ -119,7 +121,7 @@ export function describeTags(picks: { pick: Picked; context: ElementContext | nu
 // A sent message as the user wrote it: the block the tags put ahead of it
 // read back into the elements it names ("Card · button.btn"), and the rest.
 const BLOCK_RE = /^<canvas-selection>\n([\s\S]*?)\n<\/canvas-selection>(?:\n\n|$)/;
-const unescape = (v: string) => v.replace(/&lt;/g, "<");
+const unescape = (v: string) => v.replace(/&(lt|amp);/g, (_, e: string) => (e === "lt" ? "<" : "&"));
 
 export function splitTagged(message: string): { tags: string[]; text: string } {
   const block = BLOCK_RE.exec(message);

@@ -37,7 +37,11 @@ export const CommentBoxAt = ({ at, add, send, preset = "", onClose }: { at: At; 
     el.style.height = `${el.scrollHeight}px`;
   }, [v]);
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Escape") return onClose?.();
+    // Handled here: See Code's panel closes on an Escape nobody took.
+    if (e.key === "Escape") {
+      e.preventDefault();
+      return onClose?.();
+    }
     if (e.nativeEvent.isComposing || e.keyCode === 229 || e.key !== "Enter" || e.shiftKey) return;
     e.preventDefault();
     add(v);
