@@ -60,11 +60,14 @@ import { claudeCliInteractionsController } from "./controllers/claude-cli-intera
 import { accountController } from "./controllers/account.controller";
 import { commentController } from "./controllers/comment.controller";
 import { markCommentsSent } from "./services/comment.service";
+import { editController } from "./controllers/edit.controller";
+import { checkEditsPending, markEditsApplied, restoreApplied } from "./services/edit.service";
 
 const api = new Hono();
 
 api.route("/workspaces", workspaceController);
 api.route("/workspaces", commentController);
+api.route("/workspaces", editController);
 api.route("/preferences", preferenceController);
 api.route("/claude-cli", claudeCliInteractionsController);
 api.route("/account", accountController);
@@ -94,6 +97,10 @@ const chatMessageSchema = z.object({
   // POST /comments/prompt): marked sent into this chat before the turn
   // starts, or the send is refused.
   commentIds: z.array(z.number().int()).min(1).optional(),
+  // Design edits the message applies (a <canvas-edits> block from POST
+  // /edits/prompt): handed to this chat before the turn starts, or the send
+  // is refused.
+  editIds: z.array(z.number().int()).min(1).optional(),
 });
 
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
@@ -102,7 +109,7 @@ api.post(
   "/chat/message",
   zValidator("json", chatMessageSchema),
   async (ctx) => {
-    const { message, workspaceId, conversationId, userMessageId, images, model, effort, commentIds } =
+    const { message, workspaceId, conversationId, userMessageId, images, model, effort, commentIds, editIds } =
       ctx.req.valid("json");
 
     const conversationRes = await resolveOrCreateConversation(
@@ -117,13 +124,32 @@ api.post(
 
     const conversation = conversationRes.value;
 
+    // The comments and edits are the workspace's, so the chat must be too.
+    if ((commentIds || editIds) && conversation.workspaceId !== workspaceId)
+      return ctx.json({ error: { code: "CONVERSATION_WORKSPACE_MISMATCH", message: "The chat is another workspace's" } }, 409);
+
+    // Checked before the comments are marked: a send refused for its edits
+    // must leave the comments as they were.
+    const pendingEdits = editIds ? checkEditsPending(workspaceId, editIds) : null;
+    if (pendingEdits?.isErr()) {
+      const { status, code, message } = pendingEdits.error;
+      return ctx.json({ error: { code, message } }, status);
+    }
+
     if (commentIds) {
-      // The comments are the workspace's, so the chat must be too.
-      if (conversation.workspaceId !== workspaceId)
-        return ctx.json({ error: { code: "CONVERSATION_WORKSPACE_MISMATCH", message: "The chat is another workspace's" } }, 409);
       const marked = await markCommentsSent(workspaceId, conversation.id, commentIds);
       if (marked.isErr()) {
         const { status, code, message } = marked.error;
+        return ctx.json({ error: { code, message } }, status);
+      }
+    }
+
+    if (editIds) {
+      // Checked above; marking the comments could have let another send
+      // take them meanwhile, so this can still refuse.
+      const applied = markEditsApplied(workspaceId, conversation.id, editIds, userMessageId);
+      if (applied.isErr()) {
+        const { status, code, message } = applied.error;
         return ctx.json({ error: { code, message } }, status);
       }
     }
@@ -344,6 +370,8 @@ api.delete(
     if (!cancelled) {
       return ctx.json({ cancelled: false });
     }
+    // Design edits it was applying are pending again.
+    restoreApplied(userMessageId);
 
     const deleted = await deleteMessage(userMessageId);
     if (deleted.isErr()) {

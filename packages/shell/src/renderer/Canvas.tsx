@@ -14,6 +14,9 @@ import { InspectorControls } from "./inspector/InspectorControls";
 import { CommentFlow, renderFrameComments } from "./comments/CommentFlow";
 import { CommentControls } from "./comments/CommentControls";
 import { useCanvasTool } from "./comments/store";
+import { RightPanel, ShowPanel } from "./design/RightPanel";
+import { EditBar } from "./design/EditBar";
+import { DesignSync } from "./design/use-design";
 
 // Over each frame: the tools (the inspector's and the Comment tool's).
 const renderFrameLayers: FrameLayer = (frame) => (
@@ -89,6 +92,9 @@ const WorkspaceCanvas = ({
       <InspectorControls />
       <CommentControls />
       <CommentFlow />
+      <DesignSync />
+      <EditBar />
+      <ShowPanel />
       <CanvasToolbar />
     </Canvas>
   );
@@ -160,15 +166,19 @@ export const AppCanvas = ({ className }: AppCanvasProps) => {
     );
   }
 
+  // The right panel (Design, Comments) beside the frames.
   return (
     <ReactFlowProvider>
-      <WorkspaceCanvas
-        workspaceId={activeWorkspaceId}
-        userComponents={userComponents}
-        port={devServer.port}
-        savedLayouts={frameLayouts}
-        className={className}
-      />
+      <div className={cn("flex min-w-0", className)}>
+        <WorkspaceCanvas
+          workspaceId={activeWorkspaceId}
+          userComponents={userComponents}
+          port={devServer.port}
+          savedLayouts={frameLayouts}
+          className="min-w-0 flex-1"
+        />
+        <RightPanel />
+      </div>
     </ReactFlowProvider>
   );
 };

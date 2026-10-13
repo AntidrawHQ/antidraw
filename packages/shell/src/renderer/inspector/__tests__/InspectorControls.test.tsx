@@ -43,7 +43,7 @@ afterEach(() => {
 });
 
 // Presses a key at a target; says whether the inspector took it and what's left.
-const press = (
+const press = async (
   key: string,
   target: Element,
   { handledBy, inspecting = true }: { handledBy?: "a menu"; inspecting?: boolean } = {},
@@ -53,7 +53,8 @@ const press = (
   const layer = (e: KeyboardEvent) => e.preventDefault();
   if (handledBy) document.addEventListener("keydown", layer, true);
   const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
-  act(() => void target.dispatchEvent(event));
+  // Enter tags once the frame has said what it sees (tagSelection).
+  await act(async () => void target.dispatchEvent(event));
   document.removeEventListener("keydown", layer, true);
   const s = useInspectorStore.getState();
   const where = target === document.body ? "nothing focused" : target === canvas ? "the canvas" : "a menu";
@@ -63,20 +64,20 @@ const press = (
   }, ${s.active ? "inspecting" : "not inspecting"}, ${s.tags.length} tagged`;
 };
 
-it("takes keys on the canvas and with nothing focused, and leaves a menu's alone", () => {
+it("takes keys on the canvas and with nothing focused, and leaves a menu's alone", async () => {
   expect([
-    press("Escape", document.body),
-    press("Escape", canvas),
-    press("Escape", menu),
-    press("Escape", canvas, { handledBy: "a menu" }),
-    press("Enter", canvas),
-    press("Enter", menu),
-    press("i", menu, { inspecting: false }),
-    press("i", document.body, { inspecting: false }),
-    press("i", document.body),
-    press("v", menu),
-    press("v", canvas),
-    press("v", document.body, { inspecting: false }),
+    await press("Escape", document.body),
+    await press("Escape", canvas),
+    await press("Escape", menu),
+    await press("Escape", canvas, { handledBy: "a menu" }),
+    await press("Enter", canvas),
+    await press("Enter", menu),
+    await press("i", menu, { inspecting: false }),
+    await press("i", document.body, { inspecting: false }),
+    await press("i", document.body),
+    await press("v", menu),
+    await press("v", canvas),
+    await press("v", document.body, { inspecting: false }),
   ]).toMatchInlineSnapshot(`
     [
       "Escape on nothing focused: cleared, inspecting, 0 tagged",

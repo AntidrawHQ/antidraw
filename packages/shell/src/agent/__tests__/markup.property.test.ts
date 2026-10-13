@@ -2,6 +2,7 @@
 import fc from "fast-check"
 import { expect, test } from "vitest"
 import { markupOf, openingTag } from "../markup"
+import { EDIT_ATTRIBUTE } from "../protocol"
 
 // Random DOM trees through the markup an agent is given. Each case is a model
 // of a tree, built with the DOM API the way a page's script builds it: text
@@ -179,6 +180,8 @@ const attrs = fc.uniqueArray(
       "title",
       "hidden",
       "role",
+      // The agent's own, on an element whose design edits it previews.
+      EDIT_ATTRIBUTE,
     ),
     value,
   }),
@@ -377,8 +380,9 @@ const shownable = (el: Element) =>
   )
 const isToggle = (el: Element): el is HTMLInputElement =>
   el instanceof HTMLInputElement && (el.type === "checkbox" || el.type === "radio")
+// The agent's own attribute isn't the page's: never shown.
 const attributesOf = (el: Element) => {
-  const all = [...el.attributes].map((a) => [a.name, a.value] as const)
+  const all = [...el.attributes].filter((a) => a.name !== EDIT_ATTRIBUTE).map((a) => [a.name, a.value] as const)
   if (!isToggle(el)) return all
   return [...all.filter(([name]) => name !== "checked"), ...(el.checked ? [["checked", ""] as const] : [])]
 }
@@ -763,4 +767,6 @@ test("generates the cases that matter", () => {
       tag,
     ).toBeGreaterThan(10)
   }
+  // The agent's own attribute, which must never be shown.
+  expect(seen((s) => s.all.some((el) => el.hasAttribute(EDIT_ATTRIBUTE)))).toBeGreaterThan(25)
 })

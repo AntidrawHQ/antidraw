@@ -9,6 +9,7 @@ import {
   onFrameWheel,
   registerFrame,
   setFrameTool,
+  tagSelection,
   trackElements,
   walk,
 } from "../bridge";
@@ -64,7 +65,6 @@ const frameSays = (msg: FromFrame, { origin = ORIGIN, source = iframe.contentWin
 const lastAsked = () => asked.at(-1)!.msg as { type: string; id: number };
 // The frame's agent answering.
 const frameIsReady = () => frameSays({ type: "ready", componentName: "Card", tagged: true });
-const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 beforeEach(() => {
   useInspectorStore.setState({ active: true, frames: {}, selection: null, tags: [] });
@@ -213,52 +213,52 @@ it("follows the selection the frame reports, and gives it back after a reload", 
   expect(useInspectorStore.getState().selection).toBeNull();
 });
 
-it("sends tags grouped by component, as their frames describe them now, or as last seen", async () => {
+it("sends tags grouped by component, as their frames saw them when tagged, or as last seen", () => {
   frameIsReady();
-  const buy = { frame: "Card", info: info() };
-  // A frame that isn't on the canvas any more can't answer.
-  const price = { frame: "Pricing", info: info({ tag: "p", classes: ["price"], text: "$12", callsite: null, ref: { loc: "src/components/user-components/Pricing.tsx:9:7", index: 0, path: [3], tag: "p" } }) };
-  const title = { frame: "Card", info: info() };
+  const buy = {
+    frame: "Card",
+    info: info(),
+    seen: context({
+      html: [
+        `<button data-ad-loc="src/components/ui/button.tsx:3:5" class="btn" data-slot="button" aria-expanded="false">`,
+        `  <svg class="lucide lucide-arrow-right">…</svg>`,
+        `  Buy`,
+        `</button>`,
+      ].join("\n"),
+      path: [
+        { loc: "src/components/ui/button.tsx:3:5", index: 0, count: 1 },
+        { loc: "src/components/PlanCard.tsx:3:5", index: 1, count: 2 },
+        { loc: `${OWN}:11:7`, index: 0, count: 1 },
+      ],
+      margin: [0, 0, 12, 0],
+      border: [1, 1, 1, 1],
+      padding: [8, 16, 8, 16],
+    }),
+  };
+  // Its frame couldn't say when it was tagged.
+  const price = { frame: "Pricing", info: info({ tag: "p", classes: ["price"], text: "$12", callsite: null, ref: { loc: "src/components/user-components/Pricing.tsx:9:7", index: 0, path: [3], tag: "p" } }), seen: null };
+  const title = {
+    frame: "Card",
+    info: info(),
+    seen: context({
+      element: "h3.title",
+      html: `<h3 data-ad-loc="${OWN}:4:7" class="title">Pro plan</h3>`,
+      text: "Pro plan",
+      path: [],
+      repeat: [
+        { loc: `${OWN}:4:7`, index: 0, count: 3 },
+        { loc: `${OWN}:2:5`, index: 1, count: 2 },
+      ],
+      size: [268, 24],
+    }),
+  };
   useInspectorStore.setState({ tags: [buy, price, title] });
-  const taking = describePendingTags().then((t) => t.block);
-  // Still tagged until the message is on its way.
+  const before = asked.length;
+  const { block } = describePendingTags();
+  // Still tagged until the message is on its way, and no frame is asked again.
   expect(useInspectorStore.getState().tags).toEqual([buy, price, title]);
-  expect(lastAsked()).toMatchObject({ type: "context", refs: [buy.info.ref, title.info.ref] });
-  frameSays({
-    type: "context",
-    id: lastAsked().id,
-    contexts: [
-      context({
-        html: [
-          `<button data-ad-loc="src/components/ui/button.tsx:3:5" class="btn" data-slot="button" aria-expanded="false">`,
-          `  <svg class="lucide lucide-arrow-right">…</svg>`,
-          `  Buy`,
-          `</button>`,
-        ].join("\n"),
-        path: [
-          { loc: "src/components/ui/button.tsx:3:5", index: 0, count: 1 },
-          { loc: "src/components/PlanCard.tsx:3:5", index: 1, count: 2 },
-          { loc: `${OWN}:11:7`, index: 0, count: 1 },
-        ],
-        margin: [0, 0, 12, 0],
-        border: [1, 1, 1, 1],
-        padding: [8, 16, 8, 16],
-      }),
-      context({
-        element: "h3.title",
-        html: `<h3 data-ad-loc="${OWN}:4:7" class="title">Pro plan</h3>`,
-        text: "Pro plan",
-        path: [],
-        repeat: [
-          { loc: `${OWN}:4:7`, index: 0, count: 3 },
-          { loc: `${OWN}:2:5`, index: 1, count: 2 },
-        ],
-        size: [268, 24],
-      }),
-    ],
-  });
-  await settle();
-  expect(await taking).toMatchInlineSnapshot(`
+  expect(asked.length).toBe(before);
+  expect(block).toMatchInlineSnapshot(`
     "<canvas-selection>
     <component name="Card" file="src/components/user-components/Card.tsx" preview="https://frame.test/preview?componentName=Card" frame="1280×800">
     <element>
@@ -290,21 +290,24 @@ it("sends tags grouped by component, as their frames describe them now, or as la
   `);
 });
 
-it("describes a pick its live frame can't find any more as last seen, in its place", async () => {
+it("tags the selection as its frame sees it then, or as last seen where the frame can't find it", async () => {
   frameIsReady();
-  const buy = { frame: "Card", info: info() };
-  const gone = { frame: "Card", info: info({ tag: "p", classes: [], text: "Billed yearly", ref: { loc: `${OWN}:9:7`, index: 0, path: [3], tag: "p" } }) };
-  const title = { frame: "Card", info: info() };
-  useInspectorStore.setState({ tags: [buy, gone, title] });
-  const taking = describePendingTags().then((t) => t.block);
-  expect(lastAsked()).toMatchObject({ type: "context", refs: [buy.info.ref, gone.info.ref, title.info.ref] });
-  frameSays({
-    type: "context",
-    id: lastAsked().id,
-    contexts: [context(), null, context({ element: "h3.title", html: `<h3 data-ad-loc="${OWN}:4:7" class="title">Pro plan</h3>` })],
-  });
-  await settle();
-  expect(await taking).toMatchInlineSnapshot(`
+  const tag = async (pick: { frame: string; info: ElementInfo }, seen: ElementContext | null) => {
+    useInspectorStore.setState({ selection: pick });
+    const tagging = tagSelection();
+    expect(lastAsked()).toMatchObject({ type: "context", refs: [pick.info.ref] });
+    frameSays({ type: "context", id: lastAsked().id, contexts: [seen] });
+    await tagging;
+  };
+  await tag({ frame: "Card", info: info() }, context());
+  await tag({ frame: "Card", info: info({ tag: "p", classes: [], text: "Billed yearly", ref: { loc: `${OWN}:9:7`, index: 0, path: [3], tag: "p" } }) }, null);
+  await tag(
+    { frame: "Card", info: info({ ref: { loc: `${OWN}:4:7`, index: 1, path: [0, 1], tag: "h3" } }) },
+    context({ element: "h3.title", html: `<h3 data-ad-loc="${OWN}:4:7" class="title">Pro plan</h3>` }),
+  );
+  // A later answer doesn't change what was tagged.
+  const before = asked.length;
+  expect(describePendingTags().block).toMatchInlineSnapshot(`
     "<canvas-selection>
     <component name="Card" file="src/components/user-components/Card.tsx" preview="https://frame.test/preview?componentName=Card" frame="1280×800">
     <element>
@@ -330,14 +333,16 @@ it("describes a pick its live frame can't find any more as last seen, in its pla
     </component>
     </canvas-selection>"
   `);
+  expect(asked.length).toBe(before);
 });
 
-it("asks only a frame whose agent is there, and describes the rest as last seen", async () => {
+it("asks only a frame whose agent is there, and tags the rest as last seen", async () => {
   const before = asked.length;
-  useInspectorStore.setState({ tags: [{ frame: "Card", info: info() }] });
-  const block = (await describePendingTags()).block;
+  useInspectorStore.setState({ selection: { frame: "Card", info: info() } });
+  await tagSelection();
   expect(asked.length).toBe(before);
-  expect(block).toContain("(as last seen: the frame didn't answer)");
+  expect(useInspectorStore.getState().tags).toEqual([{ frame: "Card", info: info(), seen: null }]);
+  expect(describePendingTags().block).toContain("(as last seen: the frame didn't answer)");
 });
 
 it("places an element without a location of its own, with nothing in it read as a tag", () => {

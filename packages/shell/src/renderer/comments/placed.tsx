@@ -3,7 +3,6 @@ import { ArrowUpRight, Pencil } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
 import { beside as besideAt, BOX, FLOAT, floatShadow, Kbd, TextBtn } from "./pieces";
 import { LABEL, type Actions, type Cmt, type Flow } from "./model";
-import { TRAY_W } from "./CommentTray";
 import type { Pos } from "./store";
 
 // The pins and the open comment, where their frames are: on the canvas
@@ -94,9 +93,9 @@ export const CommentCard = ({ f, id, editing, a, onClose }: { f: Flow; id: numbe
   const { width: w } = useContext(PlacementContext);
   if (!c) return null;
   // Its frame isn't on the canvas (the component's gone, often by the
-  // comment's own doing): beside the list instead, at the top, inside the
-  // canvas.
-  const { left, top } = at ?? { left: Math.max(16, w - 16 - TRAY_W - 8 - BOX), top: 16 };
+  // comment's own doing): at the canvas's top right instead, by the panel
+  // that lists it.
+  const { left, top } = at ?? { left: Math.max(16, w - 16 - BOX), top: 16 };
   const save = () => {
     // Emptied, it's gone, and so is its card.
     if (!v.trim()) return a.remove(c.id);

@@ -5,6 +5,13 @@
   font-display: swap;
 }
 
+@font-face {
+  font-family: "Geist Mono";
+  src: url("./assets/GeistMono-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+
 @import "tailwindcss";
 @import "tw-animate-css";
 
@@ -268,4 +275,33 @@ pre.shiki {
   /* Within sonner's 200ms before it unmounts a removed toast. */
   animation: toast-slide-out-right 200ms cubic-bezier(0.55, 0, 0.55, 0.2)
     forwards;
+}
+
+/* The right panel's (design/): DialKit's faces, the shimmer for work in
+   progress, and a thin scrollbar. */
+.dk-root {
+  font-family: "Geist Sans", "Geist", -apple-system, BlinkMacSystemFont, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.dk-mono {
+  font-family: "Geist Mono", ui-monospace, monospace;
+}
+@keyframes dk-shimmer {
+  from { background-position: 150% 0; }
+  to { background-position: -50% 0; }
+}
+.dk-shimmer {
+  background: linear-gradient(90deg, #737373 0%, #737373 40%, #e5e5e5 50%, #737373 60%, #737373 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: dk-shimmer 1.8s linear infinite;
+}
+.dk-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #525252 transparent;
+}
+@media (prefers-reduced-motion: reduce) {
+  .dk-shimmer { animation: none; background: none; color: #a3a3a3; }
 }

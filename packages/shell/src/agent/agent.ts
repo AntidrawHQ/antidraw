@@ -15,6 +15,7 @@ import {
 } from "./protocol"
 import { markupOf, openingTag } from "./markup"
 import { createOverlay } from "./overlay"
+import { createPreviews, readStyle } from "./design"
 import { reactParent, renderedWithin } from "./react"
 
 // The shell's agent in a preview frame: it finds, measures and keeps track
@@ -28,7 +29,7 @@ const fileOf = (loc: string) => loc.replace(LOC_RE, "")
 
 // As the user reads it: innerText breaks between blocks, where textContent
 // runs "Pro" and "Choose" together. Without it (an SVG), text by text.
-const textOf = (el: Element) => {
+const allTextOf = (el: Element) => {
   let text = el instanceof HTMLElement ? el.innerText : undefined
   if (text === undefined) {
     const parts: string[] = []
@@ -36,8 +37,9 @@ const textOf = (el: Element) => {
     for (let node = walker.nextNode(); node; node = walker.nextNode()) parts.push(node.nodeValue ?? "")
     text = parts.join(" ")
   }
-  return text.replace(/\s+/g, " ").trim().slice(0, 80)
+  return text.replace(/\s+/g, " ").trim()
 }
+const textOf = (el: Element) => allTextOf(el).slice(0, 80)
 
 
 const px = (v: string) => parseFloat(v) || 0
@@ -125,9 +127,13 @@ export function startInspector(container: HTMLElement, componentName: string, pr
   const withLoc = (loc: string) =>
     [...document.querySelectorAll(`[${SOURCE_ATTRIBUTE}="${CSS.escape(loc)}"]`)].filter(inside)
 
+  // Text an edit's preview wrote isn't the element's: a ref has, and is
+  // matched against, the text the page itself shows.
+  const pageTextOf = (el: Element) => previews.ownText(el, allTextOf(el)).slice(0, 80)
+
   // The child-index path from the container, or for an element in a portal
   // from <body>, marked by a leading -1.
-  const refFor = (el: Element, text = textOf(el)): ElementRef => {
+  const refFor = (el: Element): ElementRef => {
     const loc = el.getAttribute(SOURCE_ATTRIBUTE)
     const portaled = !container.contains(el)
     const root = portaled ? document.body : container
@@ -135,7 +141,7 @@ export function startInspector(container: HTMLElement, componentName: string, pr
     for (let node: Element = el; node !== root && node.parentElement; node = node.parentElement)
       path.unshift([...node.parentElement.children].indexOf(node))
     if (portaled) path.unshift(-1)
-    return { loc, index: loc ? withLoc(loc).indexOf(el) : 0, path, tag: el.localName, text }
+    return { loc, index: loc ? withLoc(loc).indexOf(el) : 0, path, tag: el.localName, text: pageTextOf(el) }
   }
 
   // The element a ref names now: by source location, or by path. Either way
@@ -160,12 +166,15 @@ export function startInspector(container: HTMLElement, componentName: string, pr
     for (const i of portaled ? ref.path.slice(1) : ref.path) node = node?.children[i]
     const byPath = same(node) ? node : null
     if (ref.text === undefined) return byLoc ?? byPath
-    if (byLoc && byPath && byLoc !== byPath && textOf(byLoc) !== ref.text && textOf(byPath) === ref.text) return byPath
+    if (byLoc && byPath && byLoc !== byPath && pageTextOf(byLoc) !== ref.text && pageTextOf(byPath) === ref.text) return byPath
     const found = byLoc ?? byPath
-    if (!found || !ref.loc || textOf(found) === ref.text) return found
-    const moved = withLoc(ref.loc).filter((el) => same(el) && textOf(el) === ref.text)
+    if (!found || !ref.loc || pageTextOf(found) === ref.text) return found
+    const moved = withLoc(ref.loc).filter((el) => same(el) && pageTextOf(el) === ref.text)
     return moved.length === 1 ? moved[0]! : found
   }
+
+  // The Design panel's edits, shown on the page until the code has them.
+  const previews = createPreviews(find, (missing) => post({ type: "previewed", missing }))
 
   const callsiteOf = (el: Element) => {
     for (let node: Element | null = el; inside(node); node = parentOf(node)) {
@@ -180,7 +189,7 @@ export function startInspector(container: HTMLElement, componentName: string, pr
     const r = el.getBoundingClientRect()
     const text = textOf(el)
     return {
-      ref: refFor(el, text),
+      ref: refFor(el),
       callsite: callsiteOf(el),
       tag: el.localName,
       id: el.id,
@@ -323,6 +332,8 @@ export function startInspector(container: HTMLElement, componentName: string, pr
 
   const check = () => {
     frame = 0
+    // A previewed element React replaced gets its edits back.
+    previews.heal()
     if (!selected || !selectedRef) return
     // React kept the node (Fast Refresh usually does) or replaced it.
     const el = selected.isConnected ? selected : find(selectedRef)
@@ -588,6 +599,13 @@ export function startInspector(container: HTMLElement, componentName: string, pr
         })
       case "track":
         return post({ type: "tracked", id: msg.id, rects: track(msg.refs) })
+      case "style": {
+        const el = find(msg.ref)
+        const read = el && readStyle(el)
+        return post({ type: "style", id: msg.id, style: read?.style ?? null, text: read?.text ?? false })
+      }
+      case "preview":
+        return previews.set(msg.items)
     }
   }
   window.addEventListener("message", onMessage)
@@ -598,6 +616,7 @@ export function startInspector(container: HTMLElement, componentName: string, pr
 
   return () => {
     setTool(null, wheelMode, zoom)
+    previews.stop()
     window.removeEventListener("pagehide", onHide)
     window.removeEventListener("message", onMessage)
     window.removeEventListener("resize", schedule)

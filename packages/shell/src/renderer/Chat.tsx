@@ -54,6 +54,7 @@ import { SMOOTH } from "@/renderer/lib/motion";
 import { SentTags, TagChips } from "@/renderer/inspector/TagChips";
 import { describePendingTags, retagTags, splitTagged, untagTags } from "@/renderer/inspector/tags";
 import { splitComments } from "@/shared/utils/canvas-comments";
+import { splitEdits } from "@/shared/utils/canvas-edits";
 import {
   SUPPORTED_IMAGE_TYPES,
   type ImageAttachment,
@@ -263,6 +264,24 @@ const MessageRow = memo(
         // Comments sent from the canvas are the whole message: the bubble
         // shows them, one to a line, under the components they're on.
         const commented = isAssistant ? null : splitComments(block.text);
+        // Design edits applied from the canvas are the whole message too:
+        // their changes, under the components they're in.
+        const edited = isAssistant ? null : splitEdits(block.text);
+        if (edited) {
+          nodes.push(
+            <SentTags key={`tags-${idx}`} tags={[...new Set(edited.edits.map((e) => e.component))]} />,
+            <MessageContent
+              key={idx}
+              className={cn(
+                "self-end max-w-[85%] bg-neutral-700 text-neutral-200 prose prose-sm prose-invert whitespace-pre-wrap",
+                isFailed && "opacity-60"
+              )}
+            >
+              {edited.edits.flatMap((e) => e.changes).join("\n")}
+            </MessageContent>
+          );
+          return;
+        }
         if (commented) {
           nodes.push(
             <SentTags key={`tags-${idx}`} tags={[...new Set(commented.comments.map((c) => c.component))]} />,
@@ -590,7 +609,7 @@ function Composer({
     submitting.current = true;
     try {
       // Elements tagged on the canvas lead the message.
-      const tagged = await describePendingTags();
+      const tagged = describePendingTags();
       const prompt = tagged.block ? `${tagged.block}\n\n${input.trim()}` : input.trim();
 
       let imagesToSend: ImageAttachment[] | undefined;

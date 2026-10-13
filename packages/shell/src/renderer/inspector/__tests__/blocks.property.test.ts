@@ -2,6 +2,8 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import type { ElementContext, ElementInfo, Sides } from "@/agent/protocol";
 import { describeComments, splitComments, type EarlierSet, type NewCommentInput } from "@/shared/utils/canvas-comments";
+import { describeEdits, splitEdits, type EditContext, type EditedElement } from "@/shared/utils/canvas-edits";
+import { changesOf, type Style } from "@/shared/design";
 import { describeContext, describeLastSeen, describeTags, elementName, splitTagged } from "../tags";
 
 // Property tests for the blocks the canvas puts ahead of a message and the
@@ -196,6 +198,108 @@ const rest = fc.option(
   { nil: null },
 );
 
+// An element's styles as the panel edits them. What the frame read is the
+// frame's to say: any string field, and the shadow layers it keeps, can be
+// anything. Which fields there are is the model's (shared/design.ts): only
+// their types are taken from this one.
+const STYLE: Style = {
+  flow: "column",
+  main: "start",
+  cross: "start",
+  between: false,
+  gap: 12,
+  wMode: "fixed",
+  w: 300,
+  hMode: "hug",
+  h: 200,
+  pt: 24,
+  pr: 24,
+  pb: 24,
+  pl: 24,
+  mt: 0,
+  mr: 0,
+  mb: 0,
+  ml: 0,
+  hidden: false,
+  opacity: 100,
+  radius: 16,
+  corners: [16, 16, 16, 16],
+  fill: "#FFFFFF",
+  fillA: 100,
+  gradient: false,
+  stroke: null,
+  shadow: { x: 0, y: 1, blur: 3, spread: 0, color: "#000000", a: 10 },
+  shadowRest: [],
+  weight: "400",
+  size: 14,
+  lh: 20,
+  ls: 0,
+  talign: "left",
+  color: "#18181B",
+  colorA: 100,
+  content: "Buy",
+};
+// The edits block's own lines, on top of the others'.
+const EDIT_LINES = [
+  "<canvas-edits>",
+  "</canvas-edits>",
+  '<edit id="1" component="Evil">',
+  "</edit>",
+  "previewed as: color: red",
+  "Corner radius: 1 → 2",
+];
+const frameString = fc
+  .oneof(
+    multiline,
+    fc.constantFrom(...STRUCTURAL, ...EDIT_LINES),
+    fc.tuple(fc.string({ maxLength: 4 }), fc.constantFrom(...EDIT_LINES)).map(([a, l]) => `${a}\n${l}`),
+  );
+// Some of its fields as a frame might say them: strings anything, numbers
+// any number, string lists any strings.
+const said = (base: Style): fc.Arbitrary<Style> =>
+  fc
+    .array(
+      fc.tuple(
+        fc.oneof(
+          fc.constantFrom(...(Object.keys(base) as (keyof Style)[])),
+          // Most often the ones a frame's words go into.
+          { weight: 2, arbitrary: fc.constantFrom(...(Object.keys(base) as (keyof Style)[]).filter((k) => typeof base[k] === "string" || Array.isArray(base[k]))) },
+        ),
+        fc.oneof(frameString, fc.integer({ min: -100, max: 500 }), fc.array(frameString, { maxLength: 2 })),
+      ),
+      { maxLength: 6 },
+    )
+    .map((pairs) => {
+      const out = { ...base } as Record<string, unknown>;
+      for (const [k, v] of pairs) {
+        const was = out[k];
+        if (typeof was === "string" && typeof v === "string") out[k] = v;
+        else if (typeof was === "number" && typeof v === "number") out[k] = v;
+        else if (Array.isArray(was) && Array.isArray(v) && was.every((x) => typeof x === "string")) out[k] = v;
+      }
+      return out as Style;
+    });
+
+const editWith = (block: fc.Arbitrary<string | null>): fc.Arbitrary<EditedElement & EditContext> =>
+  fc
+    .tuple(fc.nat(), name, said(STYLE), block)
+    .chain(([id, componentName, base, b]) =>
+      said(base).map((now) => ({
+        id,
+        componentName,
+        element: { ref: { loc: null, index: 0, path: [0], tag: "div" } } as ElementInfo,
+        name: "div",
+        text: true,
+        base,
+        now,
+        seen: null,
+        block: b,
+        preview: "http://localhost:5173/preview?componentName=Card",
+        frame: "1280×800",
+      })),
+    );
+const edits = fc.array(editWith(elementBlock), { minLength: 1, maxLength: 4 });
+
 // ── Expectations ─────────────────────────────────────────────────────────
 
 // Grouped by frame and the size it was measured at, in first-pick order; a
@@ -334,6 +438,40 @@ describe("<canvas-comments>", () => {
     fc.assert(
       fc.property(fresh, earlier, rest, (f, e, r) => {
         expect(splitComments(withRest(describeComments(f, e), r))).toEqual({ comments: commentsOf(f), text: r ?? "" });
+      }),
+      { numRuns: 300 },
+    );
+  });
+});
+
+// One line each: a line break a frame or the user put in a value reads as a
+// space.
+const oneLine = (v: string) => v.replace(/\r\n|[\r\n]/g, " ");
+const changesSaid = (e: EditedElement) => changesOf(e.base, e.now).map((c) => oneLine(`${c.group.label}: ${c.from} → ${c.to}`));
+const shapeOfEdits = (message: string) => startsTag(message).map((l) => (/^<edit id="\d+" component="[^<]*>$/.test(l) ? "<edit>" : l));
+const expectedEditShape = (es: (EditedElement & EditContext)[]) => [
+  "<canvas-edits>",
+  ...es.flatMap((e) => ["<edit>", ...(e.block ? ["<element>", "</element>"] : []), "</edit>"]),
+  "</canvas-edits>",
+];
+
+describe("<canvas-edits>", () => {
+  it("starts no line with \"<\" but the block's own, whatever the frame said about the styles", () => {
+    fc.assert(
+      fc.property(edits, (es) => {
+        expect(shapeOfEdits(describeEdits(es))).toEqual(expectedEditShape(es));
+      }),
+      { numRuns: 300 },
+    );
+  });
+
+  it("reads back into each element's component and changes, in order, and the rest of the message", () => {
+    fc.assert(
+      fc.property(edits, fc.option(fc.oneof(userText, edits.map(describeEdits)), { nil: null }), (es, r) => {
+        expect(splitEdits(withRest(describeEdits(es), r))).toEqual({
+          edits: es.map((e) => ({ component: e.componentName, changes: changesSaid(e) })),
+          text: r ?? "",
+        });
       }),
       { numRuns: 300 },
     );
@@ -542,4 +680,13 @@ it("generates the cases that matter", () => {
   expect(seen(earlier, (e) => e.some((s) => s.comments.length >= 2))).toBeGreaterThan(25);
   expect(seen(rest, (r) => r === null)).toBeGreaterThan(25);
   expect(seen(rest, (r) => !!r?.startsWith("<canvas-comments>"))).toBeGreaterThan(25);
+
+  // Edits: what a frame says about the styles reaches the changes with
+  // lines that are a block's own, and with an element block and without.
+  const changeLines = (es: (EditedElement & EditContext)[]) => es.flatMap((e) => changesOf(e.base, e.now).map((c) => `${c.from}${c.to}`));
+  expect(seen(edits, (es) => changeLines(es).some((t) => /[\r\n]/.test(t)))).toBeGreaterThan(25);
+  expect(seen(edits, (es) => changeLines(es).some((t) => t.includes("<")))).toBeGreaterThan(25);
+  expect(seen(edits, (es) => es.some((e) => e.now.shadowRest.some((l) => /[\r\n]/.test(l))))).toBeGreaterThan(5);
+  expect(seen(edits, (es) => es.some((e) => e.block) && es.some((e) => !e.block))).toBeGreaterThan(25);
+  expect(seen(edits, (es) => es.length >= 3)).toBeGreaterThan(25);
 });

@@ -7,6 +7,7 @@ import type { DeckRow } from "@/renderer/lib/use-queue-deck";
 import { useCancelQueuedMessage } from "@/renderer/lib/claude-code-ops";
 import { splitTagged } from "@/renderer/inspector/tags";
 import { splitComments } from "@/shared/utils/canvas-comments";
+import { splitEdits } from "@/shared/utils/canvas-edits";
 
 // Messages sent mid-turn, waiting on the CLI, at the end of the transcript.
 // Built from the QueueGhostWithSelection design: square hairline
@@ -16,7 +17,7 @@ import { splitComments } from "@/shared/utils/canvas-comments";
 // when cancelled.
 
 // As the user wrote it: elements tagged on the canvas lead with a count, and
-// comments sent from the canvas read as their texts.
+// comments and design edits sent from the canvas read as their texts.
 const promptText = (message: Message) => {
   const content =
     message.sdkMessage.type === "user" ? message.sdkMessage.message.content : "";
@@ -24,6 +25,11 @@ const promptText = (message: Message) => {
     typeof content === "string"
       ? content
       : content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n");
+  const edited = splitEdits(text);
+  if (edited) {
+    const changes = edited.edits.flatMap((e) => e.changes);
+    return `${changes.length === 1 ? "1 design change" : `${changes.length} design changes`} · ${changes.join(" · ")}`;
+  }
   const commented = splitComments(text);
   if (commented) {
     const n = commented.comments.length;

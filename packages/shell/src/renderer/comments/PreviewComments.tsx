@@ -3,8 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { Comment } from "@/main/api";
 import { addComment } from "@/renderer/lib/api";
 import { queryKeys } from "@/renderer/lib/query-keys";
-import { useComments, useCommentsChanged, useEditComment, useRemoveComment } from "@/renderer/lib/comment-ops";
-import { getElementContext } from "@/renderer/inspector/bridge";
+import { useComments, useCommentsChanged, useEditComment, useRemoveComment, withSeen } from "@/renderer/lib/comment-ops";
 import { beside, CommentBoxAt, FrameCommentTarget, useCloseOnClickAway } from "./pieces";
 import { CommentCard, PlacementContext, Pins, type Placement } from "./placed";
 import { useAnchoredFlow } from "./anchors";
@@ -61,12 +60,9 @@ export const PreviewComments = ({
   const add = (t: string) => {
     if (box && t.trim()) {
       const { element, pos } = box;
-      // The element as this window sees it, kept with it (`seen`): the
-      // canvas's frame is another page, at another size (comment-ops).
-      last.current = (element ? getElementContext([{ frame, info: element }]) : Promise.resolve([null]))
-        .then(([seen]) =>
-          addComment(workspaceId, { componentName: frame, x: pos.x, y: pos.y, text: t.trim(), element: element && { ...element, seen: seen ?? null } }),
-        )
+      // The element as this window sees it, kept with it (comment-ops).
+      last.current = withSeen(frame, element)
+        .then((seen) => addComment(workspaceId, { componentName: frame, x: pos.x, y: pos.y, text: t.trim(), element: seen }))
         .then((r) => {
           if (r.isErr()) {
             console.error("Failed to add comment:", r.error.message);

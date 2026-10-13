@@ -9,6 +9,8 @@
 // app, so there are no versions between them. Only the attributes are the
 // workspace's: its dev server stamps them (@antidrawapp/runtime).
 
+import type { Style } from "../shared/design"
+
 // Not the runtime's own inspector's ("antidraw-inspector", before 0.7), which
 // an older workspace still runs: it stays out of this.
 export const AGENT_NS = "antidraw-agent"
@@ -19,6 +21,10 @@ export const SOURCE_ATTRIBUTE = "data-ad-loc"
 // On the element the runtime's preview page renders the component into
 // (0.7 on). Before it, the page's root stands in.
 export const PREVIEW_ATTRIBUTE = "data-ad-preview"
+// Put by the agent on an element whose design edits it previews: the keys of
+// the edits, which its sheet's rules name (design.ts). Not the page's: left
+// out of the markup an agent is given.
+export const EDIT_ATTRIBUTE = "data-ad-edit"
 
 export type Sides = [top: number, right: number, bottom: number, left: number]
 
@@ -92,6 +98,11 @@ export type ElementContext = {
   padding: Sides
 }
 
+// A design edit the frame shows before the code has it: the element it's
+// on, the CSS that shows it (shared/design.ts' previewCss), and its text
+// where the edit rewrote it. `key` names it in "previewed".
+export type PreviewItem = { key: string; ref: ElementRef; css: Record<string, string>; text?: string }
+
 export type WalkDirection = "parent" | "child" | "next" | "prev"
 
 export type Tool = "inspect" | "comment"
@@ -119,6 +130,10 @@ export type ToFrame =
   // The pointer is elsewhere: what it hovered isn't any more. A frame isn't
   // always told when the pointer leaves it (fast, or into the next frame).
   | { type: "leave"; id: number }
+  // An element's styles, as the Design panel edits them.
+  | { type: "style"; id: number; ref: ElementRef }
+  // The design edits to show, replacing the last; none ends them.
+  | { type: "preview"; id: number; items: PreviewItem[] }
 
 // Frame to shell. "ready" is sent on start and in answer to "hello"; it's
 // `provisional` on the page's root standing in for the component's element
@@ -134,6 +149,12 @@ export type FromFrame =
   // A click with the Comment tool: where, and on what.
   | { type: "comment-at"; x: number; y: number; info: ElementInfo | null }
   | { type: "context"; id: number; contexts: (ElementContext | null)[] }
+  // Null when it can't find the element. `text`: text is written right in it.
+  | { type: "style"; id: number; style: Style | null; text: boolean }
+  // The previews whose element it can't find, by key: in answer to
+  // "preview", and whenever that changes (a re-render took one away or
+  // brought it back).
+  | { type: "previewed"; id?: number; missing: string[] }
   // The tracked elements' boxes, in "track"'s order: null for one not found.
   // With the id in answer to "track"; without, when one has moved.
   | { type: "tracked"; id?: number; rects: (Rect | null)[] }

@@ -1,3 +1,4 @@
+import { useSyncExternalStore } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import type { EffortLevel } from "@/main/api";
@@ -30,8 +31,21 @@ export const sayNotOnCanvas = (frame: string) =>
 // whichever window's box made them (the canvas's, a frame window's).
 const adding = new Set<Promise<unknown>>();
 
+// A send in flight, whoever started it (the canvas's box, a frame window's,
+// the panel's Send): one at a time, and every Send button knows.
+let sendingNow = false;
+const watchers = new Set<() => void>();
+const setSending = (v: boolean) => {
+  sendingNow = v;
+  watchers.forEach((w) => w());
+};
+const watchSending = (w: () => void) => {
+  watchers.add(w);
+  return () => void watchers.delete(w);
+};
+
 // The workspace's comments and what can be done with them, for the canvas
-// (CommentFlow) and its list (CommentTray). A send uses `model`/`effort`: the
+// (CommentFlow) and its list (the right panel's, design/Outbox). A send uses `model`/`effort`: the
 // caller's composer's.
 export const useCommentActions = ({ model, effort }: { model?: string; effort?: EffortLevel }) => {
   const workspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
@@ -63,14 +77,22 @@ export const useCommentActions = ({ model, effort }: { model?: string; effort?: 
   const removeComment = useRemoveComment(workspaceId);
   const clearCompleted = useClearCompleted(workspaceId);
   const sendComments = useSendComments(workspaceId);
+  const sending = useSyncExternalStore(watchSending, () => sendingNow);
 
   // Every draft to the open chat, or a new one that then opens, once the
-  // adds in flight have landed.
+  // adds in flight have landed. Not while another send is going: it would
+  // send the same drafts again.
   const sendDrafts = async () => {
-    await Promise.allSettled([...adding]);
-    const list = queryClient.getQueryData<CommentList>(queryKeys.comments.byWorkspace(workspaceId));
-    const drafts = list?.comments.filter((c) => c.state === "draft") ?? [];
-    return sendComments.send({ drafts, model, effort });
+    if (sendingNow) return;
+    setSending(true);
+    try {
+      await Promise.allSettled([...adding]);
+      const list = queryClient.getQueryData<CommentList>(queryKeys.comments.byWorkspace(workspaceId));
+      const drafts = list?.comments.filter((c) => c.state === "draft") ?? [];
+      return await sendComments.send({ drafts, model, effort });
+    } finally {
+      setSending(false);
+    }
   };
 
   // A comment that goes away takes its open card with it.
@@ -132,5 +154,5 @@ export const useCommentActions = ({ model, effort }: { model?: string; effort?: 
     chat: showConversation,
   };
 
-  return { f, a, sendDrafts, sending: sendComments.isPending };
+  return { f, a, sendDrafts, sending };
 };
