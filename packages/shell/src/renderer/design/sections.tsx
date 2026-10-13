@@ -48,12 +48,7 @@ import {
   TextField,
   TextFieldish,
   parseNum,
-  snap,
 } from "./kit";
-
-// Spacing and sizes step along Tailwind's 4px scale, so the code gets
-// `gap-3`, not `gap-[13px]`. Typed values snap to it too.
-const SPACE = 4;
 
 // The hairline between sections.
 const LINE = "#333335";
@@ -99,15 +94,15 @@ const Sides = ({ name, keys, s, set }: { name: string; keys: ["pt" | "mt", "pr" 
       <div className="grid flex-1 grid-cols-2 gap-1.5">
         {four ? (
           <>
-            <Num label="T" value={s[t]} step={SPACE} onChange={(v) => put({ [t]: v })} />
-            <Num label="R" value={s[r]} step={SPACE} onChange={(v) => put({ [r]: v })} />
-            <Num label="B" value={s[b]} step={SPACE} onChange={(v) => put({ [b]: v })} />
-            <Num label="L" value={s[l]} step={SPACE} onChange={(v) => put({ [l]: v })} />
+            <Num label="T" value={s[t]} onChange={(v) => put({ [t]: v })} />
+            <Num label="R" value={s[r]} onChange={(v) => put({ [r]: v })} />
+            <Num label="B" value={s[b]} onChange={(v) => put({ [b]: v })} />
+            <Num label="L" value={s[l]} onChange={(v) => put({ [l]: v })} />
           </>
         ) : (
           <>
-            <Num label="↔" value={s[l] === s[r] ? s[l] : null} step={SPACE} onChange={(v) => put({ [l]: v, [r]: v })} />
-            <Num label="↕" value={s[t] === s[b] ? s[t] : null} step={SPACE} onChange={(v) => put({ [t]: v, [b]: v })} />
+            <Num label="↔" value={s[l] === s[r] ? s[l] : null} onChange={(v) => put({ [l]: v, [r]: v })} />
+            <Num label="↕" value={s[t] === s[b] ? s[t] : null} onChange={(v) => put({ [t]: v, [b]: v })} />
           </>
         )}
       </div>
@@ -126,7 +121,7 @@ const Gap = ({ s, set }: { s: S; set: Put }) => (
         Auto
       </TextFieldish>
     ) : (
-      <Num label={s.flow === "column" ? "↕" : "↔"} value={s.gap} min={0} step={SPACE} onChange={(gap) => set({ gap, between: false })} className="flex-1" />
+      <Num label={s.flow === "column" ? "↕" : "↔"} value={s.gap} min={0} onChange={(gap) => set({ gap, between: false })} className="flex-1" />
     )}
     {s.flow !== "grid" && (
       <Menu
@@ -172,7 +167,7 @@ const LayoutSection = ({ s, set, edited, size }: EditProps) => {
         value={s[axis]}
         mode={mode}
         measured={measured}
-        step={SPACE}
+       
         onValue={(v) => set(axis === "w" ? { wMode: "fixed", w: v } : { hMode: "fixed", h: v })}
         onMode={(m: Sizing) => set(axis === "w" ? { wMode: m, w: m === "fixed" ? at : s.w } : { hMode: m, h: m === "fixed" ? at : s.h })}
       />
@@ -245,7 +240,6 @@ const AppearanceSection = ({ s, set, edited }: EditProps) => {
             value={s.radius}
             min={0}
             max={FULL}
-            step={2}
             format={(v) => (v >= FULL ? "Full" : String(v))}
             onChange={(radius) => set({ radius })}
           />
@@ -267,10 +261,10 @@ const LineHeight = ({ s, set }: { s: S; set: Put }) => {
     if (t === "auto" || t === "") set({ lh: 0 });
     else if (t.endsWith("%")) {
       const v = parseFloat(t);
-      if (Number.isFinite(v)) set({ lh: Math.max(0, snap((s.size * v) / 100, SPACE)) });
+      if (Number.isFinite(v)) set({ lh: Math.max(0, Math.round((s.size * v) / 100)) });
     } else {
       const v = parseNum(t, s.lh || Math.round(s.size * 1.2));
-      if (v !== null) set({ lh: Math.max(0, snap(v, SPACE)) });
+      if (v !== null) set({ lh: Math.max(0, v) });
     }
     setText(null);
   };
@@ -290,8 +284,8 @@ const LineHeight = ({ s, set }: { s: S; set: Put }) => {
           if (e.key === "ArrowUp" || e.key === "ArrowDown") {
             e.preventDefault();
             setText(null);
-            const from = s.lh || snap(s.size * 1.2, SPACE);
-            set({ lh: Math.max(0, from + (e.key === "ArrowUp" ? 1 : -1) * SPACE * (e.shiftKey ? 10 : 1)) });
+            const from = s.lh || Math.round(s.size * 1.2);
+            set({ lh: Math.max(0, from + (e.key === "ArrowUp" ? 1 : -1) * (e.shiftKey ? 10 : 1)) });
           }
         }}
         className="dk-mono h-full min-w-0 flex-1 bg-transparent tabular-nums outline-none"

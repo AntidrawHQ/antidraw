@@ -216,7 +216,7 @@ it("edits the selected element from where its frame showed it", async () => {
   expect(requests).toContainEqual({ url: `antidraw://app/api/workspaces/${WS}/edits`, method: "PUT" });
 });
 
-it("a typed value lands on the 4px scale, and Auto gap is space between", async () => {
+it("a typed value is taken as typed, ↑ adds 1, and Auto gap is space between", async () => {
   const card = info("Card.tsx:3:5", ["card"]);
   useInspectorStore.setState({ selection: { frame: "Card", info: card } });
   useDesignStore.setState({ read: { key: JSON.stringify(["Card", "Card.tsx:3:5", 0]), style: base, text: false, seen: null } });
@@ -228,6 +228,10 @@ it("a typed value lands on the 4px scale, and Auto gap is space between", async 
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(gap, "15");
     gap.dispatchEvent(new Event("input", { bubbles: true }));
     gap.blur();
+  });
+  expect(now()?.gap).toBe(15);
+  await act(async () => {
+    gap.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
   });
   expect(now()?.gap).toBe(16);
   await press("Gap mode");

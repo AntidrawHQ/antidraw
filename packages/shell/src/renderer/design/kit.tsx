@@ -3,8 +3,8 @@
  * Antidraw workspace's Sidebar02Classic and its controls catalog): soft
  * dark fields on the panel, 28px tall, 6px corners, Geist Mono values, a
  * neutral accent and a sand dot for edits. Number fields scrub by their
- * label, take typed maths (+8, *2) and step with ↑↓ (⇧ ten steps); `step`
- * keeps them on a scale. The dk- classes (fonts, scrubbing) are in
+ * label, take typed maths (+8, *2) and step by 1 with ↑↓ (⇧ 10); `step`
+ * is a finer one (letter spacing's 0.1). The dk- classes (fonts, scrubbing) are in
  * index.css.
  */
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode, type PointerEvent as RPE } from "react";
@@ -31,7 +31,7 @@ const RING = "pointer-events-none absolute inset-0 rounded-[6px] ring-1 ring-ins
 
 export const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 const decimals = (step: number) => (step >= 1 ? 0 : (String(step).split(".")[1]?.length ?? 0));
-// The nearest value on the scale `step` makes.
+// The nearest value `step` reaches: whole px, or tenths for a finer step.
 export const snap = (v: number, step: number) => +(Math.round(v / step) * step).toFixed(decimals(step));
 
 // A scrub: the label dragged sideways moves the value one step per 2px (⇧ ten).
@@ -347,7 +347,7 @@ export const SizeField = ({
   value,
   mode,
   measured,
-  step,
+  step = 1,
   onValue,
   onMode,
 }: {
@@ -355,7 +355,7 @@ export const SizeField = ({
   value: number;
   mode: Sizing;
   measured: number;
-  step: number;
+  step?: number;
   onValue: (v: number) => void;
   onMode: (m: Sizing) => void;
 }) => {
