@@ -1,5 +1,5 @@
 import { ok, err } from "neverthrow";
-import { conversationEvents } from "@/main/lib/conversation-store";
+import { conversationEvents, getHandle, getPending } from "@/main/lib/conversation-store";
 import { editEvents } from "@/main/lib/edit-events";
 import { same } from "@/shared/design";
 import {
@@ -77,19 +77,43 @@ export const describePendingEdits = (workspaceId: string, context: EditContext[]
   return ok({ ids: edits.map((e) => e.id), prompt: describeEdits(edits.map((e) => ({ ...e, ...byId.get(e.id)! }))) });
 };
 
-// The edits a message carries, handed to its chat: off the list, and shown
-// as a set being applied until the chat's turn ends. All or none: if any
-// isn't on the list any more (undone, or another Apply took it), the send
-// must not go.
-export const markEditsApplied = (workspaceId: string, conversationId: string, ids: number[]) => {
-  const list = of(workspaceId);
-  const taken = list.edits.filter((e) => ids.includes(e.id));
-  if (taken.length !== new Set(ids).size)
-    return err({ status: 409 as const, code: "EDITS_CHANGED", message: "Some of these edits were already applied or undone" });
-  list.edits = list.edits.filter((e) => !taken.includes(e));
-  list.applied = [...list.applied, { id: nextSet++, conversationId, edits: taken } satisfies AppliedSet];
-  changed(workspaceId);
-  return ok(true);
+// Whether a message can carry these edits: all or none. If any isn't on the
+// list any more (undone, or another Apply took it), the send must not go.
+// Changes nothing, so a send can check before it marks anything else.
+export const checkEditsPending = (workspaceId: string, ids: number[]) => {
+  const pending = of(workspaceId).edits.filter((e) => ids.includes(e.id));
+  return pending.length === new Set(ids).size
+    ? ok(pending)
+    : err({ status: 409 as const, code: "EDITS_CHANGED", message: "Some of these edits were already applied or undone" });
+};
+
+// The edits message `messageId` carries, handed to its chat: off the list,
+// and shown as a set being applied until that message's turn ends.
+export const markEditsApplied = (workspaceId: string, conversationId: string, ids: number[], messageId: string) =>
+  checkEditsPending(workspaceId, ids).map((taken) => {
+    const list = of(workspaceId);
+    list.edits = list.edits.filter((e) => !taken.includes(e));
+    list.applied = [...list.applied, { id: nextSet++, conversationId, messageId, edits: taken } satisfies AppliedSet];
+    changed(workspaceId);
+    return true;
+  });
+
+// The message that carried a set was withdrawn before its turn: its edits
+// are pending again. One whose element was edited since keeps that edit,
+// from where the set's started.
+export const restoreApplied = (messageId: string) => {
+  for (const [workspaceId, list] of workspaces) {
+    const set = list.applied.find((s) => s.messageId === messageId);
+    if (!set) continue;
+    list.applied = list.applied.filter((s) => s !== set);
+    for (const e of set.edits) {
+      const later = list.edits.find((p) => sameElement(p, e));
+      if (!later) list.edits = [...list.edits, e];
+      else if (same(e.base, later.now)) list.edits = list.edits.filter((p) => p !== later);
+      else list.edits = list.edits.map((p) => (p === later ? { ...later, base: e.base, seen: e.seen } : p));
+    }
+    changed(workspaceId);
+  }
 };
 
 // A set no longer shown: × on it, or its chat's turn ended.
@@ -101,17 +125,27 @@ export const releaseApplied = (workspaceId: string, setId: number) => {
   return ok(true);
 };
 
-// Once a chat's turn ends its sets are in the code, which the frames show.
-// A turn that fails ends on "error" and never goes idle: its sets go too,
+// Once a set's turn ends it's in the code, which the frames show. The chat
+// goes idle between turns too, with the next message still queued: a set
+// whose message is waiting stays until the idle after its own turn. A turn
+// that fails ends on "error" and never goes idle: the chat's sets all go,
 // what made it into the code shows, and the chat says what went wrong.
-const releaseChat = (conversationId: string) => {
+const releaseChat = (conversationId: string, waiting: string[] = []) => {
+  const done = (s: AppliedSet) => s.conversationId === conversationId && !(s.messageId && waiting.includes(s.messageId));
   for (const [workspaceId, list] of workspaces) {
-    if (!list.applied.some((s) => s.conversationId === conversationId)) continue;
-    list.applied = list.applied.filter((s) => s.conversationId !== conversationId);
+    if (!list.applied.some(done)) continue;
+    list.applied = list.applied.filter((s) => !done(s));
     changed(workspaceId);
   }
 };
 conversationEvents.on("state", (conversationId, { state }) => {
-  if (state === "idle") releaseChat(conversationId);
+  if (state === "idle") releaseChat(conversationId, getPending(conversationId));
 });
 conversationEvents.on("error", (conversationId) => releaseChat(conversationId));
+// The CLI's gone with messages still queued (it exits, and the queue is
+// cleared on the way out): they'll never run, and no idle follows.
+conversationEvents.on("queue", (conversationId) => {
+  queueMicrotask(() => {
+    if (!getHandle(conversationId)) releaseChat(conversationId);
+  });
+});

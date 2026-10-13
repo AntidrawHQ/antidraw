@@ -1,7 +1,9 @@
 import { describe, expect, test } from "vitest";
 import type { ElementInfo } from "@/agent/protocol";
 import type { Style } from "@/shared/design";
-import { conversationEvents } from "@/main/lib/conversation-store";
+import { addPending, conversationEvents, openHandle, releaseHandle, resolvePending, setCliState } from "@/main/lib/conversation-store";
+import type { PromptStream } from "@/main/api/claude-code-ops";
+import { editController } from "@/main/api/controllers/edit.controller";
 import { editEvents } from "@/main/lib/edit-events";
 import {
   describePendingEdits,
@@ -10,6 +12,7 @@ import {
   putEdit,
   releaseApplied,
   removeEdits,
+  restoreApplied,
 } from "@/main/api/services/edit.service";
 
 // The Design panel's edits, held in memory per workspace until Apply hands
@@ -66,11 +69,11 @@ describe("edits", () => {
 
     // One of them already gone: nothing is taken.
     removeEdits(ws, title.id)._unsafeUnwrap();
-    expect(markEditsApplied(ws, "chat-1", ids)._unsafeUnwrapErr().code).toBe("EDITS_CHANGED");
+    expect(markEditsApplied(ws, "chat-1", ids, "m-1")._unsafeUnwrapErr().code).toBe("EDITS_CHANGED");
     expect(list(ws).edits.map((e) => e.id)).toEqual([card.id]);
 
-    markEditsApplied(ws, "chat-1", [card.id])._unsafeUnwrap();
-    expect(list(ws)).toEqual({ edits: [], applied: [{ id: expect.any(Number), conversationId: "chat-1", edits: [card] }] });
+    markEditsApplied(ws, "chat-1", [card.id], "m-1")._unsafeUnwrap();
+    expect(list(ws)).toEqual({ edits: [], applied: [{ id: expect.any(Number), conversationId: "chat-1", messageId: "m-1", edits: [card] }] });
   });
 
   test("a set is shown until its chat's turn ends, or it's let go", () => {
@@ -79,8 +82,8 @@ describe("edits", () => {
     const on = (id: string) => id === ws && seen.push(id);
     editEvents.on("changed", on);
     try {
-      markEditsApplied(ws, "chat-2", [edit(ws, CARD, { radius: 24 })!.id])._unsafeUnwrap();
-      markEditsApplied(ws, "chat-3", [edit(ws, TITLE, { gap: 4 })!.id])._unsafeUnwrap();
+      markEditsApplied(ws, "chat-2", [edit(ws, CARD, { radius: 24 })!.id], "m-2")._unsafeUnwrap();
+      markEditsApplied(ws, "chat-3", [edit(ws, TITLE, { gap: 4 })!.id], "m-3")._unsafeUnwrap();
       conversationEvents.emit("state", "chat-2", { state: "running" });
       expect(list(ws).applied).toHaveLength(2);
       conversationEvents.emit("state", "chat-2", { state: "idle" });
@@ -91,11 +94,79 @@ describe("edits", () => {
       expect(seen).toHaveLength(6);
 
       // A turn that fails never goes idle: its error lets the set go.
-      markEditsApplied(ws, "chat-4", [edit(ws, CARD, { radius: 30 })!.id])._unsafeUnwrap();
+      markEditsApplied(ws, "chat-4", [edit(ws, CARD, { radius: 30 })!.id], "m-4")._unsafeUnwrap();
       conversationEvents.emit("error", "chat-4", { error: "CLI exited" });
       expect(list(ws).applied).toEqual([]);
     } finally {
       editEvents.off("changed", on);
     }
+  });
+
+  test("a set applied mid-turn outlasts that turn's idle, and goes after its own", () => {
+    const ws = crypto.randomUUID();
+    const chat = crypto.randomUUID();
+    openHandle(chat, {} as PromptStream);
+    try {
+      setCliState(chat, "running");
+      addPending(chat, "apply");
+      markEditsApplied(ws, chat, [edit(ws, CARD, { radius: 24 })!.id], "apply")._unsafeUnwrap();
+      // The earlier turn ends with the Apply still queued.
+      setCliState(chat, "idle");
+      expect(list(ws).applied).toHaveLength(1);
+      // The CLI takes it, runs it, and goes idle.
+      resolvePending(chat, "apply");
+      setCliState(chat, "running");
+      setCliState(chat, "idle");
+      expect(list(ws).applied).toEqual([]);
+    } finally {
+      releaseHandle(chat);
+    }
+  });
+
+  test("a queued Apply withdrawn puts its edits back; a later edit of the element keeps going from the set's start", () => {
+    const ws = crypto.randomUUID();
+    const card = edit(ws, CARD, { radius: 24 })!;
+    const title = edit(ws, TITLE, { gap: 4 })!;
+    markEditsApplied(ws, "chat-5", [card.id, title.id], "withdrawn")._unsafeUnwrap();
+    // Edited again while queued: from 24, as the preview showed it.
+    const later = edit(ws, TITLE, { gap: 8 }, { ...base, gap: 4 })!;
+    restoreApplied("withdrawn");
+    expect(list(ws).applied).toEqual([]);
+    expect(list(ws).edits).toEqual([{ ...later, base }, card]);
+  });
+
+  test("a set whose queued message dies with its CLI goes", async () => {
+    const ws = crypto.randomUUID();
+    const chat = crypto.randomUUID();
+    openHandle(chat, {} as PromptStream);
+    setCliState(chat, "running");
+    addPending(chat, "queued");
+    markEditsApplied(ws, chat, [edit(ws, CARD, { radius: 24 })!.id], "queued")._unsafeUnwrap();
+    setCliState(chat, "idle");
+    expect(list(ws).applied).toHaveLength(1);
+    // The CLI exits: its queue is cleared, then its handle released.
+    resolvePending(chat, "queued");
+    releaseHandle(chat);
+    await Promise.resolve();
+    expect(list(ws).applied).toEqual([]);
+  });
+
+  test("PUT keeps the element's text, which a frame finds it by", async () => {
+    const ws = crypto.randomUUID();
+    const res = await editController.request(`/${ws}/edits`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        componentName: "Card",
+        element: { ref: { loc: CARD, index: 1, path: [0, 1], tag: "li", text: "Banana" } },
+        name: "li",
+        text: false,
+        base,
+        now: { ...base, gap: 16 },
+        seen: null,
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(list(ws).edits[0]?.element.ref.text).toBe("Banana");
   });
 });

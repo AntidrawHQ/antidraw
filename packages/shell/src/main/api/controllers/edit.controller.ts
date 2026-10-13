@@ -27,7 +27,7 @@ const idParam = workspaceParam.extend({ id: z.coerce.number().int() });
 const putSchema = z.object({
   componentName: z.string().refine(isComponentName),
   element: z
-    .object({ ref: z.object({ loc: z.string().nullable(), index: z.number(), path: z.array(z.number()), tag: z.string() }) })
+    .object({ ref: z.object({ loc: z.string().nullable(), index: z.number(), path: z.array(z.number()), tag: z.string(), text: z.string().optional() }) })
     .passthrough()
     .transform((v) => v as unknown as ElementInfo),
   name: z.string(),
