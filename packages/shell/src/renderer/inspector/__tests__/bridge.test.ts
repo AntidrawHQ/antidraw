@@ -197,6 +197,18 @@ it("follows the selection the frame reports, and gives it back after a reload", 
   frameSays(ready);
   expect(lastAsked()).toMatchObject({ type: "select", ref: { loc: `${OWN}:6:7` } });
 
+  // Reloaded, the page's root stands in until the component is there: not
+  // found there yet, the selection stays for the next ready to give back.
+  frameSays({ ...ready, provisional: true });
+  frameSays({ type: "selected", id: lastAsked().id, info: null });
+  await Promise.resolve();
+  expect(useInspectorStore.getState().selection?.info.ref.loc).toBe(`${OWN}:6:7`);
+  frameSays(ready);
+  frameSays({ type: "selected", id: lastAsked().id, info: null });
+  await Promise.resolve();
+  expect(useInspectorStore.getState().selection).toBeNull();
+
+  frameSays({ type: "selected", info: info() });
   frameSays({ type: "selection-lost" });
   expect(useInspectorStore.getState().selection).toBeNull();
 });

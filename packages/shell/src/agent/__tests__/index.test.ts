@@ -33,7 +33,7 @@ test("starts on what the page's root holds until the component's element is ther
   document.body.innerHTML = `<div id="root"><p>Loading</p></div>`
   const sent = readies()
   await import("../index")
-  expect(sent).toEqual([{ ns: AGENT_NS, type: "ready", componentName: "Card", tagged: false }])
+  expect(sent).toEqual([{ ns: AGENT_NS, type: "ready", componentName: "Card", tagged: false, provisional: true }])
 
   // The component loads, in its element.
   document.getElementById("root")!.innerHTML = `<div data-ad-preview="Card"><h3 data-ad-loc="src/components/user-components/Card.tsx:3:5">Pro</h3></div>`

@@ -102,8 +102,11 @@ function onMessage(event: MessageEvent) {
       const mark = marks.get(frame);
       if (mark) post(frame, { type: "mark", id: nextId++, ref: mark });
       askTrack(frame);
-      // A reload lost the frame's selection; give it back.
-      if (s.selection?.frame === frame) void select(frame, s.selection.info.ref);
+      // A reload lost the frame's selection; give it back. On the page's root
+      // standing in, before the component's element is there, not finding
+      // it doesn't drop it: the next ready asks again.
+      if (s.selection?.frame === frame)
+        void selecting(frame, { type: "select", ref: s.selection.info.ref }, !!data.provisional);
       return;
     }
     case "selection-changed":
@@ -276,13 +279,13 @@ function takeSelection(frame: string, info: ElementInfo | null) {
 }
 
 // Asks a frame to select, and takes its answer unless a later selection or
-// a clear came first.
-async function selecting(frame: string, msg: Request) {
+// a clear came first (or, `keep`, it found nothing).
+async function selecting(frame: string, msg: Request, keep = false) {
   // The id request() is about to use.
   const id = nextId;
   latestSelect = id;
   const reply = await request(frame, msg);
-  if (reply?.type !== "selected" || latestSelect !== id) return;
+  if (reply?.type !== "selected" || latestSelect !== id || (keep && !reply.info)) return;
   takeSelection(frame, reply.info);
 }
 

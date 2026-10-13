@@ -120,11 +120,14 @@ export type ToFrame =
   // always told when the pointer leaves it (fast, or into the next frame).
   | { type: "leave"; id: number }
 
-// Frame to shell. "ready" is sent on start and in answer to "hello"
+// Frame to shell. "ready" is sent on start and in answer to "hello"; it's
+// `provisional` on the page's root standing in for the component's element
+// (not there yet, or a runtime without the marker), where the selection
+// may not be found yet.
 // "selection-changed" and "selection-lost" whenever a re-render (an edit, a
 // reload) moves or removes the selected element.
 export type FromFrame =
-  | { type: "ready"; id?: number; componentName: string; tagged: boolean }
+  | { type: "ready"; id?: number; componentName: string; tagged: boolean; provisional?: true }
   // In answer to "select" or "walk", with the id; a click with Inspect,
   // without.
   | { type: "selected"; id?: number; info: ElementInfo | null }

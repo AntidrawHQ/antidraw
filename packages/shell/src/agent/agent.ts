@@ -44,7 +44,7 @@ const px = (v: string) => parseFloat(v) || 0
 const sides = (cs: CSSStyleDeclaration, prop: (side: string) => string): Sides =>
   ["top", "right", "bottom", "left"].map((side) => px(cs.getPropertyValue(prop(side)))) as Sides
 
-export function startInspector(container: HTMLElement, componentName: string): () => void {
+export function startInspector(container: HTMLElement, componentName: string, provisional = false): () => void {
   const ownFile = `${USER_COMPONENTS_DIR}${componentName}.tsx`
   // Where the shell talks from; answers go only there.
   let canvasOrigin: string | null = null
@@ -552,6 +552,7 @@ export function startInspector(container: HTMLElement, componentName: string): (
         id,
         componentName,
         tagged: !!container.querySelector(`[${SOURCE_ATTRIBUTE}]`),
+        ...(provisional && { provisional: true as const }),
       },
       origin,
     )

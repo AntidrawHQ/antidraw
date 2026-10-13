@@ -36,7 +36,7 @@ if (componentName && params.get("fullscreen") !== "true" && !window.__antidrawAg
     if (now === container) return
     stop?.()
     container = now
-    stop = now && startInspector(now, componentName)
+    stop = now && startInspector(now, componentName, !now.hasAttribute(PREVIEW_ATTRIBUTE))
   }
   follow()
   new MutationObserver(follow).observe(document.documentElement, { childList: true, subtree: true })
