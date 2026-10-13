@@ -106,6 +106,8 @@ export const Slider = ({
   const [hover, setHover] = useState(false);
   const [drag, setDrag] = useState(false);
   const [typing, setTyping] = useState<string | null>(null);
+  // What the field opened with: left as it was, nothing's changed.
+  const typedFrom = useRef("");
   const active = hover || drag;
   const pct = clamp((value - min) / (max - min), 0, 1) * 100;
 
@@ -128,6 +130,7 @@ export const Slider = ({
   const shown = format ? format(value) : value.toFixed(decimals(step));
   const commit = (raw: string) => {
     setTyping(null);
+    if (raw.trim() === typedFrom.current) return;
     const n = parseFloat(raw);
     if (Number.isFinite(n)) onChange(clamp(snap(n, step, min), min, max));
   };
@@ -198,7 +201,10 @@ export const Slider = ({
           <span
             ref={valueRef}
             data-value
-            onClick={() => setTyping(String(value))}
+            onClick={() => {
+              typedFrom.current = String(value);
+              setTyping(typedFrom.current);
+            }}
             className={cn(
               MONO,
               "absolute right-3 top-1/2 translate-y-[calc(-50%+0.5px)] cursor-text border-b border-transparent pb-px text-[13px] font-medium tabular-nums hover:border-white/50",
@@ -414,7 +420,9 @@ export const ColorRow = ({
   const [draft, setDraft] = useState<string | null>(null);
   const [aDraft, setADraft] = useState<string | null>(null);
   const picker = useRef<HTMLInputElement>(null);
+  // A field left as it was changes nothing.
   const commitHex = (raw: string) => {
+    if (draft === null) return;
     setDraft(null);
     const m = raw.replace("#", "").trim();
     const full =
@@ -427,6 +435,7 @@ export const ColorRow = ({
     if (/^[0-9a-f]{6}$/i.test(full)) onChange(`#${full.toUpperCase()}`, alpha);
   };
   const commitA = (raw: string) => {
+    if (aDraft === null) return;
     setADraft(null);
     const n = parseFloat(raw);
     if (Number.isFinite(n)) onChange(hex, clamp(Math.round(n), 0, 100));
@@ -567,7 +576,7 @@ export const IconButton = ({
   className,
 }: {
   title: string;
-  onClick: () => void;
+  onClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
   children: ReactNode;
   active?: boolean;
   className?: string;

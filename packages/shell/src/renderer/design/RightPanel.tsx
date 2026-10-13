@@ -84,32 +84,45 @@ export const ShowPanel = () => {
 
 // The panel's left edge, dragged to widen it, as the side panel's right edge
 // is (components/ui/resizable-panel). The width is written straight to the
-// panel while dragging and kept when let go.
+// panel while dragging and kept when let go. The handle holds the pointer
+// while dragging: over a frame, its iframe would take the moves and the
+// release, and the drag would never end.
 const ResizeHandle = ({ panel }: { panel: React.RefObject<HTMLElement | null> }) => {
-  const handle = useRef<HTMLDivElement>(null);
-  const start = () => {
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-    handle.current?.classList.add("!bg-[#71717a]");
-    let width = useDesignStore.getState().width;
-    const move = (e: MouseEvent) => {
-      if (!panel.current) return;
-      const right = panel.current.getBoundingClientRect().right;
-      width = Math.min(PANEL_W.max, Math.max(PANEL_W.min, right - e.clientX));
-      panel.current.style.width = `${width}px`;
-    };
-    const up = () => {
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-      handle.current?.classList.remove("!bg-[#71717a]");
-      document.removeEventListener("mousemove", move);
-      document.removeEventListener("mouseup", up);
-      useDesignStore.getState().setWidth(width);
-    };
-    document.addEventListener("mousemove", move);
-    document.addEventListener("mouseup", up);
+  // The width being dragged to; null when not dragging.
+  const drag = useRef<number | null>(null);
+  const end = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (drag.current === null) return;
+    const width = drag.current;
+    drag.current = null;
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+    e.currentTarget.classList.remove("!bg-[#71717a]");
+    useDesignStore.getState().setWidth(width);
   };
-  return <div ref={handle} onMouseDown={start} className="absolute left-0 top-0 z-10 h-full w-1 cursor-col-resize hover:bg-[#2d2d2d]" />;
+  return (
+    <div
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        e.currentTarget.setPointerCapture(e.pointerId);
+        drag.current = useDesignStore.getState().width;
+        document.body.style.cursor = "col-resize";
+        document.body.style.userSelect = "none";
+        e.currentTarget.classList.add("!bg-[#71717a]");
+      }}
+      onPointerMove={(e) => {
+        if (drag.current === null || !panel.current) return;
+        // No button down: the release went somewhere else.
+        if (e.buttons === 0) return end(e);
+        const right = panel.current.getBoundingClientRect().right;
+        drag.current = Math.min(PANEL_W.max, Math.max(PANEL_W.min, right - e.clientX));
+        panel.current.style.width = `${drag.current}px`;
+      }}
+      onPointerUp={end}
+      onPointerCancel={end}
+      onLostPointerCapture={end}
+      className="absolute left-0 top-0 z-10 h-full w-1 cursor-col-resize touch-none hover:bg-[#2d2d2d]"
+    />
+  );
 };
 
 // The panel beside the canvas.

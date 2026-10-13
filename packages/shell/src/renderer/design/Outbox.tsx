@@ -152,7 +152,9 @@ const Card = ({ a, c, s, n }: { a: Actions; c: Cmt; s: Send | null; n?: number }
           {remove && (
             <IconButton
               title={kind === "draft" ? "Delete" : "Remove from the list"}
-              onClick={() => {
+              onClick={(e) => {
+                // Not the card's click too: that would open what's going.
+                e.stopPropagation();
                 remove();
                 a.point(null);
               }}
