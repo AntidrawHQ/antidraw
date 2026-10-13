@@ -1,42 +1,16 @@
-import { createRootRouteWithContext, Outlet } from "@tanstack/react-router";
+import { createRootRouteWithContext, Navigate, Outlet } from "@tanstack/react-router";
 import type { QueryClient } from "@tanstack/react-query";
-import { Toaster } from "sonner";
-import { TooltipProvider } from "@/renderer/components/ui/tooltip";
-import { Titlebar } from "@/renderer/components/titlebar";
-import { useUpdateSubscription } from "@/renderer/hooks/use-update-status";
-import { useUpdateToast } from "@/renderer/hooks/use-update-prompt";
 
 type RouterContext = {
   queryClient: QueryClient;
 };
 
-const RootComponent = () => {
-  // Single "update-downloaded" subscription for the app, plus the toast it drives.
-  useUpdateSubscription();
-  useUpdateToast();
-
-  return (
-    <TooltipProvider>
-      <div className="flex h-screen w-full flex-col">
-        <Titlebar />
-
-        <div className="flex-1 overflow-hidden">
-          <Outlet />
-        </div>
-
-        <Toaster
-          theme="dark"
-          position="bottom-right"
-          toastOptions={{
-            // Strip sonner's default card styling so our custom card owns the look.
-            unstyled: true,
-          }}
-        />
-      </div>
-    </TooltipProvider>
-  );
-};
-
+// Every window's: each draws its own chrome. The main window's is _main's;
+// a frame's own window's is /preview's.
 export const Route = createRootRouteWithContext<RouterContext>()({
-  component: RootComponent,
+  component: Outlet,
+  // A path no page has (a markdown link's #fragment, say) matches only the
+  // root, outside any window's chrome: back to the app rather than a bare
+  // "Not Found" with no titlebar to drag.
+  notFoundComponent: () => <Navigate to="/" replace />,
 });

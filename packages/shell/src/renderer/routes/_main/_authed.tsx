@@ -3,7 +3,7 @@ import { workspacesQueryOptions } from "@/renderer/lib/workspace-queries";
 
 const AuthedLayout = () => <Outlet />;
 
-export const Route = createFileRoute("/_authed")({
+export const Route = createFileRoute("/_main/_authed")({
   beforeLoad: async ({ context }) => {
     const workspaces = await context.queryClient.ensureQueryData(
       workspacesQueryOptions,
