@@ -105,16 +105,19 @@ const flowOf = (cs: CSSStyleDeclaration): Flow =>
 const TEXT_ALIGN: Record<string, TextAlign> = { center: "center", right: "right", end: "right", justify: "justify" }
 
 // Its size with `prop` set to `value`, for a moment: set and taken back in
-// the same task, so nothing is painted, and the page's own style kept.
+// the same task, so nothing is painted, and the page's own style kept, down
+// to a style attribute it didn't have.
 const sizedAs = (el: Element, prop: "width" | "height", value: string) => {
   const style = (el as HTMLElement).style
   if (!style) return null
+  const hadAttr = el.hasAttribute("style")
   const was = style.getPropertyValue(prop)
   const priority = style.getPropertyPriority(prop)
   style.setProperty(prop, value, "important")
   const r = el.getBoundingClientRect()
   if (was) style.setProperty(prop, was, priority)
   else style.removeProperty(prop)
+  if (!hadAttr && !style.length) el.removeAttribute("style")
   return prop === "width" ? r.width : r.height
 }
 
@@ -156,7 +159,7 @@ const sizingOf = (el: Element, cs: CSSStyleDeclaration) => {
           ? "hug"
           : "fixed"
   const hMode: Sizing = flex && !row && grows ? "fill" : near(autoH, r.height) ? "hug" : near(innerH, r.height) ? "fill" : "fixed"
-  return { wMode, hMode, w, h }
+  return { wMode, hMode, w, h, ...(flex && { parentFlex: row ? ("row" as const) : ("column" as const) }) }
 }
 
 // Text written right in it, not only inside its children.
@@ -186,6 +189,7 @@ export function readStyle(el: Element): { style: Style; text: boolean } {
       cross: alignOf(cs.alignItems),
       between: cs.justifyContent === "space-between",
       gap: round(px(flow === "column" ? cs.rowGap : cs.columnGap)),
+      splitGap: round(px(cs.rowGap)) !== round(px(cs.columnGap)),
       ...sizingOf(el, cs),
       pt: round(px(cs.paddingTop)),
       pr: round(px(cs.paddingRight)),
@@ -297,9 +301,24 @@ export function createPreviews(find: (ref: ElementRef) => Element | null, onMiss
     }
   }
 
+  // An element's text as the page has it: `text`, read off it, with each
+  // run written in it put back to the run's own.
+  const ownText = (el: Element, text: string) => {
+    const squash = (t: string) => t.replace(/\s+/g, " ").trim()
+    for (const [node, own] of written) {
+      const shown = squash(node.nodeValue ?? "")
+      if (shown && shown !== squash(own) && el.contains(node)) text = text.replace(shown, () => squash(own))
+    }
+    return text
+  }
+
   const set = (next: PreviewItem[]) => {
+    // An element already found for a ref is kept, not found again: the
+    // shell sends the same items again (a saved edit's key for its temporary
+    // one, an Apply), and each find is a chance to land on another.
+    const had = new Map(items.map((item, i) => [JSON.stringify(item.ref), found[i]]))
     items = next
-    found = []
+    found = next.map((item) => had.get(JSON.stringify(item.ref)) ?? null)
     sheet.textContent = next.map(ruleFor).join("\n")
     if (!next.length) sheet.remove()
     // Said again in answer, changed or not.
@@ -316,5 +335,5 @@ export function createPreviews(find: (ref: ElementRef) => Element | null, onMiss
     sheet.remove()
   }
 
-  return { set, heal, stop }
+  return { set, heal, stop, ownText }
 }
