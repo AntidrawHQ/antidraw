@@ -1,11 +1,11 @@
 /**
- * The right panel, docked at the canvas's right: 256px to start, wider by
- * its left edge, DialKit's controls at 30px rows. Two sections, Design and
+ * The right panel, docked at the canvas's right: 280px to start, wider by
+ * its left edge. Two sections, Design and
  * Comments. Picking Inspect (I) opens Design and Comment (C) opens Comments;
  * a tab only changes the section, never the tool. Design's footer is the
  * canvas's edit bar (EditBar).
  */
-import { useRef, type CSSProperties } from "react";
+import { useRef } from "react";
 import { PanelRight, PanelRightClose } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
 import { DesignSection } from "./sections";
@@ -55,8 +55,6 @@ const DesignBody = ({ d }: { d: ReturnType<typeof useDesign> }) => (
     text={d.current?.text ?? false}
     set={d.set}
     size={d.selection ? { w: d.selection.info.rect.width, h: d.selection.info.rect.height } : { w: 0, h: 0 }}
-    // The frame's size, as far as a width or height can go.
-    bounds={{ w: d.current?.seen?.viewport[0] ?? 1440, h: d.current?.seen?.viewport[1] ?? 900 }}
   />
 );
 
@@ -125,7 +123,7 @@ export const RightPanel = () => {
       <aside
         ref={aside}
         className="dk-root relative shrink-0 overflow-hidden border-l border-[#333] bg-[#2A2A2A] text-white"
-        style={{ width, "--dk-row": "30px" } as CSSProperties}
+        style={{ width }}
       >
         <ResizeHandle panel={aside} />
         <div className="flex h-full flex-col">

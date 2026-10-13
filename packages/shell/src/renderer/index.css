@@ -278,7 +278,8 @@ pre.shiki {
 }
 
 /* The right panel's (design/): DialKit's faces, the shimmer for work in
-   progress, and a thin scrollbar. */
+   progress, the cursor while a field's label is scrubbed, and a thin
+   scrollbar. */
 .dk-root {
   font-family: "Geist Sans", "Geist", -apple-system, BlinkMacSystemFont, sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -297,6 +298,11 @@ pre.shiki {
   background-clip: text;
   color: transparent;
   animation: dk-shimmer 1.8s linear infinite;
+}
+.dk-scrubbing,
+.dk-scrubbing * {
+  cursor: ew-resize !important;
+  user-select: none !important;
 }
 .dk-scroll {
   scrollbar-width: thin;

@@ -208,15 +208,32 @@ it("edits the selected element from where its frame showed it", async () => {
   act(() => setCanvasTool("inspect"));
   useDesignStore.setState({ read: { key: JSON.stringify(["Card", "Card.tsx:3:5", 0]), style: base, text: false, seen: null } });
   await render({ edits: [], applied: [] });
-  for (const folder of ["Layout", "Appearance", "Fill", "Border", "Shadow"]) expect(text()).toContain(folder);
-  expect(text()).not.toContain("Text");
+  for (const section of ["Auto layout", "Appearance", "Fill", "Stroke", "Effects"]) expect(text()).toContain(section);
+  expect(text()).not.toContain("Typography");
   // Hidden: an edit, at once, and to the API.
-  await act(async () => {
-    host.querySelector<HTMLButtonElement>('[role="switch"]')!.click();
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  });
+  await press("Hide");
   expect(text()).toContain("1 unsaved change");
   expect(requests).toContainEqual({ url: `antidraw://app/api/workspaces/${WS}/edits`, method: "PUT" });
+});
+
+it("a typed value lands on the 4px scale, and Auto gap is space between", async () => {
+  const card = info("Card.tsx:3:5", ["card"]);
+  useInspectorStore.setState({ selection: { frame: "Card", info: card } });
+  useDesignStore.setState({ read: { key: JSON.stringify(["Card", "Card.tsx:3:5", 0]), style: base, text: false, seen: null } });
+  await render({ edits: [], applied: [] });
+  const now = () => client.getQueryData<EditList>(queryKeys.edits.byWorkspace(WS))?.edits[0]?.now;
+  const gap = [...host.querySelectorAll("input")].find((i) => i.value === "12")!;
+  await act(async () => {
+    gap.focus();
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(gap, "15");
+    gap.dispatchEvent(new Event("input", { bubbles: true }));
+    gap.blur();
+  });
+  expect(now()?.gap).toBe(16);
+  await press("Gap mode");
+  await press("Auto (space between)");
+  expect(now()?.between).toBe(true);
+  expect(text()).toContain("Auto");
 });
 
 it("Comments with none yet: how to leave one", async () => {

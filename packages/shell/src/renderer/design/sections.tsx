@@ -1,346 +1,428 @@
 /**
- * The Design section of the right panel: the selected element's styles in
- * folders (Layout, Appearance, Text, Fill, Stroke, Effects), each control
- * tinted once it's edited; with nothing selected, how to pick something.
+ * The Design section of the right panel, as the confirmed sidebar draws it
+ * (the Antidraw workspace's Sidebar02Classic): one column of sections in
+ * Figma UI3's order (Auto layout, Appearance, Typography, Fill, Stroke,
+ * Effects), split by hairlines, each with a quiet title, a dot once it
+ * holds an edit, and its actions at the right. Auto layout is the compact
+ * UI3 block: direction, W/H, then the alignment pad with gap and padding
+ * stacked beside it. Empty lists fold to a single "Name  +" line. With
+ * nothing selected, how to pick something.
  */
 import { useState, type ReactNode } from "react";
 import {
-  AlignCenter,
-  AlignJustify,
-  AlignLeft,
-  AlignRight,
   ArrowDown,
   ArrowRight,
-  LayoutGrid,
+  ChevronDown,
+  Eye,
+  EyeOff,
+  FoldVertical,
+  Grid2x2,
   Minus,
   MousePointer2,
   Plus,
   Scan,
-  SquareDashed,
   SquareDashedMousePointer,
-  WrapText,
+  TextAlignCenter,
+  TextAlignEnd,
+  TextAlignJustify,
+  TextAlignStart,
+  TextWrap,
 } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
-import { FULL, WEIGHTS, changedGroups, r1, type Flow, type Shadow, type Sizing, type Stroke, type Style as S, type TextAlign } from "@/shared/design";
-import { AlignPad, ColorRow, Folder, IconButton, LabeledRow, ROW, SURFACE, Segmented, Select, Slider, TextRow, Toggle } from "./dial";
-
-export const icon = "size-3.5";
+import { FULL, WEIGHTS, changedGroups, type Align, type Flow, type Shadow, type Sizing, type Stroke, type Style as S, type TextAlign } from "@/shared/design";
+import { SURFACE } from "./dial";
+import {
+  AlignPad,
+  ColorRow,
+  Corner,
+  DropShadowIcon,
+  IconBtn,
+  Menu,
+  MenuItem,
+  Num,
+  Row,
+  Seg,
+  Select,
+  SizeField,
+  T,
+  TextField,
+  TextFieldish,
+  parseNum,
+  snap,
+} from "./kit";
 
 // Spacing and sizes step along Tailwind's 4px scale, so the code gets
 // `gap-3`, not `gap-[13px]`. Typed values snap to it too.
 const SPACE = 4;
 
-// `bounds`: the frame's size, how far a width or height can go.
+// The hairline between sections.
+const LINE = "#333335";
+
+type Put = (patch: Partial<S>) => void;
+
 export type EditProps = {
   s: S;
-  set: (patch: Partial<S>) => void;
+  set: Put;
   edited: (key: string) => boolean;
+  // The element's size as its frame drew it: what a hugging or filling side reads.
   size: { w: number; h: number };
-  bounds: { w: number; h: number };
 };
 
-// Four sides as two sliders, X and Y, or (`apart`) one each.
-const Sides = ({
-  name,
-  keys,
-  s,
-  set,
-  edited,
-  apart,
-}: {
-  name: string;
-  keys: ["pt" | "mt", "pr" | "mr", "pb" | "mb", "pl" | "ml"];
-  s: S;
-  set: (patch: Partial<S>) => void;
-  edited: boolean;
-  apart: boolean;
-}) => {
-  const [t, r, b, l] = keys;
-  return apart ? (
-    <div className="grid grid-cols-2 gap-1.5">
-      {keys.map((k, i) => (
-        <Slider
-          key={k}
-          label={`${name} ${["top", "right", "bottom", "left"][i]}`}
-          value={s[k]}
-          min={0}
-          max={64}
-          step={SPACE}
-          edited={edited}
-          onChange={(v) => set({ [k]: v } as Partial<S>)}
-        />
-      ))}
+/* ── Section chrome ───────────────────────────────────────────────────── */
+
+// A section: hairline above, a quiet 11.5px title, its actions at the right.
+// `empty` folds it to the title line alone (dimmer), as Figma does for lists.
+const Section = ({ title, dirty, actions, empty, children }: { title: string; dirty: boolean; actions?: ReactNode; empty?: boolean; children?: ReactNode }) => (
+  <section className="border-t px-4" style={{ borderColor: LINE }}>
+    <div className="flex h-10 items-center gap-1.5">
+      <span className="text-[11.5px] font-medium" style={{ color: empty ? T.text2 : T.text }}>
+        {title}
+      </span>
+      {dirty && <span className="size-[5px] rounded-full" style={{ background: T.edited }} title="Edited" />}
+      <span className="flex-1" />
+      <div className="-mr-1.5 flex items-center">{actions}</div>
     </div>
-  ) : (
-    <div className="grid grid-cols-2 gap-1.5">
-      <Slider
-        label={`${name} X`}
-        value={s[l]}
-        format={(v) => (s[l] === s[r] ? String(v) : "Mixed")}
-        min={0}
-        max={64}
-        step={SPACE}
-        edited={edited}
-        onChange={(v) => set({ [l]: v, [r]: v } as Partial<S>)}
-      />
-      <Slider
-        label={`${name} Y`}
-        value={s[t]}
-        format={(v) => (s[t] === s[b] ? String(v) : "Mixed")}
-        min={0}
-        max={64}
-        step={SPACE}
-        edited={edited}
-        onChange={(v) => set({ [t]: v, [b]: v } as Partial<S>)}
-      />
+    {!empty && <div className="flex flex-col gap-2 pb-4">{children}</div>}
+  </section>
+);
+
+/* ── Auto layout ──────────────────────────────────────────────────────── */
+
+// Four sides as two fields, ↔ and ↕ (Mixed when the two differ), or one each.
+const Sides = ({ name, keys, s, set }: { name: string; keys: ["pt" | "mt", "pr" | "mr", "pb" | "mb", "pl" | "ml"]; s: S; set: Put }) => {
+  const [four, setFour] = useState(false);
+  const [t, r, b, l] = keys;
+  const put = (p: Partial<Record<(typeof keys)[number], number>>) =>
+    set(Object.fromEntries(Object.entries(p).map(([k, v]) => [k, Math.max(0, v)])) as Partial<S>);
+  return (
+    <div className="flex min-w-0 flex-1 items-start gap-1">
+      <div className="grid flex-1 grid-cols-2 gap-1.5">
+        {four ? (
+          <>
+            <Num label="T" value={s[t]} step={SPACE} onChange={(v) => put({ [t]: v })} />
+            <Num label="R" value={s[r]} step={SPACE} onChange={(v) => put({ [r]: v })} />
+            <Num label="B" value={s[b]} step={SPACE} onChange={(v) => put({ [b]: v })} />
+            <Num label="L" value={s[l]} step={SPACE} onChange={(v) => put({ [l]: v })} />
+          </>
+        ) : (
+          <>
+            <Num label="↔" value={s[l] === s[r] ? s[l] : null} step={SPACE} onChange={(v) => put({ [l]: v, [r]: v })} />
+            <Num label="↕" value={s[t] === s[b] ? s[t] : null} step={SPACE} onChange={(v) => put({ [t]: v, [b]: v })} />
+          </>
+        )}
+      </div>
+      <IconBtn tip={`Individual ${name}`} on={four} onClick={() => setFour(!four)}>
+        <Scan />
+      </IconBtn>
     </div>
   );
 };
 
-export const LayoutFolder = ({ s, set, edited, size, bounds }: EditProps) => {
-  const [apart, setApart] = useState(false);
+// Gap, or Auto: the children pushed apart (space between). A grid only spaces.
+const Gap = ({ s, set }: { s: S; set: Put }) => (
+  <div className="flex items-center gap-1">
+    {s.between ? (
+      <TextFieldish label="↔" className="flex-1">
+        Auto
+      </TextFieldish>
+    ) : (
+      <Num label={s.flow === "column" ? "↕" : "↔"} value={s.gap} min={0} step={SPACE} onChange={(gap) => set({ gap, between: false })} className="flex-1" />
+    )}
+    {s.flow !== "grid" && (
+      <Menu
+        width={160}
+        trigger={(toggle) => (
+          <IconBtn tip="Gap mode" onClick={toggle}>
+            <ChevronDown className="!size-3.5" />
+          </IconBtn>
+        )}
+      >
+        {(close) => (
+          <>
+            <MenuItem on={!s.between} onClick={() => (set({ between: false }), close())}>
+              {s.gap}px
+            </MenuItem>
+            <MenuItem on={s.between} onClick={() => (set({ between: true }), close())}>
+              Auto (space between)
+            </MenuItem>
+          </>
+        )}
+      </Menu>
+    )}
+  </div>
+);
+
+const LayoutSection = ({ s, set, edited, size }: EditProps) => {
   // A grid's tracks are its code's: the panel only spaces it.
   const flex = s.flow !== "none" && s.flow !== "grid";
-  const direction = s.flow === "column" ? "column" : "row";
-  const sizeRow = (axis: "w" | "h") => {
+  const dir = s.flow === "column" ? "column" : "row";
+  // The pad is across and down; the style, along its direction and across it.
+  const [jx, jy] = dir === "row" ? [s.main, s.cross] : [s.cross, s.main];
+  const pick = (x: Align, y: Align, dbl: boolean) => {
+    const [main, cross] = dir === "row" ? [x, y] : [y, x];
+    set(dbl ? { main, cross, between: true } : s.between ? { cross } : { main, cross });
+  };
+  const sizeField = (axis: "w" | "h") => {
     const mode = axis === "w" ? s.wMode : s.hMode;
-    const at = mode === "fixed" ? s[axis] : Math.round(size[axis]);
+    const measured = Math.round(size[axis]);
+    const at = mode === "fixed" ? s[axis] : measured;
     return (
-      <div className="flex gap-1.5">
-        <Slider
-          label={axis === "w" ? "Width" : "Height"}
-          value={at}
-          min={0}
-          max={Math.max(bounds[axis], at)}
-          step={SPACE}
-          dim={mode !== "fixed"}
-          edited={edited(axis)}
-          onChange={(v) => set(axis === "w" ? { wMode: "fixed", w: v } : { hMode: "fixed", h: v })}
-          className="min-w-0 flex-1"
-        />
-        <Select<Sizing>
-          value={mode}
-          edited={edited(axis)}
-          onChange={(m) => set(axis === "w" ? { wMode: m, w: m === "fixed" ? at : s.w } : { hMode: m, h: m === "fixed" ? at : s.h })}
-          options={[
-            { value: "hug", label: "Hug" },
-            { value: "fill", label: "Fill" },
-            { value: "fixed", label: "Fixed" },
-          ]}
-          className="w-[78px] shrink-0"
-        />
-      </div>
+      <SizeField
+        axis={axis === "w" ? "W" : "H"}
+        value={s[axis]}
+        mode={mode}
+        measured={measured}
+        step={SPACE}
+        onValue={(v) => set(axis === "w" ? { wMode: "fixed", w: v } : { hMode: "fixed", h: v })}
+        onMode={(m: Sizing) => set(axis === "w" ? { wMode: m, w: m === "fixed" ? at : s.w } : { hMode: m, h: m === "fixed" ? at : s.h })}
+      />
     );
   };
-  const gap = (
-    <Slider
-      label="Gap"
-      value={s.gap}
-      min={0}
-      max={64}
-      step={SPACE}
-      format={(v) => (s.between ? "Auto" : String(v))}
-      edited={edited("gap")}
-      onChange={(gap) => set({ gap, between: false })}
-    />
-  );
+  const padding = <Sides name="padding" keys={["pt", "pr", "pb", "pl"]} s={s} set={set} />;
   return (
-    <Folder title="Layout" dot={["flow", "align", "gap", "w", "h", "pad", "margin"].some(edited)}>
-      <LabeledRow label="Auto layout">
-        <Segmented<Flow>
-          value={s.flow}
-          onChange={(flow) => set({ flow })}
-          options={[
-            { value: "none", title: "None", label: <SquareDashed className={icon} /> },
-            { value: "column", title: "Vertical", label: <ArrowDown className={icon} /> },
-            { value: "row", title: "Horizontal", label: <ArrowRight className={icon} /> },
-            { value: "wrap", title: "Wrap", label: <WrapText className={icon} /> },
-            // Only for one that is a grid: the panel doesn't make one.
-            ...(s.flow === "grid" ? [{ value: "grid" as const, title: "Grid", label: <LayoutGrid className={icon} /> }] : []),
-          ]}
-        />
-      </LabeledRow>
-      {flex && (
-        <div className="flex gap-1.5">
-          <AlignPad
-            direction={direction}
-            main={s.main}
-            cross={s.cross}
-            between={s.between}
-            edited={edited("align")}
-            onChange={(main, cross) => set(s.between ? { cross } : { main, cross })}
-          />
-          <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-            {gap}
-            <Segmented<"packed" | "between">
-              full
-              value={s.between ? "between" : "packed"}
-              onChange={(v) => set({ between: v === "between" })}
-              options={[
-                { value: "packed", label: "Packed", title: "Packed: gap between items" },
-                { value: "between", label: "Between", title: "Space between" },
-              ]}
-            />
+    <Section title={s.flow !== "none" ? "Auto layout" : "Layout"} dirty={["flow", "align", "gap", "w", "h", "pad", "margin"].some(edited)}>
+      <Seg<Flow>
+        value={s.flow}
+        onChange={(flow) => set({ flow })}
+        options={[
+          { v: "none", label: <Scan className="size-3.5" />, tip: "Freeform (no auto layout)" },
+          { v: "column", label: <ArrowDown className="size-3.5" />, tip: "Vertical" },
+          { v: "row", label: <ArrowRight className="size-3.5" />, tip: "Horizontal" },
+          { v: "wrap", label: <TextWrap className="size-3.5" />, tip: "Wrap" },
+          // Only for one that is a grid: the panel doesn't make one.
+          ...(s.flow === "grid" ? [{ v: "grid" as const, label: <Grid2x2 className="size-3.5" />, tip: "Grid" }] : []),
+        ]}
+      />
+      <div className="flex gap-1.5">
+        {sizeField("w")}
+        {sizeField("h")}
+      </div>
+      {flex ? (
+        // UI3's block: the pad on the left, gap over padding to its right.
+        <div className="flex items-start gap-2">
+          <AlignPad size={64} dir={dir} jx={jx} jy={jy} between={s.between} onPick={pick} />
+          <div className="flex min-w-0 flex-1 flex-col gap-2">
+            <Gap s={s} set={set} />
+            {padding}
           </div>
         </div>
+      ) : (
+        <>
+          {s.flow === "grid" && <Gap s={s} set={set} />}
+          {padding}
+        </>
       )}
-      {s.flow === "grid" && gap}
-      {sizeRow("w")}
-      {sizeRow("h")}
-      <div className="flex gap-1.5">
-        <div className="min-w-0 flex-1">
-          <Sides name="Pad" keys={["pt", "pr", "pb", "pl"]} s={s} set={set} edited={edited("pad")} apart={apart} />
-        </div>
-        <button
-          type="button"
-          title="Padding and margin per side"
-          aria-pressed={apart}
-          onClick={() => setApart(!apart)}
-          className={cn(
-            "grid w-9 shrink-0 cursor-pointer place-items-center self-start hover:bg-white/10",
-            ROW,
-            SURFACE,
-            apart ? "bg-white/[0.11] text-white/95" : "text-white/50",
-          )}
-        >
-          <Scan className={icon} />
-        </button>
-      </div>
-      <div className="pr-[42px]">
-        <Sides name="Margin" keys={["mt", "mr", "mb", "ml"]} s={s} set={set} edited={edited("margin")} apart={apart} />
-      </div>
-    </Folder>
+      <Row label="Margin">
+        <Sides name="margin" keys={["mt", "mr", "mb", "ml"]} s={s} set={set} />
+      </Row>
+    </Section>
   );
 };
 
-export const AppearanceFolder = ({ s, set, edited }: EditProps) => (
-  <Folder title="Appearance" dot={["opacity", "radius", "hidden"].some(edited)}>
-    <Toggle label="Visible" checked={!s.hidden} edited={edited("hidden")} onChange={(visible) => set({ hidden: !visible })} />
-    <Slider label="Opacity" value={s.opacity} min={0} max={100} unit="%" edited={edited("opacity")} onChange={(opacity) => set({ opacity })} />
-    <Slider
-      label={s.corners.some((c) => c !== s.radius) && s.corners.some((c) => c > 0) ? "Radius (rounded corners)" : "Radius"}
-      value={s.radius}
-      min={0}
-      max={FULL}
-      step={2}
-      format={(v) => (v >= FULL ? "Full" : String(v))}
-      edited={edited("radius")}
-      onChange={(radius) => set({ radius })}
-    />
-  </Folder>
-);
+/* ── Appearance ───────────────────────────────────────────────────────── */
 
-export const TextFolder = ({ s, set, edited }: EditProps) => (
-  <Folder title="Text" dot={["content", "weight", "size", "lh", "ls", "talign", "color"].some(edited)}>
-    {s.content !== null && <TextRow label="Text" value={s.content} edited={edited("content")} onChange={(content) => set({ content })} />}
-    <Select
-      label="Weight"
-      value={s.weight}
-      edited={edited("weight")}
-      onChange={(weight) => set({ weight })}
-      options={WEIGHTS.map(([value, label]) => ({ value, label }))}
-    />
-    <Slider label="Size" value={s.size} min={8} max={72} edited={edited("size")} onChange={(size) => set({ size })} />
-    <div className="grid grid-cols-2 gap-1.5">
-      <Slider
-        label="Line"
-        value={s.lh}
-        min={0}
-        max={80}
-        step={SPACE}
-        format={(v) => (v ? String(v) : "Auto")}
-        edited={edited("lh")}
-        onChange={(lh) => set({ lh })}
+const AppearanceSection = ({ s, set, edited }: EditProps) => {
+  // Its corners differ: an edit rounds the ones that are rounded.
+  const someCorners = s.corners.some((c) => c !== s.radius) && s.corners.some((c) => c > 0);
+  return (
+    <Section
+      title="Appearance"
+      dirty={["opacity", "radius", "hidden"].some(edited)}
+      actions={
+        <IconBtn tip={s.hidden ? "Show" : "Hide"} onClick={() => set({ hidden: !s.hidden })}>
+          {s.hidden ? <EyeOff /> : <Eye />}
+        </IconBtn>
+      }
+    >
+      {/* Opacity and radius share a row. */}
+      <div className="flex flex-wrap gap-2">
+        <div className="min-w-0 flex-1">
+          <Num label={<span className="text-[13px]">◐</span>} value={s.opacity} onChange={(opacity) => set({ opacity })} min={0} max={100} unit="%" />
+        </div>
+        <div className="min-w-0 flex-1" title={someCorners ? "Corner radius: rounds the corners that are rounded" : "Corner radius"}>
+          <Num
+            label={<Corner />}
+            value={s.radius}
+            min={0}
+            max={FULL}
+            step={2}
+            format={(v) => (v >= FULL ? "Full" : String(v))}
+            onChange={(radius) => set({ radius })}
+          />
+        </div>
+      </div>
+    </Section>
+  );
+};
+
+/* ── Typography ───────────────────────────────────────────────────────── */
+
+// Line height: Auto, px, or % of the size (in px once typed).
+const LineHeight = ({ s, set }: { s: S; set: Put }) => {
+  const [text, setText] = useState<string | null>(null);
+  const shown = s.lh ? String(s.lh) : "Auto";
+  const commit = () => {
+    if (text === null) return;
+    const t = text.trim().toLowerCase();
+    if (t === "auto" || t === "") set({ lh: 0 });
+    else if (t.endsWith("%")) {
+      const v = parseFloat(t);
+      if (Number.isFinite(v)) set({ lh: Math.max(0, snap((s.size * v) / 100, SPACE)) });
+    } else {
+      const v = parseNum(t, s.lh || Math.round(s.size * 1.2));
+      if (v !== null) set({ lh: Math.max(0, snap(v, SPACE)) });
+    }
+    setText(null);
+  };
+  return (
+    <div className="group/num relative flex h-7 min-w-0 flex-1 items-center rounded-[6px] pr-2 text-[12px]" style={{ background: T.field }} title="Line height · Auto, px or %">
+      <span className="grid h-full w-7 shrink-0 place-items-center" style={{ color: T.text3 }}>
+        <FoldVertical className="size-3.5" />
+      </span>
+      <input
+        aria-label="Line height"
+        value={text ?? shown}
+        onFocus={(e) => (setText(shown), e.target.select())}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.currentTarget.blur();
+          if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+            e.preventDefault();
+            setText(null);
+            const from = s.lh || snap(s.size * 1.2, SPACE);
+            set({ lh: Math.max(0, from + (e.key === "ArrowUp" ? 1 : -1) * SPACE * (e.shiftKey ? 10 : 1)) });
+          }
+        }}
+        className="dk-mono h-full min-w-0 flex-1 bg-transparent tabular-nums outline-none"
+        style={{ color: s.lh ? T.text : T.text2 }}
       />
-      <Slider label="Track" value={s.ls} min={-2} max={4} step={0.1} edited={edited("ls")} onChange={(ls) => set({ ls })} />
+      <span className="pointer-events-none absolute inset-0 rounded-[6px] ring-1 ring-inset ring-transparent group-focus-within/num:ring-[#E8E8EA]" />
     </div>
-    <LabeledRow label="Align">
-      <Segmented<TextAlign>
-        value={s.talign}
-        onChange={(talign) => set({ talign })}
-        options={[
-          { value: "left", title: "Left", label: <AlignLeft className={icon} /> },
-          { value: "center", title: "Center", label: <AlignCenter className={icon} /> },
-          { value: "right", title: "Right", label: <AlignRight className={icon} /> },
-          { value: "justify", title: "Justify", label: <AlignJustify className={icon} /> },
-        ]}
+  );
+};
+
+const TypographySection = ({ s, set, edited }: EditProps) => (
+  <Section title="Typography" dirty={["content", "weight", "size", "lh", "ls", "talign", "color"].some(edited)}>
+    {s.content !== null && <TextField label="Text" value={s.content} onChange={(content) => set({ content })} />}
+    <div className="flex gap-1.5">
+      <Select
+        className="flex-1"
+        value={s.weight}
+        options={WEIGHTS.map(([w]) => w)}
+        onChange={(weight) => set({ weight })}
+        render={(w) => <span style={{ fontWeight: Number(w) }}>{WEIGHTS.find(([x]) => x === w)?.[1] ?? w}</span>}
       />
-    </LabeledRow>
-    <ColorRow label="Color" hex={s.color} alpha={s.colorA} edited={edited("color")} onChange={(color, colorA) => set({ color, colorA })} />
-  </Folder>
+      <Num value={s.size} onChange={(size) => set({ size })} min={1} className="w-[76px]" />
+    </div>
+    <div className="flex gap-1.5">
+      <LineHeight s={s} set={set} />
+      <Num label={<span className="text-[10px] tracking-[0.1em]">|A|</span>} value={s.ls} step={0.1} onChange={(ls) => set({ ls })} className="flex-1" />
+    </div>
+    <Seg<TextAlign>
+      value={s.talign}
+      onChange={(talign) => set({ talign })}
+      options={[
+        { v: "left", label: <TextAlignStart className="size-3.5" />, tip: "Align left" },
+        { v: "center", label: <TextAlignCenter className="size-3.5" />, tip: "Align centre" },
+        { v: "right", label: <TextAlignEnd className="size-3.5" />, tip: "Align right" },
+        { v: "justify", label: <TextAlignJustify className="size-3.5" />, tip: "Justify" },
+      ]}
+    />
+    <ColorRow hex={s.color} alpha={s.colorA} onChange={(color, colorA) => set({ color, colorA })} />
+  </Section>
 );
 
-export const AddRemove = ({ has, what, onAdd, onRemove }: { has: boolean; what: string; onAdd: () => void; onRemove: () => void }) => (
-  <IconButton title={has ? `Remove ${what}` : `Add ${what}`} onClick={has ? onRemove : onAdd}>
-    {has ? <Minus className="size-3.5" /> : <Plus className="size-3.5" />}
-  </IconButton>
+/* ── Fill, stroke, effects ────────────────────────────────────────────── */
+
+const Add = ({ what, onClick }: { what: string; onClick: () => void }) => (
+  <IconBtn tip={`Add ${what}`} onClick={onClick}>
+    <Plus />
+  </IconBtn>
+);
+const Remove = ({ what, onClick }: { what: string; onClick: () => void }) => (
+  <IconBtn tip={`Remove ${what}`} onClick={onClick}>
+    <Minus />
+  </IconBtn>
 );
 
 // A gradient (or an image) shows as one, and stays the code's to change.
-export const FillFolder = ({ s, set, edited }: EditProps) => (
-  <Folder
+const FillSection = ({ s, set, edited }: EditProps) => (
+  <Section
     title="Fill"
-    dot={edited("fill")}
-    actions={
-      !s.gradient && <AddRemove has={!!s.fill} what="fill" onAdd={() => set({ fill: "#FFFFFF", fillA: 100 })} onRemove={() => set({ fill: null })} />
-    }
+    dirty={edited("fill")}
+    empty={!s.fill && !s.gradient}
+    actions={!s.fill && !s.gradient && <Add what="fill" onClick={() => set({ fill: "#FFFFFF", fillA: 100 })} />}
   >
     {s.gradient ? (
-      <LabeledRow label="Fill" className="pr-3">
-        <span className="text-[13px] font-medium text-white/40">Gradient</span>
-      </LabeledRow>
+      <TextFieldish dim title="A gradient or an image: its code's to change">
+        Gradient
+      </TextFieldish>
     ) : (
-      s.fill && <ColorRow label="Fill" hex={s.fill} alpha={s.fillA} edited={edited("fill")} onChange={(fill, fillA) => set({ fill, fillA })} />
+      s.fill && <ColorRow hex={s.fill} alpha={s.fillA} onChange={(fill, fillA) => set({ fill, fillA })} right={<Remove what="fill" onClick={() => set({ fill: null })} />} />
     )}
-  </Folder>
+  </Section>
 );
 
-export const BorderFolder = ({ s, set, edited }: EditProps) => {
+const StrokeSection = ({ s, set, edited }: EditProps) => {
   const k = s.stroke;
   const patch = (p: Partial<Stroke>) => k && set({ stroke: { ...k, ...p } });
   return (
-    <Folder
-      title="Border"
-      dot={edited("stroke")}
-      actions={
-        <AddRemove has={!!k} what="border" onAdd={() => set({ stroke: { color: "#000000", a: 100, w: 1 } })} onRemove={() => set({ stroke: null })} />
-      }
-    >
-      {k && <ColorRow label="Color" hex={k.color} alpha={k.a} edited={edited("stroke")} onChange={(color, a) => patch({ color, a })} />}
-      {k && <Slider label="Width" value={k.w} min={0} max={8} step={1} format={r1} edited={edited("stroke")} onChange={(w) => patch({ w })} />}
-    </Folder>
+    <Section title="Stroke" dirty={edited("stroke")} empty={!k} actions={!k && <Add what="stroke" onClick={() => set({ stroke: { color: "#000000", a: 100, w: 1 } })} />}>
+      {k && (
+        <>
+          <ColorRow hex={k.color} alpha={k.a} onChange={(color, a) => patch({ color, a })} right={<Remove what="stroke" onClick={() => set({ stroke: null })} />} />
+          <div className="flex gap-1.5" title="Stroke weight">
+            <Num label="≡" value={k.w} min={0} onChange={(w) => patch({ w })} className="w-[64px]" />
+          </div>
+        </>
+      )}
+    </Section>
   );
 };
 
-// The shadow that shows first; the others under it stay as they are.
-export const ShadowFolder = ({ s, set, edited }: EditProps) => {
+// The shadow that shows first; the others under it stay as they are. Its
+// values open from its icon.
+const EffectsSection = ({ s, set, edited }: EditProps) => {
+  const [open, setOpen] = useState(false);
   const sh = s.shadow;
   const patch = (p: Partial<Shadow>) => sh && set({ shadow: { ...sh, ...p } });
   return (
-    <Folder
-      title="Shadow"
-      dot={edited("shadow")}
-      actions={
-        <AddRemove
-          has={!!sh}
-          what="shadow"
-          onAdd={() => set({ shadow: { x: 0, y: 4, blur: 12, spread: 0, color: "#000000", a: 25 } })}
-          onRemove={() => set({ shadow: null })}
-        />
-      }
+    <Section
+      title="Effects"
+      dirty={edited("shadow")}
+      empty={!sh}
+      actions={!sh && <Add what="effect" onClick={() => set({ shadow: { x: 0, y: 4, blur: 12, spread: 0, color: "#000000", a: 25 } })} />}
     >
       {sh && (
-        <div className="grid grid-cols-2 gap-1.5">
-          <Slider label="X" value={sh.x} min={-32} max={32} edited={edited("shadow")} onChange={(x) => patch({ x })} />
-          <Slider label="Y" value={sh.y} min={-32} max={32} edited={edited("shadow")} onChange={(y) => patch({ y })} />
-          <Slider label="Blur" value={sh.blur} min={0} max={64} edited={edited("shadow")} onChange={(blur) => patch({ blur })} />
-          <Slider label="Spread" value={sh.spread} min={-24} max={24} edited={edited("shadow")} onChange={(spread) => patch({ spread })} />
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center gap-1">
+            <IconBtn tip="Edit effect" on={open} onClick={() => setOpen(!open)}>
+              <DropShadowIcon />
+            </IconBtn>
+            <div className="flex h-7 min-w-0 flex-1 items-center rounded-[6px] px-2 text-[12px]" style={{ background: T.field, color: T.text }}>
+              <span className="flex-1 truncate">Drop shadow</span>
+            </div>
+            <Remove what="effect" onClick={() => set({ shadow: null })} />
+          </div>
+          {open && (
+            <div className="ml-8 flex flex-col gap-1.5">
+              <div className="grid grid-cols-2 gap-1.5">
+                <Num label="X" value={sh.x} onChange={(x) => patch({ x })} />
+                <Num label="Y" value={sh.y} onChange={(y) => patch({ y })} />
+                <Num label="Blur" value={sh.blur} min={0} onChange={(blur) => patch({ blur })} />
+                <Num label="Spread" value={sh.spread} onChange={(spread) => patch({ spread })} />
+              </div>
+              <ColorRow hex={sh.color} alpha={sh.a} onChange={(color, a) => patch({ color, a })} />
+            </div>
+          )}
         </div>
       )}
-      {sh && <ColorRow label="Color" hex={sh.color} alpha={sh.a} edited={edited("shadow")} onChange={(color, a) => patch({ color, a })} />}
-    </Folder>
+    </Section>
   );
 };
+
+/* ── The section ──────────────────────────────────────────────────────── */
 
 export const Empty = ({ icon: Icon, title, body, children }: { icon: typeof MousePointer2; title: string; body: string; children?: ReactNode }) => (
   <div className="flex flex-col gap-4 px-3 pt-5">
@@ -359,7 +441,7 @@ export const Empty = ({ icon: Icon, title, body, children }: { icon: typeof Mous
 
 // The selected element's styles (`s`), against what it had before any edit
 // (`base`); with none selected (`selected`, its key), how to pick one.
-// `text`: text is written right in it, so its Text folder shows.
+// `text`: text is written right in it, so Typography shows.
 export const DesignSection = ({
   selected,
   s,
@@ -367,15 +449,13 @@ export const DesignSection = ({
   text,
   set,
   size,
-  bounds,
 }: {
   selected: string | null;
   s: S | null;
   base: S | null;
   text: boolean;
-  set: (patch: Partial<S>) => void;
+  set: Put;
   size: { w: number; h: number };
-  bounds: { w: number; h: number };
 }) => {
   if (!selected)
     return (
@@ -388,17 +468,18 @@ export const DesignSection = ({
   // Its styles are on their way from its frame.
   if (!s || !base) return null;
   const changed = new Set(changedGroups(base, s).map((g) => g.key));
-  const props: EditProps = { s, set, edited: (k) => changed.has(k), size, bounds };
+  const props: EditProps = { s, set, edited: (k) => changed.has(k), size };
   return (
-    <>
-      <div key={selected} className="pt-1">
-        <LayoutFolder {...props} />
-        <AppearanceFolder {...props} />
-        {text && <TextFolder {...props} />}
-        <FillFolder {...props} />
-        <BorderFolder {...props} />
-        <ShadowFolder {...props} />
-      </div>
-    </>
+    // The panel's tab header already draws a line, so the first section skips its own.
+    <div key={selected} className="flex flex-col pb-6 text-[12px] [&>section:first-of-type]:border-t-0">
+      <LayoutSection {...props} />
+      <AppearanceSection {...props} />
+      {text && <TypographySection {...props} />}
+      <FillSection {...props} />
+      <StrokeSection {...props} />
+      <EffectsSection {...props} />
+      <div className="border-t" style={{ borderColor: LINE }} />
+    </div>
   );
 };
+
