@@ -11,7 +11,6 @@ import { CanvasToolbar } from "./components/CanvasToolbar";
 import { EmptyState } from "./components/EmptyState";
 import { renderFrameInspector } from "./inspector/FrameInspector";
 import { InspectorControls } from "./inspector/InspectorControls";
-import { tagFromPreview } from "./inspector/bridge";
 
 // Focus on component when clicked in ComponentPanel
 const FocusRequestedComponent = () => {
@@ -31,12 +30,6 @@ const FocusRequestedComponent = () => {
 
 const openFullscreen = (url: string) => {
   window.electronAPI.openPreviewWindow(url);
-};
-
-// Elements tagged in a frame's own window, for this composer.
-const TagsFromPreviewWindows = () => {
-  useEffect(() => window.electronAPI.onElementTagged(tagFromPreview), []);
-  return null;
 };
 
 const WorkspaceCanvas = ({
@@ -80,7 +73,6 @@ const WorkspaceCanvas = ({
     >
       <FocusRequestedComponent />
       <InspectorControls />
-      <TagsFromPreviewWindows />
       <CanvasToolbar />
     </Canvas>
   );

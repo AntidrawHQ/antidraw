@@ -24,15 +24,13 @@ const isTyping = (target: EventTarget | null) =>
   (target instanceof HTMLElement && target.isContentEditable);
 
 // Keys are the inspector's only when nothing else has focus, or the canvas
-// does, or the preview window (which has no canvas; its titlebar tools keep
-// focus once clicked): in a menu, a dialog or a panel they're that one's.
+// does: in a menu, a dialog or a panel they're that one's.
 const isCanvasKey = (e: KeyboardEvent) =>
   !e.metaKey &&
   !e.ctrlKey &&
   !e.altKey &&
   !isTyping(e.target) &&
-  (e.target === document.body ||
-    (e.target instanceof Element && !!e.target.closest(".react-flow, [data-inspector-keys]")));
+  (e.target === document.body || (e.target instanceof Element && !!e.target.closest(".react-flow")));
 
 export const InspectorControls = () => {
   useEffect(() => {

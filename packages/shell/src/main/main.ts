@@ -83,10 +83,6 @@ const stayOnApp = (win: BrowserWindow) => {
   });
 };
 
-// Where elements tagged in a preview window go (see "inspector:tag").
-let mainWindow: BrowserWindow | null = null;
-const previewWindows = new Set<Electron.WebContents>();
-
 const createWindow = () => {
   const win = new BrowserWindow({
     width: 900,
@@ -103,10 +99,6 @@ const createWindow = () => {
       nodeIntegration: false,
       backgroundThrottling: false,
     },
-  });
-  mainWindow = win;
-  win.on("closed", () => {
-    if (mainWindow === win) mainWindow = null;
   });
 
   win.loadURL(APP_PAGE);
@@ -202,19 +194,9 @@ app.whenReady().then(async () => {
         backgroundThrottling: false,
       },
     });
-    const contents = previewWindow.webContents;
-    previewWindows.add(contents);
-    previewWindow.on("closed", () => previewWindows.delete(contents));
-
     // The app's /preview route; hash routing reads its search from inside the hash.
     previewWindow.loadURL(`${APP_PAGE}#/preview?${new URLSearchParams({ url })}`);
     stayOnApp(previewWindow);
-  });
-
-  // An element tagged in a preview window, for the main window's composer.
-  ipcMain.handle("inspector:tag", (event, pick: unknown, url: unknown) => {
-    if (!previewWindows.has(event.sender) || typeof url !== "string") return;
-    mainWindow?.webContents.send("inspector:tagged", pick, url);
   });
 
   // Cleanup any orphaned dev servers from previous crash (non-blocking)
