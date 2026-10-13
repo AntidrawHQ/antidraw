@@ -84,7 +84,7 @@ const stayOnApp = (win: BrowserWindow) => {
   });
 };
 
-// Where elements tagged in a preview window go (see "inspector:tag").
+// Where a preview window's comments are shown (see "comments:show").
 let mainWindow: BrowserWindow | null = null;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -106,6 +106,10 @@ const createWindow = () => {
       nodeIntegration: false,
       backgroundThrottling: false,
     },
+  });
+  mainWindow = win;
+  win.on("closed", () => {
+    if (mainWindow === win) mainWindow = null;
   });
 
   injectFrameAgent(win.webContents);
@@ -213,12 +217,6 @@ app.whenReady().then(async () => {
     if (typeof workspaceId === "string" && UUID_RE.test(workspaceId)) search.set("workspace", workspaceId);
     previewWindow.loadURL(`${APP_PAGE}#/preview?${search}`);
     stayOnApp(previewWindow);
-  });
-
-  // An element tagged in a preview window, for the main window's composer.
-  ipcMain.handle("inspector:tag", (event, pick: unknown, url: unknown) => {
-    if (!previewWindows.has(event.sender) || typeof url !== "string") return;
-    mainWindow?.webContents.send("inspector:tagged", pick, url);
   });
 
   // A preview window's comment, for the main window's list: bring it

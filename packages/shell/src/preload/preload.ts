@@ -11,14 +11,6 @@ const appKey = APP_PAGES.some((page) => location.href.startsWith(page))
 contextBridge.exposeInMainWorld("electronAPI", {
   openPreviewWindow: (url: string, workspaceId?: string) =>
     ipcRenderer.invoke("open-preview-window", url, workspaceId),
-  // A preview window's tags go to the main window's composer, by way of main.
-  tagElement: (pick: unknown, url: string) => ipcRenderer.invoke("inspector:tag", pick, url),
-  onElementTagged: (callback: (pick: unknown, url: string) => void) => {
-    const listener = (_event: Electron.IpcRendererEvent, pick: unknown, url: string) =>
-      callback(pick, url);
-    ipcRenderer.on("inspector:tagged", listener);
-    return () => ipcRenderer.removeListener("inspector:tagged", listener);
-  },
   // A preview window's comment, for the main window: show it there, and with
   // `send`, send the drafts there; with `chat`, open that chat (its set's).
   showComments: (request: { workspaceId: string; commentId: number; send: boolean; chat?: string }) =>

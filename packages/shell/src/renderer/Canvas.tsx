@@ -11,7 +11,6 @@ import { CanvasToolbar } from "./components/CanvasToolbar";
 import { EmptyState } from "./components/EmptyState";
 import { renderFrameInspector } from "./inspector/FrameInspector";
 import { InspectorControls } from "./inspector/InspectorControls";
-import { tagFromPreview } from "./inspector/bridge";
 import { CommentFlow, renderFrameComments } from "./comments/CommentFlow";
 import { CommentControls } from "./comments/CommentControls";
 import { useCanvasTool } from "./comments/store";
@@ -89,7 +88,6 @@ const WorkspaceCanvas = ({
       <FocusRequestedComponent />
       <InspectorControls />
       <CommentControls />
-      <TagsFromPreviewWindows />
       <CommentFlow />
       <CanvasToolbar />
     </Canvas>

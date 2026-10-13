@@ -9,7 +9,6 @@ import {
   onFrameWheel,
   registerFrame,
   setFrameTool,
-  tagFromPreview,
   trackElements,
   walk,
 } from "../bridge";
@@ -417,47 +416,6 @@ it("takes a click's selection, deselects in a frame the selection leaves, and dr
 
   unregisterOther();
   other.remove();
-});
-
-it("takes a preview window's tag only for a frame it has, from the same dev server", () => {
-  const pick = { frame: "Card", info: info() };
-  const url = `${ORIGIN}/preview?componentName=Card`;
-  tagFromPreview({ frame: "Pricing", info: info() }, `${ORIGIN}/preview?componentName=Pricing`);
-  tagFromPreview(pick, "https://other-workspace.test/preview?componentName=Card");
-  tagFromPreview(pick, "not a url");
-  expect(useInspectorStore.getState().tags).toEqual([]);
-  tagFromPreview(pick, url);
-  tagFromPreview({ frame: "Card", info: info() }, url);
-  // As the window saw it: null, it couldn't say.
-  expect(useInspectorStore.getState().tags).toEqual([{ ...pick, seen: null }]);
-});
-
-it("sends a preview window's tags as that window saw them, without asking the canvas's frame", async () => {
-  const url = `${ORIGIN}/preview?componentName=Card`;
-  const seen = context({ viewport: [1440, 900], element: "li.item", html: `<li class="item" data-ad-loc="${OWN}:7:9">Banana</li>`, size: [400, 32] });
-  tagFromPreview({ frame: "Card", info: info({ tag: "li", classes: ["item"], text: "Banana" }), seen }, url);
-  tagFromPreview({ frame: "Card", info: info({ ref: { loc: `${OWN}:8:9`, index: 0, path: [1], tag: "p" } }) }, url);
-  const before = asked.length;
-  expect(await describePendingTags().then((t) => t.block)).toMatchInlineSnapshot(`
-    "<canvas-selection>
-    <component name="Card" file="src/components/user-components/Card.tsx" preview="https://frame.test/preview?componentName=Card" frame="1440×900">
-    <element>
-    element: li.item
-      <li class="item" data-ad-loc="src/components/user-components/Card.tsx:7:9">Banana</li>
-    text: "Buy"
-    path: src/components/ui/button.tsx:3:5 › src/components/user-components/Card.tsx:5:5
-    box: 400×32
-    </element>
-    <element>
-    element: h3.title "Pro plan"
-    written at: src/components/user-components/Card.tsx:8:9
-    used at: src/components/user-components/Card.tsx:4:7
-    (as last seen: the frame didn't answer)
-    </element>
-    </component>
-    </canvas-selection>"
-  `);
-  expect(asked.length).toBe(before);
 });
 
 it("drops tags and the selection when the workspace changes", () => {

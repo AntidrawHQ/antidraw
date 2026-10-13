@@ -64,6 +64,11 @@ export const FrameInspector = ({
   return on && !ready ? <div className="nodrag nopan absolute inset-0 z-20" /> : null;
 };
 
+const CanvasFrameInspector = ({ frame, iframe }: { frame: string; iframe: HTMLIFrameElement | null }) => {
+  const zoom = useStore((s) => s.transform[2]);
+  return <FrameInspector frame={frame} iframe={iframe} zoom={zoom} />;
+};
+
 export const renderFrameInspector = ({ componentName, iframe }: { componentName: string; iframe: HTMLIFrameElement | null }) => (
-  <FrameInspector frame={componentName} iframe={iframe} />
+  <CanvasFrameInspector frame={componentName} iframe={iframe} />
 );

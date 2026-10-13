@@ -242,21 +242,6 @@ export const onFrameWheel = (frame: string, on: (wheel: WheelMsg) => void) => li
 // The URL a frame previews its component at.
 export const frameUrl = (frame: string) => iframes.get(frame)?.src ?? null;
 
-// An element tagged in a frame's own window (PreviewWindow), which shows the
-// same component from the same dev server. Taken only while this canvas has
-// that frame from that server: a window left open on another workspace's
-// component would name a file this one doesn't have.
-export function tagFromPreview(pick: Picked, url: string) {
-  const src = frameUrl(pick?.frame);
-  if (!src || !pick.info?.ref) return;
-  try {
-    if (new URL(src).origin !== new URL(url).origin) return;
-  } catch {
-    return;
-  }
-  store.getState().addTag({ frame: pick.frame, info: pick.info, seen: pick.seen ?? null });
-}
-
 // Where elements in a frame are, now and as they move: `on` gets their boxes
 // in the frame's CSS pixels, in `refs`' order, null for one it can't find,
 // whenever one moves (a scroll, a resize, an edit). One set per frame: a

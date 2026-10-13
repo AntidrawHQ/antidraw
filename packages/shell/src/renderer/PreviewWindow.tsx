@@ -3,19 +3,15 @@ import { RotateCw } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/renderer/components/ui/tooltip";
 import { TOOLS, ToolButton } from "@/renderer/components/CanvasToolbar";
 import { FrameInspector } from "@/renderer/inspector/FrameInspector";
-import { getElementContext } from "@/renderer/inspector/bridge";
-import { InspectorControls } from "@/renderer/inspector/InspectorControls";
-import { useInspectorStore } from "@/renderer/inspector/store";
-import { elementName } from "@/renderer/inspector/tags";
 import { PreviewComments } from "@/renderer/comments/PreviewComments";
 import { CommentControls } from "@/renderer/comments/CommentControls";
 import { setCanvasTool, useCanvasTool } from "@/renderer/comments/store";
 
 // A frame's own window: its component at the window's size, under a titlebar
-// like the main window's that carries the canvas's tools and the same keys.
-// This window keeps no tags: each one goes to the main window's composer
-// (main.ts "inspector:tag"), and the titlebar says so. Nor a comments list:
-// a comment left here joins the main window's, and Show goes there.
+// like the main window's that carries the canvas's Pointer and Comment tools
+// and their keys. No Inspect: tagging for the main window's chat can wait.
+// No comments list: a comment left here joins the main window's, and Show
+// goes there.
 
 const noDrag = { WebkitAppRegion: "no-drag" } as CSSProperties;
 
@@ -29,39 +25,19 @@ const componentNameOf = (url: string) => {
 };
 
 export const PreviewWindow = ({ url, workspaceId = null }: { url: string; workspaceId?: string | null }) => {
-  // The frame is named as on the canvas, so its tags name the same frame there.
+  // The frame is named as on the canvas, so its comments name the same frame there.
   const componentName = componentNameOf(url);
+  const [iframe, setIframe] = useState<HTMLIFrameElement | null>(null);
   const [reloads, setReloads] = useState(0);
-  const [tagged, setTagged] = useState<string | null>(null);
   // The comment just added here, for Show.
   const [commented, setCommented] = useState<number | null>(null);
   const tool = useCanvasTool();
-  // Comments are a workspace's: without one, no Comment tool.
-  const tools = TOOLS.filter((t) => t.id !== "comment" || workspaceId);
+  // Comments are a workspace's: without one, no tools.
+  const tools = workspaceId ? TOOLS.filter((t) => t.id !== "inspect") : [];
 
   useEffect(() => {
     document.title = componentName || "Preview";
   }, [componentName]);
-
-  useEffect(
-    () =>
-      useInspectorStore.subscribe((s) => {
-        if (!s.tags.length) return;
-        // Described here, where it was picked (see Picked's `seen`).
-        for (const tag of s.tags)
-          void getElementContext([tag]).then(([seen]) => window.electronAPI.tagElement({ ...tag, seen: seen ?? null }, url));
-        setTagged(elementName(s.tags.at(-1)!.info));
-        setCommented(null);
-        useInspectorStore.setState({ tags: [] });
-      }),
-    [url],
-  );
-
-  useEffect(() => {
-    if (!tagged) return;
-    const timer = setTimeout(() => setTagged(null), 2500);
-    return () => clearTimeout(timer);
-  }, [tagged]);
 
   useEffect(() => {
     if (commented === null) return;
@@ -71,7 +47,7 @@ export const PreviewWindow = ({ url, workspaceId = null }: { url: string; worksp
 
   return (
     <TooltipProvider>
-      <div className="flex h-screen w-full flex-col bg-[#0a0a0a]">
+      <div data-inspector-keys className="flex h-screen w-full flex-col bg-[#0a0a0a]">
         <div className="relative flex h-[38px] w-full shrink-0 items-center gap-2 border-b border-[#333] bg-[#2A2A2A] pl-20 pr-2 drag-region">
           {/* Centered on the window, as the main window's "Antidraw". */}
           <span className="pointer-events-none absolute inset-x-0 truncate px-48 text-center text-[13px] font-medium text-neutral-400 max-[560px]:hidden">
@@ -91,11 +67,6 @@ export const PreviewWindow = ({ url, workspaceId = null }: { url: string; worksp
             ))}
           </div>
           <div className="relative ml-auto flex min-w-0 items-center gap-2">
-            {tagged && (
-              <span role="status" className="truncate font-mono text-[11px] text-neutral-400">
-                Tagged {tagged} for Claude
-              </span>
-            )}
             {commented !== null && (
               <span role="status" className="flex min-w-0 items-center gap-2 text-[11px] text-neutral-400">
                 <span className="truncate">Comment added for Claude</span>
@@ -136,6 +107,7 @@ export const PreviewWindow = ({ url, workspaceId = null }: { url: string; worksp
           {url && (
             <iframe
               key={reloads}
+              ref={setIframe}
               src={url}
               title={componentName}
               className="absolute inset-0 h-full w-full border-0"
@@ -152,13 +124,11 @@ export const PreviewWindow = ({ url, workspaceId = null }: { url: string; worksp
               frame={componentName}
               workspaceId={workspaceId}
               onAdded={(c) => {
-                setTagged(null);
                 setCommented(c.id);
               }}
             />
           )}
         </div>
-        <InspectorControls />
         {workspaceId && <CommentControls />}
       </div>
     </TooltipProvider>
