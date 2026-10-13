@@ -139,7 +139,9 @@ export const describeElements = async (drafts: Comment[]): Promise<CommentContex
 // Sends the drafts to the chat that's open, or a new one if none is, as a
 // chat message: the server writes the message (POST /comments/prompt), and
 // it goes out through the composer's own send (useSendToChat), which marks
-// them sent with it. Resolves to the chat they went to.
+// them sent with it. Into the chat (and workspace) open when Send was
+// pressed, which the message is written for, whatever is open by the time
+// it's written. Resolves to the chat they went to.
 export const useSendComments = (workspaceId: string | null) => {
   const queryClient = useQueryClient();
   const sendToChat = useSendToChat();
@@ -162,6 +164,7 @@ export const useSendComments = (workspaceId: string | null) => {
       model,
       effort,
       commentIds: message.ids,
+      target: { workspaceId, conversationId: into ?? null },
       title: drafts.filter((c) => sent.has(c.id)).map((c) => c.text).join("\n"),
     });
     void queryClient.invalidateQueries({ queryKey: queryKeys.comments.byWorkspace(workspaceId) });
