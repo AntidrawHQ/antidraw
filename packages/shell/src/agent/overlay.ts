@@ -72,9 +72,23 @@ export function createOverlay() {
   // can't take the pointer meanwhile anyway: the catcher has it.
   const everything = document.createElement("style")
   everything.textContent = "* { pointer-events: auto !important; }"
-  // While the canvas pans with the wheel, the page doesn't scroll with it.
+  // While the canvas pans with the wheel, the page doesn't scroll with it:
+  // the root is held, which holds the viewport. Not <body> as well, which
+  // would make it a scroll box of its own that never scrolls, and every
+  // sticky element in it would stick to that (off screen, on a page scrolled
+  // down). Only a page that scrolls in <body> itself has it held too.
   const still = document.createElement("style")
-  still.textContent = "html, body { overflow: hidden !important; }"
+  still.textContent = "html { overflow: hidden !important; }"
+  const stillBody = document.createElement("style")
+  stillBody.textContent = "body { overflow: hidden !important; }"
+  const scrollsInBody = () => {
+    const body = document.body
+    const cs = getComputedStyle(body)
+    return (
+      (/auto|scroll|overlay/.test(cs.overflowY) && body.scrollHeight > body.clientHeight) ||
+      (/auto|scroll|overlay/.test(cs.overflowX) && body.scrollWidth > body.clientWidth)
+    )
+  }
 
   const place = (el: HTMLElement, x: number, y: number, w: number, h: number, widths?: Sides) => {
     el.hidden = false
@@ -158,8 +172,13 @@ export function createOverlay() {
       showOnTop()
     },
     holdStill(on: boolean) {
-      if (on && !still.isConnected) document.head.append(still)
-      else if (!on) still.remove()
+      if (on && !still.isConnected) {
+        document.head.append(still)
+        if (document.body && scrollsInBody()) document.head.append(stillBody)
+      } else if (!on) {
+        still.remove()
+        stillBody.remove()
+      }
     },
     hide() {
       holder = null

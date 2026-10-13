@@ -437,8 +437,10 @@ test("passes the wheel to the shell, whose canvas pans with it, not cancelled: t
   const page = vi.fn()
   window.addEventListener("wheel", page)
   tool("comment")
-  // The page doesn't scroll meanwhile.
-  expect(document.head.innerHTML).toContain("overflow: hidden !important")
+  // The page doesn't scroll meanwhile: its root is held, not <body>, which
+  // would be a scroll box of its own for sticky elements to stick to.
+  expect(document.head.innerHTML).toContain("html { overflow: hidden !important; }")
+  expect(document.head.innerHTML).not.toContain("body { overflow")
   const wheel = new WheelEvent("wheel", { bubbles: true, composed: true, cancelable: true, clientX: 3, clientY: 4, deltaY: 12, ctrlKey: true })
   catcher().dispatchEvent(wheel)
   expect(wheel.defaultPrevented).toBe(false)
