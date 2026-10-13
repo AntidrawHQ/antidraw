@@ -5,7 +5,7 @@
  * a tab only changes the section, never the tool. Design's footer is the
  * canvas's edit bar (EditBar).
  */
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import { PanelRight, PanelRightClose } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
 import { DesignSection } from "./sections";
@@ -15,6 +15,24 @@ import { PANEL_W, useDesignStore, useTab, type Tab } from "./store";
 import { useDesign } from "./use-design";
 
 const setTab = (t: Tab) => useDesignStore.getState().setTab(t);
+
+// ⌥⌘B shows and hides the panel, as VS Code's secondary side bar, beside
+// ⌘B for the side panel (Ctrl+Alt+B off macOS). By the key, not the
+// character: Option makes B "∫".
+const isMac = navigator.userAgent.includes("Mac");
+const KEYS = isMac ? "⌥⌘B" : "Ctrl+Alt+B";
+const useToggleKey = () =>
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+      if (e.code !== "KeyB" || !mod || !e.altKey || e.shiftKey) return;
+      e.preventDefault();
+      const s = useDesignStore.getState();
+      s.setPanelOpen(!s.panelOpen);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
 // Quiet tabs, as Figma's Design / Prototype and Framer's Agent / Style:
 // medium, no underline; the open one sits on a faint chip that
@@ -67,7 +85,7 @@ export const ShowPanel = () => {
   return panelOpen ? null : (
     <button
       type="button"
-      title="Show panel"
+      title={`Show panel (${KEYS})`}
       onClick={(e) => {
         e.stopPropagation();
         useDesignStore.getState().setPanelOpen(true);
@@ -114,6 +132,7 @@ const ResizeHandle = ({ panel }: { panel: React.RefObject<HTMLElement | null> })
 export const RightPanel = () => {
   const panelOpen = useDesignStore((s) => s.panelOpen);
   const width = useDesignStore((s) => s.width);
+  useToggleKey();
   const aside = useRef<HTMLElement>(null);
   const tab = useTab();
   const d = useDesign();
@@ -131,7 +150,7 @@ export const RightPanel = () => {
           <div className="flex shrink-0 items-center justify-between border-b border-[#333] p-2">
             <Tabs tab={tab} changes={d.changes.length} drafts={comments.drafts} />
             <IconButton
-              title="Hide panel"
+              title={`Hide panel (${KEYS})`}
               onClick={() => useDesignStore.getState().setPanelOpen(false)}
               className="text-white/30 hover:text-white/70"
             >

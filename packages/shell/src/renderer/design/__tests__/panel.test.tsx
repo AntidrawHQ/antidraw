@@ -259,6 +259,22 @@ it("Comments: the drafts by Send, the rest Open or Resolved; Pointer keeps the s
   expect(text()).toContain("Select an element");
   expect(useInspectorStore.getState().active).toBe(false);
   // Hidden, then back from the canvas's corner.
-  await press("Hide panel");
+  await press("Hide panel (Ctrl+Alt+B)");
   expect(useDesignStore.getState().panelOpen).toBe(false);
+});
+
+it("⌥⌘B (Ctrl+Alt+B off macOS, as here) hides the panel and brings it back; ⌘B alone is the side panel's", async () => {
+  await render({ edits: [], applied: [] });
+  // Option makes B another character: the key counts, not what it types.
+  const key = (init: KeyboardEventInit) =>
+    act(() => {
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyB", key: "∫", bubbles: true, cancelable: true, ...init }));
+    });
+  key({ ctrlKey: true, altKey: true });
+  expect(useDesignStore.getState().panelOpen).toBe(false);
+  key({ ctrlKey: true, altKey: true });
+  expect(useDesignStore.getState().panelOpen).toBe(true);
+  key({ ctrlKey: true, key: "b" });
+  key({ ctrlKey: true, altKey: true, shiftKey: true });
+  expect(useDesignStore.getState().panelOpen).toBe(true);
 });
