@@ -139,21 +139,23 @@ function onMessage(event: MessageEvent) {
     case "wheel":
       if (tools.get(frame)?.tool) wheels.get(frame)?.(data);
       return;
-    // A key pressed or let go in the frame, as if on it here: the tools' keys
-    // (InspectorControls, CommentControls) take it from there. One let go
-    // always counts: whatever has it as held must hear of it.
+    // A key pressed or let go in the frame, as if on the canvas around it:
+    // the tools' keys (InspectorControls, CommentControls) take it from
+    // there. Not on the frame itself, whose canvas node would take arrows,
+    // Enter and Esc as its own (moving it, selecting it). One let go always
+    // counts: whatever has it as held must hear of it. Never with Cmd, Ctrl
+    // or Alt: the agent sends none, and the page, which can post as it,
+    // mustn't reach the shell's shortcuts.
     case "key": {
-      if (data.kind !== "up" && !tools.get(frame)?.tool) return;
-      const { key, code, ctrlKey, metaKey, shiftKey, altKey, repeat } = data;
-      iframes.get(frame)?.dispatchEvent(
+      const iframe = iframes.get(frame);
+      if (!iframe || typeof data.key !== "string" || typeof data.code !== "string") return;
+      if (data.kind !== "up" && (!tools.get(frame)?.tool || data.ctrlKey || data.metaKey || data.altKey)) return;
+      (iframe.closest(".react-flow, [data-inspector-keys]") ?? document.body).dispatchEvent(
         new KeyboardEvent(data.kind === "up" ? "keyup" : "keydown", {
-          key,
-          code,
-          ctrlKey,
-          metaKey,
-          shiftKey,
-          altKey,
-          repeat,
+          key: data.key,
+          code: data.code,
+          shiftKey: !!data.shiftKey,
+          repeat: !!data.repeat,
           bubbles: true,
           cancelable: true,
         }),

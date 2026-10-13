@@ -116,18 +116,26 @@ it("tells a frame its tool and the element its comment box is on, and gives them
   expect(asked.map((a) => a.msg)).toMatchObject([{ type: "tool", tool: null, wheel: "scroll" }]);
 });
 
-it("hands a frame's comment clicks and wheel to whoever listens, and its keys to the page as if on the frame, only while it has a tool", () => {
+it("hands a frame's comment clicks and wheel to whoever listens, and its keys to the page as if on the canvas around it, only while it has a tool", () => {
   const clicks: unknown[] = [];
   const wheels: number[] = [];
   const stopClicks = onCommentClick("Card", (at, picked) => clicks.push([at, picked?.text ?? null]));
   const stopWheel = onFrameWheel("Card", (w) => wheels.push(w.deltaY));
   const keys: string[] = [];
-  const onKey = (e: KeyboardEvent) => keys.push(`${e.type} ${e.key} on ${(e.target as Element).localName}`);
+  let metaKeys = false;
+  const onKey = (e: KeyboardEvent) => {
+    keys.push(`${e.type} ${e.key} on ${(e.target as Element).localName}`);
+    metaKeys ||= e.metaKey;
+  };
   window.addEventListener("keydown", onKey);
   window.addEventListener("keyup", onKey);
   const wheel = { type: "wheel", x: 1, y: 2, deltaX: 0, deltaY: 9, deltaMode: 0, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false } as const;
-  const key = (kind: "down" | "up") =>
-    frameSays({ type: "key", kind, key: "Escape", code: "Escape", ctrlKey: false, metaKey: false, shiftKey: false, altKey: false, repeat: false });
+  const key = (kind: "down" | "up", metaKey = false) =>
+    frameSays({ type: "key", kind, key: "Escape", code: "Escape", ctrlKey: false, metaKey, shiftKey: false, altKey: false, repeat: false });
+  const canvas = document.createElement("div");
+  canvas.className = "react-flow";
+  document.body.append(canvas);
+  canvas.append(iframe);
 
   // No tool: no wheel, no key down; a key let go still counts.
   frameSays(wheel);
@@ -139,17 +147,22 @@ it("hands a frame's comment clicks and wheel to whoever listens, and its keys to
   frameSays(wheel);
   key("down");
   key("up");
+  // Never with Cmd, Ctrl or Alt: the page can post as the agent.
+  key("down", true);
+  key("up", true);
   stopClicks();
   stopWheel();
   frameSays({ type: "comment-at", x: 5, y: 6, info: null });
   frameSays(wheel);
   window.removeEventListener("keydown", onKey);
   window.removeEventListener("keyup", onKey);
-  expect({ clicks, wheels, keys }).toEqual({
+  expect({ clicks, wheels, keys, metaKeys }).toEqual({
     clicks: [[{ x: 3, y: 4 }, "Pro plan"]],
     wheels: [9],
-    keys: ["keyup Escape on iframe", "keydown Escape on iframe", "keyup Escape on iframe"],
+    keys: ["keyup Escape on div", "keydown Escape on div", "keyup Escape on div", "keyup Escape on div"],
+    metaKeys: false,
   });
+  canvas.remove();
 });
 
 it("leaves the keys to the tools after a pick: a chat draft being typed doesn't get Enter", () => {
