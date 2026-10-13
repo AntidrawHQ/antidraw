@@ -437,7 +437,7 @@ export const Canvas = ({
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initial.nodes);
 
-  // The frames the canvas placed, in order, until the user moves a frame.
+  // The frames the canvas placed, in order, until the user picks a frame.
   // Each grows to its component once loaded, so they're lined up again then
   // to keep them from covering each other.
   const settlingRef = useRef(initial.settling);
@@ -478,8 +478,9 @@ export const Canvas = ({
     (changes: NodeChange<IframeReactFlowNode>[]) => {
       onNodesChange(changes);
 
-      // A frame the user moved stays put, and so do the rest from then on.
-      if (changes.some((c) => c.type === "position")) {
+      // Once the user picks a frame (to move it, resize it or use it), it stays
+      // put, and so do the rest from then on.
+      if (changes.some((c) => c.type === "position" || (c.type === "select" && c.selected))) {
         settlingRef.current = [];
       }
 

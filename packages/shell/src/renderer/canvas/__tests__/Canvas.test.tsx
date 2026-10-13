@@ -38,17 +38,23 @@ const SITE = "https://paper-shaders.sites.test";
 const frameUrl = (componentName: string) =>
   `${SITE}/preview?componentName=${encodeURIComponent(componentName)}`;
 
-async function renderCanvas(onLayoutsChange?: (layouts: FrameLayout[]) => void, frameLayer?: FrameLayer) {
+async function renderCanvas(
+  onLayoutsChange?: (layouts: FrameLayout[]) => void,
+  frameLayer?: FrameLayer,
+  {
+    components = [{ name: "Card" }, { name: "Hero Card" }],
+    savedLayouts = [{ componentName: "Card", x: 10, y: 20, width: 300, height: 200 }],
+  }: { components?: { name: string }[]; savedLayouts?: FrameLayout[] } = {},
+) {
   const { Canvas } = await import("../Canvas");
   const container = document.body.appendChild(document.createElement("div"));
-  const components = [{ name: "Card" }, { name: "Hero Card" }];
   const render = (onChange: typeof onLayoutsChange, more: { name: string }[] = []) =>
     root!.render(
       <ReactFlowProvider>
         <div style={{ width: 1200, height: 800 }}>
           <Canvas
             components={[...components, ...more]}
-            savedLayouts={[{ componentName: "Card", x: 10, y: 20, width: 300, height: 200 }]}
+            savedLayouts={savedLayouts}
             frameUrl={frameUrl}
             onLayoutsChange={onChange}
             onFullscreen={() => {}}
@@ -153,6 +159,39 @@ it("lines new frames up after the others, and keeps them apart as they grow", as
       },
     }
   `);
+});
+
+it("lines new frames up after the frame reaching furthest right, level with it", async () => {
+  await renderCanvas(undefined, undefined, {
+    components: [{ name: "Wide" }, { name: "Narrow" }, { name: "New" }],
+    savedLayouts: [
+      { componentName: "Wide", x: 0, y: 0, width: 2000, height: 300 },
+      { componentName: "Narrow", x: 500, y: 400, width: 300, height: 200 },
+    ],
+  });
+  expect(positions()["New-1"]).toBe("translate(2100px,0px)");
+});
+
+it("starts the row at 100, 100 when nothing is saved", async () => {
+  await renderCanvas(undefined, undefined, { savedLayouts: [] });
+  expect(positions()).toMatchInlineSnapshot(`
+    {
+      "Card-1": "translate(100px,100px)",
+      "Hero Card-1": "translate(600px,100px)",
+    }
+  `);
+});
+
+it("leaves the frames where they are once the user picks one", async () => {
+  await renderCanvas();
+  const hero = document.querySelector<HTMLElement>('.react-flow__node[data-id="Hero Card-1"]')!;
+  await act(async () => {
+    hero.focus();
+    hero.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  });
+  // Card grows past the gap it had before Hero Card.
+  await postSize(SITE, 640, 480);
+  expect(positions()["Hero Card-1"]).toBe("translate(410px,20px)");
 });
 
 it("saves a change with the callback given when it happened", async () => {
