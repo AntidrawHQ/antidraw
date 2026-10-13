@@ -1,9 +1,9 @@
-import { useEffect } from "react";
-import { useStore } from "@xyflow/react";
+import { useEffect, useState } from "react";
+import { useStoreApi } from "@xyflow/react";
 import type { WheelMode } from "@/agent/protocol";
 import { onFrameWheel, registerFrame, setFrameTool } from "./bridge";
 import { useInspectorStore } from "./store";
-import { useCanvasTool } from "../comments/store";
+import { useCanvasTool, useCommentStore } from "../comments/store";
 
 // The canvas's tools over one frame. The frame is told which one is on and
 // then has the pointer: it finds what's under it and draws it itself, in the
@@ -64,8 +64,43 @@ export const FrameInspector = ({
   return on && !ready ? <div className="nodrag nopan absolute inset-0 z-20" /> : null;
 };
 
+// How long the canvas's zoom stays put before the outlined frame hears it.
+const SETTLED_MS = 150;
+
+// The canvas's zoom, for the frame that draws an outline (the selection, or
+// the element an open comment box is on): the only line that needs it, to
+// stay a screen pixel or two wide. That frame hears it once the zoom has
+// settled; every other frame hears nothing while the canvas zooms. Told on
+// every step, every frame fell behind: the frames share a process, and a
+// pinch over 188 of them queued 40,000 messages, seven seconds deep.
+const useOutlineZoom = (frame: string) => {
+  const selected = useInspectorStore((s) => s.selection?.frame === frame);
+  const commented = useCommentStore((s) => s.box?.frame === frame);
+  const outlined = selected || commented;
+  const flow = useStoreApi();
+  const [zoom, setZoom] = useState(() => flow.getState().transform[2]);
+  useEffect(() => {
+    if (!outlined) return;
+    let last = flow.getState().transform[2];
+    setZoom(last);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const stop = flow.subscribe((s) => {
+      const now = s.transform[2];
+      if (now === last) return;
+      last = now;
+      clearTimeout(timer);
+      timer = setTimeout(() => setZoom(now), SETTLED_MS);
+    });
+    return () => {
+      stop();
+      clearTimeout(timer);
+    };
+  }, [outlined, flow]);
+  return outlined ? zoom : 1;
+};
+
 const CanvasFrameInspector = ({ frame, iframe }: { frame: string; iframe: HTMLIFrameElement | null }) => {
-  const zoom = useStore((s) => s.transform[2]);
+  const zoom = useOutlineZoom(frame);
   return <FrameInspector frame={frame} iframe={iframe} zoom={zoom} />;
 };
 
