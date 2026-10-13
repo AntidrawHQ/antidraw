@@ -20,6 +20,9 @@ import { commentEvents } from "@/main/lib/comment-events";
 import { conversationEvents } from "@/main/lib/conversation-store";
 import { splitComments } from "@/shared/utils/canvas-comments";
 import { app } from "@/main/api";
+import { listEdits, putEdit } from "@/main/api/services/edit.service";
+import type { ElementInfo } from "@/agent/protocol";
+import type { Style } from "@/shared/design";
 
 const MIGRATIONS = fileURLToPath(new URL("../../db/drizzle", import.meta.url));
 const workspaceId = crypto.randomUUID();
@@ -128,6 +131,37 @@ describe("comments", () => {
       body: JSON.stringify({ message: "x", workspaceId, userMessageId: crypto.randomUUID(), commentIds: [c.id] }),
     });
     expect(res.status).toBe(409);
+  });
+
+  test("a send refused for its edits leaves its comments drafts; edits need the chat's workspace too", async () => {
+    const post = (body: Record<string, unknown>) =>
+      app.request("/api/chat/message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "x", workspaceId, userMessageId: crypto.randomUUID(), ...body }),
+      });
+    const c = await add("Make it pop");
+    const stale = await post({ commentIds: [c.id], editIds: [987654] });
+    expect(stale.status).toBe(409);
+    expect((await list()).comments.find((x) => x.id === c.id)?.state).toBe("draft");
+
+    const base = { gap: 12 } as Style;
+    const edit = putEdit(workspaceId, {
+      componentName: "Card",
+      element: { ref: { loc: "src/Card.tsx:3:5", index: 0, path: [0], tag: "div" } } as ElementInfo,
+      name: "div",
+      text: false,
+      base,
+      now: { ...base, gap: 16 },
+      seen: null,
+    })._unsafeUnwrap()!;
+    const other = crypto.randomUUID();
+    await db.insert(workspaces).values({ id: other, name: "other" });
+    const elsewhere = (await createConversation(other))._unsafeUnwrap().id;
+    const res = await post({ conversationId: elsewhere, editIds: [edit.id] });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe("CONVERSATION_WORKSPACE_MISMATCH");
+    expect(listEdits(workspaceId)._unsafeUnwrap().edits.map((e) => e.id)).toContain(edit.id);
   });
 
   test("a removed draft is gone; a removed sent one is only off the list", async () => {

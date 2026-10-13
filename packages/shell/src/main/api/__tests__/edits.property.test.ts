@@ -70,7 +70,7 @@ test("holds what the model holds, whatever the panel, Apply and the chats do", (
             const ids = els.map((el) => idOf(el)!);
             if (s.stale && gone.length) ids.push(gone[0]!);
             if (!ids.length) continue;
-            const r = markEditsApplied(ws, s.chat, ids);
+            const r = markEditsApplied(ws, s.chat, ids, crypto.randomUUID());
             const all = !(s.stale && gone.length);
             expect(r.isOk(), "all or nothing").toBe(all);
             changes = all;

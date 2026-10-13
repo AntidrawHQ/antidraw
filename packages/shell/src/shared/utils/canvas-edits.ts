@@ -24,8 +24,9 @@ export type EditedElement = {
 };
 
 // Edits handed to a chat by Apply: still shown on the canvas until the
-// chat's turn ends, by when the code has them.
-export type AppliedSet = { id: number; conversationId: string; edits: EditedElement[] };
+// chat's turn ends, by when the code has them. `messageId`: the message that
+// carries them (the canvas's own copy, before the API has it, has none).
+export type AppliedSet = { id: number; conversationId: string; messageId?: string; edits: EditedElement[] };
 
 export type EditList = { edits: EditedElement[]; applied: AppliedSet[] };
 

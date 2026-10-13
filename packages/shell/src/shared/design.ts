@@ -25,6 +25,12 @@ export type Style = {
   cross: Align;
   between: boolean;
   gap: number;
+  // Its row and column gaps differ: `gap` is the one along its flow (the
+  // column gap, but in a column), and an edit sets only that one.
+  splitGap?: boolean;
+  // Its parent's direction, when the parent is a flex box: the size its
+  // flex-grow and flex-basis are for.
+  parentFlex?: "row" | "column";
   wMode: Sizing;
   w: number;
   hMode: Sizing;
@@ -132,10 +138,16 @@ export const rgba = (hex: string, alpha: number) => {
 
 const FLEX: Record<Align, string> = { start: "flex-start", center: "center", end: "flex-end" };
 const px = (n: number) => `${n}px`;
+const justify = (s: Style) => (s.between ? "space-between" : FLEX[s.main]);
+// A size set as it is, not grown, shrunk or based on 0 (Tailwind's flex-1),
+// where it's the size its parent flexes: the width unless that's a column.
+const unflexed = (s: Style, size: "w" | "h") =>
+  (size === "w" ? s.parentFlex !== "column" : s.parentFlex === "column") && { "flex-grow": "0", "flex-shrink": "0", "flex-basis": "auto" };
 
 // Each group as the declarations that show it. `base` is what the element
-// had. Text isn't CSS: the agent writes it into the element (PreviewItem's
-// `text`).
+// had: only what changed is written, so an axis left alone (stretched, or
+// spaced around) stays as the code has it. Text isn't CSS: the agent writes
+// it into the element (PreviewItem's `text`).
 const CSS: Record<string, (s: Style, base: Style) => Record<string, string | undefined>> = {
   content: () => ({}),
   flow: (s) =>
@@ -144,19 +156,25 @@ const CSS: Record<string, (s: Style, base: Style) => Record<string, string | und
       : s.flow === "grid"
         ? { display: "grid" }
         : { display: "flex", "flex-direction": s.flow === "column" ? "column" : "row", "flex-wrap": s.flow === "wrap" ? "wrap" : "nowrap" },
-  align: (s) => ({ "justify-content": s.between ? "space-between" : FLEX[s.main], "align-items": FLEX[s.cross] }),
-  gap: (s) => ({ gap: px(s.gap), ...(s.flow !== "grid" && { "justify-content": s.between ? "space-between" : FLEX[s.main] }) }),
+  align: (s, base) => ({
+    ...((s.main !== base.main || s.between !== base.between) && { "justify-content": justify(s) }),
+    ...(s.cross !== base.cross && { "align-items": FLEX[s.cross] }),
+  }),
+  gap: (s, base) => ({
+    ...(s.gap !== base.gap && { [!base.splitGap ? "gap" : s.flow === "column" ? "row-gap" : "column-gap"]: px(s.gap) }),
+    ...(s.between !== base.between && s.flow !== "grid" && { "justify-content": justify(s) }),
+  }),
   w: (s) =>
     s.wMode === "fixed"
-      ? { width: px(s.w), "min-width": "0px", "max-width": "none", "flex-grow": "0", "flex-shrink": "0" }
+      ? { width: px(s.w), "min-width": "0px", "max-width": "none", ...unflexed(s, "w") }
       : s.wMode === "hug"
-        ? { width: "fit-content", "flex-grow": "0" }
+        ? { width: "fit-content", ...unflexed(s, "w") }
         : { width: "auto", "align-self": "stretch", "flex-grow": "1" },
   h: (s) =>
     s.hMode === "fixed"
-      ? { height: px(s.h), "min-height": "0px", "max-height": "none" }
+      ? { height: px(s.h), "min-height": "0px", "max-height": "none", ...unflexed(s, "h") }
       : s.hMode === "hug"
-        ? { height: "auto" }
+        ? { height: "auto", ...unflexed(s, "h") }
         : { height: "100%", "align-self": "stretch" },
   pad: (s) => ({ padding: `${px(s.pt)} ${px(s.pr)} ${px(s.pb)} ${px(s.pl)}` }),
   margin: (s) => ({ margin: `${px(s.mt)} ${px(s.mr)} ${px(s.mb)} ${px(s.ml)}` }),

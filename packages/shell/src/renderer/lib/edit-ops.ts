@@ -64,11 +64,19 @@ export const editsSettled = (workspaceId: string) =>
 const update = (queryClient: QueryClient, workspaceId: string, f: (list: EditList) => EditList) =>
   queryClient.setQueryData<EditList>(queryKeys.edits.byWorkspace(workspaceId), (old) => f(old ?? { edits: [], applied: [] }));
 
+// A write from here: a read on its way (the last write's end asked for it)
+// would land after and bring back what it replaces. It's dropped; this
+// write's end reads again.
+const write = (queryClient: QueryClient, workspaceId: string, f: (list: EditList) => EditList) => {
+  void queryClient.cancelQueries({ queryKey: queryKeys.edits.byWorkspace(workspaceId) });
+  update(queryClient, workspaceId, f);
+};
+
 // An element's edits as the panel has them now: back where it started, it
 // has none.
 export const saveEdit = (queryClient: QueryClient, workspaceId: string, input: EditInput) => {
   const key = keyOf(input);
-  update(queryClient, workspaceId, (list) => {
+  write(queryClient, workspaceId, (list) => {
     const was = list.edits.find((e) => keyOf(e) === key);
     if (same(input.base, input.now)) return { ...list, edits: list.edits.filter((e) => e !== was) };
     const edit = was ? { ...was, ...input, base: was.base, seen: was.seen } : { ...input, id: tempId-- };
@@ -80,7 +88,7 @@ export const saveEdit = (queryClient: QueryClient, workspaceId: string, input: E
   if (q) return void (q.next = input);
   const mine = { next: null as EditInput | null };
   queued.set(slot, mine);
-  const write = async (value: EditInput) => {
+  const send = async (value: EditInput) => {
     begin(workspaceId);
     try {
       const saved = await unwrap(putEdit(workspaceId, value));
@@ -95,17 +103,17 @@ export const saveEdit = (queryClient: QueryClient, workspaceId: string, input: E
     } finally {
       const next = mine.next;
       mine.next = null;
-      if (next) void write(next);
+      if (next) void send(next);
       else queued.delete(slot);
       end(queryClient, workspaceId);
     }
   };
-  void write(input);
+  void send(input);
 };
 
 // Every edit not yet applied, undone: Reset.
 export const resetEdits = (queryClient: QueryClient, workspaceId: string) => {
-  update(queryClient, workspaceId, (list) => ({ ...list, edits: [] }));
+  write(queryClient, workspaceId, (list) => ({ ...list, edits: [] }));
   begin(workspaceId);
   void unwrap(removeEdits(workspaceId))
     .catch(console.error)
@@ -114,7 +122,7 @@ export const resetEdits = (queryClient: QueryClient, workspaceId: string) => {
 
 // A set being applied, no longer shown.
 export const stopPreviewing = (queryClient: QueryClient, workspaceId: string, setId: number) => {
-  update(queryClient, workspaceId, (list) => ({ ...list, applied: list.applied.filter((s) => s.id !== setId) }));
+  write(queryClient, workspaceId, (list) => ({ ...list, applied: list.applied.filter((s) => s.id !== setId) }));
   begin(workspaceId);
   void unwrap(releaseApplied(workspaceId, setId))
     .catch(console.error)

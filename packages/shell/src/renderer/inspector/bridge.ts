@@ -98,7 +98,7 @@ function onMessage(event: MessageEvent) {
   const s = store.getState();
   switch (data.type) {
     case "ready": {
-      s.setFrame(frame, { ready: true, tagged: data.tagged });
+      s.setFrame(frame, { ready: true, tagged: data.tagged, ...(data.provisional && { provisional: true }) });
       // A reload lost its tool, and what it followed.
       const tool = tools.get(frame);
       if (tool) post(frame, { ...tool, id: nextId++ });

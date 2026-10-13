@@ -16,6 +16,9 @@ export type FrameStatus = {
   ready: boolean;
   // Its elements carry source locations (the dev server's Vite plugin).
   tagged: boolean;
+  // Its answer came from the page's root standing in, before the component's
+  // element was there: the real one follows.
+  provisional?: boolean;
 };
 
 type InspectorStore = {
