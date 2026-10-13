@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { create } from "zustand";
 import { useQueryClient } from "@tanstack/react-query";
 import type { ConversationWithMessages, EffortLevel } from "@/main/api";
 import { setPreference } from "@/renderer/lib/api";
@@ -23,6 +23,12 @@ const isEffortLevel = (value: string): value is EffortLevel =>
 
 type Picks = { model?: string; effort?: EffortLevel };
 
+// Un-sent picks for one conversation, shared by every user of this hook
+// (the composer, and the comments and design sends that go into the same
+// chat), so a send from any of them goes as the composer shows. Keyed so a
+// conversation switch resets them during render: no effect, no stale flash.
+const usePickState = create<{ key: string | null; picks: Picks }>(() => ({ key: null, picks: {} }));
+
 /**
  * Composer model/effort state.
  *
@@ -35,7 +41,8 @@ type Picks = { model?: string; effort?: EffortLevel };
  *
  * Un-sent picks are deliberately ephemeral — they exist only until a send
  * snapshots them onto the row, and switching conversations discards them.
- * A pick means "use this for my next send here", nothing more.
+ * A pick means "use this for my next send here", nothing more. They're
+ * shared by every instance of this hook (see usePickState).
  */
 export const useComposerModel = (
   conversationId: string | null,
@@ -47,15 +54,14 @@ export const useComposerModel = (
   const { data: modelPref } = usePreference(MODEL_PREF_KEY);
   const { data: effortPref } = usePreference(EFFORT_PREF_KEY);
 
-  // Un-sent picks for the CURRENT conversation. Keyed so a conversation
-  // switch resets them during render — no effect, no stale flash.
-  const [pickState, setPickState] = useState<{
-    key: string | null;
-    picks: Picks;
-  }>({ key: conversationId, picks: {} });
+  // Un-sent picks for the CURRENT conversation.
+  const pickState = usePickState();
   const picks = pickState.key === conversationId ? pickState.picks : {};
   const addPicks = (next: Picks) =>
-    setPickState({ key: conversationId, picks: { ...picks, ...next } });
+    usePickState.setState((s) => ({
+      key: conversationId,
+      picks: { ...(s.key === conversationId ? s.picks : {}), ...next },
+    }));
 
   const prefModel = modelPref ?? undefined;
   const prefEffort =

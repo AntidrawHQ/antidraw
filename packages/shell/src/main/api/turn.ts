@@ -215,6 +215,7 @@ const runColdStart = async (
     const res = sendMessage({
       promptStream,
       workspaceId,
+      conversationId: conversation.id,
       claudeCodeSessionID,
       model: options?.model,
       effort: options?.effort,

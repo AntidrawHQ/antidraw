@@ -16,7 +16,9 @@ import { z } from "zod/v3";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { getWorkspaceSourcePath } from "@/main/api/init";
 import {
+  COMMENTS_MCP_SERVER_NAME,
   DEV_SERVER_MCP_SERVER_NAME,
+  createCommentsMcpServer,
   createDevServerMcpServer,
 } from "@/main/api/tools";
 import type { ImageAttachment } from "@/shared/utils/message";
@@ -219,6 +221,8 @@ export const sendMessage = (params: {
   // message: string;
   promptStream: PromptStream;
   workspaceId: string;
+  // What its tools act for: complete_comment marks only this chat's comments.
+  conversationId: string;
   claudeCodeSessionID?: string;
   model?: string;
   effort?: EffortLevel;
@@ -247,6 +251,7 @@ export const sendMessage = (params: {
     const {
       promptStream,
       workspaceId,
+      conversationId,
       claudeCodeSessionID,
       model,
       effort,
@@ -265,6 +270,7 @@ export const sendMessage = (params: {
         effort,
         mcpServers: {
           [DEV_SERVER_MCP_SERVER_NAME]: createDevServerMcpServer(workspaceId),
+          [COMMENTS_MCP_SERVER_NAME]: createCommentsMcpServer(conversationId),
         },
         hooks: onEffortLevel
           ? {
@@ -303,12 +309,20 @@ IMPORTANT RULES:
 
 ELEMENTS THE USER POINTS AT:
 When the user picks elements on the canvas, their message starts with a <canvas-selection> block. "This", "here" and "it" in the message mean those elements. They're grouped by the component whose frame they were picked in: <component> gives its name, its file, the URL its preview loads, and the frame's size; one <element> follows for each element picked in it.
-- written at: the file, line and column of its JSX. "none of its own" means a library rendered it; the location is the nearest element around it that has one, and the selector path leads down from there.
-- rendered by: the components whose code produced it, from the previewed component in, each with the nearest place in its code. An element written in any other component's file, including another one in src/components/user-components/, may appear wherever that component is used: change it there only if the user means every use, otherwise change how the previewed component uses it.
-- repeated: one of several rendered from the same place (a .map()); the item number and React keys (outer list first) say which.
-- attributes and box: what it is and what state it's in, and its rendered size, margin, border and padding in CSS pixels, at the frame's size.
-- "as last seen": its frame didn't answer, so only what the canvas last knew is given. used at: the nearest place in the previewed component's file around it, not necessarily where it's written.
+- element: its tag, id and first classes. Below it, indented, its markup as rendered now, cut short: children a few levels down ("…", "… 3 more"), long text and values clipped, an <svg>'s drawing left out (its class names the icon), a password's or card number's value left out.
+- data-ad-loc, on it or in its markup: the file, line and column of the JSX that element is written at. The dev server adds it; it isn't in the code.
+- text: its visible text, which the markup may cut off.
+- inside: it has no data-ad-loc of its own (a library rendered it, or a component through a variable, as shadcn's <Comp>), so this is the opening tag of the nearest element around it that has one.
+- path: where it's written, out to the previewed component: the location of the JSX in each file on the way, separated by ›. The last is in the previewed component's file: the element there that holds where it is used (or the component holding it is). "(2 of 3)": which of the elements written at that location it is, counted inside the next one out (the last, in the whole component), e.g. the second of two <Card>s in that grid, or the badge in the second row of a .map(). An element written in another component's file appears wherever that component is used: change that file only if the user means every use, otherwise change how the previewed component uses it, inside the last location.
+- repeated: written in the previewed component and one of several rendered from there (a .map(), or a component written in that file used more than once); the item number says which, and its text which item of the data it is. "inside item 2 of 3 rendered at …": the list it's in is itself one of several (a list in a list).
+- among: no location of its own, so which of the elements of its kind its parent holds (the 4th star of a rating).
+- box: its rendered size, margin, border and padding in CSS pixels, at the frame's size.
+- "as last seen": its frame didn't answer, so only what the canvas last knew is given. written at: where its JSX is. used at: the nearest place in the previewed component's file around it, not necessarily where it's written.
 Locations were read when the message was sent; read the file before editing.
+
+COMMENTS THE USER LEAVES:
+When the user sends comments they pinned on the canvas, the message is a <canvas-comments> block. Each new <comment> has an id, the component it was left on (name, file, preview URL, and the frame's size, as in <canvas-selection>), "at": where the pin is in the frame, in CSS pixels from its top left, then the comment's text and the <element> under the pin, read as in <canvas-selection> (no <element>: the frame couldn't say what's there). Work through each. When one is done, call mcp__canvas_comments__complete_comment with its id and a one-line note on what changed. If one is unclear, ask in the chat rather than guessing, and don't mark it.
+A chat can get several such messages; act on the new <comment>s in each. <earlier> holds comments from other chats, with their notes, for context only: act on them only when the user refers to them ("undo that", "same as before").
 
 Current workspace directory: ${workspacePath}
 `,

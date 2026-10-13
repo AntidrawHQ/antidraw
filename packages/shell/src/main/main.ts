@@ -27,6 +27,7 @@ import { installNodeShim } from "./lib/node-shim";
 import { runMigrations } from "./db/migrate";
 import { shutdownPostHog } from "./lib/posthog";
 import { APP_KEY, APP_KEY_ARG } from "@/main/lib/app-key";
+import { injectFrameAgent } from "./frame-agent";
 import { verifyCertificate } from "@/main/lib/certificate-verify";
 
 // Keep the renderer responsive when the window is unfocused or occluded.
@@ -84,6 +85,12 @@ const stayOnApp = (win: BrowserWindow) => {
   });
 };
 
+// Where a preview window's comments are shown (see "comments:show").
+let mainWindow: BrowserWindow | null = null;
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const previewWindows = new Set<Electron.WebContents>();
+
 const createWindow = () => {
   const win = new BrowserWindow({
     width: 900,
@@ -101,7 +108,12 @@ const createWindow = () => {
       backgroundThrottling: false,
     },
   });
+  mainWindow = win;
+  win.on("closed", () => {
+    if (mainWindow === win) mainWindow = null;
+  });
 
+  injectFrameAgent(win.webContents);
   win.loadURL(APP_PAGE);
   stayOnApp(win);
 };
@@ -165,7 +177,7 @@ app.whenReady().then(async () => {
 
   createWindow();
 
-  ipcMain.handle("open-preview-window", (_event, url: string) => {
+  ipcMain.handle("open-preview-window", (_event, url: string, workspaceId?: unknown) => {
     let parsed: URL;
     try {
       parsed = new URL(url);
@@ -195,8 +207,16 @@ app.whenReady().then(async () => {
         backgroundThrottling: false,
       },
     });
-    // The app's /preview route; hash routing reads its search from inside the hash.
-    previewWindow.loadURL(`${APP_PAGE}#/preview?${new URLSearchParams({ url })}`);
+    const contents = previewWindow.webContents;
+    previewWindows.add(contents);
+    injectFrameAgent(contents);
+    previewWindow.on("closed", () => previewWindows.delete(contents));
+
+    // The app's /preview route; hash routing reads its search from inside
+    // the hash. The workspace, for the comments it leaves (renderer/comments).
+    const search = new URLSearchParams({ url });
+    if (typeof workspaceId === "string" && UUID_RE.test(workspaceId)) search.set("workspace", workspaceId);
+    previewWindow.loadURL(`${APP_PAGE}#/preview?${search}`);
     stayOnApp(previewWindow);
     // will-navigate is the window's own page only. The component's frame
     // stays on its dev server, and a link off it opens in the browser, as on
@@ -209,6 +229,43 @@ app.whenReady().then(async () => {
       event.preventDefault();
       openInBrowser(event.url);
     });
+  });
+
+  // A preview window's comment, for the main window's list: bring it
+  // forward, show the comment, and with `send`, send the drafts there. With
+  // the main window closed (macOS keeps the app open), it's opened again,
+  // and its canvas asks for the request once it listens ("comments:pending").
+  let pendingShow: object | null = null;
+  ipcMain.handle("comments:show", (event, request: unknown) => {
+    if (!previewWindows.has(event.sender)) return;
+    const { workspaceId, commentId, send, chat } = (request ?? {}) as {
+      workspaceId?: unknown;
+      commentId?: unknown;
+      send?: unknown;
+      chat?: unknown;
+    };
+    if (typeof workspaceId !== "string" || !UUID_RE.test(workspaceId) || typeof commentId !== "number") return;
+    const shown = {
+      workspaceId,
+      commentId,
+      send: send === true,
+      ...(typeof chat === "string" && UUID_RE.test(chat) && { chat }),
+    };
+    if (!mainWindow) {
+      pendingShow = shown;
+      createWindow();
+      return;
+    }
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+    mainWindow.webContents.send("comments:shown", shown);
+  });
+  ipcMain.handle("comments:pending", (event) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents) return null;
+    const shown = pendingShow;
+    pendingShow = null;
+    return shown;
   });
 
   // Cleanup any orphaned dev servers from previous crash (non-blocking)
@@ -259,10 +316,10 @@ app.whenReady().then(async () => {
     setInterval(checkForUpdates, UPDATE_CHECK_INTERVAL_MS);
   }
 
+  // A Dock click with the main window closed opens it again, even with a
+  // preview window still open.
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
-    }
+    if (!mainWindow) createWindow();
   });
 });
 

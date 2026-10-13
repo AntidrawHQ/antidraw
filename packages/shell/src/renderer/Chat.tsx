@@ -27,9 +27,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import {
   useCancelStream,
   useConversationMessages,
-  useCreateConversation,
   useFailedMessageIds,
-  useGenerateTitle,
   useLivePartial,
   usePendingQuestionIds,
   useQueuedMessageIds,
@@ -49,11 +47,13 @@ import { ChatEmptyState } from "./components/ChatEmptyState";
 import ModelPicker from "@/renderer/components/ModelPicker";
 import EffortDropdown from "@/renderer/components/EffortDropdown";
 import { useComposerModel } from "@/renderer/hooks/use-composer-model";
+import { useSendToChat } from "@/renderer/hooks/use-send-to-chat";
 import { QueuedMessagesDeck } from "@/renderer/components/QueuedMessagesDeck";
 import { useQueueDeck } from "@/renderer/lib/use-queue-deck";
 import { SMOOTH } from "@/renderer/lib/motion";
 import { SentTags, TagChips } from "@/renderer/inspector/TagChips";
 import { describePendingTags, retagTags, splitTagged, untagTags } from "@/renderer/inspector/tags";
+import { splitComments } from "@/shared/utils/canvas-comments";
 import {
   SUPPORTED_IMAGE_TYPES,
   type ImageAttachment,
@@ -260,6 +260,24 @@ const MessageRow = memo(
         // the agent; the bubble shows them as chips.
         const tagged = isAssistant ? null : splitTagged(block.text);
         if (tagged?.tags.length) nodes.push(<SentTags key={`tags-${idx}`} tags={tagged.tags} />);
+        // Comments sent from the canvas are the whole message: the bubble
+        // shows them, one to a line, under the components they're on.
+        const commented = isAssistant ? null : splitComments(block.text);
+        if (commented) {
+          nodes.push(
+            <SentTags key={`tags-${idx}`} tags={[...new Set(commented.comments.map((c) => c.component))]} />,
+            <MessageContent
+              key={idx}
+              className={cn(
+                "self-end max-w-[85%] bg-neutral-700 text-neutral-200 prose prose-sm prose-invert whitespace-pre-wrap",
+                isFailed && "opacity-60"
+              )}
+            >
+              {commented.comments.map((c) => c.text).join("\n\n")}
+            </MessageContent>
+          );
+          return;
+        }
         nodes.push(
           isAssistant ? (
             <Markdown
@@ -711,11 +729,11 @@ type AppChatProps = React.ComponentProps<"div">;
 export function AppChat({ className, ...props }: AppChatProps) {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const activeConversationId = useWorkspaceStore((s) => s.activeConversationId);
-  const setActiveConversationId = useWorkspaceStore((s) => s.setActiveConversationId);
 
-  const createConversation = useCreateConversation();
+  // The composer's send, shared with the canvas comments'.
+  const sendToChat = useSendToChat();
+  // Only the login retry's, below.
   const sendMessage = useSendMessage();
-  const generateTitle = useGenerateTitle();
   const cancelStream = useCancelStream();
   const queryClient = useQueryClient();
   const { data: conversation, isLoading: isConversationLoading } =
@@ -728,7 +746,7 @@ export function AppChat({ className, ...props }: AppChatProps) {
 
   // Only an in-flight HTTP send blocks submitting. Streaming does not: a
   // mid-turn send is queued by the CLI and acked via message_accepted.
-  const isSendPending = createConversation.isPending || sendMessage.isPending;
+  const isSendPending = sendToChat.isPending || sendMessage.isPending;
   const isLoading = isSendPending || isStreaming;
 
   const composer = useComposerModel(activeConversationId, conversation);
@@ -744,52 +762,13 @@ export function AppChat({ className, ...props }: AppChatProps) {
     prompt: string,
     imagesToSend: ImageAttachment[] | undefined
   ) => {
-    if (!activeWorkspaceId) return;
-
-    // Sending while disconnected would otherwise post into a conversation
-    // nothing is watching: the owner effect is keyed on the conversation, and
-    // that has not changed, so only this reopens the stream.
-    if (streamFailed && activeConversationId) {
-      retryStream(activeConversationId, queryClient);
-    }
-
-    // Generate userMessageId for dedup
-    const userMessageId = crypto.randomUUID();
-
-    let conversationId = activeConversationId;
-
-    if (!conversationId) {
-      const conv = await createConversation.mutateAsync({
-        workspaceId: activeWorkspaceId,
-      });
-      setActiveConversationId(conv.id);
-      conversationId = conv.id;
-    }
-
-    // The composer selection rides the message — the send is the only
-    // moment options are set (persisted on the row and applied to the CLI).
-    await sendMessage.mutateAsync({
-      message: prompt,
-      workspaceId: activeWorkspaceId,
-      conversationId,
-      userMessageId,
+    await sendToChat.send({
+      prompt,
       images: imagesToSend,
       model: composer.selectedModelId,
       effort: composer.effort,
-      // This render's status, not the cache's: retryStream above has already
-      // written "streaming" into the cache when the stream had failed.
-      sentMidTurn: isStreaming,
+      title: splitTagged(prompt).text,
     });
-
-    // Fire-and-forget title generation if conversation has no title/summary yet
-    const needsTitle = !conversation?.title && !conversation?.summary;
-    if (needsTitle) {
-      generateTitle.mutate({
-        conversationId,
-        workspaceId: activeWorkspaceId,
-        firstMessage: splitTagged(prompt).text,
-      });
-    }
   };
 
   const handleStop = () => {

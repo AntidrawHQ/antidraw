@@ -6,11 +6,22 @@ import { useDevServerStatus, useAutoStartDevServer } from "./lib/workspace-ops";
 import { useFrameLayouts } from "./lib/frame-layout-ops";
 import { saveFrameLayouts, type FrameLayoutData } from "./lib/api";
 import { cn } from "./lib/utils";
-import { Canvas, useFocusComponent, type FrameLayout } from "./canvas/Canvas";
+import { Canvas, useFocusComponent, type FrameLayer, type FrameLayout } from "./canvas/Canvas";
 import { CanvasToolbar } from "./components/CanvasToolbar";
 import { EmptyState } from "./components/EmptyState";
 import { renderFrameInspector } from "./inspector/FrameInspector";
 import { InspectorControls } from "./inspector/InspectorControls";
+import { CommentFlow, renderFrameComments } from "./comments/CommentFlow";
+import { CommentControls } from "./comments/CommentControls";
+import { useCanvasTool } from "./comments/store";
+
+// Over each frame: the tools (the inspector's and the Comment tool's).
+const renderFrameLayers: FrameLayer = (frame) => (
+  <>
+    {renderFrameInspector(frame)}
+    {renderFrameComments(frame)}
+  </>
+);
 
 // Focus on component when clicked in ComponentPanel
 const FocusRequestedComponent = () => {
@@ -29,7 +40,7 @@ const FocusRequestedComponent = () => {
 };
 
 const openFullscreen = (url: string) => {
-  window.electronAPI.openPreviewWindow(url);
+  window.electronAPI.openPreviewWindow(url, useWorkspaceStore.getState().activeWorkspaceId ?? undefined);
 };
 
 const WorkspaceCanvas = ({
@@ -46,6 +57,8 @@ const WorkspaceCanvas = ({
   className?: string;
 }) => {
   const setCodePanelComponentName = useWorkspaceStore((s) => s.setCodePanelComponentName);
+  // Inspect and Comment pick in the frames themselves.
+  const picking = useCanvasTool() !== "pointer";
 
   const frameUrl = useCallback(
     (componentName: string) =>
@@ -68,11 +81,14 @@ const WorkspaceCanvas = ({
       onLayoutsChange={saveLayouts}
       onFullscreen={openFullscreen}
       onSeeCode={setCodePanelComponentName}
-      frameLayer={renderFrameInspector}
+      frameLayer={renderFrameLayers}
+      framesTakePointer={picking}
       className={className}
     >
       <FocusRequestedComponent />
       <InspectorControls />
+      <CommentControls />
+      <CommentFlow />
       <CanvasToolbar />
     </Canvas>
   );

@@ -1,13 +1,23 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { INSPECTOR_NS, type ElementContext, type ElementInfo, type FromFrame } from "@antidrawapp/runtime/inspector";
-import { clearHover, clearSelection, getSelectedElementContext, hoverAt, registerFrame, selectAt, walk } from "../bridge";
+import { AGENT_NS, type ElementContext, type ElementInfo, type FromFrame } from "@/agent/protocol";
+import {
+  clearSelection,
+  getSelectedElementContext,
+  markElement,
+  onCommentClick,
+  onFrameWheel,
+  registerFrame,
+  setFrameTool,
+  trackElements,
+  walk,
+} from "../bridge";
 import { useInspectorStore } from "../store";
 import { useWorkspaceStore } from "../../store/workspace";
 import { describeContext, describePendingTags, describeTags, retagTags, splitTagged, untagTags } from "../tags";
 
-// The canvas side of the inspector, against a frame played by the test: what
-// it asks, and which answers it believes.
+// The shell's side of its agent, against a frame played by the test: what it
+// asks, and which answers and news it believes.
 
 const ORIGIN = "https://frame.test";
 const OWN = "src/components/user-components/Card.tsx";
@@ -29,15 +39,15 @@ const info = (over: Partial<ElementInfo> = {}): ElementInfo => ({
 const context = (over: Partial<ElementContext> = {}): ElementContext => ({
   viewport: [1280, 800],
   element: "button.btn",
+  html: `<button data-ad-loc="src/components/ui/button.tsx:3:5" class="btn">Buy</button>`,
   text: "Buy",
-  loc: "src/components/ui/button.tsx:3:5",
   within: null,
-  components: [
-    { name: "Card", loc: `${OWN}:5:5` },
-    { name: "Button", loc: "src/components/ui/button.tsx:3:5" },
+  path: [
+    { loc: "src/components/ui/button.tsx:3:5", index: 0, count: 1 },
+    { loc: `${OWN}:5:5`, index: 0, count: 1 },
   ],
-  repeat: null,
-  attributes: {},
+  repeat: [],
+  sibling: null,
   size: [120, 40],
   margin: [0, 0, 0, 0],
   border: [0, 0, 0, 0],
@@ -50,12 +60,14 @@ let unregister: () => void;
 let asked: { msg: Record<string, unknown>; origin: string }[];
 
 const frameSays = (msg: FromFrame, { origin = ORIGIN, source = iframe.contentWindow } = {}) =>
-  window.dispatchEvent(new MessageEvent("message", { data: { ns: INSPECTOR_NS, ...msg }, origin, source }));
+  window.dispatchEvent(new MessageEvent("message", { data: { ns: AGENT_NS, ...msg }, origin, source }));
 const lastAsked = () => asked.at(-1)!.msg as { type: string; id: number };
+// The frame's agent answering.
+const frameIsReady = () => frameSays({ type: "ready", componentName: "Card", tagged: true });
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 beforeEach(() => {
-  useInspectorStore.setState({ active: true, frames: {}, hover: null, selection: null, tags: [] });
+  useInspectorStore.setState({ active: true, frames: {}, selection: null, tags: [] });
   iframe = document.createElement("iframe");
   iframe.src = `${ORIGIN}/preview?componentName=Card`;
   document.body.append(iframe);
@@ -73,52 +85,136 @@ afterEach(() => {
 });
 
 it("says hello to the frame's origin, and believes only that frame from that origin", () => {
-  expect(asked).toEqual([{ msg: { ns: INSPECTOR_NS, type: "hello", id: expect.any(Number) }, origin: ORIGIN }]);
-  const ready = { type: "ready", protocol: 1, componentName: "Card", tagged: true } as const;
+  expect(asked).toEqual([{ msg: { ns: AGENT_NS, type: "hello", id: expect.any(Number) }, origin: ORIGIN }]);
+  const ready = { type: "ready", componentName: "Card", tagged: true } as const;
   frameSays(ready, { origin: "https://elsewhere.test" });
   frameSays(ready, { source: window });
   expect(useInspectorStore.getState().frames).toEqual({});
   frameSays(ready);
   expect(useInspectorStore.getState().frames).toEqual({ Card: { ready: true, tagged: true } });
-  frameSays({ ...ready, protocol: 2 });
   unregister();
   expect(useInspectorStore.getState().frames).toEqual({});
 });
 
-it("hovers what the frame answers, and drops answers to an older question", async () => {
-  const first = hoverAt("Card", 5, 6);
-  const firstId = lastAsked().id;
-  expect(lastAsked()).toMatchObject({ type: "hit", x: 5, y: 6 });
-  const second = hoverAt("Card", 7, 8);
-  const secondId = lastAsked().id;
-  frameSays({ type: "hover", id: secondId, info: info({ text: "new" }) });
-  frameSays({ type: "hover", id: firstId, info: info({ text: "old" }) });
-  await Promise.all([first, second]);
-  expect(useInspectorStore.getState().hover?.info.text).toBe("new");
+const ready = { type: "ready", componentName: "Card", tagged: true } as const;
 
-  const third = hoverAt("Card", 1, 1);
-  const thirdId = lastAsked().id;
-  clearHover("Card");
-  frameSays({ type: "hover", id: thirdId, info: info({ text: "late" }) });
-  await third;
-  expect(useInspectorStore.getState().hover).toBeNull();
+it("tells a frame its tool and the element its comment box is on, and gives them back after a reload", () => {
+  setFrameTool("Card", "comment", "pass", 0.5);
+  expect(lastAsked()).toMatchObject({ type: "tool", tool: "comment", wheel: "pass", zoom: 0.5 });
+  markElement("Card", info().ref);
+  expect(lastAsked()).toMatchObject({ type: "mark", ref: info().ref });
+  asked.length = 0;
+  frameSays(ready);
+  expect(asked.map((a) => a.msg)).toMatchObject([
+    { type: "tool", tool: "comment", zoom: 0.5 },
+    { type: "mark", ref: info().ref },
+  ]);
+  markElement("Card", null);
+  setFrameTool("Card", null, "scroll", 1);
+  asked.length = 0;
+  frameSays(ready);
+  expect(asked.map((a) => a.msg)).toMatchObject([{ type: "tool", tool: null, wheel: "scroll" }]);
+});
+
+it("hands a frame's comment clicks and wheel to whoever listens, and its keys to the page as if on the canvas around it, only while it has a tool", () => {
+  const clicks: unknown[] = [];
+  const wheels: number[] = [];
+  const stopClicks = onCommentClick("Card", (at, picked) => clicks.push([at, picked?.text ?? null]));
+  const stopWheel = onFrameWheel("Card", (w) => wheels.push(w.deltaY));
+  const keys: string[] = [];
+  let metaKeys = false;
+  const onKey = (e: KeyboardEvent) => {
+    keys.push(`${e.type} ${e.key} on ${(e.target as Element).localName}`);
+    metaKeys ||= e.metaKey;
+  };
+  window.addEventListener("keydown", onKey);
+  window.addEventListener("keyup", onKey);
+  const wheel = { type: "wheel", x: 1, y: 2, deltaX: 0, deltaY: 9, deltaMode: 0, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false } as const;
+  const key = (kind: "down" | "up", metaKey = false) =>
+    frameSays({ type: "key", kind, key: "Escape", code: "Escape", ctrlKey: false, metaKey, shiftKey: false, altKey: false, repeat: false });
+  const canvas = document.createElement("div");
+  canvas.className = "react-flow";
+  document.body.append(canvas);
+  canvas.append(iframe);
+
+  // No tool: no wheel, no key down; a key let go still counts.
+  frameSays(wheel);
+  key("down");
+  key("up");
+  setFrameTool("Card", "comment", "pass", 1);
+  frameSays({ type: "comment-at", x: 3, y: 4, info: info() });
+  frameSays({ type: "comment-at", x: NaN, y: 4, info: null });
+  frameSays(wheel);
+  key("down");
+  key("up");
+  // Never with Cmd, Ctrl or Alt: the page can post as the agent.
+  key("down", true);
+  key("up", true);
+  stopClicks();
+  stopWheel();
+  frameSays({ type: "comment-at", x: 5, y: 6, info: null });
+  frameSays(wheel);
+  window.removeEventListener("keydown", onKey);
+  window.removeEventListener("keyup", onKey);
+  expect({ clicks, wheels, keys, metaKeys }).toEqual({
+    clicks: [[{ x: 3, y: 4 }, "Pro plan"]],
+    wheels: [9],
+    keys: ["keyup Escape on div", "keydown Escape on div", "keyup Escape on div", "keyup Escape on div"],
+    metaKeys: false,
+  });
+  canvas.remove();
+});
+
+it("leaves the keys to the tools after a pick: a chat draft being typed doesn't get Enter", () => {
+  const draft = document.createElement("textarea");
+  document.body.append(draft);
+  draft.focus();
+  frameSays({ type: "selected", info: info() });
+  expect(document.activeElement).not.toBe(draft);
+  draft.focus();
+  frameSays({ type: "comment-at", x: 1, y: 1, info: null });
+  expect(document.activeElement).not.toBe(draft);
+  draft.remove();
+});
+
+it("takes a page that's going as not ready until its agent is back, and gives it its tool again", () => {
+  frameSays(ready);
+  setFrameTool("Card", "inspect", "pass", 1);
+  frameSays({ type: "gone" });
+  expect(useInspectorStore.getState().frames.Card).toEqual({ ready: false, tagged: true });
+  asked.length = 0;
+  frameSays(ready);
+  expect(useInspectorStore.getState().frames.Card?.ready).toBe(true);
+  expect(asked.map((a) => a.msg)).toMatchObject([{ type: "tool", tool: "inspect" }]);
 });
 
 it("follows the selection the frame reports, and gives it back after a reload", async () => {
-  const selecting = selectAt("Card", 5, 6);
-  frameSays({ type: "selected", id: lastAsked().id, info: info() });
-  await selecting;
+  // A click with Inspect.
+  frameSays({ type: "selected", info: info() });
   frameSays({ type: "selection-changed", info: info({ ref: { loc: `${OWN}:6:7`, index: 0, path: [0, 0], tag: "h3" } }) });
   expect(useInspectorStore.getState().selection?.info.ref.loc).toBe(`${OWN}:6:7`);
 
-  frameSays({ type: "ready", protocol: 1, componentName: "Card", tagged: true });
+  frameSays(ready);
   expect(lastAsked()).toMatchObject({ type: "select", ref: { loc: `${OWN}:6:7` } });
 
+  // Reloaded, the page's root stands in until the component is there: not
+  // found there yet, the selection stays for the next ready to give back.
+  frameSays({ ...ready, provisional: true });
+  frameSays({ type: "selected", id: lastAsked().id, info: null });
+  await Promise.resolve();
+  expect(useInspectorStore.getState().selection?.info.ref.loc).toBe(`${OWN}:6:7`);
+  frameSays(ready);
+  frameSays({ type: "selected", id: lastAsked().id, info: null });
+  await Promise.resolve();
+  expect(useInspectorStore.getState().selection).toBeNull();
+
+  frameSays({ type: "selected", info: info() });
   frameSays({ type: "selection-lost" });
   expect(useInspectorStore.getState().selection).toBeNull();
 });
 
 it("sends tags grouped by component, as their frames describe them now, or as last seen", async () => {
+  frameIsReady();
   const buy = { frame: "Card", info: info() };
   // A frame that isn't on the canvas any more can't answer.
   const price = { frame: "Pricing", info: info({ tag: "p", classes: ["price"], text: "$12", callsite: null, ref: { loc: "src/components/user-components/Pricing.tsx:9:7", index: 0, path: [3], tag: "p" } }) };
@@ -133,13 +229,32 @@ it("sends tags grouped by component, as their frames describe them now, or as la
     id: lastAsked().id,
     contexts: [
       context({
-        repeat: { index: 3, count: 4, keys: ["pro", "export"] },
-        attributes: { "data-slot": "button", "aria-expanded": "false" },
+        html: [
+          `<button data-ad-loc="src/components/ui/button.tsx:3:5" class="btn" data-slot="button" aria-expanded="false">`,
+          `  <svg class="lucide lucide-arrow-right">…</svg>`,
+          `  Buy`,
+          `</button>`,
+        ].join("\n"),
+        path: [
+          { loc: "src/components/ui/button.tsx:3:5", index: 0, count: 1 },
+          { loc: "src/components/PlanCard.tsx:3:5", index: 1, count: 2 },
+          { loc: `${OWN}:11:7`, index: 0, count: 1 },
+        ],
         margin: [0, 0, 12, 0],
         border: [1, 1, 1, 1],
         padding: [8, 16, 8, 16],
       }),
-      context({ element: "h3.title", text: "Pro plan", loc: `${OWN}:4:7`, components: [{ name: "Card", loc: `${OWN}:4:7` }], size: [268, 24] }),
+      context({
+        element: "h3.title",
+        html: `<h3 data-ad-loc="${OWN}:4:7" class="title">Pro plan</h3>`,
+        text: "Pro plan",
+        path: [],
+        repeat: [
+          { loc: `${OWN}:4:7`, index: 0, count: 3 },
+          { loc: `${OWN}:2:5`, index: 1, count: 2 },
+        ],
+        size: [268, 24],
+      }),
     ],
   });
   await settle();
@@ -147,17 +262,20 @@ it("sends tags grouped by component, as their frames describe them now, or as la
     "<canvas-selection>
     <component name="Card" file="src/components/user-components/Card.tsx" preview="https://frame.test/preview?componentName=Card" frame="1280×800">
     <element>
-    element: button.btn "Buy"
-    written at: src/components/ui/button.tsx:3:5
-    rendered by: Card (src/components/user-components/Card.tsx:5:5) > Button (src/components/ui/button.tsx:3:5)
-    repeated: item 4 of 4 rendered from there, keys "pro" > "export"
-    attributes: data-slot="button" aria-expanded="false"
+    element: button.btn
+      <button data-ad-loc="src/components/ui/button.tsx:3:5" class="btn" data-slot="button" aria-expanded="false">
+        <svg class="lucide lucide-arrow-right">…</svg>
+        Buy
+      </button>
+    text: "Buy"
+    path: src/components/ui/button.tsx:3:5 › src/components/PlanCard.tsx:3:5 (2 of 2) › src/components/user-components/Card.tsx:11:7
     box: 120×40, margin 0 0 12, border 1, padding 8 16
     </element>
     <element>
-    element: h3.title "Pro plan"
-    written at: src/components/user-components/Card.tsx:4:7
-    rendered by: Card (src/components/user-components/Card.tsx:4:7)
+    element: h3.title
+      <h3 data-ad-loc="src/components/user-components/Card.tsx:4:7" class="title">Pro plan</h3>
+    text: "Pro plan"
+    repeated: item 1 of 3 rendered from there, inside item 2 of 2 rendered at src/components/user-components/Card.tsx:2:5
     box: 268×24
     </element>
     </component>
@@ -173,6 +291,7 @@ it("sends tags grouped by component, as their frames describe them now, or as la
 });
 
 it("describes a pick its live frame can't find any more as last seen, in its place", async () => {
+  frameIsReady();
   const buy = { frame: "Card", info: info() };
   const gone = { frame: "Card", info: info({ tag: "p", classes: [], text: "Billed yearly", ref: { loc: `${OWN}:9:7`, index: 0, path: [3], tag: "p" } }) };
   const title = { frame: "Card", info: info() };
@@ -182,16 +301,17 @@ it("describes a pick its live frame can't find any more as last seen, in its pla
   frameSays({
     type: "context",
     id: lastAsked().id,
-    contexts: [context(), null, context({ element: "h3.title", text: "Pro plan", loc: `${OWN}:4:7`, components: [{ name: "Card", loc: `${OWN}:4:7` }] })],
+    contexts: [context(), null, context({ element: "h3.title", html: `<h3 data-ad-loc="${OWN}:4:7" class="title">Pro plan</h3>` })],
   });
   await settle();
   expect(await taking).toMatchInlineSnapshot(`
     "<canvas-selection>
     <component name="Card" file="src/components/user-components/Card.tsx" preview="https://frame.test/preview?componentName=Card" frame="1280×800">
     <element>
-    element: button.btn "Buy"
-    written at: src/components/ui/button.tsx:3:5
-    rendered by: Card (src/components/user-components/Card.tsx:5:5) > Button (src/components/ui/button.tsx:3:5)
+    element: button.btn
+      <button data-ad-loc="src/components/ui/button.tsx:3:5" class="btn">Buy</button>
+    text: "Buy"
+    path: src/components/ui/button.tsx:3:5 › src/components/user-components/Card.tsx:5:5
     box: 120×40
     </element>
     <element>
@@ -201,9 +321,10 @@ it("describes a pick its live frame can't find any more as last seen, in its pla
     (as last seen: the frame didn't answer)
     </element>
     <element>
-    element: h3.title "Pro plan"
-    written at: src/components/user-components/Card.tsx:4:7
-    rendered by: Card (src/components/user-components/Card.tsx:4:7)
+    element: h3.title
+      <h3 data-ad-loc="src/components/user-components/Card.tsx:4:7" class="title">Pro plan</h3>
+    text: "Buy"
+    path: src/components/ui/button.tsx:3:5 › src/components/user-components/Card.tsx:5:5
     box: 120×40
     </element>
     </component>
@@ -211,30 +332,46 @@ it("describes a pick its live frame can't find any more as last seen, in its pla
   `);
 });
 
+it("asks only a frame whose agent is there, and describes the rest as last seen", async () => {
+  const before = asked.length;
+  useInspectorStore.setState({ tags: [{ frame: "Card", info: info() }] });
+  const block = (await describePendingTags()).block;
+  expect(asked.length).toBe(before);
+  expect(block).toContain("(as last seen: the frame didn't answer)");
+});
+
 it("places an element without a location of its own, with nothing in it read as a tag", () => {
-  expect(
-    describeContext(
-      context({
-        element: "path",
-        text: 'Say "hi" & </element>',
-        loc: null,
-        within: { loc: "src/components/ui/button.tsx:3:5", path: "svg > path" },
-        components: [{ name: "Card", loc: `${OWN}:5:5` }, { name: "Icon", loc: null }],
-        attributes: { "aria-label": "Terms & <Conditions>", href: "/search?q=a&page=2" },
-      }),
-    ),
-  ).toMatchInlineSnapshot(`
+  const block = describeContext(
+    context({
+      element: "a.terms",
+      html: [
+        `<a class="terms" href="/search?q=a&amp;page=2" aria-label="Terms &amp; &lt;Conditions>">`,
+        `  Say "hi" &amp; &lt;/element&gt;`,
+        `  <svg class="lucide">…</svg>`,
+        `</a>`,
+      ].join("\n"),
+      within: `<div data-ad-loc="${OWN}:5:5" class="links">`,
+    }),
+  );
+  expect(block).toMatchInlineSnapshot(`
     "<element>
-    element: path "Say \\"hi\\" & &lt;/element>"
-    written at: none of its own; inside src/components/ui/button.tsx:3:5, at svg > path
-    rendered by: Card (src/components/user-components/Card.tsx:5:5) > Icon
-    attributes: aria-label="Terms & &lt;Conditions>" href="/search?q=a&page=2"
+    element: a.terms
+      <a class="terms" href="/search?q=a&amp;page=2" aria-label="Terms &amp; &lt;Conditions>">
+        Say "hi" &amp; &lt;/element&gt;
+        <svg class="lucide">…</svg>
+      </a>
+    text: "Buy"
+    inside: <div data-ad-loc="src/components/user-components/Card.tsx:5:5" class="links">
+    path: src/components/ui/button.tsx:3:5 › src/components/user-components/Card.tsx:5:5
     box: 120×40
     </element>"
   `);
+  // Only the block's own lines start with "<".
+  expect(block.split("\n").filter((line) => line.startsWith("<"))).toEqual(["<element>", "</element>"]);
 });
 
 it("describes the selected element", async () => {
+  frameIsReady();
   useInspectorStore.setState({ selection: { frame: "Card", info: info() } });
   const asking = getSelectedElementContext();
   frameSays({ type: "context", id: lastAsked().id, contexts: [context()] });
@@ -257,7 +394,7 @@ it("untags what a message took when it's sent, and tags it again if the send fai
   `);
 });
 
-it("takes only the latest selection's answer, and deselects in a frame the selection leaves", async () => {
+it("takes a click's selection, deselects in a frame the selection leaves, and drops answers a later one overtook", async () => {
   const other = document.createElement("iframe");
   other.src = `${ORIGIN}/preview?componentName=Pricing`;
   document.body.append(other);
@@ -267,27 +404,32 @@ it("takes only the latest selection's answer, and deselects in a frame the selec
   }) as Window["postMessage"]);
   const unregisterOther = registerFrame("Pricing", other);
   const otherSays = (msg: FromFrame) =>
-    window.dispatchEvent(new MessageEvent("message", { data: { ns: INSPECTOR_NS, ...msg }, origin: ORIGIN, source: other.contentWindow }));
+    window.dispatchEvent(new MessageEvent("message", { data: { ns: AGENT_NS, ...msg }, origin: ORIGIN, source: other.contentWindow }));
   const selected = () => {
     const s = useInspectorStore.getState().selection;
     return s && `${s.frame}: ${s.info.text}`;
   };
 
-  // A click in Card, then in Pricing; Card, busy, answers last.
-  const inCard = selectAt("Card", 1, 1);
-  const cardAsk = lastAsked().id;
-  const inPricing = selectAt("Pricing", 1, 1);
-  otherSays({ type: "selected", id: toOther.at(-1)!.id as number, info: info({ text: "Team" }) });
-  frameSays({ type: "selected", id: cardAsk, info: info({ text: "Pro plan" }) });
-  await Promise.all([inCard, inPricing]);
+  // A click in Card, then in Pricing: Card is told to let go of its element.
+  frameSays({ type: "selected", info: info({ text: "Pro plan" }) });
+  otherSays({ type: "selected", info: info({ text: "Team" }) });
   expect(selected()).toMatchInlineSnapshot(`"Pricing: Team"`);
+  expect(lastAsked()).toMatchObject({ type: "select", ref: null });
 
-  // Back to Card: Pricing is told to let go of its element.
-  const back = selectAt("Card", 2, 2);
-  frameSays({ type: "selected", id: lastAsked().id, info: info({ text: "Buy" }) });
-  await back;
+  // A walk in Pricing, overtaken by a click back in Card before it's answered.
+  const overtaken = walk("parent");
+  const overtakenAsk = toOther.at(-1)!.id as number;
+  frameSays({ type: "selected", info: info({ text: "Buy" }) });
+  otherSays({ type: "selected", id: overtakenAsk, info: info({ text: "Pricing" }) });
+  await overtaken;
   expect(selected()).toMatchInlineSnapshot(`"Card: Buy"`);
   expect(toOther.at(-1)).toMatchObject({ type: "select", ref: null });
+
+  // Not inspecting: a late click doesn't count.
+  useInspectorStore.setState({ active: false });
+  otherSays({ type: "selected", info: info({ text: "Late" }) });
+  expect(selected()).toMatchInlineSnapshot(`"Card: Buy"`);
+  useInspectorStore.setState({ active: true });
 
   // A walk answered after Escape cleared the selection.
   const walking = walk("parent");
@@ -301,17 +443,16 @@ it("takes only the latest selection's answer, and deselects in a frame the selec
   other.remove();
 });
 
-it("drops tags, the selection and the hover when the workspace changes", () => {
+it("drops tags and the selection when the workspace changes", () => {
   const pick = { frame: "Card", info: info() };
   useWorkspaceStore.setState({ activeWorkspaceId: "a" });
-  useInspectorStore.setState({ tags: [pick], selection: pick, hover: pick });
+  useInspectorStore.setState({ tags: [pick], selection: pick });
   useWorkspaceStore.setState({ activeWorkspaceId: "a" });
   expect(useInspectorStore.getState().tags).toHaveLength(1);
   useWorkspaceStore.getState().setActiveWorkspaceId("b");
-  const { tags, selection, hover } = useInspectorStore.getState();
-  expect({ tags, selection, hover }).toMatchInlineSnapshot(`
+  const { tags, selection } = useInspectorStore.getState();
+  expect({ tags, selection }).toMatchInlineSnapshot(`
     {
-      "hover": null,
       "selection": null,
       "tags": [],
     }
@@ -322,7 +463,7 @@ it("reads a sent message back into the elements it was tagged with and what the 
   const message = `${describeTags([
     { pick: { frame: "Card", info: info() }, context: context() },
     { pick: { frame: "Card", info: info({ tag: "p", classes: [] }) }, context: null },
-    { pick: { frame: "A<B>", info: info() }, context: context({ element: "svg.lucide", text: "</canvas-selection>" }) },
+    { pick: { frame: "A<B>", info: info() }, context: context({ element: "svg.lucide", html: `<svg class="lucide">…</svg>\n</canvas-selection>` }) },
   ])}\n\nmake these the same blue\n<canvas-selection> stays`;
   expect(splitTagged(message)).toMatchInlineSnapshot(`
     {
@@ -336,4 +477,69 @@ it("reads a sent message back into the elements it was tagged with and what the 
     }
   `);
   expect(splitTagged("no tags here")).toEqual({ tags: [], text: "no tags here" });
+});
+
+it("follows elements in a frame, asks again after a reload, and stops", () => {
+  const seen: unknown[] = [];
+  const refs = [info().ref];
+  const stop = trackElements("Card", refs, (rects) => seen.push(rects));
+  expect(lastAsked()).toMatchObject({ type: "track", refs });
+  const box = { x: 0, y: 40, width: 120, height: 30 };
+  frameSays({ type: "tracked", id: lastAsked().id, rects: [box] });
+  // The page scrolled.
+  frameSays({ type: "tracked", rects: [{ ...box, y: 0 }] });
+  // An answer that isn't for these refs is dropped.
+  frameSays({ type: "tracked", rects: [] });
+  expect(seen).toEqual([[box], [{ ...box, y: 0 }]]);
+  // A reload forgets: asked again.
+  frameSays(ready);
+  expect(lastAsked()).toMatchObject({ type: "track", refs });
+  stop();
+  expect(lastAsked()).toMatchObject({ type: "track", refs: [] });
+  frameSays({ type: "tracked", rects: [box] });
+  expect(seen).toHaveLength(2);
+});
+
+it("gives each size a frame was measured at its own <component>: a frame window's tag isn't measured on the canvas", () => {
+  const block = describeTags([
+    { pick: { frame: "Card", info: info() }, context: context({ viewport: [390, 800] }) },
+    { pick: { frame: "Card", info: info() }, context: context({ viewport: [1440, 900] }) },
+    { pick: { frame: "Card", info: info() }, context: null },
+  ]);
+  expect(block.split("\n").filter((l) => l.startsWith("<component"))).toEqual([
+    `<component name="Card" file="src/components/user-components/Card.tsx" preview="${ORIGIN}/preview?componentName=Card" frame="390×800">`,
+    `<component name="Card" file="src/components/user-components/Card.tsx" preview="${ORIGIN}/preview?componentName=Card" frame="1440×900">`,
+  ]);
+});
+
+it("tells a frame the pointer has left it when another frame or the shell has it: a frame isn't always told", () => {
+  const other = document.createElement("iframe");
+  other.src = `${ORIGIN}/preview?componentName=Pricing`;
+  document.body.append(other);
+  const toOther: Record<string, unknown>[] = [];
+  vi.spyOn(other.contentWindow!, "postMessage").mockImplementation(((msg: Record<string, unknown>) => {
+    toOther.push(msg);
+  }) as Window["postMessage"]);
+  const unregisterOther = registerFrame("Pricing", other);
+  const otherSays = (msg: FromFrame) =>
+    window.dispatchEvent(new MessageEvent("message", { data: { ns: AGENT_NS, ...msg }, origin: ORIGIN, source: other.contentWindow }));
+  const left = () => asked.filter((a) => a.msg.type === "leave").length;
+  const otherLeft = () => toOther.filter((m) => m.type === "leave").length;
+
+  // Into Card, then straight into Pricing.
+  frameSays({ type: "hovering" });
+  otherSays({ type: "hovering" });
+  expect([left(), otherLeft()]).toEqual([1, 0]);
+  // The shell has the pointer over Pricing's iframe (its edge): still Pricing's.
+  other.dispatchEvent(new PointerEvent("pointermove", { bubbles: true }));
+  expect(otherLeft()).toBe(0);
+  // Out over the canvas.
+  document.body.dispatchEvent(new PointerEvent("pointermove", { bubbles: true }));
+  expect(otherLeft()).toBe(1);
+  // Nothing hovered: nothing to tell.
+  document.body.dispatchEvent(new PointerEvent("pointermove", { bubbles: true }));
+  expect([left(), otherLeft()]).toEqual([1, 1]);
+
+  unregisterOther();
+  other.remove();
 });

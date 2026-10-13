@@ -46,7 +46,7 @@ export type FrameLayout = {
 };
 
 // The React Flow node that holds a component's frame.
-const frameNodeId = (componentName: string) => `${componentName}-1`;
+export const frameNodeId = (componentName: string) => `${componentName}-1`;
 
 // Pans and zooms the canvas to one component's frame. For the host's own
 // controls (a component list, a "View" button): call it inside the same
@@ -84,6 +84,7 @@ type FrameActions = {
   onFullscreen: (url: string) => void;
   onSeeCode?: (componentName: string) => void;
   frameLayer?: FrameLayer;
+  framesTakePointer?: boolean;
 };
 
 // Drawn over a frame's preview, for a host's own tools (the shell's
@@ -109,7 +110,7 @@ const IframeNode = memo(({ componentName, url, selected, onLoad }: IframeNodePro
   const [interactionMode, setInteractionMode] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [iframe, setIframe] = useState<HTMLIFrameElement | null>(null);
-  const { frameLayer } = useContext(FrameActionsContext);
+  const { frameLayer, framesTakePointer } = useContext(FrameActionsContext);
   const setIframeRef = useCallback((el: HTMLIFrameElement | null) => {
     iframeRef.current = el;
     setIframe(el);
@@ -174,7 +175,7 @@ const IframeNode = memo(({ componentName, url, selected, onLoad }: IframeNodePro
       </div>
 
       {/* Overlay on top of iframe - blocks events when not in interaction mode */}
-      {!interactionMode && (
+      {!interactionMode && !framesTakePointer && (
         <div
           className="absolute inset-0 z-10 cursor-grab"
           onDoubleClick={handleDoubleClick}
@@ -238,11 +239,10 @@ const IframeNodeRenderer = ({
     setRefreshCounter((c) => c + 1);
   }, []);
 
-  const handleFullscreen = useCallback(() => {
-    const fullscreenUrl = new URL(data.url);
-    fullscreenUrl.searchParams.set("fullscreen", "true");
-    onFullscreen(fullscreenUrl.toString());
-  }, [data.url, onFullscreen]);
+  // The frame's own URL, not the runtime's ?fullscreen=true: that drops the
+  // component's preview marker and keeps the frame agent out, and the
+  // window's Comment tool needs both.
+  const handleFullscreen = useCallback(() => onFullscreen(data.url), [data.url, onFullscreen]);
 
   const handleSeeCode = useMemo(
     () => (onSeeCode ? () => onSeeCode(data.componentName) : undefined),
@@ -319,6 +319,9 @@ type CanvasProps = {
   // Without it, frames have no See Code button.
   onSeeCode?: (componentName: string) => void;
   frameLayer?: FrameLayer;
+  // The frames have the pointer, for a host's tool that picks in them
+  // (the shell's inspector): no layer over them takes it.
+  framesTakePointer?: boolean;
   className?: string;
   // Rendered inside React Flow, for hosts that drive the viewport (useReactFlow).
   children?: ReactNode;
@@ -333,6 +336,7 @@ export const Canvas = ({
   onFullscreen,
   onSeeCode,
   frameLayer,
+  framesTakePointer,
   className,
   children,
 }: CanvasProps) => {
@@ -524,8 +528,8 @@ export const Canvas = ({
   );
 
   const frameActions = useMemo(
-    () => ({ onFullscreen, onSeeCode, frameLayer }),
-    [onFullscreen, onSeeCode, frameLayer],
+    () => ({ onFullscreen, onSeeCode, frameLayer, framesTakePointer }),
+    [onFullscreen, onSeeCode, frameLayer, framesTakePointer],
   );
 
   return (

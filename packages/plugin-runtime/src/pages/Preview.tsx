@@ -2,7 +2,7 @@ import { Component, Suspense, lazy, useEffect, useMemo, useRef } from "react"
 import type { ReactNode } from "react"
 import { useSearch } from "@tanstack/react-router"
 import { loadComponent } from "../load-component"
-import { startInspector } from "../inspector/agent"
+import { PREVIEW_ATTRIBUTE } from "../inspector/protocol"
 
 class LoadErrorBoundary extends Component<
   { children: ReactNode; fallback: ReactNode },
@@ -45,15 +45,13 @@ const Frame = ({
     )
   }, [componentName, fullscreen])
 
-  // Answers the canvas's inspector (see inspector/protocol.ts). Idle until
-  // the canvas asks something.
-  useEffect(() => {
-    if (fullscreen || !containerRef.current) return
-    return startInspector(containerRef.current, componentName)
-  }, [componentName, fullscreen])
+  // Where the app's inspector finds the component (see inspector/protocol.ts).
+  // The app puts its inspector in the page itself; a full-screen view (the
+  // published share page's) has none.
+  const marker = fullscreen ? {} : { [PREVIEW_ATTRIBUTE]: componentName }
 
   return (
-    <div ref={containerRef}>
+    <div ref={containerRef} {...marker}>
       {children}
     </div>
   )

@@ -1,109 +1,74 @@
-import { useEffect, useRef, type CSSProperties, type MouseEvent } from "react";
+import { useEffect } from "react";
 import { useStore } from "@xyflow/react";
-import type { ElementInfo, Sides } from "@antidrawapp/runtime/inspector";
-import { clearHover, hoverAt, registerFrame, selectAt } from "./bridge";
-import { samePick, useInspectorStore } from "./store";
+import type { WheelMode } from "@/agent/protocol";
+import { onFrameWheel, registerFrame, setFrameTool } from "./bridge";
+import { useInspectorStore } from "./store";
+import { useCanvasTool } from "../comments/store";
 
-// The inspector over one frame: catches the pointer while inspecting, asks
-// the frame what's under it, and draws the answer. It lives in the frame's
-// node, so frame pixels are its own pixels and the canvas zoom applies.
-// Placeholder visuals: the DevTools box model, and an outline for the selection.
-
-const COLORS = {
-  margin: "rgba(246, 178, 107, 0.5)",
-  border: "rgba(255, 229, 153, 0.5)",
-  padding: "rgba(147, 196, 125, 0.5)",
-  content: "rgba(111, 168, 220, 0.5)",
-  selected: "#3b82f6",
-};
-
-const widths = (s: Sides) => s.map((v) => `${Math.max(0, v)}px`).join(" ");
-
-const Box = ({ x, y, w, h, style }: { x: number; y: number; w: number; h: number; style?: CSSProperties }) => (
-  <div
-    style={{
-      position: "absolute",
-      left: x,
-      top: y,
-      width: Math.max(0, w),
-      height: Math.max(0, h),
-      boxSizing: "border-box",
-      ...style,
-    }}
-  />
-);
-
-const BoxModel = ({ info }: { info: ElementInfo }) => {
-  const { x, y, width: w, height: h } = info.rect;
-  const m = info.margin.map((v) => Math.max(0, v)) as Sides;
-  const [b, p] = [info.border, info.padding];
-  return (
-    <>
-      <Box x={x - m[3]} y={y - m[0]} w={w + m[1] + m[3]} h={h + m[0] + m[2]} style={{ borderStyle: "solid", borderColor: COLORS.margin, borderWidth: widths(m) }} />
-      <Box x={x} y={y} w={w} h={h} style={{ borderStyle: "solid", borderColor: COLORS.border, borderWidth: widths(b) }} />
-      <Box x={x + b[3]} y={y + b[0]} w={w - b[1] - b[3]} h={h - b[0] - b[2]} style={{ borderStyle: "solid", borderColor: COLORS.padding, borderWidth: widths(p) }} />
-      <Box x={x + b[3] + p[3]} y={y + b[0] + p[0]} w={w - b[1] - b[3] - p[1] - p[3]} h={h - b[0] - b[2] - p[0] - p[2]} style={{ background: COLORS.content }} />
-    </>
-  );
-};
-
-export const FrameInspector = ({ frame, iframe }: { frame: string; iframe: HTMLIFrameElement | null }) => {
+// The canvas's tools over one frame. The frame is told which one is on and
+// then has the pointer: it finds what's under it and draws it itself, in the
+// page (@/agent), and says what a click picked (bridge). On the canvas, the
+// wheel it passes back pans and zooms the canvas, as over the rest of it; a
+// frame's own window (PreviewWindow) has the frame scroll with it instead
+// (`wheel`). Until the frame can pick (it's loading, or has no preview page),
+// a tool keeps the pointer off it.
+export const FrameInspector = ({
+  frame,
+  iframe,
+  zoom = 1,
+  wheel = "pass",
+}: {
+  frame: string;
+  iframe: HTMLIFrameElement | null;
+  zoom?: number;
+  wheel?: WheelMode;
+}) => {
   useEffect(() => (iframe ? registerFrame(frame, iframe) : undefined), [frame, iframe]);
 
-  const active = useInspectorStore((s) => s.active && !!s.frames[frame]?.ready);
-  const hover = useInspectorStore((s) => (s.hover?.frame === frame ? s.hover : null));
-  const selection = useInspectorStore((s) => (s.selection?.frame === frame ? s.selection : null));
+  const ready = useInspectorStore((s) => !!s.frames[frame]?.ready);
+  const tool = useCanvasTool();
+  const on = tool === "pointer" ? null : tool;
+  // Only a tool's lines follow the zoom.
+  const at = on ? zoom : 1;
+
+  useEffect(() => {
+    if (ready) setFrameTool(frame, on, wheel, at);
+  }, [frame, ready, on, wheel, at]);
+
+  // As if the wheel had turned over the frame here: React Flow pans or (a
+  // pinch) zooms with it.
+  useEffect(() => {
+    if (wheel !== "pass" || !iframe) return;
+    return onFrameWheel(frame, (w) => {
+      const r = iframe.getBoundingClientRect();
+      const scale = iframe.offsetWidth ? r.width / iframe.offsetWidth : 1;
+      const { deltaX, deltaY, deltaMode, ctrlKey, metaKey, shiftKey, altKey } = w;
+      iframe.dispatchEvent(
+        new WheelEvent("wheel", {
+          clientX: r.left + w.x * scale,
+          clientY: r.top + w.y * scale,
+          deltaX,
+          deltaY,
+          deltaMode,
+          ctrlKey,
+          metaKey,
+          shiftKey,
+          altKey,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+  }, [frame, iframe, wheel]);
+
+  return on && !ready ? <div className="nodrag nopan absolute inset-0 z-20" /> : null;
+};
+
+const CanvasFrameInspector = ({ frame, iframe }: { frame: string; iframe: HTMLIFrameElement | null }) => {
   const zoom = useStore((s) => s.transform[2]);
-
-  // At most one hover question per animation frame.
-  const point = useRef<{ x: number; y: number } | null>(null);
-  const raf = useRef(0);
-  useEffect(() => () => cancelAnimationFrame(raf.current), []);
-
-  if (!active) return null;
-
-  const toFrame = (e: MouseEvent<HTMLDivElement>) => {
-    const el = e.currentTarget;
-    const r = el.getBoundingClientRect();
-    const scale = el.offsetWidth / r.width;
-    return { x: (e.clientX - r.left) * scale, y: (e.clientY - r.top) * scale };
-  };
-
-  return (
-    <div
-      className="nodrag nopan absolute inset-0 z-20 cursor-crosshair"
-      onPointerMove={(e) => {
-        point.current = toFrame(e);
-        raf.current ||= requestAnimationFrame(() => {
-          raf.current = 0;
-          if (point.current) void hoverAt(frame, point.current.x, point.current.y);
-        });
-      }}
-      onPointerLeave={() => {
-        point.current = null;
-        clearHover(frame);
-      }}
-      onClick={(e) => {
-        const { x, y } = toFrame(e);
-        void selectAt(frame, x, y);
-      }}
-    >
-      <div className="pointer-events-none absolute inset-0 overflow-hidden">
-        {hover && !(selection && samePick(hover, selection)) && <BoxModel info={hover.info} />}
-        {selection && (
-          <Box
-            x={selection.info.rect.x}
-            y={selection.info.rect.y}
-            w={selection.info.rect.width}
-            h={selection.info.rect.height}
-            style={{ outline: `${2 / zoom}px solid ${COLORS.selected}` }}
-          />
-        )}
-      </div>
-    </div>
-  );
+  return <FrameInspector frame={frame} iframe={iframe} zoom={zoom} />;
 };
 
 export const renderFrameInspector = ({ componentName, iframe }: { componentName: string; iframe: HTMLIFrameElement | null }) => (
-  <FrameInspector frame={componentName} iframe={iframe} />
+  <CanvasFrameInspector frame={componentName} iframe={iframe} />
 );

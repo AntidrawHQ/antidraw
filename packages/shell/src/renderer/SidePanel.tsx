@@ -202,6 +202,10 @@ const ChatPanel = () => {
   const { data: conversations = [], isLoading } =
     useWorkspaceConversations(activeWorkspaceId);
   const [showList, setShowList] = useState(false);
+  const conversationShown = useWorkspaceStore((s) => s.conversationShown);
+
+  // A conversation shown from outside (showConversation) replaces the list.
+  useEffect(() => setShowList(false), [conversationShown]);
 
   // Wait for the conversation list before deciding which view to land on,
   // otherwise we briefly flash the empty chat before flipping to the list.

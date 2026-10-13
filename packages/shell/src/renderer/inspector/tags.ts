@@ -1,4 +1,4 @@
-import type { ElementContext, ElementInfo, Sides } from "@antidrawapp/runtime/inspector";
+import type { ElementContext, ElementInfo, Sides } from "@/agent/protocol";
 import { frameUrl, getElementContext } from "./bridge";
 import { samePick, useInspectorStore, type Picked } from "./store";
 
@@ -13,8 +13,15 @@ export const elementName = (info: ElementInfo) =>
   info.tag + (info.id ? `#${info.id}` : "") + info.classes.map((c) => `.${c}`).join("");
 
 // Inside the block, nothing may read as a tag. Only "<" is escaped: the
-// values are quoted, not XML, and an "&amp;" would read as the text.
-const escape = (v: string) => v.replace(/</g, "&lt;");
+// values are quoted, not XML, and an "&amp;" for every "&" would read as the
+// text. An "&" is escaped only where it starts an escape's spelling ("&lt;",
+// "&amp;"), so a literal "&lt;" comes back as written. The
+// element's markup is the exception, being markup: its "<" is a tag's and
+// its text's is escaped, and each line of it is indented, so none starts
+// with one. A line break in a one-line field (an id may hold one) would
+// start a line of its own, so it reads as a space.
+const escape = (v: string) => v.replace(/&(?=lt;|amp;)/g, "&amp;").replace(/</g, "&lt;");
+const oneLine = (v: string) => v.replace(/\r\n|[\r\n]/g, " ");
 const quote = (v: string) => JSON.stringify(v);
 
 // As CSS writes them: "8", "8 16", "8 16 4", "8 16 4 0". Nothing when all are 0.
@@ -33,27 +40,35 @@ const sides = (name: string, [top, right, bottom, left]: Sides) => {
 
 const attr = (name: string, value: string | null | undefined) => (value ? ` ${name}=${quote(escape(value))}` : "");
 
-const lines = (...all: (string | null | false)[]) => all.filter((l): l is string => !!l).map(escape);
+const lines = (...all: (string | null | false)[]) =>
+  all.filter((l): l is string => !!l).map((l) => escape(oneLine(l)));
+
+// A context as a frame's agent gives it now. One saved with a comment by an
+// earlier version (a frame window's `seen`) may be in another shape: it's
+// taken as none, and the comment described as last seen.
+export const usableContext = (c: unknown): ElementContext | null =>
+  !!c && typeof c === "object" && typeof (c as ElementContext).html === "string" ? (c as ElementContext) : null;
+
+const ofCount = ({ index, count }: { index: number; count: number }) => `${index + 1} of ${count}`;
 
 export function describeContext(c: ElementContext) {
+  const path = c.path ?? [];
+  const repeat = Array.isArray(c.repeat) ? c.repeat : [];
   return [
     "<element>",
+    ...lines(`element: ${c.element}`),
+    ...c.html.split("\n").map((line) => `  ${line}`),
+    ...lines(c.text && `text: ${quote(c.text)}`),
+    ...(c.within ? [`inside: ${oneLine(c.within)}`] : []),
     ...lines(
-      `element: ${c.element}${c.text ? ` ${quote(c.text)}` : ""}`,
-      c.loc
-        ? `written at: ${c.loc}`
-        : c.within && `written at: none of its own; inside ${c.within.loc}, at ${c.within.path}`,
-      c.components.length > 0 &&
-        `rendered by: ${c.components.map((x) => (x.loc ? `${x.name} (${x.loc})` : x.name)).join(" > ")}`,
-      c.repeat &&
-        `repeated: item ${c.repeat.index + 1} of ${c.repeat.count} rendered from there` +
-          (c.repeat.keys.length
-            ? `, ${c.repeat.keys.length > 1 ? "keys" : "key"} ${c.repeat.keys.map(quote).join(" > ")}`
-            : ""),
-      Object.keys(c.attributes).length > 0 &&
-        `attributes: ${Object.entries(c.attributes)
-          .map(([k, v]) => `${k}=${quote(v)}`)
-          .join(" ")}`,
+      path.length > 0 && `path: ${path.map((p) => (p.count > 1 ? `${p.loc} (${ofCount(p)})` : p.loc)).join(" › ")}`,
+      repeat.length > 0 &&
+        `repeated: item ${ofCount(repeat[0]!)} rendered from there` +
+          repeat
+            .slice(1)
+            .map((r) => `, inside item ${ofCount(r)} rendered at ${r.loc}`)
+            .join(""),
+      c.sibling && `among: ${ofCount(c.sibling)} ${c.element.split(/[#.]/)[0]} elements in its parent`,
       `box: ${[c.size.join("×"), sides("margin", c.margin), sides("border", c.border), sides("padding", c.padding)]
         .filter(Boolean)
         .join(", ")}`,
@@ -78,17 +93,24 @@ export function describeLastSeen({ frame, info }: Picked) {
 }
 
 // Picks with what their frames said about them (null: nothing), grouped by
-// frame in the order they were first picked.
+// frame in the order they were first picked, and by the frame's size: one
+// picked in a frame's own window was measured at another than the canvas's.
+// One the frame couldn't describe joins its frame's first group.
 export function describeTags(picks: { pick: Picked; context: ElementContext | null }[]) {
-  const frames = [...new Set(picks.map((p) => p.pick.frame))];
+  const sizeOf = (p: (typeof picks)[number]) =>
+    p.context?.viewport.join("×") ??
+    picks.find((q) => q.pick.frame === p.pick.frame && q.context)?.context?.viewport.join("×") ??
+    "";
+  const keyOf = (p: (typeof picks)[number]) => JSON.stringify([p.pick.frame, sizeOf(p)]);
+  const groups = [...new Set(picks.map(keyOf))];
   return [
     "<canvas-selection>",
-    ...frames.flatMap((frame) => {
-      const inFrame = picks.filter((p) => p.pick.frame === frame);
-      const viewport = inFrame.find((p) => p.context)?.context?.viewport;
+    ...groups.flatMap((group) => {
+      const [frame, size] = JSON.parse(group) as [string, string];
+      const inGroup = picks.filter((p) => keyOf(p) === group);
       return [
-        `<component${attr("name", frame)}${attr("file", componentFile(frame))}${attr("preview", frameUrl(frame))}${attr("frame", viewport?.join("×"))}>`,
-        ...inFrame.map((p) => (p.context ? describeContext(p.context) : describeLastSeen(p.pick))),
+        `<component${attr("name", frame)}${attr("file", componentFile(frame))}${attr("preview", frameUrl(frame))}${attr("frame", size)}>`,
+        ...inGroup.map((p) => (p.context ? describeContext(p.context) : describeLastSeen(p.pick))),
         "</component>",
       ];
     }),
@@ -99,7 +121,7 @@ export function describeTags(picks: { pick: Picked; context: ElementContext | nu
 // A sent message as the user wrote it: the block the tags put ahead of it
 // read back into the elements it names ("Card · button.btn"), and the rest.
 const BLOCK_RE = /^<canvas-selection>\n([\s\S]*?)\n<\/canvas-selection>(?:\n\n|$)/;
-const unescape = (v: string) => v.replace(/&lt;/g, "<");
+const unescape = (v: string) => v.replace(/&(lt|amp);/g, (_, e: string) => (e === "lt" ? "<" : "&"));
 
 export function splitTagged(message: string): { tags: string[]; text: string } {
   const block = BLOCK_RE.exec(message);
@@ -109,7 +131,9 @@ export function splitTagged(message: string): { tags: string[]; text: string } {
   for (const line of block[1]!.split("\n")) {
     const component = /^<component name=("(?:[^"\\]|\\.)*")/.exec(line);
     if (component) frame = unescape(JSON.parse(component[1]!) as string);
-    const element = /^element: (\S+)/.exec(line);
+    // All of it but the text a last-seen block quotes after it. Any
+    // character: an id may hold a line separator.
+    const element = /^element: ([\s\S]+?)(?: "(?:[^"\\]|\\.)*")?$/.exec(line);
     if (element) tags.push(`${frame} · ${unescape(element[1]!)}`);
   }
   return { tags, text: message.slice(block[0].length) };

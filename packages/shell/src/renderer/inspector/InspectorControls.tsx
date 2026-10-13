@@ -1,7 +1,8 @@
 import { useEffect } from "react";
-import type { WalkDirection } from "@antidrawapp/runtime/inspector";
+import type { WalkDirection } from "@/agent/protocol";
 import { clearSelection, walk } from "./bridge";
 import { useInspectorStore } from "./store";
+import { setCanvasTool } from "../comments/store";
 
 // The inspector's keys, mounted inside the canvas. Its switch is the canvas
 // toolbar's Inspect tool.
@@ -38,7 +39,7 @@ export const InspectorControls = () => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape" || !isCanvasKey(e)) return;
       const s = useInspectorStore.getState();
-      if (e.key === "i") s.setActive(true);
+      if (e.key === "i") setCanvasTool("inspect");
       else if (!s.active) return;
       else if (e.key === "v") s.setActive(false);
       else if (e.key === "Enter" && s.selection) s.addTag(s.selection);
