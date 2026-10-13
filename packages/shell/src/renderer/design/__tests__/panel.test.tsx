@@ -177,6 +177,8 @@ const press = (label: string) =>
     button(label).click();
     await new Promise((resolve) => setTimeout(resolve, 50));
   });
+// The query cache tells what it holds a tick later: the panel then shows it.
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 const button = (label: string) => [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === label || b.title === label)!;
 
 it("with Inspect on and nothing edited: the bar says so, and Design how to pick", async () => {
@@ -242,6 +244,7 @@ it("a typed value is taken as typed, ↑ adds 1, and Auto gap is space between",
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(gap, "15");
     gap.dispatchEvent(new Event("input", { bubbles: true }));
     gap.blur();
+    await settle();
   });
   expect(now()?.gap).toBe(15);
   await act(async () => {
@@ -251,7 +254,10 @@ it("a typed value is taken as typed, ↑ adds 1, and Auto gap is space between",
   await press("Gap mode");
   await press("Auto (space between)");
   expect(now()?.between).toBe(true);
-  expect(text()).toContain("Auto");
+  // The gap field itself reads Auto, with no number to type.
+  const field = button("Gap mode").parentElement!.parentElement!;
+  expect(field.textContent).toContain("Auto");
+  expect(field.querySelector("input")).toBe(null);
 });
 
 it("Comments with none yet: how to leave one", async () => {
@@ -290,6 +296,9 @@ it("⌥⌘B (Ctrl+Alt+B off macOS, as here) hides the panel and brings it back; 
   expect(useDesignStore.getState().panelOpen).toBe(true);
   key({ ctrlKey: true, key: "b" });
   key({ ctrlKey: true, altKey: true, shiftKey: true });
+  expect(useDesignStore.getState().panelOpen).toBe(true);
+  // AltGr comes as Ctrl+Alt off macOS, and types a character ({ in Hungarian).
+  key({ ctrlKey: true, altKey: true, key: "{", modifierAltGraph: true } as KeyboardEventInit);
   expect(useDesignStore.getState().panelOpen).toBe(true);
 });
 
@@ -379,13 +388,103 @@ it("the panel's edge, let go over a frame, stops widening it", async () => {
   aside.getBoundingClientRect = () => ({ right: 1000 }) as DOMRect;
   const edge = aside.firstElementChild!;
   const pointer = (type: string, init: MouseEventInit) => act(() => void edge.dispatchEvent(new MouseEvent(type, { bubbles: true, ...init })));
-  pointer("pointerdown", { button: 0, buttons: 1, clientX: 744 });
-  pointer("pointermove", { buttons: 1, clientX: 700 });
+  await pointer("pointerdown", { button: 0, buttons: 1, clientX: 744 });
+  await pointer("pointermove", { buttons: 1, clientX: 700 });
   expect(aside.style.width).toBe("300px");
   // The release went to the frame's iframe: the next move comes with no button down.
-  pointer("pointermove", { buttons: 0, clientX: 650 });
+  await pointer("pointermove", { buttons: 0, clientX: 650 });
   expect(useDesignStore.getState().width).toBe(300);
   expect(document.body.style.cursor).toBe("");
-  pointer("pointermove", { buttons: 0, clientX: 600 });
+  await pointer("pointermove", { buttons: 0, clientX: 600 });
   expect(aside.style.width).toBe("300px");
+});
+
+// The Card selected, read as `style`.
+const select = async (style: Style = base) => {
+  useInspectorStore.setState({ selection: { frame: "Card", info: info("Card.tsx:3:5", ["card"]) } });
+  act(() => setCanvasTool("inspect"));
+  useDesignStore.setState({ read: { key: JSON.stringify(["Card", "Card.tsx:3:5", 0]), style, text: false, seen: null } });
+  await render({ edits: [], applied: [] });
+};
+const keydown = (el: Element, key: string) =>
+  act(async () => {
+    el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+    await settle();
+  });
+const typeIn = (field: HTMLInputElement, value: string) =>
+  act(async () => {
+    field.focus();
+    type(field, value);
+    field.blur();
+    await settle();
+  });
+const now = () => client.getQueryData<EditList>(queryKeys.edits.byWorkspace(WS))?.edits[0]?.now;
+
+it("Esc drops what was typed, in a number, a size and a colour, and leaves the field", async () => {
+  await select();
+  const fields = [
+    [...host.querySelectorAll("input")].find((i) => i.value === "12")!,
+    host.querySelector<HTMLInputElement>('input[aria-label="Height"]')!,
+    host.querySelector<HTMLInputElement>('input[aria-label="Hex"]')!,
+  ];
+  for (const [field, typed] of fields.map((f, i) => [f, ["30", "132", "FF0000"][i]!] as const)) {
+    act(() => field.focus());
+    act(() => type(field, typed));
+    await keydown(field, "Escape");
+    expect(document.activeElement).not.toBe(field);
+    expect(field.value).not.toBe(typed);
+  }
+  expect(text()).toContain("No changes yet");
+  expect(requests.filter((r) => r.method === "PUT")).toEqual([]);
+});
+
+it("a Mixed pair steps and does maths from its first side; a unit typed is the field's own", async () => {
+  await select({ ...base, pl: 24, pr: 16 });
+  const mixed = () => [...host.querySelectorAll("input")].find((i) => i.placeholder === "Mixed" && i.value === "")!;
+  const pair = mixed();
+  await keydown(pair, "ArrowUp");
+  expect(now()).toMatchObject({ pl: 25, pr: 25 });
+  await typeIn(pair, "+8");
+  expect(now()).toMatchObject({ pl: 33, pr: 33 });
+  await typeIn([...host.querySelectorAll("input")].find((i) => i.value === "12")!, "20px");
+  expect(now()?.gap).toBe(20);
+});
+
+it("Esc closes a menu, and is taken: the canvas's Esc leaves the selection be", async () => {
+  await select();
+  await press("Gap mode");
+  expect(text()).toContain("Auto (space between)");
+  const esc = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+  act(() => {
+    document.body.dispatchEvent(esc);
+  });
+  expect(text()).not.toContain("Auto (space between)");
+  expect(esc.defaultPrevented).toBe(true);
+});
+
+it("a label clicked with a wobble writes nothing; dragged, it scrubs, ⇧ from where it's pressed; gone mid-drag, it lets go", async () => {
+  HTMLElement.prototype.setPointerCapture ??= () => {};
+  await select();
+  const label = () => [...host.querySelectorAll("input")].find((i) => i.value === String(now()?.gap ?? 12))!.previousElementSibling!;
+  const pointer = (type: string, clientX: number, shiftKey = false) =>
+    act(async () => {
+      label().dispatchEvent(new MouseEvent(type, { clientX, shiftKey, bubbles: true }));
+      await settle();
+    });
+  await pointer("pointerdown", 100);
+  expect(document.body.classList.contains("dk-scrubbing")).toBe(true);
+  await pointer("pointermove", 101);
+  await pointer("pointerup", 101);
+  expect(document.body.classList.contains("dk-scrubbing")).toBe(false);
+  expect(requests.filter((r) => r.method === "PUT")).toEqual([]);
+  // 20px is ten steps: 22. Then ⇧, pressed at 122: 2px on is ten, not the whole drag's hundred.
+  await pointer("pointerdown", 100);
+  await pointer("pointermove", 120);
+  expect(now()?.gap).toBe(22);
+  await pointer("pointermove", 122, true);
+  await pointer("pointermove", 124, true);
+  expect(now()?.gap).toBe(32);
+  // The selection gone while dragging: the app isn't left scrubbing.
+  await act(async () => useInspectorStore.setState({ selection: null }));
+  expect(document.body.classList.contains("dk-scrubbing")).toBe(false);
 });

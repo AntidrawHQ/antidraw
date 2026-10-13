@@ -101,8 +101,8 @@ const Sides = ({ name, keys, s, set }: { name: string; keys: ["pt" | "mt", "pr" 
           </>
         ) : (
           <>
-            <Num label="↔" value={s[l] === s[r] ? s[l] : null} onChange={(v) => put({ [l]: v, [r]: v })} />
-            <Num label="↕" value={s[t] === s[b] ? s[t] : null} onChange={(v) => put({ [t]: v, [b]: v })} />
+            <Num label="↔" value={s[l] === s[r] ? s[l] : null} base={s[l]} onChange={(v) => put({ [l]: v, [r]: v })} />
+            <Num label="↕" value={s[t] === s[b] ? s[t] : null} base={s[t]} onChange={(v) => put({ [t]: v, [b]: v })} />
           </>
         )}
       </div>
@@ -113,15 +113,22 @@ const Sides = ({ name, keys, s, set }: { name: string; keys: ["pt" | "mt", "pr" 
   );
 };
 
-// Gap, or Auto: the children pushed apart (space between). A grid only spaces.
+// Gap, or Auto: the children pushed apart (space between). A grid only spaces:
+// its gap stays a number whatever its code justifies with.
 const Gap = ({ s, set }: { s: S; set: Put }) => (
   <div className="flex items-center gap-1">
-    {s.between ? (
+    {s.between && s.flow !== "grid" ? (
       <TextFieldish label="↔" className="flex-1">
         Auto
       </TextFieldish>
     ) : (
-      <Num label={s.flow === "column" ? "↕" : "↔"} value={s.gap} min={0} onChange={(gap) => set({ gap, between: false })} className="flex-1" />
+      <Num
+        label={s.flow === "column" ? "↕" : "↔"}
+        value={s.gap}
+        min={0}
+        onChange={(gap) => set(s.flow === "grid" ? { gap } : { gap, between: false })}
+        className="flex-1"
+      />
     )}
     {s.flow !== "grid" && (
       <Menu

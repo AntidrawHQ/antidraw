@@ -7,7 +7,18 @@
  * is a finer one (letter spacing's 0.1). The dk- classes (fonts, scrubbing) are in
  * index.css.
  */
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode, type PointerEvent as RPE } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type CSSProperties,
+  type FocusEvent,
+  type ReactNode,
+  type PointerEvent as RPE,
+  type RefObject,
+} from "react";
 import { Check as CheckIcon, ChevronDown, Pipette } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
 import { rgba, type Align, type Sizing } from "@/shared/design";
@@ -37,24 +48,92 @@ const decimals = (step: number) => (step >= 1 ? 0 : (String(step).split(".")[1]?
 export const snap = (v: number, step: number) => +(Math.round(v / step) * step).toFixed(decimals(step));
 
 // A scrub: the label dragged sideways moves the value one step per 2px (⇧ ten).
+// It starts once the pointer has moved 3px, so a click with a wobble writes
+// nothing, and ⇧ counts from where it was pressed, not from the drag's start.
+const SCRUB_SLOP = 3;
 const useScrub = (start: () => number, to: (v: number) => void, step: number) => {
-  const drag = useRef<{ x: number; v: number } | null>(null);
+  const drag = useRef<{ x: number; v: number; last: number; shift: boolean; live: boolean } | null>(null);
+  const end = () => {
+    if (!drag.current) return;
+    drag.current = null;
+    document.body.classList.remove("dk-scrubbing");
+  };
+  // A field taken away mid-drag doesn't leave the app scrubbing.
+  useEffect(() => end, []);
   return {
     onPointerDown: (e: RPE<HTMLSpanElement>) => {
       e.currentTarget.setPointerCapture(e.pointerId);
-      drag.current = { x: e.clientX, v: start() };
+      const v = start();
+      drag.current = { x: e.clientX, v, last: v, shift: e.shiftKey, live: false };
       document.body.classList.add("dk-scrubbing");
     },
     onPointerMove: (e: RPE<HTMLSpanElement>) => {
       const d = drag.current;
-      if (d) to(d.v + Math.round((e.clientX - d.x) / 2) * step * (e.shiftKey ? 10 : 1));
+      if (!d) return;
+      if (!d.live) {
+        if (Math.abs(e.clientX - d.x) < SCRUB_SLOP) return;
+        d.live = true;
+      }
+      if (e.shiftKey !== d.shift) Object.assign(d, { x: e.clientX, v: d.last, shift: e.shiftKey });
+      const v = d.v + Math.round((e.clientX - d.x) / 2) * step * (d.shift ? 10 : 1);
+      if (v === d.last) return;
+      d.last = v;
+      to(v);
     },
-    onPointerUp: () => {
-      drag.current = null;
-      document.body.classList.remove("dk-scrubbing");
+    onPointerUp: end,
+    onPointerCancel: end,
+    onLostPointerCapture: end,
+  };
+};
+
+// What's typed into a field: kept on blur (Enter) only if something was
+// typed, dropped with Esc. Read from the input at blur, so an Esc's blur
+// never sees the draft it just dropped, and a value that changed while the
+// field had focus isn't written back over.
+const useDraft = (commit: (text: string) => void) => {
+  const [text, setText] = useState<string | null>(null);
+  const typed = useRef(false);
+  const drop = () => {
+    typed.current = false;
+    setText(null);
+  };
+  return {
+    text,
+    drop,
+    cancel: (el: HTMLInputElement) => (drop(), el.blur()),
+    input: {
+      onFocus: (e: FocusEvent<HTMLInputElement>) => e.target.select(),
+      onChange: (e: ChangeEvent<HTMLInputElement>) => {
+        typed.current = true;
+        setText(e.target.value);
+      },
+      onBlur: (e: FocusEvent<HTMLInputElement>) => {
+        if (typed.current) commit(e.target.value);
+        drop();
+      },
     },
   };
 };
+
+// A popover closes on a press outside it, and on Esc, which it marks
+// handled so the canvas's Esc (deselect) leaves the selection alone.
+const useDismiss = (open: boolean, ref: RefObject<HTMLElement | null>, close: () => void) =>
+  useEffect(() => {
+    if (!open) return;
+    const press = (e: PointerEvent) => !ref.current?.contains(e.target as Node) && close();
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      e.preventDefault();
+      close();
+    };
+    window.addEventListener("pointerdown", press);
+    window.addEventListener("keydown", key, true);
+    return () => {
+      window.removeEventListener("pointerdown", press);
+      window.removeEventListener("keydown", key, true);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
 /* ── Rows and menus ───────────────────────────────────────────────────── */
 
@@ -70,8 +149,8 @@ export const Row = ({ label, children, className }: { label?: ReactNode; childre
   </div>
 );
 
-export const Pop = ({ children, className, style }: { children: ReactNode; className?: string; style?: CSSProperties }) => (
-  <div className={cn("rounded-[10px] p-2", className)} style={{ background: T.popover, boxShadow: "0 12px 32px rgba(0,0,0,.45), 0 0 0 1px #454545", ...style }}>
+export const Pop = ({ children, className, style, ref }: { children: ReactNode; className?: string; style?: CSSProperties; ref?: RefObject<HTMLDivElement | null> }) => (
+  <div ref={ref} className={cn("rounded-[10px] p-2", className)} style={{ background: T.popover, boxShadow: "0 12px 32px rgba(0,0,0,.45), 0 0 0 1px #454545", ...style }}>
     {children}
   </div>
 );
@@ -105,17 +184,27 @@ export const Menu = ({
 }) => {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const close = (e: PointerEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
-    window.addEventListener("pointerdown", close);
-    return () => window.removeEventListener("pointerdown", close);
-  }, [open]);
+  const pop = useRef<HTMLDivElement>(null);
+  const [nudge, setNudge] = useState(0);
+  useDismiss(open, ref, () => setOpen(false));
+  // Kept inside the panel's scroller: moved back by what it would overhang
+  // (a shadow's colour, indented, opens wider than what's left of the panel).
+  useLayoutEffect(() => {
+    if (!open || !pop.current) return setNudge(0);
+    const box = pop.current.getBoundingClientRect();
+    const bound = pop.current.closest(".dk-scroll")?.getBoundingClientRect() ?? { left: 0, right: window.innerWidth };
+    const over = align === "left" ? box.right - (bound.right - 4) : bound.left + 4 - box.left;
+    setNudge(over > 0 ? (align === "left" ? -over : over) : 0);
+  }, [open, align]);
   return (
     <div ref={ref} className={cn("relative", className)}>
       {trigger(() => setOpen((o) => !o), open)}
       {open && (
-        <Pop className={cn("absolute top-[calc(100%+4px)] z-50 !p-1", align === "right" ? "right-0" : "left-0")} style={{ width }}>
+        <Pop
+          ref={pop}
+          className={cn("absolute top-[calc(100%+4px)] z-50 !p-1", align === "right" ? "right-0" : "left-0")}
+          style={{ width, transform: nudge ? `translateX(${nudge}px)` : undefined }}
+        >
           {children(() => setOpen(false))}
         </Pop>
       )}
@@ -139,9 +228,10 @@ export const IconBtn = ({ children, tip, on, onClick, className }: { children: R
 
 /* ── Number fields ────────────────────────────────────────────────────── */
 
-// Typed input: numbers, a leading operator on the current value (+8, *2), plain maths.
+// Typed input: numbers, a leading operator on the current value (+8, *2),
+// plain maths. A trailing px or % is the field's own unit, so it's dropped.
 export const parseNum = (text: string, current: number): number | null => {
-  const t = text.trim();
+  const t = text.trim().replace(/\s*(px|%)$/i, "");
   if (!t) return null;
   const expr = /^[+\-*/]/.test(t) && !/^-\d+(\.\d+)?$/.test(t) ? `${current}${t}` : t;
   if (!/^[\d+\-*/().\s]+$/.test(expr)) return null;
@@ -166,9 +256,12 @@ export const Num = ({
   format,
   className,
   placeholder,
+  base,
 }: {
   value: number | null;
   onChange: (v: number) => void;
+  // Where a Mixed field steps, scrubs and does maths from (a pair's first side).
+  base?: number;
   label?: ReactNode;
   unit?: string;
   min?: number;
@@ -178,11 +271,14 @@ export const Num = ({
   className?: string;
   placeholder?: string;
 }) => {
-  const [text, setText] = useState<string | null>(null);
-  const cur = value ?? 0;
+  const cur = value ?? base ?? 0;
   const shown = value === null ? "" : (format?.(value) ?? String(value));
   const put = (v: number) => onChange(clamp(snap(v, step), min, max));
   const scrub = useScrub(() => cur, put, step);
+  const draft = useDraft((t) => {
+    const v = parseNum(t, cur);
+    if (v !== null) put(v);
+  });
   return (
     <div
       className={cn("group/num relative flex h-7 min-w-0 items-center rounded-[6px] pr-2 text-[12px]", label === undefined && "pl-2", className)}
@@ -194,24 +290,15 @@ export const Num = ({
         </span>
       )}
       <input
-        value={text ?? shown}
+        value={draft.text ?? shown}
         placeholder={placeholder ?? "Mixed"}
-        onFocus={(e) => (setText(e.target.value), e.target.select())}
-        onChange={(e) => setText(e.target.value)}
-        onBlur={() => {
-          // Left as it was shown: nothing to change.
-          if (text !== null && text !== shown) {
-            const v = parseNum(text, cur);
-            if (v !== null) put(v);
-          }
-          setText(null);
-        }}
+        {...draft.input}
         onKeyDown={(e) => {
           if (e.key === "Enter") e.currentTarget.blur();
-          if (e.key === "Escape") (setText(null), requestAnimationFrame(() => e.currentTarget?.blur()));
+          if (e.key === "Escape") draft.cancel(e.currentTarget);
           if (e.key === "ArrowUp" || e.key === "ArrowDown") {
             e.preventDefault();
-            setText(null);
+            draft.drop();
             put(cur + (e.key === "ArrowUp" ? 1 : -1) * step * (e.shiftKey ? 10 : 1));
           }
         }}
@@ -244,20 +331,16 @@ export const TextFieldish = ({ label, children, dim, className, title }: { label
 
 // Text typed in, kept when it loses focus (Enter), dropped with Esc.
 export const TextField = ({ value, onChange, label }: { value: string; onChange: (v: string) => void; label: string }) => {
-  const [draft, setDraft] = useState<string | null>(null);
+  const draft = useDraft((t) => t.trim() && t !== value && onChange(t.trim()));
   return (
     <div className="group/num relative flex h-7 min-w-0 items-center rounded-[6px] px-2 text-[12px]" style={{ background: T.field }}>
       <input
         aria-label={label}
-        value={draft ?? value}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={(e) => {
-          setDraft(null);
-          if (e.target.value.trim() && e.target.value !== value) onChange(e.target.value.trim());
-        }}
+        value={draft.text ?? value}
+        {...draft.input}
         onKeyDown={(e) => {
           if (e.key === "Enter") e.currentTarget.blur();
-          if (e.key === "Escape") (setDraft(null), requestAnimationFrame(() => e.currentTarget?.blur()));
+          if (e.key === "Escape") draft.cancel(e.currentTarget);
         }}
         className="h-full min-w-0 flex-1 bg-transparent outline-none"
         style={{ color: T.text }}
@@ -306,12 +389,7 @@ export const Select = <V extends string>({
 }) => {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const close = (e: PointerEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
-    window.addEventListener("pointerdown", close);
-    return () => window.removeEventListener("pointerdown", close);
-  }, [open]);
+  useDismiss(open, ref, () => setOpen(false));
   return (
     <div ref={ref} className={cn("relative min-w-0", className)}>
       <button
@@ -363,21 +441,19 @@ export const SizeField = ({
   onValue: (v: number) => void;
   onMode: (m: Sizing) => void;
 }) => {
-  const [text, setText] = useState<string | null>(null);
   const shown = mode === "fixed" ? value : measured;
   const fix = (v: number) => onValue(Math.max(0, snap(v, step)));
   const scrub = useScrub(() => shown, fix, step);
-  const commit = () => {
-    // Left as it was shown, a Hug or Fill size stays one.
-    if (text === null || text === String(shown)) return setText(null);
+  // Left as it was shown (nothing typed), a Hug or Fill size stays one.
+  const draft = useDraft((text) => {
     const t = text.trim().toLowerCase();
+    if (t === String(shown)) return;
     if (t === "hug" || t === "fill") onMode(t);
     else {
       const v = parseNum(t, shown);
       if (v !== null) fix(v);
     }
-    setText(null);
-  };
+  });
   const name = axis === "W" ? "width" : "height";
   return (
     <div className="group/num relative flex h-7 min-w-0 flex-1 items-center rounded-[6px] text-[12px]" style={{ background: T.field }}>
@@ -386,15 +462,14 @@ export const SizeField = ({
       </span>
       <input
         aria-label={axis === "W" ? "Width" : "Height"}
-        value={text ?? String(shown)}
-        onFocus={(e) => (setText(String(shown)), e.target.select())}
-        onChange={(e) => setText(e.target.value)}
-        onBlur={commit}
+        value={draft.text ?? String(shown)}
+        {...draft.input}
         onKeyDown={(e) => {
           if (e.key === "Enter") e.currentTarget.blur();
+          if (e.key === "Escape") draft.cancel(e.currentTarget);
           if (e.key === "ArrowUp" || e.key === "ArrowDown") {
             e.preventDefault();
-            setText(null);
+            draft.drop();
             fix(shown + (e.key === "ArrowUp" ? 1 : -1) * step * (e.shiftKey ? 10 : 1));
           }
         }}
@@ -557,21 +632,18 @@ const normHex = (t: string) => {
 };
 
 const HexInput = ({ hex, onChange }: { hex: string; onChange: (h: string) => void }) => {
-  const [text, setText] = useState<string | null>(null);
+  const draft = useDraft((t) => {
+    const h = normHex(t);
+    if (h && h !== hex.toUpperCase()) onChange(h);
+  });
   return (
     <input
       aria-label="Hex"
-      value={text ?? hex.slice(1)}
-      onFocus={(e) => (setText(hex.slice(1)), e.target.select())}
-      onChange={(e) => setText(e.target.value)}
-      onBlur={() => {
-        const h = text !== null && text !== hex.slice(1) ? normHex(text) : null;
-        if (h) onChange(h);
-        setText(null);
-      }}
+      value={draft.text ?? hex.slice(1)}
+      {...draft.input}
       onKeyDown={(e) => {
         if (e.key === "Enter") e.currentTarget.blur();
-        if (e.key === "Escape") (setText(null), e.currentTarget.blur());
+        if (e.key === "Escape") draft.cancel(e.currentTarget);
       }}
       className={cn(MONO, "min-w-0 flex-1 bg-transparent uppercase outline-none")}
       style={{ color: T.text }}
@@ -580,24 +652,22 @@ const HexInput = ({ hex, onChange }: { hex: string; onChange: (h: string) => voi
 };
 
 const AlphaInput = ({ alpha, onChange }: { alpha: number; onChange: (a: number) => void }) => {
-  const [text, setText] = useState<string | null>(null);
+  const draft = useDraft((t) => {
+    const v = parseFloat(t);
+    if (Number.isFinite(v) && v !== alpha) onChange(clamp(Math.round(v), 0, 100));
+  });
   return (
     <span className="flex w-[52px] shrink-0 items-center pr-2">
       <input
         aria-label="Opacity"
-        value={text ?? String(alpha)}
-        onFocus={(e) => (setText(String(alpha)), e.target.select())}
-        onChange={(e) => setText(e.target.value)}
-        onBlur={() => {
-          const v = text !== null && text !== String(alpha) ? parseFloat(text) : NaN;
-          if (Number.isFinite(v)) onChange(clamp(Math.round(v), 0, 100));
-          setText(null);
-        }}
+        value={draft.text ?? String(alpha)}
+        {...draft.input}
         onKeyDown={(e) => {
           if (e.key === "Enter") e.currentTarget.blur();
+          if (e.key === "Escape") draft.cancel(e.currentTarget);
           if (e.key === "ArrowUp" || e.key === "ArrowDown") {
             e.preventDefault();
-            setText(null);
+            draft.drop();
             onChange(clamp(alpha + (e.key === "ArrowUp" ? 1 : -1) * (e.shiftKey ? 10 : 1), 0, 100));
           }
         }}

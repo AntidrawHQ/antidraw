@@ -25,7 +25,8 @@ const useToggleKey = () =>
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
-      if (e.code !== "KeyB" || !mod || !e.altKey || e.shiftKey) return;
+      // Off macOS, AltGr arrives as Ctrl+Alt: AltGr+B types a character on some layouts ({ in Hungarian).
+      if (e.code !== "KeyB" || !mod || !e.altKey || e.shiftKey || e.getModifierState("AltGraph")) return;
       e.preventDefault();
       const s = useDesignStore.getState();
       s.setPanelOpen(!s.panelOpen);
