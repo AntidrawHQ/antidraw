@@ -21,6 +21,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
       request: { workspaceId: string; commentId: number; send: boolean; chat?: string },
     ) => callback(request);
     ipcRenderer.on("comments:shown", listener);
+    // One made while this window was closed, which opened it.
+    void ipcRenderer.invoke("comments:pending").then((pending) => pending && callback(pending));
     return () => ipcRenderer.removeListener("comments:shown", listener);
   },
   appKey,
