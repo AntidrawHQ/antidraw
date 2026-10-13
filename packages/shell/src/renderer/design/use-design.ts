@@ -77,6 +77,10 @@ export const useDesign = () => {
   const [describing, setDescribing] = useState(false);
   const apply = async () => {
     if (!workspaceId) return;
+    // Where it goes is fixed now: switching chat or workspace while it's
+    // described doesn't move it.
+    const target = { workspaceId, conversationId: activeConversationId ?? null };
+    const { selectedModelId: model, effort } = composer;
     setDescribing(true);
     try {
       await editsSettled(workspaceId);
@@ -109,9 +113,10 @@ export const useDesign = () => {
       await sendToChat
         .send({
           prompt,
-          model: composer.selectedModelId,
-          effort: composer.effort,
+          model,
+          effort,
           editIds: ids,
+          target,
           title: taken.flatMap((e) => changesOf(e.base, e.now).map((c) => `${e.name} ${c.group.label}: ${c.from} → ${c.to}`)).join("\n"),
         })
         .finally(() => void queryClient.invalidateQueries({ queryKey }));
@@ -174,11 +179,17 @@ export const DesignSync = () => {
   useEffect(() => () => shown.current.forEach((frame) => previewStyles(frame, [])), []);
 
   // Read again whenever there's no edit of it to start from: newly selected,
-  // or its edits undone or applied, which the frame now shows otherwise.
+  // or its edits undone or applied, which the frame now shows otherwise, or
+  // a set on its frame let go (the frame shows the code's now). Only once its
+  // frame really is ready: the page's root standing in can't find it.
   const selection = useInspectorStore((s) => s.selection);
   const key = selection && elementKey(selection.frame, selection.info.ref);
   const edited = !!key && data.edits.some((e) => keyOf(e) === key);
-  const ready = useInspectorStore((s) => !!selection && !!s.frames[selection.frame]?.ready);
+  const ready = useInspectorStore((s) => !!selection && !!s.frames[selection.frame]?.ready && !s.frames[selection.frame]?.provisional);
+  const sets = data.applied
+    .filter((set) => set.edits.some((e) => e.componentName === selection?.frame))
+    .map((set) => set.id)
+    .join();
   useEffect(() => {
     const { setRead } = useDesignStore.getState();
     const pick = useInspectorStore.getState().selection;
@@ -186,13 +197,14 @@ export const DesignSync = () => {
     if (edited || !ready) return;
     let stale = false;
     void Promise.all([getStyle(pick.frame, pick.info.ref), getElementContext([pick])]).then(([style, [seen]]) => {
-      if (stale) return;
-      setRead(style && { key, style: style.style, text: style.text, seen: seen ?? null });
+      // Not found (the frame's busy, or it went): what was read stays.
+      if (stale || !style) return;
+      setRead({ key, style: style.style, text: style.text, seen: seen ?? null });
     });
     return () => {
       stale = true;
     };
-  }, [key, edited, ready]);
+  }, [key, edited, ready, sets]);
 
   return null;
 };
