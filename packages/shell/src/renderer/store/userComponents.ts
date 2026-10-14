@@ -9,6 +9,7 @@ import { fetchEventSource } from "@microsoft/fetch-event-source";
 import type { ComponentStreamEvent } from "@/main/api";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
 import { queryKeys } from "@/renderer/lib/query-keys";
+import { requestThumbnail } from "@/renderer/lib/thumbnail";
 import { listComponents, getComponentSource } from "@/renderer/lib/api";
 
 export const useUserComponents = (workspaceId: string | null) => {
@@ -47,6 +48,8 @@ export const useUserComponentsWatcher = (workspaceId: string | null) => {
             queryClient.invalidateQueries({
               queryKey: queryKeys.userComponents.byWorkspace(workspaceId),
             });
+          } else if (event.type === "edited") {
+            requestThumbnail(workspaceId);
           }
         },
         onerror: (error) => {

@@ -12,7 +12,7 @@ import type {
   EffortLevel,
   ModelInfo,
   StreamEvent,
-  Workspace,
+  WorkspaceWithThumbnail,
 } from "@/main/api";
 import type { ImageAttachment } from "@/shared/utils/message";
 import type { CommentContext } from "@/shared/utils/canvas-comments";
@@ -187,7 +187,7 @@ export const listWorkspaces = async () => {
       });
     }
 
-    const data: Workspace[] = await response.json();
+    const data: WorkspaceWithThumbnail[] = await response.json();
     return ok(data);
   } catch (_e) {
     return err({
@@ -211,7 +211,7 @@ export const getWorkspace = async (id: string) => {
       });
     }
 
-    const data: Workspace = await response.json();
+    const data: WorkspaceWithThumbnail = await response.json();
     return ok(data);
   } catch (_e) {
     return err({

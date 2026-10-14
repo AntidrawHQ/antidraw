@@ -19,6 +19,7 @@ import {
 } from "./api";
 import { workspacesQueryOptions } from "./workspace-queries";
 import { usePreference } from "./preference-ops";
+import { flushThumbnail } from "./thumbnail";
 
 export const useWorkspaces = () => {
   return useQuery(workspacesQueryOptions);
@@ -88,8 +89,11 @@ export const useSwitchWorkspace = () => {
   );
   const stopDevServer = useStopDevServer();
 
-  return (nextWorkspaceId: string) => {
+  return async (nextWorkspaceId: string) => {
     if (nextWorkspaceId === activeWorkspaceId) return;
+
+    // The canvas as it's left, while its dev server still serves its frames.
+    await flushThumbnail();
 
     if (activeWorkspaceId) {
       stopDevServer.mutate(activeWorkspaceId, {

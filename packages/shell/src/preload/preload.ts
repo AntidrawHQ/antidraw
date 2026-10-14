@@ -25,6 +25,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
     void ipcRenderer.invoke("comments:pending").then((pending) => pending && callback(pending));
     return () => ipcRenderer.removeListener("comments:shown", listener);
   },
+  // The main window's canvas as a workspace's thumbnail (main.ts).
+  captureThumbnail: (workspaceId: string, rect: { x: number; y: number; width: number; height: number }) =>
+    ipcRenderer.invoke("thumbnail:capture", workspaceId, rect),
   appKey,
   getUpdateStatus: () => ipcRenderer.invoke("update:get-status"),
   installUpdate: () => ipcRenderer.invoke("update:install"),

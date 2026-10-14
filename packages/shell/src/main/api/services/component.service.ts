@@ -18,10 +18,13 @@ export type ComponentSource = {
   source: string;
 };
 
-export type ComponentStreamEvent = { type: "changed" };
+// `changed`: a component came or went. `edited`: one's file changed, which
+// the frames show by HMR, without a load.
+export type ComponentStreamEvent = { type: "changed" } | { type: "edited" };
 
 type ComponentEvents = {
   changed: [workspaceId: string];
+  edited: [workspaceId: string];
 };
 
 class ComponentEventEmitter extends EventEmitter<ComponentEvents> {}
@@ -113,6 +116,9 @@ export const startComponentWatcher = async (workspaceId: string) => {
 
   watcher.on("add", onChange);
   watcher.on("unlink", onChange);
+  watcher.on("change", (filePath) => {
+    if (filePath.endsWith(".tsx")) componentEvents.emit("edited", workspaceId);
+  });
   watcher.on("error", (error) => {
     console.error(`[component-watcher:${workspaceId}]`, error);
   });
