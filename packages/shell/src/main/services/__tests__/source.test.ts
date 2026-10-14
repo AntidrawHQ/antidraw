@@ -86,7 +86,9 @@ const message = async (gitDir: string, commit: string) =>
 describe("listSource", () => {
   it("leaves out what .gitignore files and the fixed list leave out, and keeps modes", async () => {
     const dir = await folder({
-      ".gitignore": "secret.txt\nbuild/\n*.log\n!keep.log\n",
+      // The fixed list wins over a `!`.
+      ".gitignore": "secret.txt\nbuild/\n*.log\n!keep.log\n!.env\n!node_modules/\n",
+      "certs/.gitignore": "!*.pem\n",
       "src/App.tsx": "app",
       "src/.gitignore": "generated/\n!secret.txt\n",
       "src/generated/types.ts": "x",
@@ -118,6 +120,7 @@ describe("listSource", () => {
     expect(files.map(({ path, mode }) => `${mode} ${path}`)).toMatchInlineSnapshot(`
       [
         "100644 .gitignore",
+        "100644 certs/.gitignore",
         "100644 keep.log",
         "120000 link.tsx",
         "100755 scripts/run.sh",

@@ -20,9 +20,10 @@ export const MAX_FILE_BYTES = 32 * MiB;
 export const MAX_SOURCE_BYTES = 1024 * MiB;
 export const MAX_PUSH_BYTES = 16 * MiB;
 
-// Never part of the source, whatever the workspace's .gitignore says: git's
-// own (.git as a file too: a submodule's or worktree's names a folder on this
-// machine), what npm and the build make, and secrets.
+// Never part of the source, whatever the workspace's .gitignore files say, a
+// `!` in one included: git's own (.git as a file too: a submodule's or
+// worktree's names a folder on this machine), what npm and the build make,
+// and secrets. Each is a name, matched at any depth.
 const ALWAYS_IGNORED = [
   ".git",
   "node_modules/",
@@ -37,6 +38,7 @@ const ALWAYS_IGNORED = [
   "id_rsa*",
   "id_ed25519*",
 ];
+const alwaysIgnored = ignore().add(ALWAYS_IGNORED);
 
 type Mode = "100644" | "100755" | "120000";
 
@@ -66,6 +68,7 @@ export const listSource = async (sourceDir: string): Promise<SourceFile[]> => {
     for (const entry of entries) {
       const file = rel ? `${rel}/${entry.name}` : entry.name;
       const folder = entry.isDirectory();
+      if (alwaysIgnored.ignores(folder ? `${entry.name}/` : entry.name)) continue;
       if (ignored(rules, folder ? `${file}/` : file)) continue;
       if (folder) {
         await walk(file, rules);
@@ -77,7 +80,7 @@ export const listSource = async (sourceDir: string): Promise<SourceFile[]> => {
       files.push({ path: file, size: stat.size, mtimeMs: stat.mtimeMs, mode });
     }
   };
-  await walk("", [{ base: "", ignore: ignore().add(ALWAYS_IGNORED) }]);
+  await walk("", []);
   return files;
 };
 

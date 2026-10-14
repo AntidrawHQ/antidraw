@@ -13,7 +13,8 @@ import { batches, commitSource, initSource, listSource } from "../source";
 // folders or folders made files, modes changed), the last commit is exactly
 // the workspace, every part is a tree git accepts, each push stays in budget,
 // and a publish that stopped partway picks up where it left off; and the
-// files listed are those git would take.
+// files listed are those git would take, never one on the fixed list,
+// whatever the .gitignore files say.
 
 const MAX_PUSH = 64;
 
@@ -296,6 +297,18 @@ describe("listSource", () => {
 
   const list = (files: Workspace) =>
     Object.fromEntries([...files].map(([file, { content }]) => [file, Buffer.from(content).toString()]));
+
+  it("never lists what's on the fixed list, whatever a .gitignore brings back", async () => {
+    await fc.assert(
+      fc.asyncProperty(workspaceOf(NAMES), async (files) => {
+        const dir = await run();
+        await write(dir, files);
+        const listed = (await listSource(dir)).map((file) => file.path);
+        expect(listed.filter(fixed), JSON.stringify(list(files))).toEqual([]);
+      }),
+      { numRuns: 100 },
+    );
+  }, 60_000);
 
   it("leaves out what git leaves out, off the fixed list", async () => {
     // Not .git, which git takes for a repo of its own.
