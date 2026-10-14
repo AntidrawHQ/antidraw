@@ -75,11 +75,16 @@ const canvas: PublishOptions["canvas"] = {
 /** Each source repo's main, by its remote. */
 const heads = new Map<string, string>();
 
-/** The source repo as the server described it, minus git. */
-const fakeRemote = (remote: string, pushes: string[], failing: boolean): SourceRemote => ({
+/**
+ * The source repo as the server described it, minus git. A push can be
+ * refused, or find main moved every time, as when another publish of the site
+ * keeps pushing.
+ */
+const fakeRemote = (remote: string, pushes: string[], fails: "refused" | "moved" | null): SourceRemote => ({
   head: async () => heads.get(remote) ?? null,
   async push(commit, parent) {
-    if (failing) throw new SourcePushError("403: Invalid or expired token");
+    if (fails === "refused") throw new SourcePushError("403: Invalid or expired token");
+    if (fails === "moved") throw new SourceMovedError(`main is at ${"1".repeat(40)}`);
     if (parent !== (heads.get(remote) ?? null)) throw new SourceMovedError(`main is at ${heads.get(remote)}`);
     pushes.push(commit);
     heads.set(remote, commit);
@@ -98,7 +103,11 @@ const gitDir = () => {
 const publish = async (
   sourceDir: string,
   site: PublishedSite | null,
-  { authorization = (_pathname: string) => user.authorization, git = gitDir(), pushFails = false } = {},
+  {
+    authorization = (_pathname: string) => user.authorization,
+    git = gitDir(),
+    pushFails = null as "refused" | "moved" | null,
+  } = {},
 ) => {
   const requests: string[] = [];
   const created: PublishedSite[] = [];
@@ -312,7 +321,9 @@ it("says why when it can't publish", async () => {
     // Sparse: 40 MB as far as the size goes, without writing them.
     fileTooBig: await publish(sparse(workspace(), "public/demo.mov", 40 * 1024 * 1024), null),
     signedOut: await publish(workspace(), null, { authorization: () => "Bearer nobody" }),
-    pushRefused: await publish(workspace(), first, { git: firstGit, pushFails: true }),
+    pushRefused: await publish(workspace(), first, { git: firstGit, pushFails: "refused" }),
+    // Another publish of the site pushes before ours each time.
+    pushRaced: await publish(workspace(), first, { git: firstGit, pushFails: "moved" }),
     // Signed out elsewhere once the publish has started.
     signedOutMidUpload: await publish(workspace(), first, {
       git: firstGit,
@@ -356,6 +367,13 @@ it("says why when it can't publish", async () => {
         "code": "RUNTIME_TOO_OLD",
         "message": "Publishing needs @antidrawapp/runtime 0.5.0 or later; this workspace has 0.4.2",
         "requests": [],
+      },
+      "pushRaced": {
+        "code": "SOURCE_FAILED",
+        "message": "This site is being published from somewhere else too. Publish again once that's done.",
+        "requests": [
+          "POST /api/sites/<site>/source",
+        ],
       },
       "pushRefused": {
         "code": "SOURCE_FAILED",

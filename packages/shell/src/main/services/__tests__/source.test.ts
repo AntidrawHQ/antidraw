@@ -107,6 +107,8 @@ describe("listSource", () => {
       "certs/server.key": "x",
       ".ssh/id_ed25519": "x",
       ".git/HEAD": "the user's own repo",
+      "vendor/lib/.git": "gitdir: ../../.git/modules/lib",
+      "vendor/lib/index.ts": "lib",
       "public/empty": null,
       "scripts/run.sh": "#!/bin/sh",
     });
@@ -122,6 +124,7 @@ describe("listSource", () => {
         "100644 src/.gitignore",
         "100644 src/App.tsx",
         "100644 src/secret.txt",
+        "100644 vendor/lib/index.ts",
       ]
     `);
   });
@@ -132,7 +135,11 @@ describe("listSource", () => {
       "vendor/lib/.git": "gitdir: ../../.git/modules/lib",
       "vendor/lib/index.ts": "lib",
     });
-    expect((await listSource(dir)).map((file) => file.path)).toEqual(["vendor/lib/index.ts"]);
+    expect((await listSource(dir)).map((file) => file.path)).toMatchInlineSnapshot(`
+      [
+        "vendor/lib/index.ts",
+      ]
+    `);
   });
 });
 
