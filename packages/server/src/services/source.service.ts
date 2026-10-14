@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { err, ok, type Result } from "neverthrow";
 import type { Db } from "../db";
 import { site } from "../db/schema";
-import { isArtifactsError, type Artifacts } from "../lib/artifacts";
+import { isArtifactsError } from "../lib/artifacts";
 import { apiError, type ApiError } from "../lib/errors";
 
 // Each site's source lives in its own git repo in Artifacts, named after the

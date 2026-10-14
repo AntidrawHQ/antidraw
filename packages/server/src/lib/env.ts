@@ -1,5 +1,3 @@
-import type { Artifacts } from "./artifacts";
-
 // Worker bindings + secrets. D1Database comes from @cloudflare/workers-types.
 //
 // Secrets (everything but the bindings and SHARE_URL_PATTERN, a plain var in
