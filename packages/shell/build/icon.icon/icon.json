@@ -1,0 +1,22 @@
+{
+  "fill" : {
+    "linear-gradient" : [
+      "srgb:0.22745,0.37255,0.69020,1.00000",
+      "srgb:0.10588,0.20392,0.45490,1.00000"
+    ]
+  },
+  "groups" : [
+    {
+      "layers" : [
+        { "image-name" : "plate-front.svg", "name" : "plate-front" },
+        { "image-name" : "plate-middle.svg", "name" : "plate-middle" },
+        { "image-name" : "plate-back.svg", "name" : "plate-back" }
+      ],
+      "shadow" : { "kind" : "neutral", "opacity" : 0.5 },
+      "translucency" : { "enabled" : false, "value" : 0.5 }
+    }
+  ],
+  "supported-platforms" : {
+    "squares" : "shared"
+  }
+}
