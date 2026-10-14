@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import nodeFs from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -10,8 +11,9 @@ import { batches, commitSource, initSource, listSource } from "../source";
 // The source as commits and the files it's made of, against git itself:
 // whatever a workspace was and becomes (files moved, copied, deleted, made
 // folders or folders made files, modes changed), the last commit is exactly
-// the workspace and every part is a tree git accepts; and the files listed
-// are those git would take.
+// the workspace, every part is a tree git accepts, each push stays in budget,
+// and a publish that stopped partway picks up where it left off; and the
+// files listed are those git would take.
 
 const MAX_PUSH = 64;
 
@@ -87,6 +89,12 @@ const change = fc
     ]),
   }));
 
+const show = ({ previous, next }: { previous: Workspace; next: Workspace }) => {
+  const list = (files: Workspace) =>
+    Object.fromEntries([...files].map(([file, { mode, content }]) => [file, `${mode} ${JSON.stringify(Buffer.from(content).toString("latin1"))}`]));
+  return JSON.stringify({ previous: list(previous), next: list(next) });
+};
+
 /** Publishes previous on an empty repo, then next on top, both in pushes of MAX_PUSH. */
 const publish = async ({ previous, next }: { previous: Workspace; next: Workspace }) => {
   const dir = await run();
@@ -117,6 +125,22 @@ const treeOf = (gitDir: string, commit: string): Tree => {
   return tree;
 };
 
+/** The same, read in process: quicker for the commits in between. */
+const filesOf = async (gitDir: string, commit: string, cache: object): Promise<Tree> => {
+  const tree: Tree = new Map();
+  const walk = async (oid: string, prefix: string) => {
+    for (const entry of (await git.readTree({ fs: nodeFs, gitdir: gitDir, oid, cache })).tree) {
+      if (entry.type === "tree") await walk(entry.oid, `${prefix}${entry.path}/`);
+      else {
+        const { blob } = await git.readBlob({ fs: nodeFs, gitdir: gitDir, oid: entry.oid, cache });
+        tree.set(prefix + entry.path, { mode: entry.mode, oid: entry.oid, size: blob.length });
+      }
+    }
+  };
+  await walk((await git.readCommit({ fs: nodeFs, gitdir: gitDir, oid: commit, cache })).commit.tree, "");
+  return tree;
+};
+
 const expected = async (files: Workspace): Promise<Tree> => {
   const tree: Tree = new Map();
   for (const [file, { mode, content }] of files) {
@@ -127,6 +151,17 @@ const expected = async (files: Workspace): Promise<Tree> => {
 
 const sorted = (tree: Tree) => [...tree].map(([file, { mode, oid }]) => `${mode} ${oid} ${file}`).sort();
 
+/** The blobs a push of `tree` onto `before` sends: those not in before's tree. */
+const sent = (tree: Tree, before: Tree | null) => {
+  const had = new Set([...(before?.values() ?? [])].map(({ oid }) => oid));
+  const blobs = new Map<string, number>();
+  for (const { oid, size } of tree.values()) if (!had.has(oid)) blobs.set(oid, size);
+  return blobs;
+};
+
+const parentOf = async (gitDir: string, commit: string) =>
+  (await git.readCommit({ fs: nodeFs, gitdir: gitDir, oid: commit })).commit.parent;
+
 describe("commitSource", () => {
   it("ends at exactly the workspace, every part a tree git accepts", async () => {
     await fc.assert(
@@ -135,6 +170,63 @@ describe("commitSource", () => {
         expect(sorted(treeOf(gitDir, second.head!))).toEqual(sorted(await expected(change.next)));
         expect(sorted(treeOf(gitDir, first.head!))).toEqual(sorted(await expected(change.previous)));
         gitCli(["--git-dir", gitDir, "fsck", "--strict", "--no-dangling", ...first.commits, ...second.commits]);
+      }),
+      { numRuns: 60 },
+    );
+  }, 60_000);
+
+  it("sends at most a push's worth of new blobs in each commit, or one bigger blob alone", async () => {
+    await fc.assert(
+      fc.asyncProperty(change, async (change) => {
+        const { gitDir, first, second } = await publish(change);
+        const cache = {};
+        let before: Tree | null = null;
+        for (const commit of [...first.commits, ...second.commits]) {
+          const tree = await filesOf(gitDir, commit, cache);
+          const blobs = sent(tree, before);
+          const bytes = [...blobs.values()].reduce((sum, size) => sum + size, 0);
+          if (blobs.size > 1) expect(bytes, show(change)).toBeLessThanOrEqual(MAX_PUSH);
+          before = tree;
+        }
+      }),
+      { numRuns: 60 },
+    );
+  }, 60_000);
+
+  it("chains its commits, picks up after any of them, and has nothing to add after the last", async () => {
+    await fc.assert(
+      fc.asyncProperty(change, fc.nat(), async (change, stop) => {
+        const { gitDir, first, second, again } = await publish(change);
+        // A chain from the parent.
+        let parent = first.head!;
+        for (const commit of second.commits) {
+          expect(await parentOf(gitDir, commit)).toEqual([parent]);
+          parent = commit;
+        }
+        expect(second.head).toBe(second.commits.at(-1) ?? first.head);
+        // Nothing new on its own head.
+        expect(await again(second.head!)).toEqual({ commits: [], head: second.head });
+
+        // Stopped after k of them: the rest, each new blob sent once.
+        const k = stop % (second.commits.length + 1);
+        const resumeFrom = k === 0 ? first.head! : second.commits[k - 1]!;
+        const resumed = await again(resumeFrom);
+        if (k === second.commits.length) {
+          expect(resumed).toEqual({ commits: [], head: second.head });
+          return;
+        }
+        const cache = {};
+        const final = await filesOf(gitDir, resumed.head!, cache);
+        expect(sorted(final)).toEqual(sorted(await filesOf(gitDir, second.head!, cache)));
+        let before = await filesOf(gitDir, resumeFrom, cache);
+        const remaining = sent(final, before);
+        const introduced: string[] = [];
+        for (const commit of resumed.commits) {
+          const tree = await filesOf(gitDir, commit, cache);
+          introduced.push(...sent(tree, before).keys());
+          before = tree;
+        }
+        expect(introduced.sort(), show(change)).toEqual([...remaining.keys()].sort());
       }),
       { numRuns: 60 },
     );

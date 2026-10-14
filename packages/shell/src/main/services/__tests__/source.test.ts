@@ -349,6 +349,58 @@ describe("commitSource", () => {
       ]
     `);
   });
+
+  it("keeps what the parent had in each part, so no push sends it again", async () => {
+    const dir = await folder({ "icon.svg": "<svg/>" });
+    const gitDir = await repo();
+    const parent = (await commitAll(dir, gitDir, null)).head!;
+
+    // Moved, and something new where it was.
+    await fs.mkdir(path.join(dir, "public"));
+    await fs.rename(path.join(dir, "icon.svg"), path.join(dir, "public/icon.svg"));
+    await fs.writeFile(path.join(dir, "icon.svg"), "x".repeat(10));
+    await fs.writeFile(path.join(dir, "z.bin"), "z".repeat(10));
+    const { commits } = await commitSource({
+      sourceDir: dir,
+      gitDir,
+      files: await listSource(dir),
+      parent,
+      message: "Publish",
+      maxPushBytes: 10,
+    });
+    // A push sends the blobs the commit before it doesn't have.
+    let before = await filesAt(gitDir, parent);
+    const pushes = [];
+    for (const commit of commits) {
+      const files = await filesAt(gitDir, commit);
+      const had = new Set(Object.values(before));
+      pushes.push({ files, sends: [...new Set(Object.values(files).filter((content) => !had.has(content)))] });
+      before = files;
+    }
+    expect(pushes).toMatchInlineSnapshot(`
+      [
+        {
+          "files": {
+            "icon.svg": "xxxxxxxxxx",
+            "public/icon.svg": "<svg/>",
+          },
+          "sends": [
+            "xxxxxxxxxx",
+          ],
+        },
+        {
+          "files": {
+            "icon.svg": "xxxxxxxxxx",
+            "public/icon.svg": "<svg/>",
+            "z.bin": "zzzzzzzzzz",
+          },
+          "sends": [
+            "zzzzzzzzzz",
+          ],
+        },
+      ]
+    `);
+  });
 });
 
 describe("saveSource", () => {

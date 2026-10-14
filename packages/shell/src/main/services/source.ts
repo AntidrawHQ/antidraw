@@ -199,7 +199,8 @@ export const commitSource = async ({
     ? (await git.readCommit({ fs: nodeFs, gitdir: gitDir, oid: parent, cache })).commit.tree
     : null;
   const base = parentTree ? await flatTree(gitDir, parentTree, cache) : new Map<string, Entry>();
-  const known = new Set([...base.values()].map((entry) => entry.oid));
+  const inParent = new Set([...base.values()].map((entry) => entry.oid));
+  const known = new Set(inParent);
 
   const snapshot = new Map<string, Entry>();
   const added: { path: string; size: number }[] = [];
@@ -233,14 +234,31 @@ export const commitSource = async ({
   // A file that was a folder, or is in one that was a file, replaces what
   // was there, or the tree would have both under one name.
   const partial = new Map(base);
-  for (const [index, group] of groups.slice(0, -1).entries()) {
-    const adding = new Set(group.map(({ path: file }) => file));
+  const place = (files: Iterable<string>) => {
+    const adding = new Set(files);
     for (const file of partial.keys()) {
       if (folders(file).some((folder) => adding.has(folder))) partial.delete(file);
     }
     for (const file of adding) {
       for (const folder of folders(file)) partial.delete(folder);
       partial.set(file, snapshot.get(file)!);
+    }
+  };
+  // A push sends the blobs the commit before it doesn't have, so a blob the
+  // snapshot keeps from the parent mustn't leave a part when the file it was
+  // in is replaced, or a later push sends it again: it goes where the
+  // snapshot has it, which no later part replaces.
+  const kept = new Map<string, string>();
+  for (const [file, { oid }] of snapshot) if (inParent.has(oid) && !kept.has(oid)) kept.set(oid, file);
+  const oids = () => new Set([...partial.values()].map((entry) => entry.oid));
+  for (const [index, group] of groups.slice(0, -1).entries()) {
+    const had = oids();
+    place(group.map(({ path: file }) => file));
+    for (;;) {
+      const have = oids();
+      const lost = [...had].filter((oid) => !have.has(oid) && kept.has(oid));
+      if (lost.length === 0) break;
+      place(lost.map((oid) => kept.get(oid)!));
     }
     await commit(await writeTree(gitDir, partial), `${message} (part ${index + 1} of ${groups.length})`);
   }
