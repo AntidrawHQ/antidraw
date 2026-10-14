@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { publishSite, type PublishOptions, type PublishedSite } from "../publish";
-import { SourcePushError, type SourceRemote } from "../source";
+import { SourceMovedError, SourcePushError, type SourceRemote } from "../source";
 
 // Publishing a workspace end to end: a real `vite build` of a workspace (the
 // runtime's test fixture) with the repo's runtime, uploaded to @antidraw/server
@@ -78,8 +78,9 @@ const heads = new Map<string, string>();
 /** The source repo as the server described it, minus git. */
 const fakeRemote = (remote: string, pushes: string[], failing: boolean): SourceRemote => ({
   head: async () => heads.get(remote) ?? null,
-  async push(commit) {
+  async push(commit, parent) {
     if (failing) throw new SourcePushError("403: Invalid or expired token");
+    if (parent !== (heads.get(remote) ?? null)) throw new SourceMovedError(`main is at ${heads.get(remote)}`);
     pushes.push(commit);
     heads.set(remote, commit);
     await server.artifacts.pushed(remote.match(/\/(site-[\w-]+)\.git$/)![1]!, commit);

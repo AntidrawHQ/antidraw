@@ -1,11 +1,14 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import nodeFs from "node:fs";
 import fs from "node:fs/promises";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import git from "isomorphic-git";
 import { afterAll, describe, expect, it } from "vitest";
 import {
+  artifactsRemote,
   batches,
   changedSince,
   commitSource,
@@ -14,12 +17,14 @@ import {
   saveSource,
   sourceProblem,
   SourceMovedError,
+  SourcePushError,
   type SourceFile,
   type SourceRemote,
 } from "../source";
 
-// The workspace's source as commits, on disk with isomorphic-git; pushing to
-// the site's repo is faked (SourceRemote), as git's own side isn't ours to test.
+// The workspace's source as commits, on disk with isomorphic-git. The site's
+// repo is faked (SourceRemote) for saveSource, and is git's own http-backend
+// behind a password for artifactsRemote.
 
 const dirs: string[] = [];
 afterAll(async () => {
@@ -344,19 +349,25 @@ describe("saveSource", () => {
   const remote = (gitDir: string, dir: string, moves: number) => {
     let head: string | null = null;
     const pushed: string[] = [];
+    const caches = new Set<object | undefined>();
     let moved = 0;
-    const self: SourceRemote & { pushed: string[] } = {
+    const self: SourceRemote & { pushed: string[]; caches: Set<object | undefined> } = {
       pushed,
-      head: async () => head,
-      async push(commit) {
+      caches,
+      async head(cache) {
+        caches.add(cache);
+        return head;
+      },
+      async push(commit, parent, cache) {
+        caches.add(cache);
         if (moved < moves) {
           moved++;
           // Someone else's commit, already fetched.
           await fs.writeFile(path.join(dir, "theirs.ts"), `theirs ${moved}`);
           head = (await commitAll(dir, gitDir, head, "Theirs")).head;
           await fs.rm(path.join(dir, "theirs.ts"));
-          throw new SourceMovedError("not-fast-forward");
         }
+        if (parent !== head) throw new SourceMovedError(`main is at ${head}`);
         pushed.push(commit);
         head = commit;
       },
@@ -388,11 +399,245 @@ describe("saveSource", () => {
     `);
   });
 
+  it("pushes each part onto the one before, sharing one cache", async () => {
+    const dir = await folder({ "a.bin": "a".repeat(10), "b.bin": "b".repeat(10) });
+    const gitDir = await repo();
+    const repoRemote = remote(gitDir, dir, 0);
+    const files = await listSource(dir);
+    const commit = await saveSource({
+      sourceDir: dir,
+      gitDir,
+      files,
+      remote: repoRemote,
+      message: "Publish",
+      maxPushBytes: 10,
+    });
+    expect(repoRemote.pushed).toHaveLength(2);
+    expect(repoRemote.pushed[1]).toBe(commit);
+    expect([...repoRemote.caches]).toEqual([expect.any(Object)]);
+  });
+
   it("gives up when it moves again", async () => {
     const dir = await folder({ "a.ts": "a" });
     const gitDir = await repo();
     const files = await listSource(dir);
     const saving = saveSource({ sourceDir: dir, gitDir, files, remote: remote(gitDir, dir, 2), message: "Publish" });
     await expect(saving).rejects.toBeInstanceOf(SourceMovedError);
+  });
+});
+
+describe("artifactsRemote", () => {
+  const token = "secret?expires=1700000000";
+  const authorization = `Basic ${Buffer.from("x:secret").toString("base64")}`;
+
+  /** git's own http-backend for the bare repos in root, asking for the token's password. */
+  const gitServer = async (root: string) => {
+    const server = http.createServer((req, res) => {
+      if (req.headers.authorization !== authorization) {
+        res.writeHead(401, { "WWW-Authenticate": 'Basic realm="git"' }).end();
+        return;
+      }
+      const url = new URL(req.url!, "http://localhost");
+      const backend = spawn("git", ["http-backend"], {
+        env: {
+          ...process.env,
+          GIT_PROJECT_ROOT: root,
+          GIT_HTTP_EXPORT_ALL: "1",
+          REMOTE_USER: "x",
+          PATH_INFO: url.pathname,
+          QUERY_STRING: url.search.slice(1),
+          REQUEST_METHOD: req.method,
+          CONTENT_TYPE: req.headers["content-type"] ?? "",
+          GIT_PROTOCOL: String(req.headers["git-protocol"] ?? ""),
+        },
+      });
+      backend.stdin.on("error", () => {});
+      req.pipe(backend.stdin);
+      // A CGI's answer: headers, Status among them, then a blank line.
+      let head: Buffer | null = Buffer.alloc(0);
+      backend.stdout.on("data", (data: Buffer) => {
+        if (!head) return void res.write(data);
+        head = Buffer.concat([head, data]);
+        const end = head.indexOf("\r\n\r\n");
+        if (end === -1) return;
+        for (const line of head.subarray(0, end).toString().split("\r\n")) {
+          const [name = "", value = ""] = line.split(/:\s*/, 2);
+          if (name.toLowerCase() === "status") res.statusCode = parseInt(value);
+          else res.setHeader(name, value);
+        }
+        res.write(head.subarray(end + 4));
+        head = null;
+      });
+      backend.on("close", () => res.end());
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    servers.push(server);
+    return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  };
+  const servers: http.Server[] = [];
+  afterAll(() => {
+    for (const server of servers) server.close();
+  });
+
+  /** The site's repo on a git server, with a commit of these files on main. */
+  const site = async (files: Record<string, string>) => {
+    const root = await tmp();
+    const gitDir = path.join(root, "site.git");
+    await initSource(gitDir);
+    const remote = {
+      gitDir,
+      url: `${await gitServer(root)}/site.git`,
+      commit: async (files: Record<string, string>, message = "Theirs") => {
+        const main = await git.resolveRef({ fs: nodeFs, gitdir: gitDir, ref: "main" }).catch(() => null);
+        const { head } = await commitAll(await folder(files), gitDir, main, message);
+        await git.writeRef({ fs: nodeFs, gitdir: gitDir, ref: "refs/heads/main", value: head!, force: true });
+        return head!;
+      },
+    };
+    await remote.commit(files, "First");
+    return remote;
+  };
+
+  /** fetch, noting each request and its answer; `before` runs ahead of each. */
+  const recording =
+    (log: string[], before?: (request: string) => Promise<void>): typeof fetch =>
+    async (input, init = {}) => {
+      const url = new URL(String(input));
+      const request = `${init.method ?? "GET"} ${url.pathname.replace(/^.*\.git/, "")}${url.search}`;
+      await before?.(request);
+      const response = await fetch(input, init);
+      log.push(`${request} ${response.status}`);
+      return response;
+    };
+
+  it("fetches main as the fetch finds it, with the password from the first request", async () => {
+    const repoSite = await site({ "a.ts": "a" });
+    await repoSite.commit({ "a.ts": "a, edited" });
+    const gitDir = await repo();
+    // Left by a fetch that failed before origin was set up.
+    await fs.writeFile(path.join(gitDir, "shallow"), `${"1".repeat(40)}\n`);
+    const log: string[] = [];
+    let moved: string | null = null;
+    const listed = (request: string) => request.startsWith("GET /info/refs?service=git-upload-pack");
+    const remote = artifactsRemote({
+      gitDir,
+      url: repoSite.url,
+      token,
+      // main moves between listing it and fetching it.
+      fetch: recording(log, async (request) => {
+        if (listed(request) && log.some(listed) && !moved) moved = await repoSite.commit({ "a.ts": "a, again" });
+      }),
+    });
+    const head = await remote.head();
+    expect(head).toBe(moved);
+    expect(await filesAt(gitDir, head!)).toEqual({ "a.ts": "a, again" });
+    expect(await fs.readFile(path.join(gitDir, "shallow"), "utf8")).toBe(`${moved}\n`);
+    expect(await git.getConfig({ fs: nodeFs, gitdir: gitDir, path: "remote.origin.fetch" })).toBe(
+      "+refs/heads/*:refs/remotes/origin/*",
+    );
+    expect(log).toMatchInlineSnapshot(`
+      [
+        "GET /info/refs?service=git-upload-pack 200",
+        "POST /git-upload-pack 200",
+        "GET /info/refs?service=git-upload-pack 200",
+        "POST /git-upload-pack 200",
+      ]
+    `);
+  });
+
+  it("won't push onto a main that moved, and says so before sending anything", async () => {
+    const repoSite = await site({ "theirs.ts": "theirs" });
+    const gitDir = await repo();
+    const { head } = await commitAll(await folder({ "a.ts": "a" }), gitDir, null);
+    const log: string[] = [];
+    const remote = artifactsRemote({ gitDir, url: repoSite.url, token, fetch: recording(log) });
+    const theirs = await git.resolveRef({ fs: nodeFs, gitdir: repoSite.gitDir, ref: "main" });
+    // Not git's own not-fast-forward, which it finds out after going through what it would send.
+    const error = await remote.push(head!, null).catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(SourceMovedError);
+    expect((error as Error).message).toBe(`main is at ${theirs}`);
+    expect(log).toMatchInlineSnapshot(`
+      [
+        "GET /info/refs?service=git-receive-pack 200",
+      ]
+    `);
+  });
+
+  it("builds again on a push that got to main between ours reading and moving it", async () => {
+    const repoSite = await site({ "a.ts": "a" });
+    const gitDir = await repo();
+    const dir = await folder({ "a.ts": "a", "b.ts": "b" });
+    const log: string[] = [];
+    let theirs: string | null = null;
+    const remote = artifactsRemote({
+      gitDir,
+      url: repoSite.url,
+      token,
+      fetch: recording(log, async (request) => {
+        if (request === "POST /git-receive-pack" && !theirs) theirs = await repoSite.commit({ "a.ts": "theirs" });
+      }),
+    });
+    const commit = await saveSource({
+      sourceDir: dir,
+      gitDir,
+      files: await listSource(dir),
+      remote,
+      message: "Publish",
+    });
+    const { parent } = (await git.readCommit({ fs: nodeFs, gitdir: repoSite.gitDir, oid: commit })).commit;
+    expect(await git.resolveRef({ fs: nodeFs, gitdir: repoSite.gitDir, ref: "main" })).toBe(commit);
+    expect(parent).toEqual([theirs]);
+    execFileSync("git", ["--git-dir", repoSite.gitDir, "fsck", "--strict", "--no-dangling"], { stdio: "pipe" });
+    expect(log).toMatchInlineSnapshot(`
+      [
+        "GET /info/refs?service=git-upload-pack 200",
+        "POST /git-upload-pack 200",
+        "GET /info/refs?service=git-upload-pack 200",
+        "POST /git-upload-pack 200",
+        "GET /info/refs?service=git-receive-pack 200",
+        "POST /git-receive-pack 200",
+        "GET /info/refs?service=git-upload-pack 200",
+        "POST /git-upload-pack 200",
+        "GET /info/refs?service=git-upload-pack 200",
+        "POST /git-upload-pack 200",
+        "GET /info/refs?service=git-receive-pack 200",
+        "POST /git-receive-pack 200",
+      ]
+    `);
+  });
+
+  it("says what the repo answered, without a web page", async () => {
+    const gitDir = await repo();
+    const answer = async (response: () => Response) => {
+      const remote = artifactsRemote({
+        gitDir,
+        url: "https://artifacts.test/site.git",
+        token,
+        fetch: async () => response(),
+      });
+      const error = await remote.head().catch((error: unknown) => error);
+      expect(error).toBeInstanceOf(SourcePushError);
+      return (error as Error).message;
+    };
+    expect({
+      refused: await answer(() => new Response("Invalid or expired token\n", { status: 403, statusText: "Forbidden" })),
+      // HTTP/2 has no status text.
+      http2: await answer(() => new Response("Repository not found", { status: 404 })),
+      page: await answer(
+        () =>
+          new Response("<!DOCTYPE html><html><body>Bad gateway</body></html>", {
+            status: 502,
+            statusText: "Bad Gateway",
+          }),
+      ),
+      long: await answer(() => new Response("x".repeat(500), { status: 500, statusText: "Internal Server Error" })),
+    }).toMatchInlineSnapshot(`
+      {
+        "http2": "404: Repository not found",
+        "long": "500 Internal Server Error",
+        "page": "502 Bad Gateway",
+        "refused": "403 Forbidden: Invalid or expired token",
+      }
+    `);
   });
 });

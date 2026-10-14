@@ -184,6 +184,7 @@ export const commitSource = async ({
   message,
   maxPushBytes = MAX_PUSH_BYTES,
   now = Date.now(),
+  cache = {},
 }: {
   sourceDir: string;
   gitDir: string;
@@ -192,9 +193,12 @@ export const commitSource = async ({
   message: string;
   maxPushBytes?: number;
   now?: number;
+  cache?: GitCache;
 }): Promise<{ commits: string[]; head: string | null }> => {
-  const parentTree = parent ? (await git.readCommit({ fs: nodeFs, gitdir: gitDir, oid: parent })).commit.tree : null;
-  const base = parentTree ? await flatTree(gitDir, parentTree) : new Map<string, Entry>();
+  const parentTree = parent
+    ? (await git.readCommit({ fs: nodeFs, gitdir: gitDir, oid: parent, cache })).commit.tree
+    : null;
+  const base = parentTree ? await flatTree(gitDir, parentTree, cache) : new Map<string, Entry>();
   const known = new Set([...base.values()].map((entry) => entry.oid));
 
   const snapshot = new Map<string, Entry>();
@@ -250,14 +254,19 @@ const folders = (file: string) => {
   return parts.slice(1).map((_, index) => parts.slice(0, index + 1).join("/"));
 };
 
-const flatTree = async (gitDir: string, oid: string, prefix = "", into = new Map<string, Entry>()) => {
-  const { tree } = await git.readTree({ fs: nodeFs, gitdir: gitDir, oid });
-  for (const entry of tree) {
-    const file = prefix + entry.path;
-    if (entry.type === "tree") await flatTree(gitDir, entry.oid, `${file}/`, into);
-    else into.set(file, { oid: entry.oid, mode: entry.mode as Mode });
-  }
-  return into;
+/** A tree's files by path. */
+const flatTree = async (gitDir: string, oid: string, cache: GitCache) => {
+  const entries: [string, Entry][] = await git.walk({
+    fs: nodeFs,
+    gitdir: gitDir,
+    cache,
+    trees: [git.TREE({ ref: oid })],
+    map: async (file, [entry]) =>
+      (await entry!.type()) === "blob"
+        ? [file, { oid: await entry!.oid(), mode: (await entry!.mode()).toString(8) as Mode }]
+        : undefined,
+  });
+  return new Map(entries);
 };
 
 /** Writes the trees for files by path; answers the root's oid. */
@@ -280,12 +289,22 @@ const writeTree = async (gitDir: string, files: Map<string, Entry>): Promise<str
   return git.writeTree({ fs: nodeFs, gitdir: gitDir, tree: here });
 };
 
+/**
+ * isomorphic-git's cache of the packs it has read. Each call makes its own
+ * unless given one, reading and checking every pack again, so one publish's
+ * calls share one.
+ */
+export type GitCache = object;
+
 /** The site's repo, as saveSource uses it. */
 export type SourceRemote = {
   /** main's head, fetched into gitDir to build on; null for an empty repo. */
-  head(): Promise<string | null>;
-  /** Moves main to commit. Throws SourceMovedError if main isn't where commit builds on. */
-  push(commit: string): Promise<void>;
+  head(cache?: GitCache): Promise<string | null>;
+  /**
+   * Moves main from parent (null: no main yet) to commit, which builds on it.
+   * Throws SourceMovedError if main isn't at parent.
+   */
+  push(commit: string, parent: string | null, cache?: GitCache): Promise<void>;
 };
 
 /** main moved since its head was read: another publish of the site pushed. */
@@ -294,15 +313,16 @@ export class SourceMovedError extends Error {}
 /** A push the repo refused or couldn't take, in its words. */
 export class SourcePushError extends Error {}
 
-// isomorphic-git's HTTP over the given fetch. Its own clients won't do:
-// http/node gives up on a push after 5 seconds without a reply, and
-// http/web's global fetch (Node's) after 300, which a 16 MiB push on a slow
-// uplink takes.
+const NO_COMMIT = "0".repeat(40);
+
+// isomorphic-git's HTTP over the given fetch, so git goes the way the app's
+// other requests do (net.fetch: the system's proxy and certificates). The body
+// is sent whole: isomorphic-git has made the whole pack by then anyway.
 const gitHttp = (fetch: typeof globalThis.fetch): HttpClient => ({
-  async request({ url, method = "GET", headers = {}, body }) {
+  async request({ url, method = "GET", headers = {}, body, signal }) {
     const chunks: Uint8Array[] = [];
     if (body) for await (const chunk of body) chunks.push(chunk);
-    const response = await fetch(url, { method, headers, body: body ? Buffer.concat(chunks) : undefined });
+    const response = await fetch(url, { method, headers, body: body ? Buffer.concat(chunks) : undefined, signal });
     return {
       url: response.url,
       method,
@@ -313,6 +333,18 @@ const gitHttp = (fetch: typeof globalThis.fetch): HttpClient => ({
     };
   },
 });
+
+// The repo refusing to move main because it isn't where the push said it
+// was: another push got there between ours reading main and updating it.
+// Git says "incorrect old value provided" now, "failed to lock" or "failed
+// to update ref" before.
+const raced = (error: unknown) => {
+  if (!(error instanceof Errors.GitPushError)) return false;
+  const { result } = error.data as { result: { refs: Record<string, { error?: string }> } };
+  return /incorrect old value|failed to (lock|update)|cannot lock|stale|non-fast-forward/i.test(
+    result.refs["refs/heads/main"]?.error ?? "",
+  );
+};
 
 /** The site's repo in Artifacts, over git's HTTP protocol with the given fetch. */
 export const artifactsRemote = ({
@@ -326,15 +358,26 @@ export const artifactsRemote = ({
   token: string;
   fetch: typeof globalThis.fetch;
 }): SourceRemote => {
-  // The token without its `?expires=` suffix is git's password.
-  const onAuth = () => ({ username: "x", password: token.split("?expires=")[0] });
+  // The token without its `?expires=` suffix is git's password, sent from the
+  // first request: isomorphic-git asks onAuth only once refused, which would
+  // make each request twice. A new object each time, as it adds to them.
+  const authorization = `Basic ${Buffer.from(`x:${token.split("?expires=")[0]}`).toString("base64")}`;
+  const headers = () => ({ Authorization: authorization });
   const http = gitHttp(fetch);
-  const remote = { fs: nodeFs, http, gitdir: gitDir, url, onAuth };
+  const repo = { fs: nodeFs, http, gitdir: gitDir, url };
   // In the repo's words, for the user: why it was refused, or what went wrong.
   const failed = (error: unknown) => {
     if (error instanceof Errors.HttpError) {
-      const { statusCode, response } = error.data as { statusCode: number; response: string };
-      return new SourcePushError(`${statusCode}${response ? `: ${response}` : ""}`);
+      const { statusCode, statusMessage, response } = error.data as {
+        statusCode: number;
+        statusMessage: string;
+        response?: string;
+      };
+      // isomorphic-git keeps the body only when asking for refs, and it can
+      // be a whole web page.
+      const said = response?.trim();
+      const reason = said && said.length <= 200 && !/<[a-z!]/i.test(said) ? `: ${said}` : "";
+      return new SourcePushError(`${[statusCode, statusMessage].filter(Boolean).join(" ")}${reason}`);
     }
     if (error instanceof Errors.GitPushError) {
       const { result } = error.data as { result: { error?: string; refs: Record<string, { error?: string }> } };
@@ -342,27 +385,61 @@ export const artifactsRemote = ({
     }
     return new SourcePushError(error instanceof Error ? error.message : String(error));
   };
+  // fetch keeps what it got as origin's, and fails without origin's refspec
+  // (NoRefspecError). Until there was one every fetch did, after writing the
+  // `shallow` file but before keeping the commits it names, so that's stale.
+  const origin = async () => {
+    const refspec = await git.getConfig({ fs: nodeFs, gitdir: gitDir, path: "remote.origin.fetch" });
+    const current = await git.getConfig({ fs: nodeFs, gitdir: gitDir, path: "remote.origin.url" });
+    if (refspec && current === url) return;
+    if (!refspec) await fs.rm(path.join(gitDir, "shallow"), { force: true });
+    await git.addRemote({ fs: nodeFs, gitdir: gitDir, remote: "origin", url, force: true });
+  };
   return {
-    async head() {
+    async head(cache = {}) {
       try {
-        const refs = await git.listServerRefs({ http, url, onAuth, prefix: "refs/heads/main" });
+        const refs = await git.listServerRefs({ http, url, headers: headers(), prefix: "refs/heads/main" });
         const head = refs.find((ref) => ref.ref === "refs/heads/main")?.oid ?? null;
         const have = async (oid: string) =>
-          git.readCommit({ fs: nodeFs, gitdir: gitDir, oid }).then(() => true, () => false);
-        if (head && !(await have(head))) {
-          await git.fetch({ ...remote, ref: "main", singleBranch: true, depth: 1, tags: false });
-        }
-        return head;
+          git.readCommit({ fs: nodeFs, gitdir: gitDir, oid, cache }).then(() => true, () => false);
+        if (!head || (await have(head))) return head;
+        await origin();
+        // What this fetch found, as main may have moved since it was listed.
+        const { fetchHead } = await git.fetch({
+          ...repo,
+          headers: headers(),
+          cache,
+          ref: "main",
+          singleBranch: true,
+          depth: 1,
+          tags: false,
+        });
+        return fetchHead;
       } catch (error) {
         throw failed(error);
       }
     },
-    async push(commit) {
+    async push(commit, parent, cache = {}) {
       try {
         await git.writeRef({ fs: nodeFs, gitdir: gitDir, ref: "refs/heads/main", value: commit, force: true });
-        await git.push({ ...remote, ref: "main", remoteRef: "main" });
+        await git.push({
+          ...repo,
+          headers: headers(),
+          cache,
+          ref: "main",
+          remoteRef: "main",
+          // Before anything is packed: a main that moved is likely one this
+          // repo doesn't have, and the pack would be all of history down to it.
+          onPrePush: ({ remoteRef }) => {
+            if (remoteRef.oid !== (parent ?? NO_COMMIT)) throw new SourceMovedError(`main is at ${remoteRef.oid}`);
+            return true;
+          },
+        });
       } catch (error) {
-        if (error instanceof Errors.PushRejectedError) throw new SourceMovedError(error.message);
+        if (error instanceof SourceMovedError) throw error;
+        if (error instanceof Errors.PushRejectedError || raced(error)) {
+          throw new SourceMovedError((error as Error).message);
+        }
         throw failed(error);
       }
     },
@@ -389,11 +466,16 @@ export const saveSource = async ({
   message: string;
   maxPushBytes?: number;
 }): Promise<string> => {
+  const cache: GitCache = {};
   for (let attempt = 1; ; attempt++) {
-    const parent = await remote.head();
-    const { commits, head } = await commitSource({ sourceDir, gitDir, files, parent, message, maxPushBytes });
+    const parent = await remote.head(cache);
+    const { commits, head } = await commitSource({ sourceDir, gitDir, files, parent, message, maxPushBytes, cache });
     try {
-      for (const commit of commits) await remote.push(commit);
+      let onto = parent;
+      for (const commit of commits) {
+        await remote.push(commit, onto, cache);
+        onto = commit;
+      }
       return head!;
     } catch (error) {
       if (error instanceof SourceMovedError && attempt === 1) continue;
