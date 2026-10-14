@@ -315,6 +315,7 @@ export function startInspector(container: HTMLElement, componentName: string, pr
 
   const select = (el: Element | null) => {
     selected = el
+    wake()
     if (!el) {
       selectedRef = null
       lastSent = ""
@@ -353,8 +354,15 @@ export function startInspector(container: HTMLElement, componentName: string, pr
   const schedule = () => {
     if (!frame) frame = requestAnimationFrame(check)
   }
-  // The whole body: the component's portals are outside the container.
-  const mutations = new MutationObserver(schedule)
+  // A dialog of the page's opened or closed.
+  const toggled = (r: MutationRecord) => r.attributeName === "open" && r.target.nodeName === "DIALOG"
+  // The whole body: the component's portals are outside the container. A
+  // modal opened or closed, or the overlay gone with the one it was in, puts
+  // the overlay back on top then, drawing or not.
+  const mutations = new MutationObserver((records) => {
+    schedule()
+    if (tool && (!overlay.host.isConnected || records.some(toggled))) overlay.keepOnTop(true)
+  })
   mutations.observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true })
   window.addEventListener("resize", schedule)
 
@@ -424,15 +432,24 @@ export function startInspector(container: HTMLElement, componentName: string, pr
   let markedRef: ElementRef | null = null
   let drawing = 0
 
+  // Drawn each frame while there's something to draw: the box under the
+  // pointer, or the outline of what's picked (the selection, or the element
+  // an open comment box is on). Found again each time: a scroll, a
+  // re-render or an animation moves things with no event to say so. With
+  // neither, the last pass clears the boxes and the loop stops; the pointer
+  // coming in, a pick or a mark starts it again (wake). A frame showing
+  // nothing does nothing: the frames share a process.
   const draw = () => {
-    drawing = requestAnimationFrame(draw)
-    // Found again each frame: a scroll or a re-render changes what's under a
-    // still pointer.
-    const hovered = point ? elementAt(point.x, point.y) : null
     if (markedRef && !marked?.isConnected) marked = find(markedRef)
+    const outlining = tool === "inspect" ? !!selected : !!markedRef
+    drawing = point || outlining ? requestAnimationFrame(draw) : 0
+    const hovered = point ? elementAt(point.x, point.y) : null
     const picked = tool === "inspect" ? selected : marked
     overlay.keepOnTop()
     overlay.draw(hovered === picked ? null : hovered, picked, zoom)
+  }
+  const wake = () => {
+    if (tool && !drawing) drawing = requestAnimationFrame(draw)
   }
 
   // The overlay's events, taken at the window before anything of the page's
@@ -448,6 +465,7 @@ export function startInspector(container: HTMLElement, componentName: string, pr
   const pointAt = (e: MouseEvent) => {
     if (!point) post({ type: "hovering" })
     point = { x: e.clientX, y: e.clientY }
+    wake()
   }
   const onPointer = (e: Event) => {
     // Every wheel, wherever it lands: a gesture stays with the frame it began
@@ -543,7 +561,7 @@ export function startInspector(container: HTMLElement, componentName: string, pr
     window.addEventListener("keydown", onKey, true)
     window.addEventListener("keyup", onKey, true)
     window.addEventListener("blur", letGo)
-    if (!drawing) drawing = requestAnimationFrame(draw)
+    wake()
   }
 
   // The page is going (a reload, Vite's full reload): the shell keeps the
@@ -587,6 +605,7 @@ export function startInspector(container: HTMLElement, componentName: string, pr
       case "mark":
         markedRef = msg.ref
         marked = msg.ref && find(msg.ref)
+        wake()
         return
       case "context":
         return post({

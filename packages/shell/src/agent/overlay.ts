@@ -90,18 +90,27 @@ export function createOverlay() {
     )
   }
 
+  // Each box is written only when it moves: drawn every frame, most frames
+  // nothing has.
+  const placed = new WeakMap<HTMLElement, string>()
   const place = (el: HTMLElement, x: number, y: number, w: number, h: number, widths?: Sides) => {
+    const at = `${x} ${y} ${w} ${h} ${widths?.join(" ") ?? ""}`
+    if (!el.hidden && placed.get(el) === at) return
+    placed.set(el, at)
     el.hidden = false
     el.style.transform = `translate(${x}px, ${y}px)`
     el.style.width = `${Math.max(0, w)}px`
     el.style.height = `${Math.max(0, h)}px`
     if (widths) el.style.borderWidth = widths.map((v) => `${Math.max(0, v)}px`).join(" ")
   }
+  const hide = (el: HTMLElement) => {
+    if (!el.hidden) el.hidden = true
+  }
 
   const drawBoxModel = (el: Element | null) => {
     const r = el?.isConnected ? el.getBoundingClientRect() : null
     if (!el || !r || (!r.width && !r.height)) {
-      for (const b of [margin, border, padding, content]) b.hidden = true
+      for (const b of [margin, border, padding, content]) hide(b)
       return
     }
     const cs = getComputedStyle(el)
@@ -120,15 +129,17 @@ export function createOverlay() {
     )
   }
 
+  let drawnLine = ""
   const drawOutline = (el: Element | null, zoom: number) => {
     if (!el?.isConnected) {
-      outline.hidden = true
+      hide(outline)
       return
     }
     const r = el.getBoundingClientRect()
     place(outline, r.x, r.y, r.width, r.height)
     // Two screen pixels at the canvas's zoom.
-    outline.style.outline = `${2 / zoom}px solid ${COLORS.picked}`
+    const line = `${2 / zoom}px solid ${COLORS.picked}`
+    if (line !== drawnLine) outline.style.outline = drawnLine = line
   }
 
   const showOnTop = () => {
@@ -145,6 +156,7 @@ export function createOverlay() {
   // overlay too, and goes over it. So the overlay goes inside the topmost
   // one, shown again above it, and back out when it closes.
   let holder: Element | null = null
+  let checked = -Infinity
   const topModal = () => {
     try {
       return [...document.querySelectorAll("dialog:modal")].at(-1) ?? null
@@ -164,7 +176,14 @@ export function createOverlay() {
       if (!everything.isConnected) document.head.append(everything)
       showOnTop()
     },
-    keepOnTop() {
+    // Looked for at most every 250ms as the frame draws, and at once (now)
+    // when the page opens or closes a dialog: a frame with nothing to draw
+    // doesn't draw, and the pointer can't reach an overlay a modal has made
+    // inert to wake it.
+    keepOnTop(now = false) {
+      const at = performance.now()
+      if (!now && host.isConnected && at - checked < 250) return
+      checked = at
       const modal = topModal()
       if (modal === holder && host.isConnected) return
       holder = modal

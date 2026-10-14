@@ -208,7 +208,9 @@ const IframeNodeRenderer = ({
   const [url, setUrl] = useState<string | undefined>(undefined);
   const [refreshCounter, setRefreshCounter] = useState(0);
   const releaseRef = useRef<(() => void) | null>(null);
-  const multiSelected = useStore((s) => s.nodes.filter((n) => n.selected).length > 1);
+  // Only a selected node asks: each of them counting every node on each
+  // store change (every step of a zoom) is frames × frames.
+  const multiSelected = useStore((s) => selected && s.nodes.filter((n) => n.selected).length > 1);
   const { onFullscreen, onSeeCode } = useContext(FrameActionsContext);
 
   useEffect(() => {

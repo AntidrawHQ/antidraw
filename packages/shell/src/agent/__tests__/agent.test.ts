@@ -382,6 +382,80 @@ test("walks the selection through the tree, staying inside the component", () =>
 
 const shown = () => [...shadow().querySelectorAll<HTMLElement>(".box")].filter((b) => !b.hidden)
 
+// The draw loop: the overlay's pass each animation frame.
+const looping = () => [...queued.values()].some((fn) => fn.name === "draw")
+const hover = (el: Element | null) => {
+  at = el
+  catcher().dispatchEvent(new PointerEvent("pointermove", { bubbles: true, composed: true, clientX: 5, clientY: 9 }))
+}
+const leave = () => {
+  at = null
+  catcher().dispatchEvent(new PointerEvent("pointerleave", { composed: true }))
+}
+
+test("draws only while there's something to draw: with no pointer and nothing picked, no loop", async () => {
+  vi.spyOn($("h3"), "getBoundingClientRect").mockReturnValue(new DOMRect(4, 8, 120, 30))
+  tool("inspect")
+  await frames(1)
+  expect(looping()).toBe(false)
+  // The pointer comes in: drawn each frame while it's there.
+  hover($("h3"))
+  expect(looping()).toBe(true)
+  await frames(2)
+  expect(shown()).toHaveLength(4)
+  expect(looping()).toBe(true)
+  // It goes: the last pass clears the box, and nothing runs after.
+  leave()
+  await frames(1)
+  expect(shown()).toHaveLength(0)
+  expect(looping()).toBe(false)
+  // So does the shell's word that it went.
+  hover($("h3"))
+  await frames(1)
+  ask({ type: "leave", id: 0 })
+  await frames(1)
+  expect(looping()).toBe(false)
+})
+
+test("keeps the outline on what's picked with the pointer elsewhere, until nothing is", async () => {
+  vi.spyOn($(".btn"), "getBoundingClientRect").mockReturnValue(new DOMRect(4, 50, 80, 24))
+  const ref = pick($(".btn")).info!.ref
+  await frames(2)
+  expect(shown()).toHaveLength(1)
+  expect(looping()).toBe(true)
+  ask({ type: "select", id: 1, ref: null })
+  await frames(1)
+  expect(shown()).toHaveLength(0)
+  expect(looping()).toBe(false)
+  // A comment box open on an element: outlined, with the Comment tool.
+  tool("comment")
+  await frames(1)
+  expect(looping()).toBe(false)
+  ask({ type: "mark", id: 2, ref })
+  await frames(2)
+  expect(looping()).toBe(true)
+  expect(shown()).toHaveLength(1)
+  ask({ type: "mark", id: 3, ref: null })
+  await frames(1)
+  expect(looping()).toBe(false)
+})
+
+test("writes a box only when it has moved", async () => {
+  const rect = vi.spyOn($("h3"), "getBoundingClientRect").mockReturnValue(new DOMRect(4, 8, 120, 30))
+  tool("inspect")
+  hover($("h3"))
+  await frames(1)
+  const writes: MutationRecord[] = []
+  const watch = new MutationObserver((records) => writes.push(...records))
+  for (const box of shadow().querySelectorAll(".box")) watch.observe(box, { attributes: true })
+  await frames(3)
+  expect(writes).toEqual([])
+  rect.mockReturnValue(new DOMRect(4, 20, 120, 30))
+  await frames(1)
+  expect(writes.length).toBeGreaterThan(0)
+  watch.disconnect()
+})
+
 test("takes the pointer from the page only while a tool is on", () => {
   expect(host()).toBeNull()
   tool("inspect")
@@ -527,6 +601,31 @@ test("never picks its own overlay, when it's inside the component (a modal dialo
   $(".card").append(host()!)
   expect(click($(".btn")).msg).toMatchObject({ type: "comment-at", info: { tag: "button" } })
   expect(ask({ type: "walk", id: 1, dir: "next" })).toBeTruthy()
+})
+
+test("goes into a modal the page opens with nothing drawn, and out when it closes or goes", async () => {
+  tool("inspect")
+  await frames(2)
+  expect(looping()).toBe(false)
+  // jsdom has no :modal: an open dialog in the page is the modal one.
+  const dialog = document.createElement("dialog")
+  document.body.append(dialog)
+  const all = document.querySelectorAll.bind(document)
+  vi.spyOn(document, "querySelectorAll").mockImplementation(((s: string) =>
+    s === "dialog:modal" ? (dialog.isConnected && dialog.open ? [dialog] : []) : all(s)) as typeof document.querySelectorAll)
+  // The pointer can't wake a frame whose overlay a modal has made inert.
+  dialog.setAttribute("open", "")
+  await frames(1)
+  expect(host()!.parentElement).toBe(dialog)
+  dialog.removeAttribute("open")
+  await frames(1)
+  expect(host()!.parentElement).toBe(document.documentElement)
+  // Gone with the overlay in it: put back.
+  dialog.setAttribute("open", "")
+  await frames(1)
+  dialog.remove()
+  await frames(1)
+  expect(host()!.parentElement).toBe(document.documentElement)
 })
 
 test("says when the pointer comes in, and stops drawing what it hovered when the shell says it left", async () => {
