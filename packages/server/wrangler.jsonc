@@ -36,9 +36,9 @@
   "artifacts": [
     // Each site's source, a git repo named site-<site id>
     // (src/services/source.service.ts). Artifacts has no local mode, so
-    // `npm run dev` reaches this real namespace too, under local sites' ids,
-    // and tests run src/test/wrangler.jsonc, which binds a stub instead.
-    { "binding": "ARTIFACTS", "namespace": "sites" }
+    // `npm run dev` reaches this real namespace too (remote), under local
+    // sites' ids, and tests run src/test/wrangler.jsonc, which binds a stub.
+    { "binding": "ARTIFACTS", "namespace": "sites", "remote": true }
   ],
   "vars": {
     // A published site's share page, * being its slug: the canvas that shows
