@@ -37,8 +37,15 @@ const createSite = async (user: User, title = "My Canvas") => {
   return (await res.json()) as { id: string; slug: string; url: string };
 };
 
+/** As if the app had pushed the site's source: answers a commit its repo has. */
+const pushSource = async (user: User, siteId: string, commit = "c".repeat(40)) => {
+  await post(user, `/api/sites/${siteId}/source`);
+  await server.artifacts.pushed(`site-${siteId}`, commit);
+  return commit;
+};
+
 const startPublish = async (user: User, siteId: string) => {
-  const res = await post(user, `/api/sites/${siteId}/publishes`);
+  const res = await post(user, `/api/sites/${siteId}/publishes`, { commit: await pushSource(user, siteId) });
   expect(res.status).toBe(201);
   return (await res.json()) as { publishId: string; uploadUrl: string };
 };
@@ -219,7 +226,9 @@ describe("publishing", () => {
   it("uploads a folder with the app's client and goes live", async () => {
     const user = await server.signIn();
     const site = await createSite(user);
-    const started = await answer(await post(user, `/api/sites/${site.id}/publishes`));
+    const started = await answer(
+      await post(user, `/api/sites/${site.id}/publishes`, { commit: await pushSource(user, site.id) }),
+    );
     const { publishId, uploadUrl } = started.body;
     const names = { [site.id]: "<site>", [publishId]: "<publish>" };
     expect(readable(started, names)).toMatchInlineSnapshot(`
@@ -639,11 +648,10 @@ describe("the site's source", () => {
     const pushed = await post(user, `/api/sites/${site.id}/publishes`, { commit: A });
     const missing = await answer(await post(user, `/api/sites/${site.id}/publishes`, { commit: B }));
     const malformed = await answer(await post(user, `/api/sites/${site.id}/publishes`, { commit: "main" }));
-    // From an app that doesn't push the source.
-    const none = await post(user, `/api/sites/${site.id}/publishes`);
+    const none = await answer(await post(user, `/api/sites/${site.id}/publishes`));
     expect(
       readable(
-        { before, pushed: pushed.status, missing, malformed, none: none.status, source: await sourceOf(site.id) },
+        { before, pushed: pushed.status, missing, malformed, none, source: await sourceOf(site.id) },
         { [site.id]: "<site>", [A]: "<A>", [B]: "<B>" },
       ),
     ).toMatchInlineSnapshot(`
@@ -661,7 +669,7 @@ describe("the site's source", () => {
           "body": {
             "error": {
               "code": "INVALID_REQUEST",
-              "message": "Body must be { commit?: a 40-character commit id }",
+              "message": "Body must be { commit: a 40-character commit id }",
             },
           },
           "status": 400,
@@ -675,12 +683,19 @@ describe("the site's source", () => {
           },
           "status": 409,
         },
-        "none": 201,
+        "none": {
+          "body": {
+            "error": {
+              "code": "INVALID_REQUEST",
+              "message": "Body must be { commit: a 40-character commit id }",
+            },
+          },
+          "status": 400,
+        },
         "pushed": 201,
         "source": {
           "commits": [
             "<A>",
-            null,
           ],
           "repo": "site-<site>",
         },

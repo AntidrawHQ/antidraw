@@ -13,7 +13,7 @@ import { endSourcePush, hasSourceCommit, sourceAccess } from "../services/source
 //
 //   POST /api/sites                          { title } -> { id, slug, url }  (url: the share page)
 //   POST /api/sites/:id/source               -> { remote, token, expiresAt }  (pushing the source)
-//   POST /api/sites/:id/publishes            { commit? } -> { publishId, uploadUrl }
+//   POST /api/sites/:id/publishes            { commit } -> { publishId, uploadUrl }
 //   POST /api/sites/:id/publishes/:pid/plan          manifest -> { missing }
 //   PUT  /api/sites/:id/publishes/:pid/files/:sha256 bytes -> { ok }
 //   POST /api/sites/:id/publishes/:pid/commit        -> { publishId, previous, alreadyCommitted }
@@ -61,25 +61,23 @@ siteController.post("/:siteId/source", async (ctx) =>
   respond(ctx, await sourceAccess(getDb(ctx.env), ctx.env.ARTIFACTS, ctx.req.param("siteId"))),
 );
 
-// The commit is optional: app versions before source pushing send no body.
-const publishBody = z.object({ commit: z.string().regex(/^[0-9a-f]{40}$/).optional() });
+// Every version that goes live names the commit it was built from, so it can
+// be remixed from its source.
+const publishBody = z.object({ commit: z.string().regex(/^[0-9a-f]{40}$/) });
 
 siteController.post("/:siteId/publishes", async (ctx) => {
   const body = publishBody.safeParse(await ctx.req.json().catch(() => ({})));
   if (!body.success) {
-    return respondError(ctx, 400, "INVALID_REQUEST", "Body must be { commit?: a 40-character commit id }");
+    return respondError(ctx, 400, "INVALID_REQUEST", "Body must be { commit: a 40-character commit id }");
   }
   const siteId = ctx.req.param("siteId");
   const db = getDb(ctx.env);
-  const commit = body.data.commit ?? null;
-  if (commit) {
-    // So every version that goes live can be remixed from its source.
-    const found = await hasSourceCommit(db, ctx.env.ARTIFACTS, siteId, commit);
-    if (found.isErr()) return respond(ctx, found);
-    if (!found.value) return respondError(ctx, 409, "SOURCE_NOT_FOUND", `The site's source has no commit ${commit}`);
-    // The push is done, so its token has nothing left to do.
-    await endSourcePush(ctx.env.ARTIFACTS, siteId);
-  }
+  const { commit } = body.data;
+  const found = await hasSourceCommit(db, ctx.env.ARTIFACTS, siteId, commit);
+  if (found.isErr()) return respond(ctx, found);
+  if (!found.value) return respondError(ctx, 409, "SOURCE_NOT_FOUND", `The site's source has no commit ${commit}`);
+  // The push is done, so its token has nothing left to do.
+  await endSourcePush(ctx.env.ARTIFACTS, siteId);
   const publishId = await startPublish(db, siteId, commit);
   return ctx.json({ publishId, uploadUrl: new URL(`${ctx.req.path}/${publishId}`, ctx.req.url).href }, 201);
 });
