@@ -35,9 +35,9 @@
   ],
   "artifacts": [
     // Each site's source, a git repo named site-<site id>
-    // (src/services/source.service.ts). Artifacts has no local mode, so
-    // `npm run dev` reaches this real namespace too (remote), under local
-    // sites' ids, and tests run src/test/wrangler.jsonc, which binds a stub.
+    // (src/services/source.service.ts). Artifacts has no local mode: `npm run
+    // dev` uses the dev environment's namespace below, and tests run
+    // src/test/wrangler.jsonc, which binds a stub.
     { "binding": "ARTIFACTS", "namespace": "sites", "remote": true }
   ],
   "vars": {
@@ -53,5 +53,31 @@
     // Its own subdomain, not antidraw.com/api: the landing page and the share
     // pages keep antidraw.com, and the API's auth cookies stay off them.
     { "pattern": "api.antidraw.com", "custom_domain": true }
-  ]
+  ],
+  "env": {
+    // `npm run dev` (wrangler dev --env dev). D1 and R2 are local in dev
+    // anyway; Artifacts is always remote, so dev gets its own namespace and
+    // a local server can't make or hand out tokens for production's repos.
+    // An environment doesn't inherit bindings or vars, so they're repeated
+    // here, with the vars' local values (.dev.vars can still override them).
+    // Never deployed, so it claims no route.
+    "dev": {
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "antidraw",
+          "database_id": "0f1a9297-6b12-4031-8c3a-f2a7bf64f71e",
+          "preview_database_id": "antidraw-local",
+          "migrations_dir": "src/db/migrations"
+        }
+      ],
+      "r2_buckets": [{ "binding": "SITES", "bucket_name": "antidraw-sites" }],
+      "artifacts": [{ "binding": "ARTIFACTS", "namespace": "sites-dev", "remote": true }],
+      "vars": {
+        "SHARE_URL_PATTERN": "http://localhost:8786/s/*",
+        "BETTER_AUTH_URL": "http://localhost:8799"
+      },
+      "routes": []
+    }
+  }
 }

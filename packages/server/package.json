@@ -6,8 +6,8 @@
   "description": "Antidraw cloud API — a Cloudflare Worker (Hono + D1). The real, network-exposed backend that gates cloud operations (publish/sync) behind authenticated, authorized users. Distinct from the in-Electron API in @antidraw/shell.",
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "dev": "wrangler dev --env dev",
+    "deploy": "wrangler deploy --env=\"\"",
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
     "db:migrate:local": "wrangler d1 migrations apply antidraw --local",

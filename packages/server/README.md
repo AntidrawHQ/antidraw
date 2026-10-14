@@ -53,7 +53,7 @@ step to keep in sync.
 
 ```sh
 cd packages/server
-npm run dev          # wrangler dev — local Worker + D1 on http://localhost:8799
+npm run dev          # wrangler dev --env dev — local Worker + D1 on http://localhost:8799
 npm test             # vitest
 npm run typecheck
 ```
@@ -62,8 +62,9 @@ Tests that need storage run the real Worker in workerd with local D1 and R2
 (`src/test/harness.ts`, Wrangler's test harness); the rest call the Hono app
 directly. Artifacts has no local mode, so tests run
 `src/test/wrangler.jsonc`, which binds `ARTIFACTS` to a stub Worker
-(`src/test/artifacts-stub`), and `npm run dev` uses the real `sites`
-namespace (a `wrangler login` is needed).
+(`src/test/artifacts-stub`), and `npm run dev` uses a real namespace of its
+own, `sites-dev` (wrangler.jsonc's `dev` environment; a `wrangler login` is
+needed), so a local server never reaches production's repos.
 
 `GET /api/health` → `{ "status": "ok", "service": "antidraw-server" }`.
 
