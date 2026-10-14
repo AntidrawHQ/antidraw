@@ -7,7 +7,7 @@ import { requireBearer, type AuthedEnv } from "../lib/require-session";
 import { respond, respondError } from "../lib/respond";
 import { siteStore } from "../lib/site-store";
 import { commitPublish, createSite, ownsSite, startPublish } from "../services/site.service";
-import { hasSourceCommit, sourceAccess } from "../services/source.service";
+import { endSourcePush, hasSourceCommit, sourceAccess } from "../services/source.service";
 
 // Publishing a site (see @antidraw/site-upload for the upload protocol):
 //
@@ -77,6 +77,8 @@ siteController.post("/:siteId/publishes", async (ctx) => {
     const found = await hasSourceCommit(db, ctx.env.ARTIFACTS, siteId, commit);
     if (found.isErr()) return respond(ctx, found);
     if (!found.value) return respondError(ctx, 409, "SOURCE_NOT_FOUND", `The site's source has no commit ${commit}`);
+    // The push is done, so its token has nothing left to do.
+    await endSourcePush(ctx.env.ARTIFACTS, siteId);
   }
   const publishId = await startPublish(db, siteId, commit);
   return ctx.json({ publishId, uploadUrl: new URL(`${ctx.req.path}/${publishId}`, ctx.req.url).href }, 201);

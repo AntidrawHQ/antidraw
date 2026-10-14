@@ -567,9 +567,12 @@ describe("the site's source", () => {
         "calls": [
           "create site-<site> {"setDefaultBranch":"main"}",
           "get site-<site>",
+          "listTokens site-<site>",
           "info site-<site>",
           "createToken site-<site> write 3600",
           "get site-<site>",
+          "listTokens site-<site>",
+          "revokeToken site-<site> token-1",
           "info site-<site>",
           "createToken site-<site> write 3600",
         ],
@@ -614,6 +617,7 @@ describe("the site's source", () => {
         "calls": [
           "create site-<site> {"setDefaultBranch":"main"}",
           "get site-<site>",
+          "listTokens site-<site>",
           "info site-<site>",
           "createToken site-<site> write 3600",
         ],
@@ -679,6 +683,60 @@ describe("the site's source", () => {
             null,
           ],
           "repo": "site-<site>",
+        },
+      }
+    `);
+  });
+
+  it("ends the site's tokens when it hands out the next, and once a publish names its commit", async () => {
+    const user = await server.signIn();
+    const site = await createSite(user);
+    const repo = `site-${site.id}`;
+    // A publish that failed after getting its token, then one that pushes.
+    await post(user, `/api/sites/${site.id}/source`);
+    await post(user, `/api/sites/${site.id}/source`);
+    const handedOut = await server.artifacts.tokens(repo);
+    await server.artifacts.pushed(repo, A);
+    await server.artifacts.takeCalls();
+    const refused = await post(user, `/api/sites/${site.id}/publishes`, { commit: B });
+    const afterRefused = await server.artifacts.takeCalls();
+    const published = await post(user, `/api/sites/${site.id}/publishes`, { commit: A });
+    expect(
+      readable(
+        {
+          handedOut,
+          refused: { status: refused.status, calls: afterRefused },
+          published: { status: published.status, calls: await server.artifacts.takeCalls() },
+          tokens: await server.artifacts.tokens(repo),
+        },
+        { [site.id]: "<site>", [A]: "<A>", [B]: "<B>" },
+      ),
+    ).toMatchInlineSnapshot(`
+      {
+        "handedOut": {
+          "token-1": "revoked",
+          "token-2": "active",
+        },
+        "published": {
+          "calls": [
+            "get site-<site>",
+            "readCommit site-<site> <A>",
+            "get site-<site>",
+            "listTokens site-<site>",
+            "revokeToken site-<site> token-2",
+          ],
+          "status": 201,
+        },
+        "refused": {
+          "calls": [
+            "get site-<site>",
+            "readCommit site-<site> <B>",
+          ],
+          "status": 409,
+        },
+        "tokens": {
+          "token-1": "revoked",
+          "token-2": "revoked",
         },
       }
     `);

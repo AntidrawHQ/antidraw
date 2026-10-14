@@ -18,6 +18,16 @@ const TOKEN_TTL_SECONDS = 60 * 60;
 
 export const repoName = (siteId: string) => `site-${siteId}`;
 
+// A token is needed only while a publish pushes. The site's next token and
+// the publish that names its commit end the ones before, so one a failed
+// publish leaves behind lives until the site's next publish, or its hour is
+// up. A publish of the site from elsewhere that's still pushing loses its
+// token, and is told to try again.
+const revokeTokens = async (repo: ArtifactsRepo) => {
+  const { tokens } = await repo.listTokens();
+  await Promise.all(tokens.filter((token) => token.state === "active").map((token) => repo.revokeToken(token.id)));
+};
+
 const unavailable = (error: unknown) => {
   console.error("Artifacts:", error);
   return err(apiError(502, "SOURCE_UNAVAILABLE", "Couldn't reach the source storage; try again"));
@@ -42,6 +52,7 @@ export const sourceAccess = async (
       await db.update(site).set({ sourceRepo: name }).where(eq(site.id, siteId));
     }
     const repo = await artifacts.get(name);
+    await revokeTokens(repo);
     const [{ remote }, token] = await Promise.all([repo.info(), repo.createToken("write", TOKEN_TTL_SECONDS)]);
     return ok({ remote, token: token.plaintext, expiresAt: token.expiresAt });
   } catch (error) {
@@ -63,5 +74,17 @@ export const hasSourceCommit = async (
     return ok((await repo.readCommit(commit)) !== null);
   } catch (error) {
     return unavailable(error);
+  }
+};
+
+/**
+ * Ends the tokens that pushed the site's source, once a publish has named the
+ * commit they pushed. Best effort: they run out within the hour anyway.
+ */
+export const endSourcePush = async (artifacts: Artifacts, siteId: string) => {
+  try {
+    await revokeTokens(await artifacts.get(repoName(siteId)));
+  } catch (error) {
+    console.error("Artifacts:", error);
   }
 };

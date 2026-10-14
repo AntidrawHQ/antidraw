@@ -6,7 +6,7 @@ import { RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 // Errors carry only a message, as the real ones do once they've crossed RPC.
 // Tests drive it through the harness (TestServer.artifacts).
 
-type Repo = { commits: Set<string> };
+type Repo = { commits: Set<string>; tokens: Map<string, "active" | "revoked"> };
 
 const repos = new Map<string, Repo>();
 let calls: string[] = [];
@@ -29,7 +29,30 @@ class RepoHandle extends RpcTarget {
 
   createToken(scope: "read" | "write", ttl: number) {
     call(`createToken ${this.name} ${scope} ${ttl}`);
-    return { plaintext: `art_test_${scope}?expires=1893456000`, expiresAt: "2030-01-01T00:00:00.000Z" };
+    const { tokens } = repos.get(this.name)!;
+    const id = `token-${tokens.size + 1}`;
+    tokens.set(id, "active");
+    return { id, plaintext: `art_test_${scope}?expires=1893456000`, scope, expiresAt: "2030-01-01T00:00:00.000Z" };
+  }
+
+  listTokens() {
+    call(`listTokens ${this.name}`);
+    const tokens = [...repos.get(this.name)!.tokens].map(([id, state]) => ({
+      id,
+      scope: "write",
+      state,
+      createdAt: "2029-12-31T23:00:00.000Z",
+      expiresAt: "2030-01-01T00:00:00.000Z",
+    }));
+    return { tokens, total: tokens.length };
+  }
+
+  revokeToken(tokenOrId: string) {
+    call(`revokeToken ${this.name} ${tokenOrId}`);
+    const { tokens } = repos.get(this.name)!;
+    if (tokens.get(tokenOrId) !== "active") return false;
+    tokens.set(tokenOrId, "revoked");
+    return true;
   }
 
   readCommit(hash: string) {
@@ -44,7 +67,7 @@ export default class ArtifactsStub extends WorkerEntrypoint {
   create(name: string, opts?: { setDefaultBranch?: string }) {
     call(`create ${name} ${JSON.stringify(opts ?? {})}`);
     if (repos.has(name)) throw new Error(`repo already exists: ${name}`);
-    repos.set(name, { commits: new Set() });
+    repos.set(name, { commits: new Set(), tokens: new Map() });
     return { name, remote: `https://artifacts.test/git/sites/${name}.git` };
   }
 
@@ -59,6 +82,11 @@ export default class ArtifactsStub extends WorkerEntrypoint {
   /** As if a push to the repo had added the commit. */
   pushed(name: string, commit: string) {
     repos.get(name)!.commits.add(commit);
+  }
+
+  /** The repo's tokens and whether each is still live, by id. */
+  tokens(name: string) {
+    return Object.fromEntries(repos.get(name)!.tokens);
   }
 
   /** The calls made since the last time, oldest first. */
