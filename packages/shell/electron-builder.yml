@@ -17,6 +17,9 @@ asarUnpack:
   - resources/**
 mac:
   category: public.app-category.developer-tools
+  # Icon Composer bundle: macOS 26 draws it natively; the Assets.car it compiles
+  # to also carries pre-rounded renditions for macOS 11-15.
+  icon: build/icon.icon
   hardenedRuntime: true
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
@@ -35,6 +38,9 @@ dmg:
   title: Antidraw
   artifactName: ${productName}-${version}-${arch}.${ext}
   background: build/dmg-bg.png
+  # The volume icon only reads .icns, so point it at the pre-rounded one rather
+  # than the 256px fallback electron-builder derives from icon.icon.
+  icon: build/icon.icns
   window:
     width: 540
     height: 380
