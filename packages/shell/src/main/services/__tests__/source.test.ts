@@ -119,6 +119,15 @@ describe("listSource", () => {
       ]
     `);
   });
+
+  it("leaves out a .git file, which a submodule or worktree has instead of the folder", async () => {
+    const dir = await folder({
+      ".git": "gitdir: /Users/someone/project/.git/worktrees/site",
+      "vendor/lib/.git": "gitdir: ../../.git/modules/lib",
+      "vendor/lib/index.ts": "lib",
+    });
+    expect((await listSource(dir)).map((file) => file.path)).toEqual(["vendor/lib/index.ts"]);
+  });
 });
 
 describe("sourceProblem", () => {
