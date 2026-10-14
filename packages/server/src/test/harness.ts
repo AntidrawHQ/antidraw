@@ -3,16 +3,26 @@ import { generateRandomString, makeSignature } from "better-auth/crypto";
 import { createTestHarness } from "wrangler";
 import type { Bindings } from "../lib/env";
 
-// Runs this package's real Worker (wrangler.jsonc) in workerd with local D1 and
+// Runs this package's real Worker (test/wrangler.jsonc) in workerd with local D1 and
 // R2, through Wrangler's integration-test harness, for tests that need storage.
-// Nothing is stubbed: requests go through better-auth, drizzle and R2.
+// Only Artifacts is stubbed (artifacts-stub/): requests go through better-auth,
+// drizzle and R2.
 
 const SECRET = "test-secret-with-enough-entropy-0123456789abcdef";
+
+/** The Artifacts stand-in (artifacts-stub/index.ts), driven from Node. */
+export type ArtifactsStub = {
+  create(name: string): Promise<unknown>;
+  pushed(name: string, commit: string): Promise<void>;
+  takeCalls(): Promise<string[]>;
+  setFailing(value: boolean): Promise<void>;
+};
 
 export type TestServer = {
   url: URL;
   /** The Worker's bindings, driven from Node: seed and inspect D1 and R2. */
   env: Bindings;
+  artifacts: ArtifactsStub;
   fetch(path: string, init?: RequestInit): Promise<Response>;
   /** A new user with a session; returns its Authorization header value. */
   signIn(name?: string): Promise<{ userId: string; authorization: string }>;
@@ -24,7 +34,8 @@ export async function startServer(): Promise<TestServer> {
     root: fileURLToPath(new URL("../..", import.meta.url)),
     workers: [
       {
-        configPath: "./wrangler.jsonc",
+        // The package's wrangler.jsonc with ARTIFACTS bound to the stub below.
+        configPath: "./src/test/wrangler.jsonc",
         secrets: {
           BETTER_AUTH_SECRET: SECRET,
           BETTER_AUTH_URL: "http://localhost:8799",
@@ -33,17 +44,20 @@ export async function startServer(): Promise<TestServer> {
         },
         vars: { SHARE_URL_PATTERN: "https://share.test/s/*" },
       },
+      { configPath: "./src/test/artifacts-stub/wrangler.jsonc" },
     ],
   });
   const { url } = await harness.listen();
   const worker = harness.getWorker<Bindings>();
   await worker.applyD1Migrations("DB");
   const env = await worker.getEnv();
+  const artifacts = (await harness.getWorker("artifacts-stub").getExport()) as unknown as ArtifactsStub;
 
   let users = 0;
   return {
     url,
     env,
+    artifacts,
     fetch: (path, init) => fetch(new URL(path, url), init),
     async signIn(name = `user${++users}`) {
       // What better-auth writes when Google sign-in succeeds, and the signed

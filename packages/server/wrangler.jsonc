@@ -33,6 +33,13 @@
     // The site-serving Worker binds the same bucket.
     { "binding": "SITES", "bucket_name": "antidraw-sites" }
   ],
+  "artifacts": [
+    // Each site's source, a git repo named site-<site id>
+    // (src/services/source.service.ts). Artifacts has no local mode, so
+    // `npm run dev` reaches this real namespace too, under local sites' ids,
+    // and tests run src/test/wrangler.jsonc, which binds a stub instead.
+    { "binding": "ARTIFACTS", "namespace": "sites" }
+  ],
   "vars": {
     // A published site's share page, * being its slug: the canvas that shows
     // the site's components, which are served from <slug>.antidraw.app (see

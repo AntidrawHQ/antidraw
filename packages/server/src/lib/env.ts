@@ -1,3 +1,5 @@
+import type { Artifacts } from "./artifacts";
+
 // Worker bindings + secrets. D1Database comes from @cloudflare/workers-types.
 //
 // Secrets (everything but the bindings and SHARE_URL_PATTERN, a plain var in
@@ -7,6 +9,8 @@ export type Bindings = {
   DB: D1Database;
   // Published sites' files (@antidraw/site-upload's layout, under sites/).
   SITES: R2Bucket;
+  // Each site's source: a git repo per site (services/source.service.ts).
+  ARTIFACTS: Artifacts;
   // A published site's share page, with * for its slug: https://antidraw.com/s/*
   SHARE_URL_PATTERN: string;
   BETTER_AUTH_SECRET: string;

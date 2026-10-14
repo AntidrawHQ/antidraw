@@ -536,3 +536,208 @@ describe("publishing", () => {
     `);
   });
 });
+
+describe("the site's source", () => {
+  /** What the site's row and its publishes say about its source. */
+  const sourceOf = async (siteId: string) => ({
+    repo: (await server.env.DB.prepare("SELECT source_repo AS repo FROM site WHERE id = ?").bind(siteId).first<{
+      repo: string | null;
+    }>())!.repo,
+    commits: (
+      await server.env.DB.prepare("SELECT source_commit AS commit_ FROM publish WHERE site_id = ? ORDER BY created_at")
+        .bind(siteId)
+        .all<{ commit_: string | null }>()
+    ).results.map((row) => row.commit_),
+  });
+
+  const A = "a".repeat(40);
+  const B = "b".repeat(40);
+
+  it("makes the site's repo on first use, and hands out a write token for it each time", async () => {
+    const user = await server.signIn();
+    const site = await createSite(user);
+    await server.artifacts.takeCalls();
+    const first = await answer(await post(user, `/api/sites/${site.id}/source`));
+    const second = await answer(await post(user, `/api/sites/${site.id}/source`));
+    const names = { [site.id]: "<site>" };
+    expect(
+      readable({ first, second, calls: await server.artifacts.takeCalls(), source: await sourceOf(site.id) }, names),
+    ).toMatchInlineSnapshot(`
+      {
+        "calls": [
+          "create site-<site> {"setDefaultBranch":"main"}",
+          "get site-<site>",
+          "info site-<site>",
+          "createToken site-<site> write 3600",
+          "get site-<site>",
+          "info site-<site>",
+          "createToken site-<site> write 3600",
+        ],
+        "first": {
+          "body": {
+            "expiresAt": "2030-01-01T00:00:00.000Z",
+            "remote": "https://artifacts.test/git/sites/site-<site>.git",
+            "token": "art_test_write?expires=1893456000",
+          },
+          "status": 200,
+        },
+        "second": {
+          "body": {
+            "expiresAt": "2030-01-01T00:00:00.000Z",
+            "remote": "https://artifacts.test/git/sites/site-<site>.git",
+            "token": "art_test_write?expires=1893456000",
+          },
+          "status": 200,
+        },
+        "source": {
+          "commits": [],
+          "repo": "site-<site>",
+        },
+      }
+    `);
+  });
+
+  it("uses the repo another first publish made a moment before", async () => {
+    const user = await server.signIn();
+    const site = await createSite(user);
+    // The other request has made the repo but not yet recorded it.
+    await server.artifacts.create(`site-${site.id}`);
+    await server.artifacts.takeCalls();
+    const answered = await post(user, `/api/sites/${site.id}/source`);
+    expect(
+      readable(
+        { status: answered.status, calls: await server.artifacts.takeCalls(), source: await sourceOf(site.id) },
+        { [site.id]: "<site>" },
+      ),
+    ).toMatchInlineSnapshot(`
+      {
+        "calls": [
+          "create site-<site> {"setDefaultBranch":"main"}",
+          "get site-<site>",
+          "info site-<site>",
+          "createToken site-<site> write 3600",
+        ],
+        "source": {
+          "commits": [],
+          "repo": "site-<site>",
+        },
+        "status": 200,
+      }
+    `);
+  });
+
+  it("records the commit a publish was built from, and refuses one the repo doesn't have", async () => {
+    const user = await server.signIn();
+    const site = await createSite(user);
+    const before = await answer(await post(user, `/api/sites/${site.id}/publishes`, { commit: A }));
+    await post(user, `/api/sites/${site.id}/source`);
+    await server.artifacts.pushed(`site-${site.id}`, A);
+    const pushed = await post(user, `/api/sites/${site.id}/publishes`, { commit: A });
+    const missing = await answer(await post(user, `/api/sites/${site.id}/publishes`, { commit: B }));
+    const malformed = await answer(await post(user, `/api/sites/${site.id}/publishes`, { commit: "main" }));
+    // From an app that doesn't push the source.
+    const none = await post(user, `/api/sites/${site.id}/publishes`);
+    expect(
+      readable(
+        { before, pushed: pushed.status, missing, malformed, none: none.status, source: await sourceOf(site.id) },
+        { [site.id]: "<site>", [A]: "<A>", [B]: "<B>" },
+      ),
+    ).toMatchInlineSnapshot(`
+      {
+        "before": {
+          "body": {
+            "error": {
+              "code": "SOURCE_NOT_FOUND",
+              "message": "The site's source has no commit <A>",
+            },
+          },
+          "status": 409,
+        },
+        "malformed": {
+          "body": {
+            "error": {
+              "code": "INVALID_REQUEST",
+              "message": "Body must be { commit?: a 40-character commit id }",
+            },
+          },
+          "status": 400,
+        },
+        "missing": {
+          "body": {
+            "error": {
+              "code": "SOURCE_NOT_FOUND",
+              "message": "The site's source has no commit <B>",
+            },
+          },
+          "status": 409,
+        },
+        "none": 201,
+        "pushed": 201,
+        "source": {
+          "commits": [
+            "<A>",
+            null,
+          ],
+          "repo": "site-<site>",
+        },
+      }
+    `);
+  });
+
+  it("says so when Artifacts can't be reached", async () => {
+    const user = await server.signIn();
+    const site = await createSite(user);
+    await post(user, `/api/sites/${site.id}/source`);
+    await server.artifacts.setFailing(true);
+    try {
+      const source = await answer(await post(user, `/api/sites/${site.id}/source`));
+      const publish = await answer(await post(user, `/api/sites/${site.id}/publishes`, { commit: A }));
+      expect({ source, publish }).toMatchInlineSnapshot(`
+        {
+          "publish": {
+            "body": {
+              "error": {
+                "code": "SOURCE_UNAVAILABLE",
+                "message": "Couldn't reach the source storage; try again",
+              },
+            },
+            "status": 502,
+          },
+          "source": {
+            "body": {
+              "error": {
+                "code": "SOURCE_UNAVAILABLE",
+                "message": "Couldn't reach the source storage; try again",
+              },
+            },
+            "status": 502,
+          },
+        }
+      `);
+    } finally {
+      await server.artifacts.setFailing(false);
+    }
+  });
+
+  it("keeps a site's source from other users", async () => {
+    const owner = await server.signIn();
+    const other = await server.signIn();
+    const site = await createSite(owner);
+    await server.artifacts.takeCalls();
+    const answered = await answer(await post(other, `/api/sites/${site.id}/source`));
+    expect({ answered, calls: await server.artifacts.takeCalls() }).toMatchInlineSnapshot(`
+      {
+        "answered": {
+          "body": {
+            "error": {
+              "code": "NOT_FOUND",
+              "message": "No such site",
+            },
+          },
+          "status": 404,
+        },
+        "calls": [],
+      }
+    `);
+  });
+});

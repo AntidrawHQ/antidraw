@@ -40,14 +40,18 @@ export const ownsSite = async (db: Db, siteId: string, ownerId: string): Promise
   return row !== undefined;
 };
 
-/** Starts a publish on top of the site's current version (its seq now). */
-export const startPublish = async (db: Db, siteId: string): Promise<string> => {
+/**
+ * Starts a publish on top of the site's current version (its seq now), built
+ * from sourceCommit in the site's repo.
+ */
+export const startPublish = async (db: Db, siteId: string, sourceCommit: string | null): Promise<string> => {
   const publishId = crypto.randomUUID();
   // base_seq is read in the same statement, so it's the seq at this instant.
   await db.insert(publish).values({
     id: publishId,
     siteId,
     baseSeq: sql`(select ${site.seq} from ${site} where ${site.id} = ${siteId})`,
+    sourceCommit,
   });
   return publishId;
 };

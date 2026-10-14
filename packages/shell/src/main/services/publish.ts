@@ -5,24 +5,47 @@ import path from "node:path";
 import { createHttpTransport, SiteUploadError, uploadSite } from "@antidraw/site-upload/client";
 import { err, ok, type Result } from "neverthrow";
 import type { CanvasFile } from "@/renderer/canvas/canvas-file";
+import {
+  changedSince,
+  initSource,
+  listSource,
+  saveSource,
+  sourceProblem,
+  SourceMovedError,
+  SourcePushError,
+  type SourceFile,
+  type SourceRemote,
+} from "./source";
 
 // Publishing a workspace, given the server to publish to: build the site with
 // the workspace's own `vite build` (@antidrawapp/runtime ≥ 0.5.0), add
-// canvas.json, and upload it to the workspace's site (@antidraw/server's
-// /api/sites, then @antidraw/site-upload). No Electron or DB here;
-// publish.service.ts supplies those.
+// canvas.json, push the workspace's source to the site's git repo
+// (source.ts), and upload the site, naming the commit it was built from
+// (@antidraw/server's /api/sites, then @antidraw/site-upload). No Electron or
+// DB here; publish.service.ts supplies those.
 
 export type PublishedSite = { id: string; url: string };
 
 export type PublishError = {
   status: 401 | 409 | 422 | 502;
-  code: "SIGNED_OUT" | "RUNTIME_TOO_OLD" | "BUILD_FAILED" | "UPLOAD_FAILED" | "SERVER_ERROR";
+  code:
+    | "SIGNED_OUT"
+    | "RUNTIME_TOO_OLD"
+    | "FILE_TOO_LARGE"
+    | "SOURCE_TOO_LARGE"
+    | "BUILD_FAILED"
+    | "SOURCE_CHANGED"
+    | "SOURCE_FAILED"
+    | "UPLOAD_FAILED"
+    | "SERVER_ERROR";
   message: string;
 };
 
 export type PublishOptions = {
   /** The workspace's project folder. */
   sourceDir: string;
+  /** A bare git repo beside it, kept between publishes (source.ts). */
+  gitDir: string;
   canvas: CanvasFile;
   /** The site this workspace published to before, if any. */
   site: PublishedSite | null;
@@ -35,6 +58,8 @@ export type PublishOptions = {
   npm: (args: string[], cwd: string, options: SpawnOptions & { env: NodeJS.ProcessEnv }) => ChildProcess;
   /** Called with a new site before anything is uploaded to it, to keep it. */
   onSiteCreated: (site: PublishedSite) => Promise<void>;
+  /** The site's git repo, given the server's address and token for it (artifactsRemote in the app). */
+  sourceRemote: (access: { remote: string; token: string }) => SourceRemote;
 };
 
 class Failure extends Error {
@@ -53,11 +78,25 @@ export const publishSite = async (options: PublishOptions): Promise<Result<{ url
   const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "antidraw-publish-"));
   try {
     await checkRuntime(options.sourceDir);
+    // Before the build, which can take a while, so a workspace that can't be
+    // published says so at once.
+    await initSource(options.gitDir);
+    const files = await listSource(options.sourceDir);
+    const problem = sourceProblem(files);
+    if (problem) fail(422, problem.code, problem.message);
     await build(options, outDir);
+    // The commit has to be what was built.
+    const changed = await changedSince(options.sourceDir, files);
+    if (changed.length > 0) {
+      const named = changed.slice(0, 3).join(", ") + (changed.length > 3 ? ` and ${changed.length - 3} more` : "");
+      fail(409, "SOURCE_CHANGED", `${named} changed while publishing. Publish again to include the changes.`);
+    }
     const immutable = await hashedFiles(outDir);
     await fs.writeFile(path.join(outDir, "canvas.json"), JSON.stringify(options.canvas));
 
-    const { site, uploadUrl } = await startPublish(options);
+    const { site, access } = await siteSource(options);
+    const commit = await pushSource(options, files, access);
+    const uploadUrl = await startPublish(options, site, commit);
     try {
       await uploadSite({
         dir: outDir,
@@ -161,9 +200,10 @@ const serverError = async (response: Response): Promise<never> => {
   return fail(502, "SERVER_ERROR", body?.error?.message ?? `The server answered ${response.status}`);
 };
 
-// A publish of the workspace's site, making the site on first publish. A site
-// the server doesn't know (deleted, or another account's) is replaced.
-const startPublish = async (options: PublishOptions) => {
+// The workspace's site, made on first publish, and a token to push to its
+// source repo. A site the server doesn't know (deleted, or another account's)
+// is replaced.
+const siteSource = async (options: PublishOptions) => {
   let site = options.site;
   for (let attempt = 0; attempt < 2; attempt++) {
     if (!site) {
@@ -173,10 +213,36 @@ const startPublish = async (options: PublishOptions) => {
       site = { id, url };
       await options.onSiteCreated(site);
     }
-    const started = await api(options, `/api/sites/${encodeURIComponent(site.id)}/publishes`);
-    if (started.ok) return { site, uploadUrl: ((await started.json()) as { uploadUrl: string }).uploadUrl };
-    if (started.status !== 404) return serverError(started);
+    const source = await api(options, `/api/sites/${encodeURIComponent(site.id)}/source`);
+    if (source.ok) return { site, access: (await source.json()) as { remote: string; token: string } };
+    if (source.status !== 404) return serverError(source);
     site = null;
   }
   return fail(502, "SERVER_ERROR", "The server lost the new site");
+};
+
+const pushSource = async (
+  { sourceDir, gitDir, sourceRemote }: PublishOptions,
+  files: SourceFile[],
+  access: { remote: string; token: string },
+) => {
+  try {
+    return await saveSource({ sourceDir, gitDir, files, remote: sourceRemote(access), message: "Publish" });
+  } catch (error) {
+    if (error instanceof SourceMovedError) {
+      const message = "This site is being published from somewhere else too. Publish again once that's done.";
+      return fail(409, "SOURCE_FAILED", message);
+    }
+    if (error instanceof SourcePushError) {
+      return fail(502, "SOURCE_FAILED", `Couldn't save the workspace's source (${error.message}). Try publishing again.`);
+    }
+    throw error;
+  }
+};
+
+// A publish of the site, built from commit in its source repo.
+const startPublish = async (options: PublishOptions, site: PublishedSite, commit: string) => {
+  const started = await api(options, `/api/sites/${encodeURIComponent(site.id)}/publishes`, { commit });
+  if (!started.ok) return serverError(started);
+  return ((await started.json()) as { uploadUrl: string }).uploadUrl;
 };
