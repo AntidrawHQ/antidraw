@@ -139,14 +139,19 @@ export const sourceProblem = (files: SourceFile[]): SourceProblem | null => {
   return null;
 };
 
-/** The files that changed or went away since they were listed. */
+/** The files that changed, went away or appeared since they were listed, by path. */
 export const changedSince = async (sourceDir: string, files: SourceFile[]) => {
-  const changed: string[] = [];
-  for (const file of files) {
-    const stat = await fs.lstat(path.join(sourceDir, file.path)).catch(() => null);
-    if (!stat || stat.size !== file.size || stat.mtimeMs !== file.mtimeMs) changed.push(file.path);
+  const listed = new Map(files.map((file) => [file.path, file]));
+  const changed = new Set<string>();
+  for (const file of await listSource(sourceDir)) {
+    const was = listed.get(file.path);
+    if (!was || was.size !== file.size || was.mtimeMs !== file.mtimeMs || was.mode !== file.mode) {
+      changed.add(file.path);
+    }
+    listed.delete(file.path);
   }
-  return changed;
+  for (const file of listed.keys()) changed.add(file);
+  return [...changed].sort();
 };
 
 type Entry = { oid: string; mode: Mode };

@@ -189,13 +189,27 @@ describe("sourceProblem", () => {
   });
 });
 
-it("changedSince names files edited or removed since they were listed, not new ones", async () => {
-  const dir = await folder({ "a.ts": "a", "b.ts": "b", "c.ts": "c" });
+it("changedSince names files edited, removed or added since they were listed", async () => {
+  const dir = await folder({ "a.ts": "a", "b.ts": "b", "c.ts": "c", "run.sh": "#!/bin/sh" });
   const files = await listSource(dir);
   await fs.writeFile(path.join(dir, "a.ts"), "a, edited");
   await fs.rm(path.join(dir, "b.ts"));
+  await fs.chmod(path.join(dir, "run.sh"), 0o755);
   await fs.writeFile(path.join(dir, "new.ts"), "new");
-  expect(await changedSince(dir, files)).toEqual(["a.ts", "b.ts"]);
+  await fs.mkdir(path.join(dir, "src"));
+  await fs.writeFile(path.join(dir, "src/added.ts"), "added");
+  // Left out of the source, so no change to it.
+  await fs.mkdir(path.join(dir, "node_modules"));
+  await fs.writeFile(path.join(dir, "node_modules/cache.json"), "{}");
+  expect(await changedSince(dir, files)).toMatchInlineSnapshot(`
+    [
+      "a.ts",
+      "b.ts",
+      "new.ts",
+      "run.sh",
+      "src/added.ts",
+    ]
+  `);
 });
 
 it("batches fills each push up to the limit, in order, and sends a too-big blob alone", () => {

@@ -107,6 +107,7 @@ const publish = async (
     authorization = (_pathname: string) => user.authorization,
     git = gitDir(),
     pushFails = null as "refused" | "moved" | null,
+    duringBuild = (_dir: string) => {},
   } = {},
 ) => {
   const requests: string[] = [];
@@ -125,7 +126,10 @@ const publish = async (
       headers.set("authorization", authorization(target.pathname));
       return fetch(target, { ...init, headers });
     },
-    npm: (args, cwd, { env, ...options }) => spawn("npm", args, { ...options, cwd, env: { ...process.env, ...env } }),
+    npm: (args, cwd, { env, ...options }) => {
+      duringBuild(cwd);
+      return spawn("npm", args, { ...options, cwd, env: { ...process.env, ...env } });
+    },
     onSiteCreated: async (site) => void created.push(site),
   });
   return { result, requests, created, pushes, git };
@@ -320,6 +324,13 @@ it("says why when it can't publish", async () => {
     brokenComponent: await publish(workspace({ "src/components/user-components/Card.tsx": `export default () => <div>\n` }), null),
     // Sparse: 40 MB as far as the size goes, without writing them.
     fileTooBig: await publish(sparse(workspace(), "public/demo.mov", 40 * 1024 * 1024), null),
+    // Saved while it built: an edit, and a new file.
+    changedWhileBuilding: await publish(workspace(), null, {
+      duringBuild: (dir) => {
+        fs.appendFileSync(path.join(dir, "src/components/user-components/Card.tsx"), "\n// edited\n");
+        fs.writeFileSync(path.join(dir, "src/components/user-components/New.tsx"), "export default () => null\n");
+      },
+    }),
     signedOut: await publish(workspace(), null, { authorization: () => "Bearer nobody" }),
     pushRefused: await publish(workspace(), first, { git: firstGit, pushFails: "refused" }),
     // Another publish of the site pushes before ours each time.
@@ -354,6 +365,11 @@ it("says why when it can't publish", async () => {
     1  |  export default () => <div>
     2  |  
        |  ^",
+        "requests": [],
+      },
+      "changedWhileBuilding": {
+        "code": "SOURCE_CHANGED",
+        "message": "src/components/user-components/Card.tsx, src/components/user-components/New.tsx changed while publishing. Publish again to include the changes.",
         "requests": [],
       },
       "fileTooBig": {
