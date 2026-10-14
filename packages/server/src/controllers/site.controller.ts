@@ -52,7 +52,8 @@ siteController.post(
 // Everything under a site is its owner's alone; to anyone else it doesn't exist.
 siteController.use("/:siteId/*", async (ctx, next) => {
   if (!(await ownsSite(getDb(ctx.env), ctx.req.param("siteId"), ctx.get("user").id))) {
-    return respondError(ctx, 404, "NOT_FOUND", "No such site");
+    // Its own code, so the app can tell it from a route that doesn't exist.
+    return respondError(ctx, 404, "SITE_NOT_FOUND", "No such site");
   }
   await next();
 });
@@ -76,9 +77,9 @@ siteController.post("/:siteId/publishes", async (ctx) => {
   const found = await hasSourceCommit(db, ctx.env.ARTIFACTS, siteId, commit);
   if (found.isErr()) return respond(ctx, found);
   if (!found.value) return respondError(ctx, 409, "SOURCE_NOT_FOUND", `The site's source has no commit ${commit}`);
+  const publishId = await startPublish(db, siteId, commit);
   // The push is done, so its token has nothing left to do.
   await endSourcePush(ctx.env.ARTIFACTS, siteId);
-  const publishId = await startPublish(db, siteId, commit);
   return ctx.json({ publishId, uploadUrl: new URL(`${ctx.req.path}/${publishId}`, ctx.req.url).href }, 201);
 });
 

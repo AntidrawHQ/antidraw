@@ -5,7 +5,11 @@
 // The binding's errors carry a `code` in production, but lose it on the way
 // through wrangler dev's proxy to the real service (and through RPC from the
 // test stub), so the message is checked too.
-const messages = { ALREADY_EXISTS: /already exists/i, NOT_FOUND: /not found/i };
+const messages = {
+  ALREADY_EXISTS: /already exists/i,
+  NOT_FOUND: /not found/i,
+  CREATE_IN_PROGRESS: /still being created|create in progress/i,
+};
 
 export const isArtifactsError = (error: unknown, code: keyof typeof messages) =>
   error instanceof Error &&

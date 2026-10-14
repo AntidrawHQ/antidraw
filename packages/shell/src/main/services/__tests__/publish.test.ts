@@ -108,6 +108,8 @@ const publish = async (
     git = gitDir(),
     pushFails = null as "refused" | "moved" | null,
     duringBuild = (_dir: string) => {},
+    // Changes where a request goes, as a server without that route would see it.
+    route = (pathname: string) => pathname,
   } = {},
 ) => {
   const requests: string[] = [];
@@ -120,7 +122,7 @@ const publish = async (
     canvas,
     site,
     request: (url, init = {}) => {
-      const target = new URL(url, server.url);
+      const target = new URL(route(String(url)), server.url);
       requests.push(`${init.method ?? "GET"} ${target.pathname}`);
       const headers = new Headers(init.headers);
       headers.set("authorization", authorization(target.pathname));
@@ -316,6 +318,33 @@ it("makes a new site when the server doesn't know the saved one", async () => {
         "result": true,
       }
     `);
+}, 60_000);
+
+it("keeps the saved site when a 404 is about the route, not the site", async () => {
+  const made = await fetch(new URL("/api/sites", server.url), {
+    method: "POST",
+    headers: { authorization: user.authorization, "content-type": "application/json" },
+    body: JSON.stringify({ title: "Kept" }),
+  });
+  const site = (await made.json()) as PublishedSite;
+  const { result, requests, created } = await publish(workspace(), site, {
+    route: (pathname) => pathname.replace(/\/source$/, "/source-gone"),
+  });
+  expect(
+    readable({ error: result._unsafeUnwrapErr(), requests, created }, { [site.id]: "<site>" }),
+  ).toMatchInlineSnapshot(`
+    {
+      "created": [],
+      "error": {
+        "code": "SERVER_ERROR",
+        "message": "Not found",
+        "status": 502,
+      },
+      "requests": [
+        "POST /api/sites/<site>/source-gone",
+      ],
+    }
+  `);
 }, 60_000);
 
 it("says why when it can't publish", async () => {

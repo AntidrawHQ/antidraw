@@ -9,6 +9,7 @@ import { RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 type Repo = { commits: Set<string>; tokens: Map<string, "active" | "revoked"> };
 
 const repos = new Map<string, Repo>();
+const creating = new Map<string, number>();
 let calls: string[] = [];
 let failing = false;
 
@@ -74,6 +75,11 @@ export default class ArtifactsStub extends WorkerEntrypoint {
   get(name: string) {
     call(`get ${name}`);
     if (!repos.has(name)) throw new Error(`Repository not found: ${name}.`);
+    const left = creating.get(name) ?? 0;
+    if (left > 0) {
+      creating.set(name, left - 1);
+      throw new Error(`Repository is still being created: ${name}.`);
+    }
     return new RepoHandle(name);
   }
 
@@ -82,6 +88,11 @@ export default class ArtifactsStub extends WorkerEntrypoint {
   /** As if a push to the repo had added the commit. */
   pushed(name: string, commit: string) {
     repos.get(name)!.commits.add(commit);
+  }
+
+  /** Makes the repo's next `times` gets answer that it's still being created. */
+  setCreating(name: string, times: number) {
+    creating.set(name, times);
   }
 
   /** The repo's tokens and whether each is still live, by id. */

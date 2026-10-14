@@ -195,9 +195,13 @@ const api = async (options: PublishOptions, pathname: string, body?: unknown) =>
   return response;
 };
 
-const serverError = async (response: Response): Promise<never> => {
-  const body = (await response.json().catch(() => null)) as { error?: { message?: string } } | null;
-  return fail(502, "SERVER_ERROR", body?.error?.message ?? `The server answered ${response.status}`);
+type ErrorBody = { error?: { code?: string; message?: string } } | null;
+
+const errorBody = async (response: Response) => (await response.json().catch(() => null)) as ErrorBody;
+
+const serverError = async (response: Response, body?: ErrorBody): Promise<never> => {
+  const { error } = (body === undefined ? await errorBody(response) : body) ?? {};
+  return fail(502, "SERVER_ERROR", error?.message ?? `The server answered ${response.status}`);
 };
 
 // The workspace's site, made on first publish, and a token to push to its
@@ -215,7 +219,10 @@ const siteSource = async (options: PublishOptions) => {
     }
     const source = await api(options, `/api/sites/${encodeURIComponent(site.id)}/source`);
     if (source.ok) return { site, access: (await source.json()) as { remote: string; token: string } };
-    if (source.status !== 404) return serverError(source);
+    // Only the server saying it has no such site replaces it; any other 404
+    // (a route that isn't there) is an error to see.
+    const body = await errorBody(source);
+    if (source.status !== 404 || body?.error?.code !== "SITE_NOT_FOUND") return serverError(source, body);
     site = null;
   }
   return fail(502, "SERVER_ERROR", "The server lost the new site");

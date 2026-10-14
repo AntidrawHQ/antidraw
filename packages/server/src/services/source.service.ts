@@ -28,6 +28,18 @@ const revokeTokens = async (repo: ArtifactsRepo) => {
   await Promise.all(tokens.filter((token) => token.state === "active").map((token) => repo.revokeToken(token.id)));
 };
 
+// A repo made a moment ago can answer CREATE_IN_PROGRESS for a little while.
+const ready = async (artifacts: Artifacts, name: string) => {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await artifacts.get(name);
+    } catch (error) {
+      if (!isArtifactsError(error, "CREATE_IN_PROGRESS") || attempt === 5) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 100 * 2 ** attempt));
+    }
+  }
+};
+
 const unavailable = (error: unknown) => {
   console.error("Artifacts:", error);
   return err(apiError(502, "SOURCE_UNAVAILABLE", "Couldn't reach the source storage; try again"));
@@ -51,7 +63,7 @@ export const sourceAccess = async (
       }
       await db.update(site).set({ sourceRepo: name }).where(eq(site.id, siteId));
     }
-    const repo = await artifacts.get(name);
+    const repo = await ready(artifacts, name);
     await revokeTokens(repo);
     const [{ remote }, token] = await Promise.all([repo.info(), repo.createToken("write", TOKEN_TTL_SECONDS)]);
     return ok({ remote, token: token.plaintext, expiresAt: token.expiresAt });

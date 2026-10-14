@@ -482,7 +482,7 @@ describe("publishing", () => {
         "plan": {
           "body": {
             "error": {
-              "code": "NOT_FOUND",
+              "code": "SITE_NOT_FOUND",
               "message": "No such site",
             },
           },
@@ -491,7 +491,7 @@ describe("publishing", () => {
         "start": {
           "body": {
             "error": {
-              "code": "NOT_FOUND",
+              "code": "SITE_NOT_FOUND",
               "message": "No such site",
             },
           },
@@ -535,7 +535,7 @@ describe("publishing", () => {
         "unknownSite": {
           "body": {
             "error": {
-              "code": "NOT_FOUND",
+              "code": "SITE_NOT_FOUND",
               "message": "No such site",
             },
           },
@@ -634,6 +634,30 @@ describe("the site's source", () => {
           "commits": [],
           "repo": "site-<site>",
         },
+        "status": 200,
+      }
+    `);
+  });
+
+  it("waits for a repo that's still being made", async () => {
+    const user = await server.signIn();
+    const site = await createSite(user);
+    await server.artifacts.setCreating(`site-${site.id}`, 2);
+    await server.artifacts.takeCalls();
+    const answered = await post(user, `/api/sites/${site.id}/source`);
+    expect(
+      readable({ status: answered.status, calls: await server.artifacts.takeCalls() }, { [site.id]: "<site>" }),
+    ).toMatchInlineSnapshot(`
+      {
+        "calls": [
+          "create site-<site> {"setDefaultBranch":"main"}",
+          "get site-<site>",
+          "get site-<site>",
+          "get site-<site>",
+          "listTokens site-<site>",
+          "info site-<site>",
+          "createToken site-<site> write 3600",
+        ],
         "status": 200,
       }
     `);
@@ -803,7 +827,7 @@ describe("the site's source", () => {
         "answered": {
           "body": {
             "error": {
-              "code": "NOT_FOUND",
+              "code": "SITE_NOT_FOUND",
               "message": "No such site",
             },
           },
