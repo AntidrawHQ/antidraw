@@ -1,11 +1,11 @@
 /**
- * The right panel, docked at the canvas's right: 256px to start, wider by
- * its left edge, DialKit's controls at 30px rows. Two sections, Design and
+ * The right panel, docked at the canvas's right: 280px to start, wider by
+ * its left edge. Two sections, Design and
  * Comments. Picking Inspect (I) opens Design and Comment (C) opens Comments;
  * a tab only changes the section, never the tool. Design's footer is the
  * canvas's edit bar (EditBar).
  */
-import { useRef, type CSSProperties } from "react";
+import { useEffect, useRef } from "react";
 import { PanelRight, PanelRightClose } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
 import { DesignSection } from "./sections";
@@ -15,6 +15,25 @@ import { PANEL_W, useDesignStore, useTab, type Tab } from "./store";
 import { useDesign } from "./use-design";
 
 const setTab = (t: Tab) => useDesignStore.getState().setTab(t);
+
+// ⌥⌘B shows and hides the panel, as VS Code's secondary side bar, beside
+// ⌘B for the side panel (Ctrl+Alt+B off macOS). By the key, not the
+// character: Option makes B "∫".
+const isMac = navigator.userAgent.includes("Mac");
+const KEYS = isMac ? "⌥⌘B" : "Ctrl+Alt+B";
+const useToggleKey = () =>
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+      // Off macOS, AltGr arrives as Ctrl+Alt: AltGr+B types a character on some layouts ({ in Hungarian).
+      if (e.code !== "KeyB" || !mod || !e.altKey || e.shiftKey || e.getModifierState("AltGraph")) return;
+      e.preventDefault();
+      const s = useDesignStore.getState();
+      s.setPanelOpen(!s.panelOpen);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
 // Quiet tabs, as Figma's Design / Prototype and Framer's Agent / Style:
 // medium, no underline; the open one sits on a faint chip that
@@ -55,8 +74,6 @@ const DesignBody = ({ d }: { d: ReturnType<typeof useDesign> }) => (
     text={d.current?.text ?? false}
     set={d.set}
     size={d.selection ? { w: d.selection.info.rect.width, h: d.selection.info.rect.height } : { w: 0, h: 0 }}
-    // The frame's size, as far as a width or height can go.
-    bounds={{ w: d.current?.seen?.viewport[0] ?? 1440, h: d.current?.seen?.viewport[1] ?? 900 }}
   />
 );
 
@@ -69,7 +86,7 @@ export const ShowPanel = () => {
   return panelOpen ? null : (
     <button
       type="button"
-      title="Show panel"
+      title={`Show panel (${KEYS})`}
       onClick={(e) => {
         e.stopPropagation();
         useDesignStore.getState().setPanelOpen(true);
@@ -129,6 +146,7 @@ const ResizeHandle = ({ panel }: { panel: React.RefObject<HTMLElement | null> })
 export const RightPanel = () => {
   const panelOpen = useDesignStore((s) => s.panelOpen);
   const width = useDesignStore((s) => s.width);
+  useToggleKey();
   const aside = useRef<HTMLElement>(null);
   const tab = useTab();
   const d = useDesign();
@@ -138,7 +156,7 @@ export const RightPanel = () => {
       <aside
         ref={aside}
         className="dk-root relative shrink-0 overflow-hidden border-l border-[#333] bg-[#2A2A2A] text-white"
-        style={{ width, "--dk-row": "30px" } as CSSProperties}
+        style={{ width }}
       >
         <ResizeHandle panel={aside} />
         <div className="flex h-full flex-col">
@@ -146,7 +164,7 @@ export const RightPanel = () => {
           <div className="flex shrink-0 items-center justify-between border-b border-[#333] p-2">
             <Tabs tab={tab} changes={d.changes.length} drafts={comments.drafts} />
             <IconButton
-              title="Hide panel"
+              title={`Hide panel (${KEYS})`}
               onClick={() => useDesignStore.getState().setPanelOpen(false)}
               className="text-white/30 hover:text-white/70"
             >

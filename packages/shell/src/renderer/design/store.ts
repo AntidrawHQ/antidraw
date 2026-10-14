@@ -17,7 +17,7 @@ export type Tab = "design" | "comments";
 export type Read = { key: string; style: Style; text: boolean; seen: ElementContext | null };
 
 // The panel's width, dragged by its left edge.
-export const PANEL_W = { min: 256, max: 480 };
+export const PANEL_W = { min: 280, max: 480 };
 
 type DesignStore = {
   panelOpen: boolean;
