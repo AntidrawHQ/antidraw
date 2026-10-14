@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import nodeFs from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -294,6 +295,47 @@ describe("commitSource", () => {
           },
         ]
       `);
+  });
+
+  it("keeps each part a valid tree when a file becomes a folder or a folder a file", async () => {
+    const dir = await folder({ config: "a file", "lib/a.ts": "a", "lib/b/c.ts": "c" });
+    const gitDir = await repo();
+    const parent = (await commitAll(dir, gitDir, null)).head;
+
+    await fs.rm(path.join(dir, "config"));
+    await fs.rm(path.join(dir, "lib"), { recursive: true });
+    await fs.mkdir(path.join(dir, "config"));
+    await fs.writeFile(path.join(dir, "config/app.json"), "x".repeat(10));
+    await fs.writeFile(path.join(dir, "lib"), "y".repeat(10));
+    await fs.writeFile(path.join(dir, "z.bin"), "z".repeat(10));
+    const { commits } = await commitSource({
+      sourceDir: dir,
+      gitDir,
+      files: await listSource(dir),
+      parent,
+      message: "Publish",
+      maxPushBytes: 10,
+    });
+    // git itself refuses a tree with two entries of one name.
+    execFileSync("git", ["--git-dir", gitDir, "fsck", "--strict", "--no-dangling"], { stdio: "pipe" });
+    expect(await Promise.all(commits.map((commit) => filesAt(gitDir, commit)))).toMatchInlineSnapshot(`
+      [
+        {
+          "config/app.json": "xxxxxxxxxx",
+          "lib/a.ts": "a",
+          "lib/b/c.ts": "c",
+        },
+        {
+          "config/app.json": "xxxxxxxxxx",
+          "lib": "yyyyyyyyyy",
+        },
+        {
+          "config/app.json": "xxxxxxxxxx",
+          "lib": "yyyyyyyyyy",
+          "z.bin": "zzzzzzzzzz",
+        },
+      ]
+    `);
   });
 });
 

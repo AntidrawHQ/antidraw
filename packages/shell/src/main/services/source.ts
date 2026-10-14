@@ -226,13 +226,28 @@ export const commitSource = async ({
     commits.push(head);
   };
   // Every batch but the last on top of the parent's files; then the snapshot.
+  // A file that was a folder, or is in one that was a file, replaces what
+  // was there, or the tree would have both under one name.
   const partial = new Map(base);
   for (const [index, group] of groups.slice(0, -1).entries()) {
-    for (const { path: file } of group) partial.set(file, snapshot.get(file)!);
+    const adding = new Set(group.map(({ path: file }) => file));
+    for (const file of partial.keys()) {
+      if (folders(file).some((folder) => adding.has(folder))) partial.delete(file);
+    }
+    for (const file of adding) {
+      for (const folder of folders(file)) partial.delete(folder);
+      partial.set(file, snapshot.get(file)!);
+    }
     await commit(await writeTree(gitDir, partial), `${message} (part ${index + 1} of ${groups.length})`);
   }
   await commit(tree, groups.length > 1 ? `${message} (part ${groups.length} of ${groups.length})` : message);
   return { commits, head };
+};
+
+/** The folders a path is in: `a` and `a/b` for `a/b/c`. */
+const folders = (file: string) => {
+  const parts = file.split("/");
+  return parts.slice(1).map((_, index) => parts.slice(0, index + 1).join("/"));
 };
 
 const flatTree = async (gitDir: string, oid: string, prefix = "", into = new Map<string, Entry>()) => {
