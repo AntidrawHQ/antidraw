@@ -354,8 +354,15 @@ export function startInspector(container: HTMLElement, componentName: string, pr
   const schedule = () => {
     if (!frame) frame = requestAnimationFrame(check)
   }
-  // The whole body: the component's portals are outside the container.
-  const mutations = new MutationObserver(schedule)
+  // A dialog of the page's opened or closed.
+  const toggled = (r: MutationRecord) => r.attributeName === "open" && r.target.nodeName === "DIALOG"
+  // The whole body: the component's portals are outside the container. A
+  // modal opened or closed, or the overlay gone with the one it was in, puts
+  // the overlay back on top then, drawing or not.
+  const mutations = new MutationObserver((records) => {
+    schedule()
+    if (tool && (!overlay.host.isConnected || records.some(toggled))) overlay.keepOnTop(true)
+  })
   mutations.observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true })
   window.addEventListener("resize", schedule)
 

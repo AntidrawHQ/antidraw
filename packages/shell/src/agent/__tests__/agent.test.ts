@@ -603,6 +603,31 @@ test("never picks its own overlay, when it's inside the component (a modal dialo
   expect(ask({ type: "walk", id: 1, dir: "next" })).toBeTruthy()
 })
 
+test("goes into a modal the page opens with nothing drawn, and out when it closes or goes", async () => {
+  tool("inspect")
+  await frames(2)
+  expect(looping()).toBe(false)
+  // jsdom has no :modal: an open dialog in the page is the modal one.
+  const dialog = document.createElement("dialog")
+  document.body.append(dialog)
+  const all = document.querySelectorAll.bind(document)
+  vi.spyOn(document, "querySelectorAll").mockImplementation(((s: string) =>
+    s === "dialog:modal" ? (dialog.isConnected && dialog.open ? [dialog] : []) : all(s)) as typeof document.querySelectorAll)
+  // The pointer can't wake a frame whose overlay a modal has made inert.
+  dialog.setAttribute("open", "")
+  await frames(1)
+  expect(host()!.parentElement).toBe(dialog)
+  dialog.removeAttribute("open")
+  await frames(1)
+  expect(host()!.parentElement).toBe(document.documentElement)
+  // Gone with the overlay in it: put back.
+  dialog.setAttribute("open", "")
+  await frames(1)
+  dialog.remove()
+  await frames(1)
+  expect(host()!.parentElement).toBe(document.documentElement)
+})
+
 test("says when the pointer comes in, and stops drawing what it hovered when the shell says it left", async () => {
   vi.spyOn($("h3"), "getBoundingClientRect").mockReturnValue(new DOMRect(4, 8, 120, 30))
   tool("inspect")

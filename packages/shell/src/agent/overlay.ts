@@ -176,12 +176,14 @@ export function createOverlay() {
       if (!everything.isConnected) document.head.append(everything)
       showOnTop()
     },
-    // Looked for at most every 250ms: the page has neither the pointer nor
-    // the keys meanwhile, so only its own timers open one.
-    keepOnTop() {
-      const now = performance.now()
-      if (host.isConnected && now - checked < 250) return
-      checked = now
+    // Looked for at most every 250ms as the frame draws, and at once (now)
+    // when the page opens or closes a dialog: a frame with nothing to draw
+    // doesn't draw, and the pointer can't reach an overlay a modal has made
+    // inert to wake it.
+    keepOnTop(now = false) {
+      const at = performance.now()
+      if (!now && host.isConnected && at - checked < 250) return
+      checked = at
       const modal = topModal()
       if (modal === holder && host.isConnected) return
       holder = modal
