@@ -1,11 +1,12 @@
 import { useEffect, useState, type CSSProperties } from "react";
-import { RotateCw } from "lucide-react";
+import { ChevronLeft, ChevronRight, RotateCw } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/renderer/components/ui/tooltip";
 import { TOOLS, ToolButton } from "@/renderer/components/CanvasToolbar";
 import { FrameInspector } from "@/renderer/inspector/FrameInspector";
 import { PreviewComments } from "@/renderer/comments/PreviewComments";
 import { CommentControls } from "@/renderer/comments/CommentControls";
 import { setCanvasTool, useCanvasTool } from "@/renderer/comments/store";
+import { useUserComponents, useUserComponentsWatcher } from "@/renderer/store/userComponents";
 
 // A frame's own window: its component at the window's size, under a titlebar
 // like the main window's that carries the canvas's Pointer and Comment tools
@@ -15,6 +16,67 @@ import { setCanvasTool, useCanvasTool } from "@/renderer/comments/store";
 
 const noDrag = { WebkitAppRegion: "no-drag" } as CSSProperties;
 
+const TitlebarButton = ({
+  label,
+  Icon,
+  onClick,
+  disabled = false,
+}: {
+  label: string;
+  Icon: typeof RotateCw;
+  onClick: () => void;
+  disabled?: boolean;
+}) => (
+  <Tooltip>
+    <TooltipTrigger asChild>
+      <button
+        type="button"
+        aria-label={label}
+        disabled={disabled}
+        // As the tools': a click doesn't take focus (ToolButton).
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={onClick}
+        className="grid size-[26px] shrink-0 place-items-center rounded-[8px] text-white/50 hover:bg-white/[0.05] hover:text-white/85 disabled:text-white/20 disabled:hover:bg-transparent"
+        style={noDrag}
+      >
+        <Icon size={14} strokeWidth={1.75} />
+      </button>
+    </TooltipTrigger>
+    <TooltipContent side="bottom" sideOffset={4} style={{ animation: "none" }}>
+      {label}
+    </TooltipContent>
+  </Tooltip>
+);
+
+// A step to the workspace's component before or after this one, in the
+// components panel's order, kept as the panel's is when files change. No
+// step past either end.
+const ComponentSteps = ({
+  workspaceId,
+  componentName,
+  onSwitch,
+}: {
+  workspaceId: string;
+  componentName: string;
+  onSwitch: (componentName: string) => void;
+}) => {
+  useUserComponentsWatcher(workspaceId);
+  const names = useUserComponents(workspaceId).data?.map((c) => c.name) ?? [];
+  const at = names.indexOf(componentName);
+  const previous = at > 0 ? names[at - 1] : undefined;
+  const next = at >= 0 ? names[at + 1] : undefined;
+  return (
+    <div className="flex items-center">
+      <TitlebarButton
+        label="Previous component"
+        Icon={ChevronLeft}
+        disabled={!previous}
+        onClick={() => previous && onSwitch(previous)}
+      />
+      <TitlebarButton label="Next component" Icon={ChevronRight} disabled={!next} onClick={() => next && onSwitch(next)} />
+    </div>
+  );
+};
 
 const componentNameOf = (url: string) => {
   try {
@@ -24,7 +86,22 @@ const componentNameOf = (url: string) => {
   }
 };
 
-export const PreviewWindow = ({ url, workspaceId = null }: { url: string; workspaceId?: string | null }) => {
+const withComponent = (url: string, componentName: string) => {
+  const next = new URL(url);
+  next.searchParams.set("componentName", componentName);
+  return next.toString();
+};
+
+export const PreviewWindow = ({
+  url,
+  workspaceId = null,
+  onSwitch,
+}: {
+  url: string;
+  workspaceId?: string | null;
+  // Shows another of the workspace's components here, at its preview URL.
+  onSwitch?: (url: string) => void;
+}) => {
   // The frame is named as on the canvas, so its comments name the same frame there.
   const componentName = componentNameOf(url);
   const [iframe, setIframe] = useState<HTMLIFrameElement | null>(null);
@@ -83,24 +160,14 @@ export const PreviewWindow = ({ url, workspaceId = null }: { url: string; worksp
                 </button>
               </span>
             )}
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  aria-label="Refresh"
-                  // As the tools': a click doesn't take focus (ToolButton).
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => setReloads((n) => n + 1)}
-                  className="grid size-[26px] shrink-0 place-items-center rounded-[8px] text-white/50 hover:bg-white/[0.05] hover:text-white/85"
-                  style={noDrag}
-                >
-                  <RotateCw size={14} strokeWidth={1.75} />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" sideOffset={4} style={{ animation: "none" }}>
-                Refresh
-              </TooltipContent>
-            </Tooltip>
+            {workspaceId && onSwitch && (
+              <ComponentSteps
+                workspaceId={workspaceId}
+                componentName={componentName}
+                onSwitch={(name) => onSwitch(withComponent(url, name))}
+              />
+            )}
+            <TitlebarButton label="Refresh" Icon={RotateCw} onClick={() => setReloads((n) => n + 1)} />
           </div>
         </div>
         <div className="relative flex-1 overflow-hidden">
