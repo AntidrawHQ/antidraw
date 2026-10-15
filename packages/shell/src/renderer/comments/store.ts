@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { ElementInfo } from "@/agent/protocol";
 import { useInspectorStore } from "../inspector/store";
 import { useWorkspaceStore } from "../store/workspace";
+import { track } from "@/renderer/lib/analytics";
 
 // The Comment tool's state on the canvas: whether it's on, the box a click
 // opened, the comment opened from its row or pin, and the pin a row lights.
@@ -54,4 +55,12 @@ export const useCanvasTool = (): CanvasTool => {
 export const setCanvasTool = (tool: CanvasTool) => {
   useInspectorStore.getState().setActive(tool === "inspect");
   useCommentStore.getState().setActive(tool === "comment");
+};
+
+// A tool the user picked, on a toolbar or by its key, as against one the app
+// switches to (opening a comment's pin, say): counted when it changes the tool.
+export const pickCanvasTool = (tool: CanvasTool, via: "click" | "shortcut") => {
+  const current = useInspectorStore.getState().active ? "inspect" : useCommentStore.getState().active ? "comment" : "pointer";
+  if (current !== tool) track("canvas_tool_selected", { tool, via });
+  setCanvasTool(tool);
 };

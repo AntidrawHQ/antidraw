@@ -18,6 +18,7 @@ import { RightPanel, ShowPanel } from "./design/RightPanel";
 import { EditBar } from "./design/EditBar";
 import { DesignSync } from "./design/use-design";
 import { useCanvasThumbnail } from "./lib/thumbnail";
+import { track } from "@/renderer/lib/analytics";
 
 // Over each frame: the tools (the inspector's and the Comment tool's).
 const renderFrameLayers: FrameLayer = (frame) => (
@@ -43,7 +44,10 @@ const FocusRequestedComponent = () => {
   return null;
 };
 
+const trackRefresh = () => track("frame_refreshed");
+
 const openFullscreen = (url: string) => {
+  track("frame_opened_in_window");
   window.electronAPI.openPreviewWindow(url, useWorkspaceStore.getState().activeWorkspaceId ?? undefined);
 };
 
@@ -61,6 +65,13 @@ const WorkspaceCanvas = ({
   className?: string;
 }) => {
   const setCodePanelComponentName = useWorkspaceStore((s) => s.setCodePanelComponentName);
+  const seeCode = useCallback(
+    (componentName: string) => {
+      track("frame_code_viewed");
+      setCodePanelComponentName(componentName);
+    },
+    [setCodePanelComponentName],
+  );
   // Inspect and Comment pick in the frames themselves.
   const picking = useCanvasTool() !== "pointer";
   const onFrameActivity = useCanvasThumbnail(workspaceId);
@@ -86,7 +97,8 @@ const WorkspaceCanvas = ({
       onLayoutsChange={saveLayouts}
       onFrameActivity={onFrameActivity}
       onFullscreen={openFullscreen}
-      onSeeCode={setCodePanelComponentName}
+      onSeeCode={seeCode}
+      onRefresh={trackRefresh}
       frameLayer={renderFrameLayers}
       framesTakePointer={picking}
       className={className}

@@ -25,7 +25,9 @@ import {
 } from "./services/dev-server.service";
 import { installNodeShim } from "./lib/node-shim";
 import { runMigrations } from "./db/migrate";
-import { shutdownPostHog } from "./lib/posthog";
+import { isNewInstall, shutdownPostHog, track } from "./lib/posthog";
+import { isRendererEvent, toAnalyticsProperties } from "@/shared/analytics";
+import { listWorkspaces } from "./api/services/workspace.service";
 import { APP_KEY, APP_KEY_ARG } from "@/main/lib/app-key";
 import { injectFrameAgent } from "./frame-agent";
 import { verifyCertificate } from "@/main/lib/certificate-verify";
@@ -181,6 +183,22 @@ app.whenReady().then(async () => {
 
   createWindow();
 
+  void listWorkspaces().then((workspaces) => {
+    const workspaceCount = workspaces.isOk() ? workspaces.value.length : null;
+    track("app_opened", {
+      is_first_launch: isNewInstall() && workspaceCount === 0,
+      workspace_count: workspaceCount,
+    });
+  });
+
+  // A renderer's event (renderer/lib/analytics.ts): the app's own windows
+  // only, a known event, and flat properties.
+  ipcMain.on("analytics:track", (event, name: unknown, properties: unknown) => {
+    if (event.sender !== mainWindow?.webContents && !previewWindows.has(event.sender)) return;
+    if (!isRendererEvent(name)) return;
+    track(name, toAnalyticsProperties(properties));
+  });
+
   ipcMain.handle("open-preview-window", (_event, url: string, workspaceId?: unknown) => {
     let parsed: URL;
     try {
@@ -319,6 +337,7 @@ app.whenReady().then(async () => {
   if (app.isPackaged) {
     autoUpdater.on("update-downloaded", (event) => {
       pendingUpdateVersion = event.version;
+      track("update_downloaded", { version: event.version });
       for (const window of BrowserWindow.getAllWindows()) {
         window.webContents.send("update:downloaded", event.version);
       }

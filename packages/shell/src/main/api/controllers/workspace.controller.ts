@@ -17,6 +17,7 @@ import {
 } from "@/main/services/dev-server.service";
 import { publishWorkspace } from "@/main/services/publish.service";
 import { readThumbnail } from "@/main/services/thumbnail.service";
+import { track } from "@/main/lib/posthog";
 import { listConversations } from "../services/chat.service";
 import {
   getFrameLayouts,
@@ -52,8 +53,28 @@ workspaceController.post(
   async (ctx) => {
     const { name } = ctx.req.valid("json");
 
+    const existing = await listWorkspaces();
+    const isFirst = existing.isOk() && existing.value.length === 0;
+    const startedAt = Date.now();
+    let step: string | null = null;
+    track("workspace_create_started", { is_first_workspace: isFirst });
+
     return streamSSE(ctx, async (stream) => {
       for await (const event of createWorkspace(name)) {
+        if (event.type === "status") step = event.status;
+        if (event.type === "done")
+          track("workspace_create_completed", {
+            workspace_id: event.workspace.id,
+            is_first_workspace: isFirst,
+            duration_ms: Date.now() - startedAt,
+          });
+        if (event.type === "error")
+          track("workspace_create_failed", {
+            is_first_workspace: isFirst,
+            failed_step: step,
+            error_code: event.error.code,
+            duration_ms: Date.now() - startedAt,
+          });
         await stream.writeSSE({
           data: JSON.stringify(event),
         });
@@ -147,13 +168,20 @@ workspaceController.post(
   zValidator("param", workspaceIdParamSchema),
   async (ctx) => {
     const { workspaceId } = ctx.req.valid("param");
+    const before = await getWorkspace(workspaceId);
+    const isFirstPublish = before.isOk() && !before.value.siteId;
+    const startedAt = Date.now();
     const result = await publishWorkspace(workspaceId);
+    const outcome = { workspace_id: workspaceId, is_first_publish: isFirstPublish, duration_ms: Date.now() - startedAt };
 
     if (result.isErr()) {
       const { status, code, message } = result.error;
+      track("publish_failed", { ...outcome, error_code: code });
       return ctx.json({ error: { code, message } }, status);
     }
 
+    const frames = await listComponents(workspaceId);
+    track("publish_succeeded", { ...outcome, frame_count: frames.isOk() ? frames.value.length : null });
     return ctx.json(result.value);
   }
 );
@@ -165,12 +193,18 @@ workspaceController.post(
   zValidator("param", workspaceIdParamSchema),
   async (ctx) => {
     const { workspaceId } = ctx.req.valid("param");
+    const startedAt = Date.now();
     const result = await startDevServer(workspaceId);
 
     if (result.isErr()) {
       const { status, code, message } = result.error;
+      track("dev_server_failed", { workspace_id: workspaceId, error_code: code, duration_ms: Date.now() - startedAt });
       return ctx.json({ error: { code, message } }, status);
     }
+
+    // A server that was already up answers with when it started: not a start.
+    if (result.value.startedAt >= startedAt)
+      track("dev_server_started", { workspace_id: workspaceId, startup_ms: Date.now() - startedAt });
 
     return ctx.json(result.value);
   }

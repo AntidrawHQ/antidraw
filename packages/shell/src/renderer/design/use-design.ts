@@ -15,6 +15,7 @@ import { useComposerModel } from "@/renderer/hooks/use-composer-model";
 import { useConversationMessages } from "@/renderer/lib/claude-code-ops";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
 import { useDesignStore } from "./store";
+import { track } from "@/renderer/lib/analytics";
 
 // The Design panel's state and what it does, for the panel (RightPanel) and
 // the canvas's edit bar (EditBar): the selected element's styles, every
@@ -57,13 +58,18 @@ export const useDesign = () => {
   const changes: ElementChange[] = data.edits.flatMap((edit) => changesOf(edit.base, edit.now).map((c) => ({ ...c, edit })));
   const revert = (c: ElementChange) => {
     if (!workspaceId) return;
+    track("design_edit_undone", { group: c.group.key });
     const back = Object.fromEntries(c.group.keys.map((k) => [k, c.edit.base[k]]));
     saveEdit(queryClient, workspaceId, { ...c.edit, now: { ...c.edit.now, ...back } });
   };
   const revertEdits = (edits: EditedElement[]) => {
     if (workspaceId) for (const edit of edits) saveEdit(queryClient, workspaceId, { ...edit, now: edit.base });
   };
-  const reset = () => workspaceId && resetEdits(queryClient, workspaceId);
+  const reset = () => {
+    if (!workspaceId) return;
+    track("design_edits_reset", { change_count: changes.length });
+    resetEdits(queryClient, workspaceId);
+  };
   const release = (setId: number) => workspaceId && stopPreviewing(queryClient, workspaceId, setId);
 
   // Apply: to the chat that's open, with its model and effort, as its
@@ -110,6 +116,7 @@ export const useDesign = () => {
           },
       );
       setDescribing(false);
+      const groups = taken.flatMap((e) => changesOf(e.base, e.now).map((c) => c.group.key));
       await sendToChat
         .send({
           prompt,
@@ -120,6 +127,12 @@ export const useDesign = () => {
           title: taken.flatMap((e) => changesOf(e.base, e.now).map((c) => `${e.name} ${c.group.label}: ${c.from} → ${c.to}`)).join("\n"),
         })
         .finally(() => void queryClient.invalidateQueries({ queryKey }));
+      track("design_edits_sent", {
+        workspace_id: workspaceId,
+        element_count: taken.length,
+        change_count: groups.length,
+        groups: [...new Set(groups)],
+      });
     } catch (e) {
       console.error(e);
     } finally {

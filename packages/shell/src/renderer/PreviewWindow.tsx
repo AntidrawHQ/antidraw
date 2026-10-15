@@ -5,7 +5,7 @@ import { TOOLS, ToolButton } from "@/renderer/components/CanvasToolbar";
 import { FrameInspector } from "@/renderer/inspector/FrameInspector";
 import { PreviewComments } from "@/renderer/comments/PreviewComments";
 import { CommentControls } from "@/renderer/comments/CommentControls";
-import { setCanvasTool, useCanvasTool } from "@/renderer/comments/store";
+import { pickCanvasTool, useCanvasTool } from "@/renderer/comments/store";
 
 // A frame's own window: its component at the window's size, under a titlebar
 // like the main window's that carries the canvas's Pointer and Comment tools
@@ -60,7 +60,7 @@ export const PreviewWindow = ({ url, workspaceId = null }: { url: string; worksp
                 label={t.label}
                 Icon={t.Icon}
                 active={t.id === tool}
-                onClick={() => setCanvasTool(t.id)}
+                onClick={() => pickCanvasTool(t.id, "click")}
                 size={26}
                 tooltipSide="bottom"
               />

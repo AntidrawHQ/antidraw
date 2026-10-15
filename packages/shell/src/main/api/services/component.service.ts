@@ -4,6 +4,7 @@ import { EventEmitter } from "node:events";
 import chokidar, { type FSWatcher } from "chokidar";
 import { ok, err } from "neverthrow";
 import { getWorkspaceSourcePath } from "@/main/api/init";
+import { track } from "@/main/lib/posthog";
 
 const USER_COMPONENTS_DIR = "src/components/user-components";
 
@@ -120,8 +121,20 @@ export const startComponentWatcher = async (workspaceId: string) => {
     componentEvents.emit(isComponent(filePath) ? "changed" : "edited", workspaceId);
   };
 
-  watcher.on("add", onAddOrUnlink);
-  watcher.on("unlink", onAddOrUnlink);
+  // A frame that came or went, with how many the canvas has now.
+  const trackFrame = (event: "frame_created" | "frame_deleted") =>
+    void listComponents(workspaceId).then((frames) =>
+      track(event, { workspace_id: workspaceId, frame_count: frames.isOk() ? frames.value.length : null }),
+    );
+
+  watcher.on("add", (filePath) => {
+    onAddOrUnlink(filePath);
+    if (isComponent(filePath)) trackFrame("frame_created");
+  });
+  watcher.on("unlink", (filePath) => {
+    onAddOrUnlink(filePath);
+    if (isComponent(filePath)) trackFrame("frame_deleted");
+  });
   watcher.on("change", () => componentEvents.emit("edited", workspaceId));
   watcher.on("error", (error) => {
     console.error(`[component-watcher:${workspaceId}]`, error);

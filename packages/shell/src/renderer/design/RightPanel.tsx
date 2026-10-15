@@ -13,6 +13,7 @@ import { IconButton, MONO } from "./dial";
 import { useOutbox } from "./Outbox";
 import { PANEL_W, useDesignStore, useTab, type Tab } from "./store";
 import { useDesign } from "./use-design";
+import { track } from "@/renderer/lib/analytics";
 
 const setTab = (t: Tab) => useDesignStore.getState().setTab(t);
 
@@ -29,6 +30,7 @@ const useToggleKey = () =>
       if (e.code !== "KeyB" || !mod || !e.altKey || e.shiftKey || e.getModifierState("AltGraph")) return;
       e.preventDefault();
       const s = useDesignStore.getState();
+      track("panel_toggled", { panel: "right", open: !s.panelOpen, via: "shortcut" });
       s.setPanelOpen(!s.panelOpen);
     };
     window.addEventListener("keydown", onKey);
@@ -51,7 +53,10 @@ const Tabs = ({ tab, changes, drafts }: { tab: Tab; changes: number; drafts: num
           key={t}
           type="button"
           title={t === "design" ? "Design (I)" : "Comments (C)"}
-          onClick={() => setTab(t)}
+          onClick={() => {
+            if (t !== tab) track("right_panel_tab_selected", { tab: t });
+            setTab(t);
+          }}
           className={cn(
             "relative flex h-6 cursor-pointer items-center gap-1.5 rounded-md px-2 text-[13px] font-medium",
             on ? "text-white/85" : "text-white/40 hover:text-white/65",
@@ -89,6 +94,7 @@ export const ShowPanel = () => {
       title={`Show panel (${KEYS})`}
       onClick={(e) => {
         e.stopPropagation();
+        track("panel_toggled", { panel: "right", open: true, via: "click" });
         useDesignStore.getState().setPanelOpen(true);
       }}
       className="absolute right-4 top-4 z-30 grid size-8 place-items-center rounded-[10px] bg-[#262626] text-white/60 hover:text-white/95"
@@ -165,7 +171,10 @@ export const RightPanel = () => {
             <Tabs tab={tab} changes={d.changes.length} drafts={comments.drafts} />
             <IconButton
               title={`Hide panel (${KEYS})`}
-              onClick={() => useDesignStore.getState().setPanelOpen(false)}
+              onClick={() => {
+                track("panel_toggled", { panel: "right", open: false, via: "click" });
+                useDesignStore.getState().setPanelOpen(false);
+              }}
               className="text-white/30 hover:text-white/70"
             >
               <PanelRightClose className="size-3.5" strokeWidth={1.75} />

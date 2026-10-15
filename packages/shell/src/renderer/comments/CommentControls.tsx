@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { setCanvasTool, useCommentStore } from "./store";
+import { pickCanvasTool, useCommentStore } from "./store";
 
 // The Comment tool's keys, mounted inside the canvas, as InspectorControls'.
 //   C     start commenting (it stays on: Esc or V stops it)
@@ -25,9 +25,9 @@ export const CommentControls = () => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape" || !isCanvasKey(e)) return;
       const s = useCommentStore.getState();
-      if (e.key === "c") setCanvasTool("comment");
+      if (e.key === "c") pickCanvasTool("comment", "shortcut");
       else if (!s.active) return;
-      else if (e.key === "v") setCanvasTool("pointer");
+      else if (e.key === "v") pickCanvasTool("pointer", "shortcut");
       else return;
       e.preventDefault();
       e.stopPropagation();
