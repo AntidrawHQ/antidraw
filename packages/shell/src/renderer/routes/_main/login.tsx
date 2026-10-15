@@ -1,11 +1,16 @@
 import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { ArrowRight } from "lucide-react";
 import antidrawIcon from "@/renderer/assets/antidraw-icon.svg";
+import { track } from "@/renderer/lib/analytics";
+import { useMountEffect } from "@/renderer/hooks/use-mount-effect";
 
 const LoginPage = () => {
   const router = useRouter();
 
+  useMountEffect(() => track("welcome_viewed"));
+
   const handleSignIn = () => {
+    track("onboarding_started");
     router.navigate({ to: "/onboarding/create-workspace" });
   };
 

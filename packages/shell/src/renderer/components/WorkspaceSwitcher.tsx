@@ -17,6 +17,7 @@ import {
 } from "@/renderer/components/ui/command";
 import { AvatarIcon } from "@/renderer/components/AvatarIcon";
 import { CreateWorkspaceDialog } from "@/renderer/components/CreateWorkspaceDialog";
+import { track } from "@/renderer/lib/analytics";
 
 export const WorkspaceSwitcher = () => {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
@@ -47,6 +48,7 @@ export const WorkspaceSwitcher = () => {
     const ws = workspaces?.find((w) => w.id === wsId);
     if (!ws) return;
 
+    if (ws.id !== activeWorkspaceId) track("workspace_switched", { workspace_id: ws.id });
     switchWorkspace(ws.id);
     close();
   };

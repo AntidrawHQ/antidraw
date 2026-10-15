@@ -29,6 +29,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
   captureThumbnail: (workspaceId: string, rect: { x: number; y: number; width: number; height: number }) =>
     ipcRenderer.invoke("thumbnail:capture", workspaceId, rect),
   appKey,
+  // A content-free analytics event (shared/analytics.ts); main drops any it
+  // doesn't know.
+  track: (event: string, properties?: Record<string, unknown>) =>
+    ipcRenderer.send("analytics:track", event, properties),
   getUpdateStatus: () => ipcRenderer.invoke("update:get-status"),
   installUpdate: () => ipcRenderer.invoke("update:install"),
   onUpdateDownloaded: (callback: (version: string) => void) => {

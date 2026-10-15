@@ -1,6 +1,7 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { completeComment } from "@/main/api/services/comment.service";
+import { track } from "@/main/lib/posthog";
 
 export const COMMENTS_MCP_SERVER_NAME = "canvas_comments";
 
@@ -25,6 +26,7 @@ export const completeCommentTool = (conversationId: string) =>
           content: [{ type: "text", text: result.error.message }],
           isError: true,
         };
+      track("comment_completed_by_agent");
       return { content: [{ type: "text", text: `Comment ${id} marked completed.` }] };
     },
   );
