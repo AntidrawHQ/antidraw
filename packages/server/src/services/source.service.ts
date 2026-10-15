@@ -1,0 +1,102 @@
+import { eq } from "drizzle-orm";
+import { err, ok, type Result } from "neverthrow";
+import type { Db } from "../db";
+import { site } from "../db/schema";
+import { isArtifactsError } from "../lib/artifacts";
+import { apiError, type ApiError } from "../lib/errors";
+
+// Each site's source lives in its own git repo in Artifacts, named after the
+// site's id so a renamed slug never moves it. The app pushes to it with a
+// short-lived token for that repo alone, and each publish records the commit
+// it was built from, which is what a remix clones.
+
+export type SourceAccess = { remote: string; token: string; expiresAt: string };
+
+// A push of a large workspace runs for minutes, in several requests that each
+// check the token.
+const TOKEN_TTL_SECONDS = 60 * 60;
+
+export const repoName = (siteId: string) => `site-${siteId}`;
+
+// A token is needed only while a publish pushes. The site's next token and
+// the publish that names its commit end the ones before, so one a failed
+// publish leaves behind lives until the site's next publish, or its hour is
+// up. A publish of the site from elsewhere that's still pushing loses its
+// token, and is told to try again.
+const revokeTokens = async (repo: ArtifactsRepo) => {
+  const { tokens } = await repo.listTokens();
+  await Promise.all(tokens.filter((token) => token.state === "active").map((token) => repo.revokeToken(token.id)));
+};
+
+// A repo made a moment ago can answer CREATE_IN_PROGRESS for a little while.
+const ready = async (artifacts: Artifacts, name: string) => {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await artifacts.get(name);
+    } catch (error) {
+      if (!isArtifactsError(error, "CREATE_IN_PROGRESS") || attempt === 5) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 100 * 2 ** attempt));
+    }
+  }
+};
+
+const unavailable = (error: unknown) => {
+  console.error("Artifacts:", error);
+  return err(apiError(502, "SOURCE_UNAVAILABLE", "Couldn't reach the source storage; try again"));
+};
+
+/** The site's repo, made on first use, and a token to push to it. */
+export const sourceAccess = async (
+  db: Db,
+  artifacts: Artifacts,
+  siteId: string,
+): Promise<Result<SourceAccess, ApiError>> => {
+  const name = repoName(siteId);
+  try {
+    const [row] = await db.select({ repo: site.sourceRepo }).from(site).where(eq(site.id, siteId));
+    if (!row?.repo) {
+      try {
+        await artifacts.create(name, { setDefaultBranch: "main" });
+      } catch (error) {
+        // Another first publish of the site made it.
+        if (!isArtifactsError(error, "ALREADY_EXISTS")) throw error;
+      }
+      await db.update(site).set({ sourceRepo: name }).where(eq(site.id, siteId));
+    }
+    const repo = await ready(artifacts, name);
+    await revokeTokens(repo);
+    const [{ remote }, token] = await Promise.all([repo.info(), repo.createToken("write", TOKEN_TTL_SECONDS)]);
+    return ok({ remote, token: token.plaintext, expiresAt: token.expiresAt });
+  } catch (error) {
+    return unavailable(error);
+  }
+};
+
+/** Whether the site's repo has the commit, so a publish can say it was built from it. */
+export const hasSourceCommit = async (
+  db: Db,
+  artifacts: Artifacts,
+  siteId: string,
+  commit: string,
+): Promise<Result<boolean, ApiError>> => {
+  try {
+    const [row] = await db.select({ repo: site.sourceRepo }).from(site).where(eq(site.id, siteId));
+    if (!row?.repo) return ok(false);
+    const repo = await artifacts.get(row.repo);
+    return ok((await repo.readCommit(commit)) !== null);
+  } catch (error) {
+    return unavailable(error);
+  }
+};
+
+/**
+ * Ends the tokens that pushed the site's source, once a publish has named the
+ * commit they pushed. Best effort: they run out within the hour anyway.
+ */
+export const endSourcePush = async (artifacts: Artifacts, siteId: string) => {
+  try {
+    await revokeTokens(await artifacts.get(repoName(siteId)));
+  } catch (error) {
+    console.error("Artifacts:", error);
+  }
+};

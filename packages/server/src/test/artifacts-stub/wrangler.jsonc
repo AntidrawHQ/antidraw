@@ -1,0 +1,7 @@
+{
+  "$schema": "../../../../../node_modules/wrangler/config-schema.json",
+  // Stands in for the Artifacts binding in tests (see index.ts).
+  "name": "artifacts-stub",
+  "main": "index.ts",
+  "compatibility_date": "2026-06-27"
+}

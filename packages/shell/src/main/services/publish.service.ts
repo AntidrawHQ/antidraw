@@ -1,6 +1,8 @@
+import { net } from "electron";
 import { eq } from "drizzle-orm";
 import { err, type Result } from "neverthrow";
-import { getWorkspaceSourcePath } from "@/main/api/init";
+import path from "node:path";
+import { getWorkspacePath, getWorkspaceSourcePath } from "@/main/api/init";
 import { workspaces } from "@/main/api/models/workspace.model";
 import { listComponents } from "@/main/api/services/component.service";
 import { getFrameLayouts } from "@/main/api/services/frame-layout.service";
@@ -9,6 +11,7 @@ import { db } from "@/main/db";
 import { spawnNpm } from "@/main/lib/package-manager";
 import { cloudFetch } from "@/main/services/account.service";
 import { publishSite, type PublishError } from "@/main/services/publish";
+import { artifactsRemote } from "@/main/services/source";
 
 type PublishWorkspaceError =
   | PublishError
@@ -36,8 +39,20 @@ const run = async (workspaceId: string): Promise<Result<{ url: string }, Publish
   if (layouts.isErr()) return err(layouts.error);
 
   const { name, siteId, siteUrl } = workspace.value;
+  const gitDir = path.join(getWorkspacePath(workspaceId), "publish.git");
   return publishSite({
     sourceDir: getWorkspaceSourcePath(workspaceId),
+    gitDir,
+    // Over net.fetch, as the app's requests to the Worker go: the system's
+    // proxy and certificates (see account.service.ts), and no time limit
+    // on a slow push. No cookies, and the token stays with the repo's host.
+    sourceRemote: ({ remote, token }) =>
+      artifactsRemote({
+        gitDir,
+        url: remote,
+        token,
+        fetch: (url, init) => net.fetch(String(url), { ...init, credentials: "omit", redirect: "error" }),
+      }),
     canvas: {
       version: 1,
       name,

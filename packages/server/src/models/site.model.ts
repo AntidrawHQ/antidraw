@@ -12,6 +12,9 @@ import { user } from "./auth.model";
 // which counts commits. A commit switches them only if seq is still the
 // publish's base_seq, so two publishes can't both go live on the same version,
 // and an old one retried late can't roll the site back.
+//
+// source_repo names the site's git repo in Artifacts (services/source.service.ts),
+// once the first publish has made it.
 export const site = sqliteTable(
   "site",
   {
@@ -24,6 +27,7 @@ export const site = sqliteTable(
     livePublishId: text("live_publish_id"),
     previousPublishId: text("previous_publish_id"),
     seq: integer("seq").notNull().default(0),
+    sourceRepo: text("source_repo"),
     createdAt: integer("created_at", { mode: "timestamp_ms" })
       .default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
       .notNull(),
@@ -32,7 +36,9 @@ export const site = sqliteTable(
 );
 
 // One publish of a site. base_seq is the site's seq when it started: the
-// version it builds on. committed_at is set when it goes live.
+// version it builds on. committed_at is set when it goes live. source_commit
+// is the commit in the site's repo it was built from; null from app versions
+// that don't push the source.
 export const publish = sqliteTable(
   "publish",
   {
@@ -41,6 +47,7 @@ export const publish = sqliteTable(
       .notNull()
       .references(() => site.id, { onDelete: "cascade" }),
     baseSeq: integer("base_seq").notNull(),
+    sourceCommit: text("source_commit"),
     createdAt: integer("created_at", { mode: "timestamp_ms" })
       .default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
       .notNull(),

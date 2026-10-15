@@ -72,6 +72,8 @@
     "geist": "^1.7.0",
     "get-port": "^7.1.0",
     "hono": "^4.11.1",
+    "ignore": "^5.3.2",
+    "isomorphic-git": "^1.44.2",
     "lucide-react": "^0.562.0",
     "marked": "^17.0.1",
     "motion": "^12.38.0",

@@ -53,14 +53,18 @@ step to keep in sync.
 
 ```sh
 cd packages/server
-npm run dev          # wrangler dev — local Worker + D1 on http://localhost:8799
+npm run dev          # wrangler dev --env dev — local Worker + D1 on http://localhost:8799
 npm test             # vitest
 npm run typecheck
 ```
 
 Tests that need storage run the real Worker in workerd with local D1 and R2
 (`src/test/harness.ts`, Wrangler's test harness); the rest call the Hono app
-directly.
+directly. Artifacts has no local mode, so tests run
+`src/test/wrangler.jsonc`, which binds `ARTIFACTS` to a stub Worker
+(`src/test/artifacts-stub`), and `npm run dev` uses a real namespace of its
+own, `sites-dev` (wrangler.jsonc's `dev` environment; a `wrangler login` is
+needed), so a local server never reaches production's repos.
 
 `GET /api/health` → `{ "status": "ok", "service": "antidraw-server" }`.
 
@@ -166,6 +170,15 @@ start again. A retried commit of the live publish gets the same answer, and an
 old one retried late can't roll the site back. Rolling back is the same switch
 to an older publish id.
 
+Each site's source is a git repo in Artifacts, `site-<site id>` in the `sites`
+namespace (`src/services/source.service.ts`). Before a publish, the app asks
+`POST /api/sites/:id/source`, which makes the repo on first use and answers
+its remote with a write token for it alone (an hour), pushes the workspace's
+source, and then starts the publish with `{ commit }`. The server checks the
+repo has that commit and records it with the publish, so every version that
+goes live can be remixed from its source. Older apps start publishes without
+a commit.
+
 Nothing is deleted while publishing, so a site keeps every file and manifest
 it was ever sent. To reclaim space, run `SiteStore.cleanup(siteId, { keep })`
 by hand while nothing publishes to that site, keeping at least its live and
@@ -185,6 +198,8 @@ npx wrangler login
 
 # 1. The D1 database and the bucket. Put the printed database_id into
 #    wrangler.jsonc here and in packages/site-worker/wrangler.jsonc.
+#    Artifacts (Workers Paid) needs nothing made: the `sites` namespace
+#    appears with its first repo.
 npx wrangler d1 create antidraw
 npx wrangler r2 bucket create antidraw-sites
 

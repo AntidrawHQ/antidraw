@@ -3,10 +3,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { publishSite, type PublishOptions, type PublishedSite } from "../publish";
+import { SourceMovedError, SourcePushError, type SourceRemote } from "../source";
 
 // Publishing a workspace end to end: a real `vite build` of a workspace (the
 // runtime's test fixture) with the repo's runtime, uploaded to @antidraw/server
-// running in workerd with local D1 and R2. Only the signed-in user is made up.
+// running in workerd with local D1 and R2. Made up: the signed-in user, and
+// the source repo's git side (Artifacts has no local mode), which keeps main's
+// head in memory and tells the server's stub what was pushed.
 
 const packages = path.resolve(__dirname, "../../../../..");
 const runtimeFixture = path.join(packages, "plugin-runtime/test/fixture");
@@ -20,6 +23,7 @@ type TestServer = {
     DB: { prepare(query: string): { bind(...values: unknown[]): { first<T>(): Promise<T | null> } } };
     SITES: { get(key: string): Promise<{ json(): Promise<unknown>; text(): Promise<string> } | null> };
   };
+  artifacts: { pushed(name: string, commit: string): Promise<void> };
   signIn(): Promise<{ userId: string; authorization: string }>;
   close(): Promise<void>;
 };
@@ -68,29 +72,85 @@ const canvas: PublishOptions["canvas"] = {
   layouts: [{ componentName: "Card", x: 10, y: 20, width: 300, height: 200 }],
 };
 
-/** publishSite as the app calls it, recording the requests it makes. */
+/** Each source repo's main, by its remote. */
+const heads = new Map<string, string>();
+
+/**
+ * The source repo as the server described it, minus git. A push can be
+ * refused, or find main moved every time, as when another publish of the site
+ * keeps pushing.
+ */
+const fakeRemote = (remote: string, pushes: string[], fails: "refused" | "moved" | null): SourceRemote => ({
+  head: async () => heads.get(remote) ?? null,
+  async push(commit, parent) {
+    if (fails === "refused") throw new SourcePushError("403: Invalid or expired token");
+    if (fails === "moved") throw new SourceMovedError(`main is at ${"1".repeat(40)}`);
+    if (parent !== (heads.get(remote) ?? null)) throw new SourceMovedError(`main is at ${heads.get(remote)}`);
+    pushes.push(commit);
+    heads.set(remote, commit);
+    await server.artifacts.pushed(remote.match(/\/(site-[\w-]+)\.git$/)![1]!, commit);
+  },
+});
+
+/** A bare repo for a workspace's source, as publish.service.ts keeps beside it. */
+const gitDir = () => {
+  const dir = fs.mkdtempSync(path.join(__dirname, ".tmp-git-"));
+  dirs.push(dir);
+  return dir;
+};
+
+/** publishSite as the app calls it, recording the requests it makes and the commits it pushes. */
 const publish = async (
   sourceDir: string,
   site: PublishedSite | null,
-  authorization = (_pathname: string) => user.authorization,
+  {
+    authorization = (_pathname: string) => user.authorization,
+    git = gitDir(),
+    pushFails = null as "refused" | "moved" | null,
+    duringBuild = (_dir: string) => {},
+    // Changes where a request goes, as a server without that route would see it.
+    route = (pathname: string) => pathname,
+  } = {},
 ) => {
   const requests: string[] = [];
   const created: PublishedSite[] = [];
+  const pushes: string[] = [];
   const result = await publishSite({
     sourceDir,
+    gitDir: git,
+    sourceRemote: ({ remote }) => fakeRemote(remote, pushes, pushFails),
     canvas,
     site,
     request: (url, init = {}) => {
-      const target = new URL(url, server.url);
+      const target = new URL(route(String(url)), server.url);
       requests.push(`${init.method ?? "GET"} ${target.pathname}`);
       const headers = new Headers(init.headers);
       headers.set("authorization", authorization(target.pathname));
       return fetch(target, { ...init, headers });
     },
-    npm: (args, cwd, { env, ...options }) => spawn("npm", args, { ...options, cwd, env: { ...process.env, ...env } }),
+    npm: (args, cwd, { env, ...options }) => {
+      duringBuild(cwd);
+      return spawn("npm", args, { ...options, cwd, env: { ...process.env, ...env } });
+    },
     onSiteCreated: async (site) => void created.push(site),
   });
-  return { result, requests, created };
+  return { result, requests, created, pushes, git };
+};
+
+/** The commit the site's live publish says it was built from. */
+const liveCommit = async (siteId: string) =>
+  (await server.env.DB.prepare(
+    "SELECT source_commit AS commit_ FROM publish WHERE id = (SELECT live_publish_id FROM site WHERE id = ?)",
+  )
+    .bind(siteId)
+    .first<{ commit_: string | null }>())!.commit_;
+
+/** Makes a file of that size in the workspace without writing its bytes. */
+const sparse = (dir: string, file: string, bytes: number) => {
+  fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+  fs.writeFileSync(path.join(dir, file), "");
+  fs.truncateSync(path.join(dir, file), bytes);
+  return dir;
 };
 
 /** Ids and hashes as labels, for snapshots. */
@@ -128,11 +188,15 @@ const liveFiles = async (siteId: string) => {
 };
 
 let first: PublishedSite;
+let firstGit: string;
 
-it("builds the workspace, makes its site and uploads it", async () => {
-  const { result, requests, created } = await publish(workspace(), null);
+it("builds the workspace, makes its site, pushes its source and uploads it", async () => {
+  const { result, requests, created, pushes, git } = await publish(workspace(), null);
   first = created[0]!;
+  firstGit = git;
   const names = { [first.id]: "<site>" };
+  expect(pushes).toHaveLength(1);
+  expect(await liveCommit(first.id)).toBe(pushes[0]);
   expect(readable({ result: result._unsafeUnwrap(), created, requests }, names)).toMatchInlineSnapshot(`
     {
       "created": [
@@ -143,6 +207,7 @@ it("builds the workspace, makes its site and uploads it", async () => {
       ],
       "requests": [
         "POST /api/sites",
+        "POST /api/sites/<site>/source",
         "POST /api/sites/<site>/publishes",
         "POST /api/sites/<site>/publishes/<publish>/plan",
         "PUT /api/sites/<site>/publishes/<publish>/files/<sha256>",
@@ -200,8 +265,12 @@ it("builds the workspace, makes its site and uploads it", async () => {
 
 it("publishes again to the same site, uploading only what changed", async () => {
   const before = await liveFiles(first.id);
+  const previous = await liveCommit(first.id);
   const dir = workspace({ "src/components/user-components/Card.tsx": `export default () => <div>Card, edited</div>\n` });
-  const { result, requests, created } = await publish(dir, first);
+  const { result, requests, created, pushes } = await publish(dir, first, { git: firstGit });
+  expect(pushes).toHaveLength(1);
+  expect(await liveCommit(first.id)).toBe(pushes[0]);
+  expect(pushes[0]).not.toBe(previous);
   const after = await liveFiles(first.id);
   const changed = Object.keys(after.hashes).filter((file) => after.hashes[file]!.h !== before.hashes[file]?.h);
   expect(
@@ -217,6 +286,7 @@ it("publishes again to the same site, uploading only what changed", async () => 
       ],
       "created": [],
       "requests": [
+        "POST /api/sites/<site>/source",
         "POST /api/sites/<site>/publishes",
         "POST /api/sites/<site>/publishes/<publish>/plan",
         "PUT /api/sites/<site>/publishes/<publish>/files/<sha256>",
@@ -240,25 +310,65 @@ it("makes a new site when the server doesn't know the saved one", async () => {
     .toMatchInlineSnapshot(`
       {
         "requests": [
-          "POST /api/sites/gone/publishes",
+          "POST /api/sites/gone/source",
           "POST /api/sites",
+          "POST /api/sites/<new site>/source",
           "POST /api/sites/<new site>/publishes",
-          "POST /api/sites/<new site>/publishes/<publish>/plan",
         ],
         "result": true,
       }
     `);
 }, 60_000);
 
+it("keeps the saved site when a 404 is about the route, not the site", async () => {
+  const made = await fetch(new URL("/api/sites", server.url), {
+    method: "POST",
+    headers: { authorization: user.authorization, "content-type": "application/json" },
+    body: JSON.stringify({ title: "Kept" }),
+  });
+  const site = (await made.json()) as PublishedSite;
+  const { result, requests, created } = await publish(workspace(), site, {
+    route: (pathname) => pathname.replace(/\/source$/, "/source-gone"),
+  });
+  expect(
+    readable({ error: result._unsafeUnwrapErr(), requests, created }, { [site.id]: "<site>" }),
+  ).toMatchInlineSnapshot(`
+    {
+      "created": [],
+      "error": {
+        "code": "SERVER_ERROR",
+        "message": "Not found",
+        "status": 502,
+      },
+      "requests": [
+        "POST /api/sites/<site>/source-gone",
+      ],
+    }
+  `);
+}, 60_000);
+
 it("says why when it can't publish", async () => {
   const outcomes = {
     oldRuntime: await publish(workspace({ "node_modules/@antidrawapp/runtime/package.json": `{"version":"0.4.2"}` }), null),
     brokenComponent: await publish(workspace({ "src/components/user-components/Card.tsx": `export default () => <div>\n` }), null),
-    signedOut: await publish(workspace(), null, () => "Bearer nobody"),
+    // Sparse: 40 MB as far as the size goes, without writing them.
+    fileTooBig: await publish(sparse(workspace(), "public/demo.mov", 40 * 1024 * 1024), null),
+    // Saved while it built: an edit, and a new file.
+    changedWhileBuilding: await publish(workspace(), null, {
+      duringBuild: (dir) => {
+        fs.appendFileSync(path.join(dir, "src/components/user-components/Card.tsx"), "\n// edited\n");
+        fs.writeFileSync(path.join(dir, "src/components/user-components/New.tsx"), "export default () => null\n");
+      },
+    }),
+    signedOut: await publish(workspace(), null, { authorization: () => "Bearer nobody" }),
+    pushRefused: await publish(workspace(), first, { git: firstGit, pushFails: "refused" }),
+    // Another publish of the site pushes before ours each time.
+    pushRaced: await publish(workspace(), first, { git: firstGit, pushFails: "moved" }),
     // Signed out elsewhere once the publish has started.
-    signedOutMidUpload: await publish(workspace(), first, (pathname) =>
-      pathname.endsWith("/plan") ? "Bearer nobody" : user.authorization,
-    ),
+    signedOutMidUpload: await publish(workspace(), first, {
+      git: firstGit,
+      authorization: (pathname) => (pathname.endsWith("/plan") ? "Bearer nobody" : user.authorization),
+    }),
   };
   expect(
     readable(
@@ -286,10 +396,36 @@ it("says why when it can't publish", async () => {
        |  ^",
         "requests": [],
       },
+      "changedWhileBuilding": {
+        "code": "SOURCE_CHANGED",
+        "message": "src/components/user-components/Card.tsx, src/components/user-components/New.tsx changed while publishing. Publish again to include the changes.",
+        "requests": [],
+      },
+      "fileTooBig": {
+        "code": "FILE_TOO_LARGE",
+        "message": "A file is too big to publish. Each file can be up to 32 MB:
+      public/demo.mov (40 MB)
+    Delete it or add it to .gitignore, then publish again.",
+        "requests": [],
+      },
       "oldRuntime": {
         "code": "RUNTIME_TOO_OLD",
         "message": "Publishing needs @antidrawapp/runtime 0.5.0 or later; this workspace has 0.4.2",
         "requests": [],
+      },
+      "pushRaced": {
+        "code": "SOURCE_FAILED",
+        "message": "This site is being published from somewhere else too. Publish again once that's done.",
+        "requests": [
+          "POST /api/sites/<site>/source",
+        ],
+      },
+      "pushRefused": {
+        "code": "SOURCE_FAILED",
+        "message": "Couldn't save the workspace's source (403: Invalid or expired token). Try publishing again.",
+        "requests": [
+          "POST /api/sites/<site>/source",
+        ],
       },
       "signedOut": {
         "code": "SIGNED_OUT",
@@ -302,6 +438,7 @@ it("says why when it can't publish", async () => {
         "code": "SIGNED_OUT",
         "message": "Not signed in",
         "requests": [
+          "POST /api/sites/<site>/source",
           "POST /api/sites/<site>/publishes",
           "POST /api/sites/<site>/publishes/<publish>/plan",
         ],
