@@ -2,7 +2,7 @@ import { StrictMode, useMemo } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { ReactFlowProvider } from "@xyflow/react";
-import { Canvas, GridPattern } from "@/renderer/canvas/Canvas";
+import { Canvas } from "@/renderer/canvas/Canvas";
 import type { CanvasFile } from "@/renderer/canvas/canvas-file";
 import { siteFor, slugFromPath } from "../site";
 import "./app.css";
@@ -24,9 +24,9 @@ const openFullscreen = (url: string) => {
 };
 
 const Message = ({ text }: { text: string }) => (
-  <div className="relative flex h-full items-center justify-center">
-    <GridPattern />
-    <div className="z-10 text-sm text-neutral-500">{text}</div>
+  // The canvas's surface (Canvas.tsx), which has no dots since #132.
+  <div className="flex h-full items-center justify-center bg-[#282828]">
+    <div className="text-sm text-neutral-500">{text}</div>
   </div>
 );
 
