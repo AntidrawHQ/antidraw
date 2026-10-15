@@ -18,8 +18,9 @@ export type ComponentSource = {
   source: string;
 };
 
-// `changed`: a component came or went. `edited`: one's file changed, which
-// the frames show by HMR, without a load.
+// `changed`: a component came or went. `edited`: a file under src changed
+// (a component, one of its parts, a style or helper), which the frames show
+// by HMR, without a load.
 export type ComponentStreamEvent = { type: "changed" } | { type: "edited" };
 
 type ComponentEvents = {
@@ -103,22 +104,25 @@ export const startComponentWatcher = async (workspaceId: string) => {
 
   const dir = getComponentsDir(workspaceId);
 
-  const watcher = chokidar.watch(dir, {
+  // All of src, for edits: the components import from it all.
+  const watcher = chokidar.watch(path.join(getWorkspaceSourcePath(workspaceId), "src"), {
     ignoreInitial: true,
-    depth: 0,
+    // Dotfiles, and editors' swap and backup files.
+    ignored: (filePath) => /^\.|~$|\.(swp|tmp)$/.test(path.basename(filePath)),
     awaitWriteFinish: { stabilityThreshold: 100, pollInterval: 50 },
   });
 
-  const onChange = (filePath: string) => {
-    if (!filePath.endsWith(".tsx")) return;
-    componentEvents.emit("changed", workspaceId);
+  // A component is a .tsx directly in user-components.
+  const isComponent = (filePath: string) =>
+    path.dirname(filePath) === dir && filePath.endsWith(".tsx");
+
+  const onAddOrUnlink = (filePath: string) => {
+    componentEvents.emit(isComponent(filePath) ? "changed" : "edited", workspaceId);
   };
 
-  watcher.on("add", onChange);
-  watcher.on("unlink", onChange);
-  watcher.on("change", (filePath) => {
-    if (filePath.endsWith(".tsx")) componentEvents.emit("edited", workspaceId);
-  });
+  watcher.on("add", onAddOrUnlink);
+  watcher.on("unlink", onAddOrUnlink);
+  watcher.on("change", () => componentEvents.emit("edited", workspaceId));
   watcher.on("error", (error) => {
     console.error(`[component-watcher:${workspaceId}]`, error);
   });

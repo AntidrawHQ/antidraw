@@ -48,9 +48,9 @@ export const useUserComponentsWatcher = (workspaceId: string | null) => {
             queryClient.invalidateQueries({
               queryKey: queryKeys.userComponents.byWorkspace(workspaceId),
             });
-          } else if (event.type === "edited") {
-            requestThumbnail(workspaceId);
           }
+          // A component gone takes its frame without a load or a resize.
+          requestThumbnail(workspaceId);
         },
         onerror: (error) => {
           console.error("[useUserComponentsWatcher]", error);
