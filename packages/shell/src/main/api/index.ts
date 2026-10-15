@@ -9,7 +9,7 @@ import type { Message } from "./models/chat.model";
 export type { Workspace } from "./models/workspace.model";
 export type { Comment, CommentState } from "./models/comment.model";
 export type { ChatPhase, CommentChat } from "./services/comment.service";
-export type { CreateWorkspaceResponse } from "./controllers/workspace.controller";
+export type { CreateWorkspaceResponse, PublishStreamEvent } from "./controllers/workspace.controller";
 export type {
   CreateWorkspaceStatusCode,
   WorkspaceWithThumbnail,

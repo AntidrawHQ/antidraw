@@ -45,6 +45,8 @@ export const Titlebar = () => {
           <PublishButton
             workspaceId={activeWorkspace.id}
             workspaceName={activeWorkspace.name}
+            siteUrl={activeWorkspace.siteUrl}
+            publishedAt={activeWorkspace.publishedAt}
           />
         )}
       </div>

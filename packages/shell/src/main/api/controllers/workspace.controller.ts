@@ -15,7 +15,7 @@ import {
   stopDevServer,
   getDevServerStatus,
 } from "@/main/services/dev-server.service";
-import { publishWorkspace } from "@/main/services/publish.service";
+import { isPublishing, publishWorkspace, type PublishEvent } from "@/main/services/publish.service";
 import { readThumbnail } from "@/main/services/thumbnail.service";
 import { track } from "@/main/lib/posthog";
 import { listConversations } from "../services/chat.service";
@@ -46,6 +46,12 @@ const componentNameParamSchema = z.object({
 });
 
 export type { CreateWorkspaceEvent as CreateWorkspaceResponse };
+
+/** A publish as it goes, then how it ended. */
+export type PublishStreamEvent =
+  | PublishEvent
+  | { type: "done"; url: string }
+  | { type: "error"; code: string; message: string };
 
 workspaceController.post(
   "/",
@@ -161,8 +167,8 @@ workspaceController.get(
   }
 );
 
-// Builds the workspace and publishes it to its cloud site; answers the share
-// page's URL.
+// Builds the workspace and publishes it to its cloud site, streaming each
+// step as it goes; ends with the share page's URL, or why it couldn't.
 workspaceController.post(
   "/:workspaceId/publish",
   zValidator("param", workspaceIdParamSchema),
@@ -171,18 +177,37 @@ workspaceController.post(
     const before = await getWorkspace(workspaceId);
     const isFirstPublish = before.isOk() && !before.value.siteId;
     const startedAt = Date.now();
-    const result = await publishWorkspace(workspaceId);
-    const outcome = { workspace_id: workspaceId, is_first_publish: isFirstPublish, duration_ms: Date.now() - startedAt };
 
-    if (result.isErr()) {
-      const { status, code, message } = result.error;
-      track("publish_failed", { ...outcome, error_code: code });
-      return ctx.json({ error: { code, message } }, status);
-    }
-
-    const frames = await listComponents(workspaceId);
-    track("publish_succeeded", { ...outcome, frame_count: frames.isOk() ? frames.value.length : null });
-    return ctx.json(result.value);
+    return streamSSE(ctx, async (stream) => {
+      // In order, and none lost to a reader that went away.
+      let writing = Promise.resolve();
+      const write = (event: PublishStreamEvent) => {
+        writing = writing.then(() => stream.writeSSE({ data: JSON.stringify(event) })).catch(() => {});
+      };
+      try {
+        // A request that joins a publish already going doesn't count it again.
+        const joined = isPublishing(workspaceId);
+        const result = await publishWorkspace(workspaceId, write);
+        write(
+          result.isOk()
+            ? { type: "done", url: result.value.url }
+            : { type: "error", code: result.error.code, message: result.error.message },
+        );
+        if (!joined) {
+          const outcome = { workspace_id: workspaceId, is_first_publish: isFirstPublish, duration_ms: Date.now() - startedAt };
+          if (result.isErr()) {
+            track("publish_failed", { ...outcome, error_code: result.error.code });
+          } else {
+            const frames = await listComponents(workspaceId);
+            track("publish_succeeded", { ...outcome, frame_count: frames.isOk() ? frames.value.length : null });
+          }
+        }
+      } catch (error) {
+        console.error("Publish failed:", error);
+        write({ type: "error", code: "INTERNAL_ERROR", message: "Something went wrong while publishing. Try again." });
+      }
+      await writing;
+    });
   }
 );
 

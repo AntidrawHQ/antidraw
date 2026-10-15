@@ -12,6 +12,7 @@ import type {
   DevServerState,
   EffortLevel,
   ModelInfo,
+  PublishStreamEvent,
   StreamEvent,
   WorkspaceWithThumbnail,
 } from "@/main/api";
@@ -1275,34 +1276,40 @@ export const signOut = async () => {
   }
 };
 
-// Builds the workspace and publishes it; resolves with the share page's URL.
-// Takes as long as the build and upload do.
-export const publishWorkspace = async (workspaceId: string) => {
-  try {
-    const response = await apiFetch(
-      `antidraw://app/api/workspaces/${workspaceId}/publish`,
-      { method: "POST" },
-    );
-
-    if (!response.ok) {
-      const errorBody = await response.json().catch(() => ({}));
-      return err({
-        status: response.status as 500,
-        code: (errorBody?.error?.code as string) ?? "FETCH_ERROR",
-        message: (errorBody?.error?.message as string) ?? response.statusText,
+// Builds the workspace and publishes it: each step as it goes, then the
+// share page's URL or why it couldn't. Takes as long as the build and upload
+// do.
+export async function* publishWorkspace(
+  workspaceId: string,
+): AsyncGenerator<PublishStreamEvent> {
+  const abort = new AbortController();
+  const stream = new ReadableStream<PublishStreamEvent>({
+    start(controller) {
+      fetchEventSource(`antidraw://app/api/workspaces/${workspaceId}/publish`, {
+        method: "POST",
+        headers: appKeyHeader(),
+        signal: abort.signal,
+        openWhenHidden: true,
+        onmessage: (ev) => {
+          controller.enqueue(JSON.parse(ev.data) as PublishStreamEvent);
+        },
+        onerror: (error) => {
+          controller.error(error);
+          throw error;
+        },
+        onclose: () => {
+          controller.close();
+          throw new Error("Connection closed");
+        },
       });
-    }
+    },
+    cancel() {
+      abort.abort();
+    },
+  });
 
-    const data: { url: string } = await response.json();
-    return ok(data);
-  } catch (_e) {
-    return err({
-      status: 500 as const,
-      code: "NETWORK_ERROR",
-      message: "Failed to publish",
-    });
-  }
-};
+  yield* stream;
+}
 
 // The MCP setup (main/mcp/setup): the command coding agents run, and which
 // of them already have it in their config.
