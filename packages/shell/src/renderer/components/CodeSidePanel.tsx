@@ -1,7 +1,8 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { X } from "lucide-react";
 import { File as DiffsFile } from "@pierre/diffs/react";
 import { cn } from "@/renderer/lib/utils";
+import { useCoversCanvas } from "@/renderer/lib/thumbnail";
 import { useWorkspaceStore } from "../store/workspace";
 import { useComponentSource } from "../store/userComponents";
 import { CopyDropdown } from "./CopyDropdown";
@@ -35,6 +36,18 @@ const Sidebar = ({
   fileName: string;
   filePath: string;
 }) => {
+  // Over the canvas from opening until its slide out (duration-[320ms]) ends.
+  const [onScreen, setOnScreen] = useState(false);
+  useEffect(() => {
+    if (isOpen) {
+      setOnScreen(true);
+      return;
+    }
+    const timeout = setTimeout(() => setOnScreen(false), 320);
+    return () => clearTimeout(timeout);
+  }, [isOpen]);
+  useCoversCanvas(isOpen || onScreen);
+
   useEffect(() => {
     if (!isOpen) return;
     const handler = (e: KeyboardEvent) => {

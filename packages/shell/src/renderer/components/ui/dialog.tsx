@@ -3,6 +3,7 @@ import { XIcon } from "lucide-react"
 import { Dialog as DialogPrimitive } from "radix-ui"
 
 import { cn } from "@/renderer/lib/utils"
+import { CoversCanvas } from "@/renderer/lib/thumbnail"
 import { Button } from "@/renderer/components/ui/button"
 
 function Dialog({
@@ -65,6 +66,7 @@ function DialogContent({
         {...props}
       >
         {children}
+        <CoversCanvas />
         {showCloseButton && (
           <DialogPrimitive.Close
             data-slot="dialog-close"
