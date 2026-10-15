@@ -1,31 +1,15 @@
 import { toast } from "sonner";
 import { ArrowRight, X } from "lucide-react";
-import BoringAvatar from "boring-avatars";
+import antidrawIcon from "@/renderer/assets/antidraw-icon.svg";
 import { CoversCanvas } from "@/renderer/lib/thumbnail";
 
-// Square + a blue ramp sampled from the Antidraw app logo (the paper-cut
-// waves), so the update toast is marked with the version's own generated icon.
-const AVATAR_COLORS = ["#0e4e8a", "#2b72b5", "#5293cc", "#79b0dc", "#a9cbe8"];
-
-export const WorkspaceAvatar = ({
-  seed,
-  size,
-}: {
-  seed: string;
-  size: number;
-}) => (
-  <div
-    className="rounded shrink-0 overflow-hidden"
+export const AntidrawLogo = ({ size }: { size: number }) => (
+  <img
+    src={antidrawIcon}
+    alt="Antidraw"
+    className="shrink-0"
     style={{ width: size, height: size }}
-  >
-    <BoringAvatar
-      size={size}
-      name={seed}
-      variant="beam"
-      colors={AVATAR_COLORS}
-      square
-    />
-  </div>
+  />
 );
 
 // An "Update available" notification rendered as a sonner toast.
@@ -47,8 +31,7 @@ const UpdateToastCard = ({
   <div className="relative flex w-[360px] items-start gap-3 rounded-xl border border-white/[0.06] bg-[#212121] px-4 py-3.5">
     <CoversCanvas />
     <div className="mt-0.5">
-      {/* Seeded by version — every release gets its own generated logo. */}
-      <WorkspaceAvatar seed={version} size={32} />
+      <AntidrawLogo size={32} />
     </div>
 
     <div className="flex flex-1 flex-col gap-0.5 pr-4">
