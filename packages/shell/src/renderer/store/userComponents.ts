@@ -9,6 +9,7 @@ import { fetchEventSource } from "@microsoft/fetch-event-source";
 import type { ComponentStreamEvent } from "@/main/api";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
 import { queryKeys } from "@/renderer/lib/query-keys";
+import { requestThumbnail } from "@/renderer/lib/thumbnail";
 import { listComponents, getComponentSource } from "@/renderer/lib/api";
 
 export const useUserComponents = (workspaceId: string | null) => {
@@ -48,6 +49,8 @@ export const useUserComponentsWatcher = (workspaceId: string | null) => {
               queryKey: queryKeys.userComponents.byWorkspace(workspaceId),
             });
           }
+          // A component gone takes its frame without a load or a resize.
+          requestThumbnail(workspaceId);
         },
         onerror: (error) => {
           console.error("[useUserComponentsWatcher]", error);

@@ -10,7 +10,10 @@ export type { Workspace } from "./models/workspace.model";
 export type { Comment, CommentState } from "./models/comment.model";
 export type { ChatPhase, CommentChat } from "./services/comment.service";
 export type { CreateWorkspaceResponse } from "./controllers/workspace.controller";
-export type { CreateWorkspaceStatusCode } from "./services/workspace.service";
+export type {
+  CreateWorkspaceStatusCode,
+  WorkspaceWithThumbnail,
+} from "./services/workspace.service";
 export type { DevServerState } from "@/main/lib/runtime-store";
 export type { DevServerInfo } from "@/main/services/dev-server.service";
 export type { EffortLevel, ModelInfo } from "./claude-code-ops";

@@ -36,12 +36,14 @@ export const CreateWorkspaceDialog = ({
     reset,
   } = useCreateWorkspaceFlow({
       onSuccess: (workspace) => {
-        switchWorkspace(workspace.id);
         // Brief moment so user sees the final "done" state before close
         setTimeout(() => {
           onOpenChange(false);
           setName("");
           reset();
+          // Once closing: the switch's capture waits for the dialog to go,
+          // and only so long.
+          switchWorkspace(workspace.id);
         }, 600);
       },
     });

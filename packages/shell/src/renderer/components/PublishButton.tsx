@@ -4,6 +4,7 @@ import { Popover as PopoverPrimitive } from "radix-ui";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { Check, Copy, Globe, LoaderCircle, X } from "lucide-react";
 import antidrawIcon from "@/renderer/assets/antidraw-icon.svg";
+import { CoversCanvas } from "@/renderer/lib/thumbnail";
 import {
   AccountRequestError,
   useAccount,
@@ -397,6 +398,7 @@ export const PublishButton = ({
                   exit={{ opacity: 0, scale: reduce ? 1 : 0.98, transition: EXIT }}
                   transition={SPRING}
                 >
+                  <CoversCanvas />
                   <button
                     type="button"
                     aria-label="Close"
@@ -499,6 +501,7 @@ export const PublishButton = ({
               exit={{ opacity: 0, y: reduce ? 0 : 4, transition: EXIT }}
               transition={SPRING}
             >
+              <CoversCanvas />
               <span className="flex h-5 w-5 items-center justify-center rounded-full" style={{ background: tint(GREEN, 16), color: GREEN }}>
                 <Check size={11} strokeWidth={3} />
               </span>
@@ -527,6 +530,7 @@ export const PublishButton = ({
               exit={{ opacity: 0, y: reduce ? 0 : 4, transition: EXIT }}
               transition={SPRING}
             >
+              <CoversCanvas />
               <span className="mt-1 flex h-5 w-5 shrink-0 items-center justify-center rounded-full" style={{ background: tint(RED, 16), color: RED }}>
                 <X size={11} strokeWidth={3} />
               </span>

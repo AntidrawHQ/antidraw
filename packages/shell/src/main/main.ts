@@ -29,6 +29,7 @@ import { shutdownPostHog } from "./lib/posthog";
 import { APP_KEY, APP_KEY_ARG } from "@/main/lib/app-key";
 import { injectFrameAgent } from "./frame-agent";
 import { verifyCertificate } from "@/main/lib/certificate-verify";
+import { saveThumbnail } from "./services/thumbnail.service";
 
 // Keep the renderer responsive when the window is unfocused or occluded.
 // Without these, Chromium throttles rAF/timers/request scheduling in packaged
@@ -87,6 +88,9 @@ const stayOnApp = (win: BrowserWindow) => {
 
 // Where a preview window's comments are shown (see "comments:show").
 let mainWindow: BrowserWindow | null = null;
+
+// Wide enough for a viewer's card at 2x.
+const THUMBNAIL_WIDTH = 640;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const previewWindows = new Set<Electron.WebContents>();
@@ -266,6 +270,32 @@ app.whenReady().then(async () => {
     const shown = pendingShow;
     pendingShow = null;
     return shown;
+  });
+
+  // The main window's canvas, as the workspace's thumbnail. `rect` is the
+  // canvas's, in the page's CSS pixels: capturePage takes DIPs, which differ
+  // by the page's zoom (Cmd+/-).
+  ipcMain.handle("thumbnail:capture", async (event, workspaceId: unknown, rect: unknown) => {
+    if (event.sender !== mainWindow?.webContents) return;
+    if (typeof workspaceId !== "string" || !UUID_RE.test(workspaceId)) return;
+    const { x, y, width, height } = (rect ?? {}) as Record<string, unknown>;
+    if (![x, y, width, height].every((n) => typeof n === "number" && Number.isFinite(n))) return;
+    const zoom = event.sender.getZoomFactor();
+    const dips = {
+      x: Math.round((x as number) * zoom),
+      y: Math.round((y as number) * zoom),
+      width: Math.round((width as number) * zoom),
+      height: Math.round((height as number) * zoom),
+    };
+    if (dips.width <= 0 || dips.height <= 0) return;
+
+    const image = await event.sender.capturePage(dips);
+    if (image.isEmpty()) return;
+    const thumbnail = image.resize({
+      width: Math.min(THUMBNAIL_WIDTH, image.getSize().width),
+      quality: "good",
+    });
+    await saveThumbnail(workspaceId, thumbnail.toJPEG(80));
   });
 
   // Cleanup any orphaned dev servers from previous crash (non-blocking)

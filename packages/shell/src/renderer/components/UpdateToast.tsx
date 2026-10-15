@@ -1,6 +1,7 @@
 import { toast } from "sonner";
 import { ArrowRight, X } from "lucide-react";
 import BoringAvatar from "boring-avatars";
+import { CoversCanvas } from "@/renderer/lib/thumbnail";
 
 // Square + a blue ramp sampled from the Antidraw app logo (the paper-cut
 // waves), so the update toast is marked with the version's own generated icon.
@@ -44,6 +45,7 @@ const UpdateToastCard = ({
   onDismiss,
 }: UpdateToastCardProps) => (
   <div className="relative flex w-[360px] items-start gap-3 rounded-xl border border-white/[0.06] bg-[#212121] px-4 py-3.5">
+    <CoversCanvas />
     <div className="mt-0.5">
       {/* Seeded by version — every release gets its own generated logo. */}
       <WorkspaceAvatar seed={version} size={32} />

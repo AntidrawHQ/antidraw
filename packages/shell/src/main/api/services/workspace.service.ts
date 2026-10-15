@@ -8,6 +8,7 @@ import {
   getWorkspaceSourcePath,
   getWorkspacesPath,
 } from "@/main/api/init";
+import { getThumbnailVersion } from "@/main/services/thumbnail.service";
 import {
   npmCreate,
   npmInstall,
@@ -122,13 +123,25 @@ export const createWorkspace = async function* (
   }
 };
 
+// A workspace with its thumbnail's version (null: none yet), for the viewer.
+export type WorkspaceWithThumbnail = typeof workspaces.$inferSelect & {
+  thumbnailVersion: number | null;
+};
+
+const withThumbnail = async (
+  workspace: typeof workspaces.$inferSelect,
+): Promise<WorkspaceWithThumbnail> => ({
+  ...workspace,
+  thumbnailVersion: await getThumbnailVersion(workspace.id),
+});
+
 export const listWorkspaces = async () => {
   try {
     const result = await db.query.workspaces.findMany({
       orderBy: (workspaces, { desc }) => desc(workspaces.createdAt),
     });
 
-    return ok(result);
+    return ok(await Promise.all(result.map(withThumbnail)));
   } catch (_e) {
     return err({
       status: 500 as const,
@@ -152,7 +165,7 @@ export const getWorkspace = async (id: string) => {
       });
     }
 
-    return ok(workspace);
+    return ok(await withThumbnail(workspace));
   } catch (_e) {
     return err({
       status: 500 as const,

@@ -16,6 +16,7 @@ import {
   getDevServerStatus,
 } from "@/main/services/dev-server.service";
 import { publishWorkspace } from "@/main/services/publish.service";
+import { readThumbnail } from "@/main/services/thumbnail.service";
 import { listConversations } from "../services/chat.service";
 import {
   getFrameLayouts,
@@ -101,6 +102,23 @@ workspaceController.delete(
     }
 
     return ctx.json(result.value);
+  }
+);
+
+// The canvas as last captured, for the workspace viewer. Its URL carries the
+// workspace's thumbnailVersion, so a new capture is a new URL.
+workspaceController.get(
+  "/:workspaceId/thumbnail",
+  zValidator("param", workspaceIdParamSchema),
+  async (ctx) => {
+    const { workspaceId } = ctx.req.valid("param");
+    const jpeg = await readThumbnail(workspaceId);
+
+    if (!jpeg) {
+      return ctx.json({ error: { code: "NOT_FOUND", message: "No thumbnail yet" } }, 404);
+    }
+
+    return ctx.body(new Uint8Array(jpeg), 200, { "Content-Type": "image/jpeg" });
   }
 );
 
@@ -270,10 +288,19 @@ workspaceController.get(
         });
       };
 
+      const onEdited = (editedWorkspaceId: string) => {
+        if (editedWorkspaceId !== workspaceId) return;
+        stream.writeSSE({
+          data: JSON.stringify({ type: "edited" } satisfies ComponentStreamEvent),
+        });
+      };
+
       componentEvents.on("changed", onChanged);
+      componentEvents.on("edited", onEdited);
 
       ctx.req.raw.signal.addEventListener("abort", () => {
         componentEvents.off("changed", onChanged);
+        componentEvents.off("edited", onEdited);
       });
 
       await new Promise(() => {});

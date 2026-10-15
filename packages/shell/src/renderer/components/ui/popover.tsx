@@ -2,6 +2,7 @@ import * as React from "react"
 import { Popover as PopoverPrimitive } from "radix-ui"
 
 import { cn } from "@/renderer/lib/utils"
+import { CoversCanvas } from "@/renderer/lib/thumbnail"
 
 function Popover({
   ...props
@@ -17,6 +18,7 @@ function PopoverTrigger({
 
 function PopoverContent({
   className,
+  children,
   align = "center",
   sideOffset = 4,
   ...props
@@ -32,7 +34,10 @@ function PopoverContent({
           className
         )}
         {...props}
-      />
+      >
+        {children}
+        <CoversCanvas />
+      </PopoverPrimitive.Content>
     </PopoverPrimitive.Portal>
   )
 }

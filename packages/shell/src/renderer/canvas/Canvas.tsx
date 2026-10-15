@@ -85,6 +85,7 @@ type FrameActions = {
   onSeeCode?: (componentName: string) => void;
   frameLayer?: FrameLayer;
   framesTakePointer?: boolean;
+  onFrameActivity?: () => void;
 };
 
 // Drawn over a frame's preview, for a host's own tools (the shell's
@@ -211,7 +212,7 @@ const IframeNodeRenderer = ({
   // Only a selected node asks: each of them counting every node on each
   // store change (every step of a zoom) is frames × frames.
   const multiSelected = useStore((s) => selected && s.nodes.filter((n) => n.selected).length > 1);
-  const { onFullscreen, onSeeCode } = useContext(FrameActionsContext);
+  const { onFullscreen, onSeeCode, onFrameActivity } = useContext(FrameActionsContext);
 
   useEffect(() => {
     let cancelled = false;
@@ -235,7 +236,8 @@ const IframeNodeRenderer = ({
   const handleLoad = useCallback(() => {
     releaseRef.current?.();
     releaseRef.current = null;
-  }, []);
+    onFrameActivity?.();
+  }, [onFrameActivity]);
 
   const handleRefresh = useCallback(() => {
     setRefreshCounter((c) => c + 1);
@@ -374,6 +376,9 @@ type CanvasProps = {
   // Called (debounced) after frames are moved or resized. Without it, changes
   // last only as long as the page.
   onLayoutsChange?: (layouts: FrameLayout[]) => void;
+  // A frame loaded or reported its size, for a host that waits for the
+  // frames to settle (the shell's thumbnail).
+  onFrameActivity?: () => void;
   onFullscreen: (url: string) => void;
   // Without it, frames have no See Code button.
   onSeeCode?: (componentName: string) => void;
@@ -392,6 +397,7 @@ export const Canvas = ({
   savedLayouts,
   frameUrl,
   onLayoutsChange,
+  onFrameActivity,
   onFullscreen,
   onSeeCode,
   frameLayer,
@@ -503,6 +509,9 @@ export const Canvas = ({
   const handleNodesChangeRef = useRef(handleNodesChange);
   handleNodesChangeRef.current = handleNodesChange;
 
+  const onFrameActivityRef = useRef(onFrameActivity);
+  onFrameActivityRef.current = onFrameActivity;
+
   useMountEffect(() => {
     const handleMessage = (event: MessageEvent) => {
       if (event.data?.type !== "component-size") return;
@@ -527,6 +536,7 @@ export const Canvas = ({
       if (settlingRef.current.length > 0) {
         setNodes((nodes) => lineUp(nodes, settlingRef.current));
       }
+      onFrameActivityRef.current?.();
     };
 
     window.addEventListener("message", handleMessage);
@@ -584,8 +594,8 @@ export const Canvas = ({
   );
 
   const frameActions = useMemo(
-    () => ({ onFullscreen, onSeeCode, frameLayer, framesTakePointer }),
-    [onFullscreen, onSeeCode, frameLayer, framesTakePointer],
+    () => ({ onFullscreen, onSeeCode, frameLayer, framesTakePointer, onFrameActivity }),
+    [onFullscreen, onSeeCode, frameLayer, framesTakePointer, onFrameActivity],
   );
 
   return (

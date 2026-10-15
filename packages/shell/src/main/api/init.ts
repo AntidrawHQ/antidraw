@@ -34,4 +34,9 @@ export const getWorkspaceLogsPath = (id: string) =>
 export const getWorkspaceDevServerLogPath = (id: string) =>
   path.join(getWorkspaceLogsPath(id), "dev-server.log");
 
+// Sibling of `source/`, like logs: the canvas as last captured, for the
+// workspace viewer (main/services/thumbnail.service.ts).
+export const getWorkspaceThumbnailPath = (id: string) =>
+  path.join(getWorkspacePath(id), "thumbnail.jpg");
+
 export const getDbPath = () => path.join(antidrawRoot, "antidraw.db");
