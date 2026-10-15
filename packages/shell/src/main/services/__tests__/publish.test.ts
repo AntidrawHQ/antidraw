@@ -2,7 +2,7 @@ import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { publishSite, type PublishOptions, type PublishedSite } from "../publish";
+import { publishSite, type PublishEvent, type PublishOptions, type PublishedSite } from "../publish";
 import { SourceMovedError, SourcePushError, type SourceRemote } from "../source";
 
 // Publishing a workspace end to end: a real `vite build` of a workspace (the
@@ -115,6 +115,7 @@ const publish = async (
   const requests: string[] = [];
   const created: PublishedSite[] = [];
   const pushes: string[] = [];
+  const events: PublishEvent[] = [];
   const result = await publishSite({
     sourceDir,
     gitDir: git,
@@ -133,8 +134,9 @@ const publish = async (
       return spawn("npm", args, { ...options, cwd, env: { ...process.env, ...env } });
     },
     onSiteCreated: async (site) => void created.push(site),
+    onEvent: (event) => void events.push(event),
   });
-  return { result, requests, created, pushes, git };
+  return { result, requests, created, pushes, git, events };
 };
 
 /** The commit the site's live publish says it was built from. */
@@ -191,7 +193,36 @@ let first: PublishedSite;
 let firstGit: string;
 
 it("builds the workspace, makes its site, pushes its source and uploads it", async () => {
-  const { result, requests, created, pushes, git } = await publish(workspace(), null);
+  const { result, requests, created, pushes, git, events } = await publish(workspace(), null);
+  // How it went, as the publish panel hears it: each step, what it found
+  // (the repo's runtime version, the build's time and size vary), and the
+  // upload's last progress.
+  const uploads = events.filter((e) => e.type === "upload");
+  expect({
+    steps: events.flatMap((e) => (e.type === "step" ? [e.step] : e.type === "meta" ? [`${e.step}: ${{ runtime: "<version>", build: "<time> · <size>" }[e.step as string] ?? e.text}`] : [])),
+    builtIn: events.some((e) => e.type === "log" && /^✓ built in /.test(e.line)),
+    lastUpload: { ...uploads.at(-1), file: "<file>" },
+  }).toMatchInlineSnapshot(`
+    {
+      "builtIn": true,
+      "lastUpload": {
+        "done": 8,
+        "file": "<file>",
+        "total": 8,
+        "type": "upload",
+        "unchanged": 0,
+      },
+      "steps": [
+        "runtime",
+        "runtime: <version>",
+        "build",
+        "build: <time> · <size>",
+        "upload",
+        "upload: 8 files",
+        "live",
+      ],
+    }
+  `);
   first = created[0]!;
   firstGit = git;
   const names = { [first.id]: "<site>" };
@@ -384,7 +415,7 @@ it("says why when it can't publish", async () => {
     {
       "brokenComponent": {
         "code": "BUILD_FAILED",
-        "message": "Couldn't build the workspace
+        "message": "Couldn't build the workspace.
     error during build:
     [vite:esbuild] Transform failed with 1 error:
     src/components/user-components/Card.tsx:2:0: ERROR: Unexpected end of file before a closing "div" tag
@@ -410,7 +441,7 @@ it("says why when it can't publish", async () => {
       },
       "oldRuntime": {
         "code": "RUNTIME_TOO_OLD",
-        "message": "Publishing needs @antidrawapp/runtime 0.5.0 or later; this workspace has 0.4.2",
+        "message": "This workspace has @antidrawapp/runtime 0.4.2. Publishing needs 0.5.0 or later.",
         "requests": [],
       },
       "pushRaced": {
