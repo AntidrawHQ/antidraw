@@ -4,17 +4,17 @@
  * it, over the glowing columns — with the wordmark at 0.625 of the banner's and the chrome at its own size,
  * as the hero's frames are.
  *
- * It looks clickable, so it is, a little: the wordmark, its toolbar, both cursors and the columns each
- * answer a click with an easter egg (landing/easter-eggs). BAND's values apply from sm up; a phone keeps its own.
+ * It looks clickable, so it is, a little: a click on the wordmark, its toolbar, either cursor or the columns
+ * pops up an easter egg (landing/easter-eggs). BAND's values apply from sm up; a phone keeps its own.
  */
-import { useRef, type CSSProperties } from "react"
+import type { CSSProperties } from "react"
 
 import { AGENTS, BLUE, Pointer } from "../readme-art/pointer"
 import { PillToggleToolbar } from "../landing-canvas/PillToggleToolbar"
 import { COLUMN_GLOW_DEFAULTS, ColumnGlow, type ColumnGlowSettings } from "../parts/ColumnGlow"
 import { GLOW_PALETTES } from "../landing-canvas/glowdial"
 import iconUrl from "./antidraw-icon.svg?url"
-import { useEasterEggs, type Eggs } from "./easter-eggs"
+import { useEasterEgg } from "./easter-eggs"
 
 /** The banner's selection (644×168) at 0.625. */
 const SEL = { w: 403, h: 105 }
@@ -25,44 +25,17 @@ const GLOW: ColumnGlowSettings = { ...COLUMN_GLOW_DEFAULTS, colors: [...PALETTE]
 /** The band at sm and up: its height, the glow's, the wordmark's scale and its top. */
 const BAND = { height: 360, glowHeight: 260, scale: 1, top: 88 }
 
-/** What each part says when clicked, in turn: all of it, one way or another, "go download the app". */
-const EGGS: Eggs = {
-  lines: {
-    wordmark: [
-      "Bro, it's a footer. The real canvas is one Download away.",
-      "You can't drag this one. In the app, you can drag everything.",
-      "Still clicking? The app has way more to click. Just saying.",
-    ],
-    toolbar: [
-      "See Code works in the app, bro. Here it's just vibes.",
-      "Fullscreen would just be a bigger antidraw. Download the app for the real thing.",
-    ],
-    you: [
-      "Bro, you're clicking yourself. Go download the app.",
-      "That's you, clicking a footer. Could be you, designing in the app.",
-    ],
-    agent: [
-      "Hi! I'd help, but I'm stuck in a footer. In the app I do actual work.",
-      "Download the app and give me a real task, bro.",
-    ],
-    glow: [
-      "You scrolled all the way down here and still haven't downloaded? Bro.",
-      "Nice glow, right? Wait till you see the app.",
-    ],
-  },
-  out: "Okay bro, you've clicked everything. Download the app. Please.",
-  tenth: "Ten clicks on a footer. Bro. Download the app.",
-}
+/** What every part says when clicked. */
+const EGG = "Bro, download the app instead of clicking around in the footer."
 
 export function FooterWordmark() {
   const [glow, band] = [GLOW, BAND]
-  const ref = useRef<HTMLDivElement>(null)
-  const egg = useEasterEggs(ref, EGGS)
+  const egg = useEasterEgg(EGG)
   const vars = { "--band-h": `${band.height}px`, "--glow-h": `${band.glowHeight}px`, "--mark-top": `${band.top}px`, "--mark-k": band.scale } as CSSProperties
 
   return (
     <>
-      <div ref={ref} onClick={egg.onClick} className="relative h-[280px] overflow-hidden text-white sm:h-(--band-h)" style={vars}>
+      <div onClick={egg.onClick} className="relative h-[280px] overflow-hidden text-white sm:h-(--band-h)" style={vars}>
         {/* ColumnGlow's root is always `relative`, which outranks an `absolute` passed in, so a wrapper holds it to the bottom. */}
         <div aria-hidden data-egg="glow" className="absolute inset-x-0 bottom-0 h-[200px] sm:h-(--glow-h)">
           <ColumnGlow {...glow} className="h-full" />
