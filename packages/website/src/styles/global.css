@@ -1,0 +1,22 @@
+@import "tailwindcss";
+/* The landing's entrances: animate-in, fade-in, slide-in-from-*, zoom-in. */
+@import "tw-animate-css";
+
+@source "../components/**/*.{ts,tsx}";
+
+/* The design's radius scale, off a 0.625rem base: rounded-md is 8px, rounded-lg 10px. */
+@theme {
+  --radius-sm: calc(0.625rem - 4px);
+  --radius-md: calc(0.625rem - 2px);
+  --radius-lg: 0.625rem;
+  --radius-xl: calc(0.625rem + 4px);
+  --radius-2xl: calc(0.625rem + 8px);
+}
+
+/* Borders and outlines that set no colour of their own take these, as in the design. */
+@layer base {
+  * {
+    border-color: oklch(0.922 0 0);
+    outline-color: color-mix(in oklab, oklch(0.708 0 0) 50%, transparent);
+  }
+}

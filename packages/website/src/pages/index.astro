@@ -1,0 +1,19 @@
+---
+import AntidrawLandingCanvas from "@/components/user-components/AntidrawLandingCanvas";
+import "@/styles/global.css";
+---
+
+<html lang="en" style="background-color: #232323; color-scheme: dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Antidraw</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+  </head>
+  <body>
+    <!-- Rendered in the browser only: the landing sizes its canvas from the window on its first render. -->
+    <AntidrawLandingCanvas client:only="react" />
+  </body>
+</html>
