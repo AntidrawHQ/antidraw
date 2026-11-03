@@ -37,6 +37,7 @@ import { fontStack } from "./landing/LandingFonts"
 import { EssayNav } from "./landing/EssayNav"
 import { DOWNLOADS, DownloadButton } from "./landing/DownloadButton"
 import type { FooterStyle } from "./landing/Footers"
+import { FooterWordmark } from "./landing/FooterWordmark"
 
 const REPO = "https://github.com/AntidrawHQ/antidraw"
 const BLUE = "#3b82f6"
@@ -731,6 +732,8 @@ export function CanvasLanding({ theme = "dark", hero, scale, bare = false, full 
           <CanvasFooter theme={theme} footer={footer} />
         </Suspense>
       </main>
+      {/* The page signs off with the wordmark over the glowing columns, the full width of the page. */}
+      <FooterWordmark />
     </div>
   )
 }

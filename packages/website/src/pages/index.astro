@@ -3,6 +3,7 @@ import LandingHero from "@/components/islands/LandingHero"
 import LandingIntro from "@/components/islands/LandingIntro"
 import LandingUseCases from "@/components/islands/LandingUseCases"
 import LandingFooter from "@/components/islands/LandingFooter"
+import LandingWordmark from "@/components/islands/LandingWordmark"
 import { PAGE_BG, SCROLL } from "@/components/user-components/AntidrawLandingCanvas"
 import { fontStack } from "@/components/user-components/landing/LandingFonts"
 import schibstedUrl from "@/components/user-components/landing/fonts/schibsted-grotesk.woff2?url"
@@ -64,6 +65,8 @@ const image = new URL("/og.png", Astro.site).href
         <LandingUseCases client:visible={{ rootMargin: "400px" }} />
         <LandingFooter client:visible={{ rootMargin: "400px" }} />
       </main>
+      <!-- The page signs off with the wordmark over the glowing columns, the full width of the page. Static: rendered to HTML, no script. -->
+      <LandingWordmark />
     </div>
 
     <!--
