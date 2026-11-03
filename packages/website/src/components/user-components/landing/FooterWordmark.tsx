@@ -26,7 +26,7 @@ const GLOW: ColumnGlowSettings = { ...COLUMN_GLOW_DEFAULTS, colors: [...PALETTE]
 const BAND = { height: 360, glowHeight: 260, scale: 1, top: 88 }
 
 /** What every part says when clicked. */
-const EGG = "Bro, download the app instead of clicking around in the footer."
+const EGG = "bro, download the app instead of clicking around in the footer."
 
 export function FooterWordmark() {
   const [glow, band] = [GLOW, BAND]
