@@ -308,8 +308,8 @@ const SPROUT = { x: -300, y: -30 }
 /** The app's panel at its natural 280px, scaled to fit the 228px gap between the inner frames. */
 const PANEL = { x: -98, y: -26, w: 280, s: 0.7 }
 const FERN = { x: 114, y: -30 }
-/** The title block, centred above the frames; `h` is its height at 1×, three lines and the buttons. */
-const TITLE = { w: 480, y: -353, h: 182 }
+/** The title block, centred above the frames; `h` is its height at 1×, three lines and the buttons. 520 wide so the buttons keep to one row. */
+const TITLE = { w: 520, y: -353, h: 182 }
 /** The lowest frame's foot, PastelPoster's: the canvas reaches this far below its centre. */
 const CANVAS_FOOT = 430
 

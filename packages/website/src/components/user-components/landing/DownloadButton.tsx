@@ -33,7 +33,7 @@ const TONE = {
 }
 
 /**
- * "Download", with a chip saying which Macs it's for; `icon` sits before the label. `stretch` fills the row,
+ * "Download", with chips saying which Macs it's for and that it's an alpha; `icon` sits before the label. `stretch` fills the row,
  * as the hero's stacked buttons do on a phone. The menu hangs under the button's right edge.
  */
 export function DownloadButton({ theme, icon, stretch = false, className }: { theme: "dark" | "light"; icon?: ReactNode; stretch?: boolean; className?: string }) {
@@ -62,7 +62,10 @@ export function DownloadButton({ theme, icon, stretch = false, className }: { th
         <a href={DOWNLOADS.silicon} className={cn("inline-flex items-center justify-center gap-2 whitespace-nowrap transition-transform active:scale-[0.97]", stretch ? "flex-1" : "pr-4 pl-5")}>
           {icon}
           Download
-          <span className={cn("ml-0.5 rounded-[5px] px-1.5 py-[3px] text-[11px] leading-none font-medium tracking-[0.02em]", t.chip)}>Apple Silicon</span>
+          <span className="ml-0.5 flex items-center gap-1">
+            <span className={cn("rounded-[5px] px-1.5 py-[3px] text-[11px] leading-none font-medium tracking-[0.02em]", t.chip)}>Apple Silicon</span>
+            <span className={cn("rounded-[5px] px-1.5 py-[3px] text-[11px] leading-none font-medium tracking-[0.02em]", t.chip)}>Alpha</span>
+          </span>
         </a>
         <span aria-hidden className="my-3 w-px bg-current opacity-20" />
         <button
