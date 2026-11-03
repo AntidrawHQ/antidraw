@@ -246,7 +246,7 @@ export function EssayLanding({ theme = "dark", band = "columns" }: { theme?: "da
           <UseCasesRows theme={theme} pin={NAV_H + 16} className="mt-[200px]" />
         </div>
 
-        <footer data-flow="footer" className={`mx-auto mt-32 max-w-[1000px] text-[15px] ${t.footer}`}>© 2026 Antidraw · MIT licensed</footer>
+        <footer data-flow="footer" className={`mx-auto mt-32 max-w-[1000px] text-[15px] ${t.footer}`}>© 2026 Antidraw</footer>
       </main>
     </div>
   )

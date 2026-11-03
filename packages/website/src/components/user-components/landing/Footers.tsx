@@ -1,7 +1,7 @@
 /**
  * The landing's footer, in a few styles to choose from (LandingFooters shows them all):
  *
- *  - line      one quiet row: the mark and "© 2026 Antidraw · MIT licensed", the repo's links on the right.
+ *  - line      one quiet row: the mark and "© 2026 Antidraw", the repo's links on the right.
  *  - columns   the logo and a line, then the page's own map: use cases by role, what it builds with, the repo.
  *  - close     a last call before it: "start on the canvas.", what it runs on, the two buttons; then the line.
  *  - closeColumns  the same last call, then the columns (the canvas landing's).
@@ -23,7 +23,7 @@ import { DownloadButton } from "./DownloadButton"
 
 export type FooterStyle = "line" | "columns" | "close" | "closeColumns" | "wordmark" | "frame"
 export const FOOTER_STYLES: { id: FooterStyle; name: string; note: string }[] = [
-  { id: "line", name: "Sign-off", note: "One quiet row: the mark, the licence, the repo's links." },
+  { id: "line", name: "Sign-off", note: "One quiet row: the mark, the copyright, the repo's links." },
   { id: "columns", name: "Columns", note: "The logo, then a map of the page and the repo." },
   { id: "close", name: "Last call", note: "One more ask before the line: what it runs on, the two buttons." },
   { id: "closeColumns", name: "Last call + columns", note: "The last call, then the logo and the map of the page and the repo." },
@@ -34,7 +34,6 @@ export const FOOTER_STYLES: { id: FooterStyle; name: string; note: string }[] = 
 const REPO = "https://github.com/AntidrawHQ/antidraw"
 const RELEASES = `${REPO}/releases`
 const ISSUES = `${REPO}/issues`
-const LICENSE = `${REPO}/blob/main/LICENSE`
 
 const TONE = {
   dark: {
@@ -103,7 +102,7 @@ const Logo = ({ t, size = 28 }: { t: Tone; size?: number }) => (
   </span>
 )
 
-const Copyright = ({ t }: { t: Tone }) => <span className={t.quiet}>© 2026 Antidraw · MIT licensed</span>
+const Copyright = ({ t }: { t: Tone }) => <span className={t.quiet}>© 2026 Antidraw</span>
 
 const RepoLinks = ({ t }: { t: Tone }) => (
   <>
@@ -157,7 +156,6 @@ function SiteMap({ t }: { t: Tone }) {
       links: (
         <>
           <RepoLinks t={t} />
-          <A href={LICENSE} t={t}>MIT licence</A>
         </>
       ),
     },

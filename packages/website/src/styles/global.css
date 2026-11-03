@@ -24,6 +24,14 @@
   --radius-2xl: calc(0.625rem + 8px);
 }
 
+/*
+ * No rubber-band bounce at the page's ends: the page ends on the footer's glow, and a bounce past it
+ * showed a strip of the dark page background under it.
+ */
+html {
+  overscroll-behavior-y: none;
+}
+
 /* Borders and outlines that set no colour of their own take these, as in the design. */
 @layer base {
   * {
