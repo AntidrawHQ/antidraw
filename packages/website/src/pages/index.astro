@@ -65,5 +65,11 @@ const image = new URL("/og.png", Astro.site).href
         <LandingFooter client:visible={{ rootMargin: "400px" }} />
       </main>
     </div>
+
+    <!--
+      Cloudflare Web Analytics: cookieless page views and Core Web Vitals. Added by hand because Cloudflare's
+      automatic injection skips responses a Worker serves, as this site's static assets are.
+    -->
+    <script is:inline type="module" src="https://static.cloudflareinsights.com/beacon.min.js" data-cf-beacon='{"token": "10930b0f22894b0e9dd1812143073bea"}'></script>
   </body>
 </html>
