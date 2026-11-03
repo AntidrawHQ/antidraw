@@ -25,35 +25,33 @@ const GLOW: ColumnGlowSettings = { ...COLUMN_GLOW_DEFAULTS, colors: [...PALETTE]
 /** The band at sm and up: its height, the glow's, the wordmark's scale and its top. */
 const BAND = { height: 360, glowHeight: 260, scale: 1, top: 88 }
 
-/** What each part says when clicked, in turn. */
+/** What each part says when clicked, in turn: all of it, one way or another, "go download the app". */
 const EGGS: Eggs = {
   lines: {
     wordmark: [
-      "Yes, it's selected. No, you can't drag it. We tried.",
-      "The wordmark, at 80px. The agent wanted 81.",
-      "Approved by three agents and one very tired human.",
+      "Bro, it's a footer. The real canvas is one Download away.",
+      "You can't drag this one. In the app, you can drag everything.",
+      "Still clicking? The app has way more to click. Just saying.",
     ],
     toolbar: [
-      "See Code? It's a span and an img. Very senior engineering.",
-      "Fullscreen would just be a bigger antidraw. Trust us.",
+      "See Code works in the app, bro. Here it's just vibes.",
+      "Fullscreen would just be a bigger antidraw. Download the app for the real thing.",
     ],
     you: [
-      "That's you. Well, a you. You look great.",
-      "This cursor has hovered here since launch. Commitment.",
+      "Bro, you're clicking yourself. Go download the app.",
+      "That's you, clicking a footer. Could be you, designing in the app.",
     ],
     agent: [
-      "Hi! I'd help, but I'm a footer.",
-      "Waiting for your next comment. No pressure.",
-      "I've been asked to make the logo bigger 14 times.",
+      "Hi! I'd help, but I'm stuck in a footer. In the app I do actual work.",
+      "Download the app and give me a real task, bro.",
     ],
     glow: [
-      "You reached the bottom. Here's a glow for your trouble.",
-      "48 columns, Glacier palette, zero meetings.",
-      "This is where good scrolls go to rest.",
+      "You scrolled all the way down here and still haven't downloaded? Bro.",
+      "Nice glow, right? Wait till you see the app.",
     ],
   },
-  out: "That's everything the footer knows. The rest is in the app.",
-  tenth: "Ten clicks on a footer. You'd be great at QA.",
+  out: "Okay bro, you've clicked everything. Download the app. Please.",
+  tenth: "Ten clicks on a footer. Bro. Download the app.",
 }
 
 export function FooterWordmark() {
