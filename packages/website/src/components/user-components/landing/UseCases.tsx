@@ -8,10 +8,12 @@
  * little grain, the video inset in a dark window. Styled to sit inside AntidrawLandingEssay's <main>
  * (its px-5 / sm:px-16 padding) in either theme.
  */
-import { useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react"
+import { memo, useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react"
 
 import { cn } from "@/lib/utils"
+import { ScenePaused } from "../motion/canvas-ai/kit"
 import { useType } from "./TypeScale"
+import { USE_CASE_ROLES as ROLES, type RoleInfo, type UseCaseInfo } from "./use-case-roles"
 import { UseCasePMPrdTakesScene } from "../scenes/UseCasePMPrdTakes"
 import { UseCasePMClickFlowsScene } from "../scenes/UseCasePMClickFlows"
 import { UseCasePMRealDataScene } from "../scenes/UseCasePMRealData"
@@ -25,47 +27,19 @@ import { UseCaseMarketingSlidesScene } from "../scenes/UseCaseMarketingSlides"
 import { UseCaseMarketingSizesScene } from "../scenes/UseCaseMarketingSizes"
 import { UseCaseSalesMockupScene } from "../scenes/UseCaseSalesMockup"
 
-export type UseCase = { title: string; line: string; Scene?: ComponentType<{ className?: string }> }
-type Role = { role: string; pitch: string; cases: UseCase[] }
+export type UseCase = UseCaseInfo & { Scene?: ComponentType<{ className?: string }> }
+type Role = Omit<RoleInfo, "cases"> & { cases: UseCase[] }
 
-export const USE_CASE_ROLES: Role[] = [
-  {
-    role: "PMs",
-    pitch: "Make prototypes and wireframes people can actually use and share. Explore directions until you find the right one, at AI-native speed.",
-    cases: [
-      { title: "Several takes on one PRD", line: "Hand it the PRD and ask for three takes. Each one is built from the components your team already ships, so every option on the table is one engineering could actually build.", Scene: UseCasePMPrdTakesScene },
-      { title: "Real flows you can click through", line: "Screens that link up, with the transitions, loading states and small interactions in place. Walk a stakeholder through the real thing instead of narrating a slide.", Scene: UseCasePMClickFlowsScene },
-      { title: "Real data, real logic", line: "Drop in a spreadsheet or a sample of real data, and give the prototype logic a picture can't fake: sorting, filtering, search, totals, pricing maths. Your numbers and edge cases, not lorem ipsum.", Scene: UseCasePMRealDataScene },
-      { title: "Test it with users", line: "Run research sessions on a prototype that behaves like the product. Testers click through the real flow while you watch, and you can change it between sessions.", Scene: UseCasePMUserTestsScene },
-    ],
-  },
-  {
-    role: "Designers",
-    pitch: "Design in the material the product is made of.",
-    cases: [
-      { title: "Animations other tools can't do", line: "Springs, gestures, scroll, drag and physics you can actually feel, not a prototype link that fakes it with dissolves. Tune the motion on the real component until it's right.", Scene: UseCaseDesignAnimationsScene },
-      { title: "Build the controls you need", line: "Ask for the exact sliders, swatches and toggles a design needs, then shape it by hand. When AI can make almost anything, the craft is in having the right handles.", Scene: UseCaseDesignControlsScene },
-      { title: "Design every state", line: "Hover, loading, empty, error, the 40-character name and the three-line title. Flip through them on the real component instead of drawing each one.", Scene: UseCaseDesignStatesScene },
-      { title: "Responsive for real", line: "Resize the frame and the layout reflows the way it will in the browser. No more drawing a mobile, tablet and desktop copy of every screen.", Scene: UseCaseDesignResponsiveScene },
-    ],
-  },
-  {
-    role: "Marketers",
-    pitch: "On-brand assets from the real product, with every detail yours to adjust.",
-    cases: [
-      { title: "Launch videos with Remotion", line: "Feature announcements made from your real components and brand, scene by scene. The product in the video is the product people get, and every frame is yours to adjust.", Scene: UseCaseMarketingVideoScene },
-      { title: "Slides made of real components", line: "Launch keynotes and webinar decks built from your actual product and brand. Animated where you want it, and never out of date with the app.", Scene: UseCaseMarketingSlidesScene },
-      { title: "Every size, from one design", line: "Because it's code, one design adapts. Ask for the square, the story and the banner, and each one lays itself out properly instead of being redrawn.", Scene: UseCaseMarketingSizesScene },
-    ],
-  },
-  {
-    role: "Sales",
-    pitch: "Show prospects the product they're buying, shaped around them.",
-    cases: [
-      { title: "Mockups with their data", line: "Their logo, their colours and their records, inside your product. Show a prospect what it looks like when it's theirs, before they've signed anything.", Scene: UseCaseSalesMockupScene },
-    ],
-  },
+/** Each case's scene, in landing/use-case-roles' order: role by role, case by case. */
+const SCENES: ComponentType<{ className?: string }>[][] = [
+  [UseCasePMPrdTakesScene, UseCasePMClickFlowsScene, UseCasePMRealDataScene, UseCasePMUserTestsScene],
+  [UseCaseDesignAnimationsScene, UseCaseDesignControlsScene, UseCaseDesignStatesScene, UseCaseDesignResponsiveScene],
+  [UseCaseMarketingVideoScene, UseCaseMarketingSlidesScene, UseCaseMarketingSizesScene],
+  [UseCaseSalesMockupScene],
 ]
+
+/** The roles and their cases (landing/use-case-roles, which the navbar and footer read alone), each case with its scene. */
+export const USE_CASE_ROLES: Role[] = ROLES.map((r, ri) => ({ ...r, cases: r.cases.map((c, ci) => ({ ...c, Scene: SCENES[ri]?.[ci] })) }))
 
 const TONE = {
   dark: { ink: "text-white", soft: "text-white/70", quiet: "text-white/45" },
@@ -133,9 +107,21 @@ function halftone(seed: number): Shape[] {
 /** The colour pair of role ri's case ci, as its card draws it (the navbar's menus reuse it). */
 export const cardSwatch = (ri: number, ci: number) => SWATCHES[(ri * 3 + ci) % SWATCHES.length]
 
+/**
+ * False on the server and in the first client render, true once mounted. The cards' scenes and halftone
+ * borders are thousands of nodes of decoration: the page's HTML carries the rows' words and colours, and
+ * these draw in once the section hydrates (as it nears the screen).
+ */
+function useMounted() {
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => setMounted(true), [])
+  return mounted
+}
+
 function Frame({ i, children }: { i: number; children: ReactNode }) {
   const [bg, ink] = SWATCHES[i % SWATCHES.length]
-  const shapes = useMemo(() => halftone(i + 1), [i])
+  const mounted = useMounted()
+  const shapes = useMemo(() => (mounted ? halftone(i + 1) : []), [i, mounted])
   return (
     <div className="relative overflow-hidden" style={{ background: bg, padding: `${PAD * 100}%` }}>
       <svg aria-hidden className="absolute inset-0 h-full w-full" viewBox={`0 0 ${FW} ${FH}`} preserveAspectRatio="xMidYMid slice">
@@ -184,11 +170,12 @@ function Intro({ t }: { t: Tone }) {
 }
 
 /** A use case's card: its colour frame, with the video or a placeholder until it's made. Neighbouring cards, and the same slot in the next role, never share a colour. */
-export function Card({ uc, role, ri, ci }: { uc: UseCase; role: string; ri: number; ci: number }) {
+export const Card = memo(function Card({ uc, role, ri, ci }: { uc: UseCase; role: string; ri: number; ci: number }) {
+  const mounted = useMounted()
   return (
     <Frame i={ri * 3 + ci}>
       {uc.Scene ? (
-        <uc.Scene />
+        mounted && <uc.Scene />
       ) : (
         <div className="grid h-full place-content-center text-center">
           <div className="text-[13px] font-medium text-white/45">
@@ -199,7 +186,7 @@ export function Card({ uc, role, ri, ci }: { uc: UseCase; role: string; ri: numb
       )}
     </Frame>
   )
-}
+})
 
 /** Layout: per role, a sideways filmstrip of cards starting at the page's left padding. */
 export function UseCasesSection({ theme = "dark", className }: { theme?: "dark" | "light"; className?: string }) {
@@ -237,6 +224,8 @@ const PAGE = { dark: "bg-[var(--landing-page,#262626)]", light: "bg-[var(--landi
 /** Rows pin this far from the top of the window, each a little lower than the last, so the next one slides up over it like a sheet on a stack. */
 const PIN = 32
 const FOLDED = 18
+/** A row this far covered (0 open → 1 folded) shows only its title, so its scene stops. */
+const COVERED = 0.9
 
 /**
  * Layout, after Morph's site: a sticky index of roles on the left (square
@@ -266,11 +255,16 @@ export function UseCasesRows({ theme = "dark", className, roles = USE_CASE_ROLES
 
   // How far the next row has slid over each row (0 open → 1 folded), written straight to the row's style.
   const rows = useRef<(HTMLDivElement | null)[][]>([])
+  // Rows folded under the next one, as "ri-ci" keys: their scenes pause, since Scene's own observer
+  // still counts a covered row as on screen. Set only when a row crosses COVERED, never per frame.
+  const [covered, setCovered] = useState("")
   useEffect(() => {
     let raf = 0
+    let last = ""
     const update = () => {
       raf = 0
-      for (const group of rows.current) {
+      const now: string[] = []
+      rows.current.forEach((group, ri) => {
         group.forEach((el, k) => {
           const next = group[k + 1]
           if (!el) return
@@ -285,8 +279,11 @@ export function UseCasesRows({ theme = "dark", className, roles = USE_CASE_ROLES
             inner.style.opacity = String(1 - cover * 0.55)
             inner.style.transform = `scale(${1 - cover * 0.03})`
           }
+          if (cover >= COVERED) now.push(`${ri}-${k}`)
         })
-      }
+      })
+      const key = now.join(" ")
+      if (key !== last) setCovered((last = key))
     }
     const onScroll = () => {
       if (!raf) raf = requestAnimationFrame(update)
@@ -351,7 +348,9 @@ export function UseCasesRows({ theme = "dark", className, roles = USE_CASE_ROLES
                         <p className={`m-0 mt-2 ${ty.line} leading-[1.55] text-pretty ${t.soft}`}>{uc.line}</p>
                       </div>
                       <div className="mt-6" style={{ width: `min(100%, calc((100vh - 280px) * ${FRAME_RATIO}))` }}>
-                        <Card uc={uc} role={r.role} ri={ri} ci={ci} />
+                        <ScenePaused.Provider value={covered.split(" ").includes(`${ri}-${ci}`)}>
+                          <Card uc={uc} role={r.role} ri={ri} ci={ci} />
+                        </ScenePaused.Provider>
                       </div>
                     </div>
                   </div>

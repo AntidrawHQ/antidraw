@@ -94,11 +94,22 @@ const rand = (n: number) => {
   return x - Math.floor(x)
 }
 
-const CSS = `
-@keyframes ad-column-glow { 0%, 100% { transform: scaleY(1); } 50% { transform: scaleY(calc(1 - var(--amp))); } }
-@media (prefers-reduced-motion: no-preference) { .ad-column-glow { animation: ad-column-glow var(--d) ease-in-out var(--l) infinite; } }
-[data-offscreen] .ad-column-glow { animation-play-state: paused; }
+/**
+ * The breathing, one keyframes rule per depth. The depth is written into the keyframes, not read from a
+ * custom property there: keyframes that use var() can't run on the compositor, so 80 bars would each
+ * need a style pass on every frame.
+ */
+/** How many independent breathing groups the columns are dealt into. */
+const VOICES = 8
+const breathing = (amp: number) => {
+  const name = `ad-column-glow-${Math.round(amp * 1000)}`
+  const css = `
+@keyframes ${name} { 0%, 100% { transform: scaleY(1); } 50% { transform: scaleY(${(1 - amp).toFixed(3)}); } }
+@media (prefers-reduced-motion: no-preference) { .${name} { animation: ${name} var(--d) ease-in-out var(--l) infinite; } }
+[data-offscreen] .${name} { animation-play-state: paused; }
 `
+  return { name, css }
+}
 
 export function ColumnGlow(props: ColumnGlowProps) {
   const p = { ...COLUMN_GLOW_DEFAULTS, ...props }
@@ -124,16 +135,31 @@ export function ColumnGlow(props: ColumnGlowProps) {
         const dim = (i % 2 ? p.dim : p.dim * 0.12) + r * 0.12 * Math.min(1, p.dim * 3)
         // The arc drops the tops toward the edges along a curve, each column a
         // little more or less than its neighbours; the random steps sit on top.
-        const arc = p.arc * Math.pow(edge, 1.7) * (0.78 + rand(s + 200) * 0.44)
-        const top = Math.min(94, arc + (r < p.full ? 0 : 4 + rand(s + 40) * Math.max(0, p.stagger - 4)))
+        // `k` is this column's share of `arc`, `step` its drop without it: its top sits at min(94, arc × k + step)%.
+        const k = Math.pow(edge, 1.7) * (0.78 + rand(s + 200) * 0.44)
+        const step = r < p.full ? 0 : 4 + rand(s + 40) * Math.max(0, p.stagger - 4)
         // Outer columns hold the first colours longer.
         const from = p.start * 100 + edge * p.edge + rand(s + 80) * p.jitter
         const stops = colors.map((c, k) => `${c} ${Math.min(100, from + (p.spread * 100 * k) / (colors.length - 1)).toFixed(1)}%`)
-        const shade = `linear-gradient(180deg, rgba(10,12,20,${dim}) 0%, rgba(10,12,20,${dim * 0.8}) 55%, rgba(10,12,20,0) 88%)`
+        // Rounded: rand() magnifies Math.sin's last digits, which differ between Node and the browser, and the
+        // server-rendered page has to match the browser's render exactly.
+        const shade = `linear-gradient(180deg, rgba(10,12,20,${dim.toFixed(4)}) 0%, rgba(10,12,20,${(dim * 0.8).toFixed(4)}) 55%, rgba(10,12,20,0) 88%)`
         const background = `${shade}, linear-gradient(180deg, ${colors[0]} 0%, ${stops.join(", ")}, ${colors[colors.length - 1]} 100%)`
-        return { top, background, d: `${(7 + rand(s + 120) * 6) / Math.max(0.05, p.speed)}s`, l: `${-rand(s + 160) * 10}s` }
+        // Rounded for the same reason as `shade`.
+        return { k: +k.toFixed(4), step: +step.toFixed(3), background }
       }),
-    [columns, seed, colors.join(), p.start, p.spread, p.edge, p.jitter, p.stagger, p.full, p.arc, p.dim, p.speed],
+    [columns, seed, colors.join(), p.start, p.spread, p.edge, p.jitter, p.stagger, p.full, p.dim],
+  )
+  // The columns breathe in VOICES groups, interleaved (column i in voice i % VOICES), each on its own
+  // period and phase, so neighbours never move together. One animated layer per voice instead of one per
+  // column: 16 animated elements in place of 80 is most of what the band costs while anything near it moves.
+  const voices = useMemo(
+    () =>
+      Array.from({ length: Math.min(VOICES, columns) }, (_, v) => {
+        const s = v + 1 + seed * 997
+        return { d: `${((7 + rand(s + 120) * 6) / Math.max(0.05, p.speed)).toFixed(3)}s`, l: `${(-rand(s + 160) * 10).toFixed(3)}s` }
+      }),
+    [columns, seed, p.speed],
   )
 
   const fade = `linear-gradient(180deg, transparent 0%, #000 ${p.fadeTop}%, #000 ${100 - p.fadeBottom}%, ${p.fadeBottom ? "transparent" : "#000"} 100%)`
@@ -143,27 +169,51 @@ export function ColumnGlow(props: ColumnGlowProps) {
   const spill = p.soften * 70
   const side = `linear-gradient(90deg, transparent 0%, #000 ${p.soften * 40}%, #000 ${100 - p.soften * 40}%, transparent 100%)`
   const crown = `linear-gradient(180deg, transparent 0%, #000 ${p.soften * 140}px)`
-  const feather: CSSProperties =
-    p.soften > 0
+  const soft = p.soften > 0
+  const breathe = breathing(p.motion)
+
+  // The columns, built once per pattern and shared by both layers: changing `arc` (which the canvas
+  // landing animates) only moves the --cg-arc custom property on the root, so React re-renders nothing
+  // below it. Crisp columns take their tops as a scaleY from the bottom, which the compositor
+  // applies without layout or repaint. Softened ones keep `top`, so their feathered crowns aren't squashed.
+  const cols = useMemo(() => {
+    const feather: CSSProperties = soft
       ? { left: `-${spill}%`, right: `-${spill}%`, maskImage: `${side}, ${crown}`, WebkitMaskImage: `${side}, ${crown}`, maskComposite: "intersect", WebkitMaskComposite: "source-in" }
       : {}
+    const top = (b: (typeof bars)[number]) => `min(94, var(--cg-arc) * ${b.k.toFixed(4)} + ${b.step.toFixed(3)})`
+    const column = (b: (typeof bars)[number], i: number) => (
+      <div
+        key={i}
+        className="absolute inset-y-0 origin-bottom"
+        style={{ left: `${(i * 100) / columns}%`, width: `${100 / columns}%`, transform: soft ? undefined : `scaleY(calc(1 - ${top(b)} / 100))` }}
+      >
+        <div
+          className={cx("absolute -inset-x-[0.5px] -bottom-1", soft ? null : "top-0")}
+          style={{ ...(soft ? { top: `calc(${top(b)} * 1%)` } : null), background: b.background, ...feather }}
+        />
+      </div>
+    )
+    return voices.map((v, vi) => (
+      <div key={vi} className={cx("absolute inset-0 origin-bottom", p.motion > 0 && breathe.name)} style={{ "--d": v.d, "--l": v.l } as CSSProperties}>
+        {bars.map((b, i) => (i % voices.length === vi ? column(b, i) : null))}
+      </div>
+    ))
+  }, [bars, voices, columns, soft, spill, side, crown, p.motion, breathe.name])
 
   const layer = (blur: number, opacity = 1) => (
-    <div className={cx("absolute flex", blur ? "-inset-12" : "inset-0")} style={blur ? { filter: `blur(${blur}px)`, opacity } : undefined}>
-      {bars.map((b, i) => (
-        <div key={i} className="relative h-full flex-1">
-          <div
-            className={cx("absolute -inset-x-[0.5px] -bottom-1 origin-bottom", p.motion > 0 && "ad-column-glow")}
-            style={{ top: `${b.top}%`, background: b.background, "--d": b.d, "--l": b.l, "--amp": p.motion, ...feather } as CSSProperties}
-          />
-        </div>
-      ))}
+    <div className={cx("absolute", blur ? "-inset-12" : "inset-0")} style={blur ? { filter: `blur(${blur}px)`, opacity } : undefined}>
+      {cols}
     </div>
   )
 
   return (
-    <div ref={root} data-offscreen={onScreen ? undefined : ""} className={cx("relative isolate overflow-hidden", p.className)} style={{ background: p.background, ...p.style }}>
-      <style>{CSS}</style>
+    <div
+      ref={root}
+      data-offscreen={onScreen ? undefined : ""}
+      className={cx("relative isolate overflow-hidden", p.className)}
+      style={{ background: p.background, contain: "paint", ...p.style, "--cg-arc": p.arc } as CSSProperties}
+    >
+      <style>{breathe.css}</style>
       <div aria-hidden className="pointer-events-none absolute inset-0 -z-10" style={{ maskImage: fade, WebkitMaskImage: fade }}>
         {layer(p.soften * 18)}
         {p.glow > 0 && layer(p.glow + p.soften * 20, p.glowOpacity)}

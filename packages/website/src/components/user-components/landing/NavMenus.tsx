@@ -19,7 +19,9 @@ import { cn } from "@/lib/utils"
 import { Card, USE_CASE_ROLES, cardSwatch } from "./UseCases"
 import { ScenePlayback } from "../motion/canvas-ai/kit"
 
-export type MenuStyle = "list" | "described" | "swatch" | "preview" | "mega" | "editorial" | "chips"
+/** Which styles there are, and which are wide: in nav-menu-styles.ts, so the navbar can read them without loading these menus. */
+import { WIDE, type MenuStyle } from "./nav-menu-styles"
+export { WIDE, type MenuStyle }
 
 export const MENU_STYLES: { id: MenuStyle; name: string; note: string }[] = [
   { id: "list", name: "Simple list", note: "Titles only, roomy, an arrow on hover." },
@@ -31,8 +33,6 @@ export const MENU_STYLES: { id: MenuStyle; name: string; note: string }[] = [
   { id: "chips", name: "Pitch and pills", note: "The role's pitch, then its cases as pills. The most compact." },
 ]
 
-/** Wide styles span the navbar instead of hanging under their link. */
-export const WIDE: Record<MenuStyle, boolean> = { list: false, described: false, swatch: false, preview: false, mega: true, editorial: false, chips: false }
 
 const TONE = {
   dark: {

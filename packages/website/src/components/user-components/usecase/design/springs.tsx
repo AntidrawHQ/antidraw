@@ -8,21 +8,18 @@
  *                 Northside Readers as a swipeable card stack. Each card's
  *                 transform comes in as MotionValues so a timeline can drag,
  *                 spring and fling it. Natural size 300×600.
- *  - SpringPanel  the controls the agent adds: DialKit's real Folder and
- *                 Sliders (mounted statically, as in ecosystem/liveline-dial),
+ *  - SpringPanel  the controls the agent adds: DialKit's Folder and Sliders,
+ *                 drawn statically (landing-canvas/dialkit-replica.tsx),
  *                 with a spring curve drawn in DialKit's spring-viz style but
  *                 on a fixed scale, so more bounce reads as more overshoot,
  *                 plus the last curve as a ghost and a dot riding the curve
  *                 while a released card settles.
  */
-import "dialkit/styles.css"
-
-import { useEffect, useRef, type ReactNode } from "react"
-import { Folder, Slider } from "dialkit"
+import { type ReactNode } from "react"
 import { Bookmark, BookmarkPlus, RotateCcw, Star, X } from "lucide-react"
 import { motion, type MotionValue } from "motion/react"
 
-import { cn } from "@/lib/utils"
+import { DialPanel, DialSlider } from "../../landing-canvas/dialkit-replica"
 
 /* ── The physics ───────────────────────────────────────────────────────── */
 
@@ -297,22 +294,6 @@ function curve(k: number, bounce: number) {
   return d
 }
 
-const noop = () => {}
-
-/** DialKit's Slider with its hover replayed (liveline-dial's trick: a scene pointer never hovers for real). */
-function ScriptedSlider({ label, value, min, max, step, active = false }: { label: string; value: number; min: number; max: number; step: number; active?: boolean }) {
-  const ref = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    const el = ref.current?.querySelector(".dialkit-slider")
-    el?.dispatchEvent(new MouseEvent(active ? "mouseover" : "mouseout", { bubbles: true, relatedTarget: null }))
-  }, [active])
-  return (
-    <div ref={ref}>
-      <Slider label={label} value={value} min={min} max={max} step={step} onChange={noop} />
-    </div>
-  )
-}
-
 /**
  * The card's spring: the response curve (a released card's offset over
  * 1.5s, release at the top, rest on the dashed line), `ghost` an earlier
@@ -322,32 +303,28 @@ function ScriptedSlider({ label, value, min, max, step, active = false }: { labe
 export function SpringPanel({ stiffness, bounce, ghost, tau = -1, active = false, className }: { stiffness: number; bounce: number; ghost?: number; tau?: number; active?: boolean; className?: string }) {
   const dot = tau >= 0 && tau <= SPAN ? [(tau / SPAN) * VW, curveY(springAt(tau, 1, 0, stiffness, bounce))] : null
   return (
-    <div className={cn("dialkit-root", className)} data-theme="dark" style={{ width: PANEL_W }}>
-      <div className="dialkit-panel" style={{ position: "relative", zIndex: "auto", maxHeight: "none", width: "100%" }}>
-        <Folder title="Card spring" isRoot>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <svg viewBox={`0 0 ${VW} ${VH}`} className="dialkit-spring-viz">
-              {[1, 2, 3].map((i) => (
-                <g key={i}>
-                  <line x1={(VW / 4) * i} y1={0} x2={(VW / 4) * i} y2={VH} stroke="rgba(255,255,255,0.08)" strokeWidth="1" />
-                  <line x1={0} y1={(VH / 4) * i} x2={VW} y2={(VH / 4) * i} stroke="rgba(255,255,255,0.08)" strokeWidth="1" />
-                </g>
-              ))}
-              <line x1={0} y1={REST_Y} x2={VW} y2={REST_Y} stroke="rgba(255,255,255,0.15)" strokeWidth="1" strokeDasharray="4,4" />
-              {ghost !== undefined && ghost !== bounce && <path d={curve(stiffness, ghost)} fill="none" stroke="rgba(255,255,255,0.16)" strokeWidth="1.5" strokeLinecap="round" />}
-              <path d={curve(stiffness, bounce)} fill="none" stroke="rgba(255,255,255,0.6)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-              {dot && (
-                <g>
-                  <line x1={dot[0]} y1={0} x2={dot[0]} y2={VH} stroke="rgba(255,255,255,0.12)" strokeWidth="1" />
-                  <circle cx={dot[0]} cy={dot[1]} r="4" fill="#fff" />
-                </g>
-              )}
-            </svg>
-            <ScriptedSlider label="Stiffness" value={stiffness} min={50} max={500} step={10} />
-            <ScriptedSlider label="Bounce" value={bounce} min={0} max={1} step={0.01} active={active} />
-          </div>
-        </Folder>
+    <DialPanel title="Card spring" width={PANEL_W} className={className}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <svg viewBox={`0 0 ${VW} ${VH}`} className="dialkit-spring-viz">
+          {[1, 2, 3].map((i) => (
+            <g key={i}>
+              <line x1={(VW / 4) * i} y1={0} x2={(VW / 4) * i} y2={VH} stroke="rgba(255,255,255,0.08)" strokeWidth="1" />
+              <line x1={0} y1={(VH / 4) * i} x2={VW} y2={(VH / 4) * i} stroke="rgba(255,255,255,0.08)" strokeWidth="1" />
+            </g>
+          ))}
+          <line x1={0} y1={REST_Y} x2={VW} y2={REST_Y} stroke="rgba(255,255,255,0.15)" strokeWidth="1" strokeDasharray="4,4" />
+          {ghost !== undefined && ghost !== bounce && <path d={curve(stiffness, ghost)} fill="none" stroke="rgba(255,255,255,0.16)" strokeWidth="1.5" strokeLinecap="round" />}
+          <path d={curve(stiffness, bounce)} fill="none" stroke="rgba(255,255,255,0.6)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+          {dot && (
+            <g>
+              <line x1={dot[0]} y1={0} x2={dot[0]} y2={VH} stroke="rgba(255,255,255,0.12)" strokeWidth="1" />
+              <circle cx={dot[0]} cy={dot[1]} r="4" fill="#fff" />
+            </g>
+          )}
+        </svg>
+        <DialSlider label="Stiffness" value={stiffness} min={50} max={500} step={10} />
+        <DialSlider label="Bounce" value={bounce} min={0} max={1} step={0.01} active={active} />
       </div>
-    </div>
+    </DialPanel>
   )
 }

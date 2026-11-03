@@ -18,6 +18,7 @@
 import type { CSSProperties, ReactNode } from "react"
 
 import { cn } from "@/lib/utils"
+import "./fraunces.css"
 
 const mix = (a: number, b: number, p: number) => a + (b - a) * p
 /** Piecewise across compact / cozy / airy for a density 0→2. */
@@ -132,7 +133,6 @@ export function ProductCard({ r, accent, density, badge }: { r: number; accent: 
         </div>
         <div className="mt-2 text-center text-[10.5px] text-black/45">Roasted to order · ships the next day</div>
       </div>
-      <style>{`@import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500&display=swap");`}</style>
     </div>
   )
 }

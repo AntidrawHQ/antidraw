@@ -34,12 +34,14 @@ const TONE = {
 
 /**
  * "Download", with chips saying which Macs it's for and that it's an alpha; `icon` sits before the label. `stretch` fills the row,
- * as the hero's stacked buttons do on a phone. The menu hangs under the button's right edge.
+ * as the hero's stacked buttons do on a phone; `"narrow"` does so only below md, in CSS, so a server render needs no window. The menu hangs under the button's right edge.
  */
-export function DownloadButton({ theme, icon, stretch = false, className }: { theme: "dark" | "light"; icon?: ReactNode; stretch?: boolean; className?: string }) {
+export function DownloadButton({ theme, icon, stretch = false, className }: { theme: "dark" | "light"; icon?: ReactNode; stretch?: boolean | "narrow"; className?: string }) {
   const t = TONE[theme]
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  // Stretched always (true), never (false), or only below md ("narrow"). Spelled out so Tailwind sees each class.
+  const st = (on: string, off: string, narrow: string) => (stretch === "narrow" ? narrow : stretch ? on : off)
 
   // Closes on a press outside it, or on Escape.
   useEffect(() => {
@@ -57,9 +59,9 @@ export function DownloadButton({ theme, icon, stretch = false, className }: { th
   }, [open])
 
   return (
-    <div ref={ref} className={cn("relative", stretch ? "flex" : "inline-flex", className)}>
-      <div className={cn("flex h-11 items-stretch text-[15px] font-medium", stretch && "flex-1", t.solid)}>
-        <a href={DOWNLOADS.silicon} className={cn("inline-flex items-center justify-center gap-2 whitespace-nowrap transition-transform active:scale-[0.97]", stretch ? "flex-1" : "pr-4 pl-5")}>
+    <div ref={ref} className={cn("relative", st("flex", "inline-flex", "max-md:flex md:inline-flex"), className)}>
+      <div className={cn("flex h-11 items-stretch text-[15px] font-medium", st("flex-1", "", "max-md:flex-1"), t.solid)}>
+        <a href={DOWNLOADS.silicon} className={cn("inline-flex items-center justify-center gap-2 whitespace-nowrap transition-transform active:scale-[0.97]", st("flex-1", "pr-4 pl-5", "max-md:flex-1 md:pr-4 md:pl-5"))}>
           {icon}
           Download
           <span className="ml-0.5 flex items-center gap-1">

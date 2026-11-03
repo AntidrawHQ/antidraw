@@ -10,7 +10,8 @@
     "build": "astro build",
     "preview": "astro preview",
     "typecheck": "astro check",
-    "deploy": "astro build && wrangler deploy"
+    "deploy": "node scripts/check-downloads.mjs && astro build && wrangler deploy",
+    "check:downloads": "node scripts/check-downloads.mjs"
   },
   "dependencies": {
     "@ark-ui/react": "^5.39.3",
@@ -21,7 +22,6 @@
     "boring-avatars": "^2.0.4",
     "clsx": "^2.1.1",
     "cookie": "^2.0.1",
-    "dialkit": "^2.0.2",
     "lucide-react": "1.51.0",
     "motion": "14.0.0",
     "react": "^19.2.3",

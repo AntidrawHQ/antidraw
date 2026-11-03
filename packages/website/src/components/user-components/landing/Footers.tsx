@@ -16,7 +16,7 @@ import { ArrowUpRight } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 import { PATHS } from "../antidraw-empty/logos"
-import { USE_CASE_ROLES } from "./UseCases"
+import { USE_CASE_ROLES } from "./use-case-roles"
 import iconUrl from "./antidraw-icon.svg?url"
 import { useType } from "./TypeScale"
 import { DownloadButton } from "./DownloadButton"

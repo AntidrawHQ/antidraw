@@ -107,6 +107,11 @@ type SceneCtx = { t: MotionValue<number>; duration: number; width: number; heigh
  * as reduced motion does (thumbnails that only play on hover).
  */
 export const ScenePlayback = createContext<"live" | "still">("live")
+/**
+ * True while a scene is on screen but can't be seen, as a use-case row covered by the next one in its
+ * stack: its clock stops where it is (unlike "still", which jumps to the still frame) and its CSS animations pause.
+ */
+export const ScenePaused = createContext(false)
 const Ctx = createContext<SceneCtx | null>(null)
 
 export function useScene() {
@@ -160,6 +165,7 @@ export function Scene({
 }) {
   const reducedMotion = useReducedMotion()
   const playback = useContext(ScenePlayback)
+  const paused = useContext(ScenePaused)
   const reduce = reducedMotion || playback === "still"
   const t = useMotionValue(reduce ? still : 0)
   const outer = useRef<HTMLDivElement>(null)
@@ -189,7 +195,7 @@ export function Scene({
       t.set(still)
       return
     }
-    if (!visible) return
+    if (!visible || paused) return
     let raf = 0
     let last = performance.now()
     const tick = (now: number) => {
@@ -201,10 +207,20 @@ export function Scene({
     }
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
-  }, [reduce, visible, duration, still, t])
+  }, [reduce, visible, paused, duration, still, t])
 
+  // Off screen or covered, its CSS loops (spinners, shimmers, carets) pause too, through global.css's
+  // [data-paused] rule, and resume from where they stopped. Not when held "still": a still frame can carry
+  // one-shot entrances (the *-pop classes) that would freeze on their first, invisible frame. It starts
+  // paused: `visible` is false until the observer reports, on the server and on the first client render alike.
+  const idle = !visible || paused
   return (
-    <div ref={outer} className={cn("relative w-full max-w-full overflow-hidden", className)} style={{ maxWidth: width, aspectRatio: `${width} / ${height}`, ...style }}>
+    <div
+      ref={outer}
+      data-paused={idle ? "" : undefined}
+      className={cn("relative w-full max-w-full overflow-hidden", className)}
+      style={{ maxWidth: width, aspectRatio: `${width} / ${height}`, ...style }}
+    >
       <div className="absolute top-0 left-0 origin-top-left" style={{ width, height, transform: `scale(${scale})` }}>
         <Ctx.Provider value={{ t, duration, width, height }}>{children}</Ctx.Provider>
       </div>

@@ -17,9 +17,10 @@
  * Everything runs off motion's clock (useTime), so cursors move at full frame rate; only the values a
  * component needs as props re-render it. Laid out for 1440×900 around the screen's centre, scaled to the window.
  */
-import { createContext, useContext, useEffect, useState, type CSSProperties, type ReactNode } from "react"
-import { motion, useMotionValueEvent, useTime, useTransform, type MotionValue } from "motion/react"
+import { createContext, lazy, Suspense, useContext, useEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react"
+import { cubicBezier, motion, motionValue, useMotionValue, useMotionValueEvent, useTransform, type MotionValue } from "motion/react"
 import { Check, ChevronDown, Scan } from "lucide-react"
+import "./landing-canvas/canvas-landing.css"
 
 import { cn } from "@/lib/utils"
 import { PATHS } from "./antidraw-empty/logos"
@@ -32,12 +33,10 @@ import { DIAL_W, GLOW_PALETTES, GlowDial } from "./landing-canvas/glowdial"
 import { BOARD_H, BOARD_W, BoardingCard, PLAYER_H, PLAYER_W, TidepodPlayer } from "./landing-canvas/inspired"
 import { SproutHome, cardH, cardRect } from "./usecase/design/sprout"
 import { FernhollowStay } from "./usecase/design/fernhollow"
-import { LandingFontFaces, fontStack } from "./landing/LandingFonts"
-import { EssayNav, NAV_H } from "./landing/EssayNav"
+import { fontStack } from "./landing/LandingFonts"
+import { EssayNav } from "./landing/EssayNav"
 import { DOWNLOADS, DownloadButton } from "./landing/DownloadButton"
-import { EssaySections } from "./landing/EssaySections"
-import { LandingFooter, type FooterStyle } from "./landing/Footers"
-import { TypeScaleCtx } from "./landing/TypeScale"
+import type { FooterStyle } from "./landing/Footers"
 
 const REPO = "https://github.com/AntidrawHQ/antidraw"
 const BLUE = "#3b82f6"
@@ -57,9 +56,62 @@ const GithubMark = ({ className = "size-4" }: { className?: string }) => (
 
 /* ── Clock ──────────────────────────────────────────────────────────── */
 
+/** Under prefers-reduced-motion the canvas holds on this moment: the card edited, the panel open, OrbitSite built. */
+const STILL_MS = 6000
+
+/**
+ * The canvas's one clock, in ms. It ticks only while the hero is on screen and the tab is visible, and holds
+ * at STILL_MS under prefers-reduced-motion. It starts at 0 on the server and on hydration, so both render the
+ * same first frame.
+ */
+const ClockCtx = createContext<MotionValue<number>>(motionValue(0))
+function useCanvasClock(ref: RefObject<HTMLElement | null>) {
+  const time = useMotionValue(0)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)")
+    let raf = 0
+    let last = 0
+    let visible = false
+    const tick = (now: number) => {
+      // A long frame (a stall, a backgrounded tab) advances the loops by at most 50ms.
+      if (last) time.set(time.get() + Math.min(50, now - last))
+      last = now
+      raf = requestAnimationFrame(tick)
+    }
+    const sync = () => {
+      const run = visible && !document.hidden && !reduce.matches
+      if (run && !raf) {
+        last = 0
+        raf = requestAnimationFrame(tick)
+      } else if (!run && raf) {
+        cancelAnimationFrame(raf)
+        raf = 0
+      }
+      if (reduce.matches) time.set(STILL_MS)
+    }
+    const io = new IntersectionObserver(([e]) => {
+      visible = e.isIntersecting
+      sync()
+    })
+    io.observe(el)
+    document.addEventListener("visibilitychange", sync)
+    reduce.addEventListener("change", sync)
+    sync()
+    return () => {
+      io.disconnect()
+      document.removeEventListener("visibilitychange", sync)
+      reduce.removeEventListener("change", sync)
+      cancelAnimationFrame(raf)
+    }
+  }, [ref, time])
+  return time
+}
+
 /** Seconds into a `period`-second loop, as a motion value. */
 function useLoop(period: number) {
-  const time = useTime()
+  const time = useContext(ClockCtx)
   return useTransform(time, (ms) => (ms / 1000) % period)
 }
 /** A motion value derived from the loop's time. */
@@ -89,16 +141,28 @@ const lerpHex = (a: string, b: string, p: number) => {
 
 /* ── Stage ──────────────────────────────────────────────────────────── */
 
-/** The canvas is drawn for 1440×900; this scales it to the window, within reason. Also gives the window's width. */
-function useStageScale() {
-  const read = () => [Math.min(1.25, Math.max(0.55, Math.min(window.innerWidth / 1440, window.innerHeight / 900))), window.innerWidth] as const
-  const [k, setK] = useState(read)
+/** The canvas is drawn for 1440×900; this is its zoom to fit the window, within reason. index.astro's head script runs the same sum. */
+const fitScale = () => Math.min(1.25, Math.max(0.55, Math.min(window.innerWidth / 1440, window.innerHeight / 900)))
+
+/**
+ * Keeps `--k`, the canvas's zoom, on `ref` as the window resizes; canvas-landing.css lays the hero out from it,
+ * so the server-rendered page is placed right before any script runs (the head script sets `--k` on <html>
+ * first). Returns the zoom for the zoom readout: 1 until hydrated, so the server and first client render agree.
+ */
+function useStageScale(ref: RefObject<HTMLElement | null>, fixed?: number) {
+  const [k, setK] = useState(1)
   useEffect(() => {
-    const on = () => setK(read())
+    if (fixed != null) return
+    const on = () => {
+      const v = fitScale()
+      ref.current?.style.setProperty("--k", String(v))
+      setK(v)
+    }
+    on()
     window.addEventListener("resize", on)
     return () => window.removeEventListener("resize", on)
-  }, [])
-  return k
+  }, [ref, fixed])
+  return fixed ?? k
 }
 
 /** The page in each theme. The app's own chrome (selected pill, Design panel, notes) stays dark, as in the app. */
@@ -308,10 +372,9 @@ const SPROUT = { x: -300, y: -30 }
 /** The app's panel at its natural 280px, scaled to fit the 228px gap between the inner frames. */
 const PANEL = { x: -98, y: -26, w: 280, s: 0.7 }
 const FERN = { x: 114, y: -30 }
-/** The title block, centred above the frames; `h` is its height at 1×, three lines and the buttons. 520 wide so the buttons keep to one row. */
-const TITLE = { w: 520, y: -353, h: 182 }
-/** The lowest frame's foot, PastelPoster's: the canvas reaches this far below its centre. */
-const CANVAS_FOOT = 430
+// The title block (520 wide, its foot at y -171, 182 tall at 1×: three lines and the buttons) and the lowest
+// frame's foot (PastelPoster's, 430 below the centre) set the hero's height and centre: see
+// landing-canvas/canvas-landing.css, which works them out from the zoom.
 
 /* ── You: precise edits, then two comments (16s) ────────────────────── */
 
@@ -536,37 +599,45 @@ function Player() {
 /* ── Page ───────────────────────────────────────────────────────────── */
 
 /** The page's ground and the scrollbar's thumb on it, per theme. */
-const PAGE_BG = { dark: "#232323", light: "#f5f5f4" }
-const SCROLL = { dark: "rgba(255,255,255,0.18)", light: "rgba(0,0,0,0.2)" }
+export const PAGE_BG = { dark: "#232323", light: "#f5f5f4" }
+export const SCROLL = { dark: "rgba(255,255,255,0.18)", light: "rgba(0,0,0,0.2)" }
 
-const DRIFT = { x: [0, -36, 18, 0], y: [0, 16, -12, 0] }
+/** The canvas drifts on a 22s loop through these offsets, eased in and out between them (motion's easeInOut). */
+const DRIFT = { x: [0, -36, 18, 0], y: [0, 16, -12, 0], period: 22 }
+const easeInOut = cubicBezier(0.42, 0, 0.58, 1)
+const drift = (vals: number[]) => (ms: number) => {
+  const s = (ms / 1000) % DRIFT.period
+  return kf(s, vals.map((v, i) => [(i * DRIFT.period) / (vals.length - 1), v, easeInOut] as Key))
+}
 
-/** The canvas landing in either theme (AntidrawLandingCanvasLight renders the light one). */
 /**
- * `hero` replaces the title and buttons (LaunchCanvasHero puts the founder's video there); `scale`
- * fixes the zoom instead of fitting the window, and the page then fills its parent, not the screen.
- * `bare` is the canvas alone — no title, navbar or zoom readout — for showing it inside an app
- * window (LaunchComposer). `full` makes it the whole page: the canvas is its first screen, the essay
- * landing's sections (landing/EssaySections) follow it, then the footer in `footer`'s style (landing/Footers):
- * by default the last call, "start on the canvas.", over the columns.
+ * The canvas, its title and the navbar: the page's first screen. `hero` replaces the title and buttons
+ * (LaunchCanvasHero puts the founder's video there); `scale` fixes the zoom instead of fitting the window,
+ * and the page then fills its parent, not the screen. `bare` is the canvas alone — no title, navbar or zoom
+ * readout — for showing it inside an app window (LaunchComposer). `readout` shows the zoom at the bottom right.
+ *
+ * Its layout is CSS (landing-canvas/canvas-landing.css) off `--k`, the zoom, so it renders on the server: the
+ * page is placed and painted before any script runs, and hydrating it changes nothing.
  */
-export function CanvasLanding({ theme = "dark", hero, scale, bare = false, full = false, footer = "closeColumns" }: { theme?: Theme; hero?: ReactNode; scale?: number; bare?: boolean; full?: boolean; footer?: FooterStyle }) {
+export function CanvasHero({ theme = "dark", hero, scale, bare = false, readout = false }: { theme?: Theme; hero?: ReactNode; scale?: number; bare?: boolean; readout?: boolean }) {
   const tone = TONES[theme]
-  const [fit, width] = useStageScale()
-  const k = scale ?? fit
-  // Below md the title leaves the canvas: it sits under the navbar at its own size, and the canvas moves down to clear it.
-  const narrow = !scale && width < 768
-  // Above it, the title's scale doesn't drop below 0.75 as the canvas shrinks, so it stays legible on a tablet. It grows upward: its bottom stays where the canvas puts it.
-  const kt = scale ? k : Math.max(k, 0.75)
+  const ref = useRef<HTMLDivElement>(null)
+  const k = useStageScale(ref, scale)
+  const time = useCanvasClock(ref)
+  const driftX = useTransform(time, drift(DRIFT.x))
+  const driftY = useTransform(time, drift(DRIFT.y))
+  // Below md the title leaves the canvas: it sits under the navbar at its own size, and the canvas moves down
+  // to clear it (canvas-landing.css). A fixed zoom keeps the wide layout, so these phone styles don't apply.
+  const nr = (c: string) => (scale != null ? "" : c)
   const title = (
     <>
-      <h1 className={cn("font-medium tracking-[-0.025em] text-balance", narrow ? "text-[26px]" : "text-[32px]", "leading-[1.1]")} style={{ fontVariationSettings: '"opsz" 32' }}>
-        product design &amp; prototyping {!narrow && <br />}
-        canvas for your coding agents {!narrow && <br />}
+      <h1 className={cn("text-[32px] leading-[1.1] font-medium tracking-[-0.025em] text-balance", nr("max-md:text-[26px]"))} style={{ fontVariationSettings: '"opsz" 32' }}>
+        product design &amp; prototyping <br className={nr("max-md:hidden")} />
+        canvas for your coding agents <br className={nr("max-md:hidden")} />
         powered by real code.
       </h1>
-      <div data-hero-cta className={cn("mt-8 flex flex-wrap items-center justify-center gap-2.5", narrow && "mx-auto max-w-[340px] flex-col items-stretch")}>
-        <DownloadButton theme={theme} stretch={narrow} icon={<AppleMark />} />
+      <div data-hero-cta className={cn("mt-8 flex flex-wrap items-center justify-center gap-2.5", nr("max-md:mx-auto max-md:max-w-[340px] max-md:flex-col max-md:items-stretch"))}>
+        <DownloadButton theme={theme} stretch={scale != null ? false : "narrow"} icon={<AppleMark />} />
         <a href={REPO} target="_blank" rel="noreferrer" className={cn("inline-flex h-11 items-center justify-center gap-2 border px-5 text-[15px] font-medium transition-colors", tone.ghost)}>
           <GithubMark />
           Star on GitHub
@@ -574,16 +645,66 @@ export function CanvasLanding({ theme = "dark", hero, scale, bare = false, full 
       </div>
     </>
   )
-  // The canvas's centre: the screen's, or low enough on a phone to clear the title.
-  // The hero is as tall as the screen, up to what the canvas needs at this zoom: the title above the centre
-  // (clear of the navbar) and the frames below it (down to PastelPoster's foot, 430 world px). In a window
-  // narrower than it is tall the zoom is set by the width, and a full-height hero would leave a band of
-  // empty canvas over the title and under the frames; capped, the title starts just under the navbar and
-  // the next section follows the frames. The centre splits the hero in the same proportion, title to frames.
-  const above = -(TITLE.y + TITLE.h) * k + TITLE.h * kt + NAV_H + 32
-  const below = CANVAS_FOOT * k + 24
-  const centre = narrow ? "max(50%, 480px)" : `${((above / (above + below)) * 100).toFixed(2)}%`
-  const heroH = narrow ? `${Math.round(480 + below)}px` : `min(100vh, ${Math.round(Math.max(680, above + below))}px)`
+  return (
+    <ThemeCtx.Provider value={theme}>
+      <ClockCtx.Provider value={time}>
+        <div
+          ref={ref}
+          className={cn("cl-hero relative overflow-hidden antialiased", scale != null && "cl-fixed h-full", tone.page)}
+          style={{ fontFamily: fontStack("schibsted"), ...(scale != null && { "--k": scale }) } as CSSProperties}
+        >
+          {/* The canvas: plain and drifting, the frames placed around the screen's centre. */}
+          <motion.div className="cl-stage absolute left-1/2" style={{ x: driftX, y: driftY }}>
+            <div className="cl-stage-scale">
+              <div aria-hidden className="font-sans">
+                <Build name="OrbitSite" at={ORBIT} nw={SITE_W} nh={SITE_H} s={SITE_S} color={AGENTS.blue} period={8}>
+                  <OrbitSite />
+                </Build>
+                <GlowTuning />
+                <Player />
+                <CanvasFrame name="BoardingCard" x={BOARD.x} y={BOARD.y} nw={BOARD_W} nh={BOARD_H} s={BOARD.s}>
+                  <BoardingCard />
+                </CanvasFrame>
+                <CanvasFrame name="PastelPoster" x={PASTEL.x} y={PASTEL.y} nw={POSTER_W} nh={POSTER_H} s={PASTEL.s}>
+                  <PastelPoster />
+                </CanvasFrame>
+                <YouStory />
+              </div>
+            </div>
+          </motion.div>
+
+          {/* The title, placed on the canvas above the frames but held still: it doesn't drift with them. */}
+          {!bare && (
+            <div className={cn("cl-title absolute z-20", !hero && scale == null && "cl-title-fit")}>
+              <div className="cl-title-scale">{hero ?? <main className="cl-title-main">{title}</main>}</div>
+            </div>
+          )}
+
+          {/* The canvas's own controls: the zoom at the bottom right (not on the landing page). */}
+          {!bare && readout && (
+            <div className="absolute right-5 bottom-5 z-30 rounded-[10px] bg-[#262626] px-3 py-1.5 font-sans text-[12px] text-white/60 tabular-nums shadow-[0_4px_16px_rgba(0,0,0,.4),0_0_0_1px_rgba(255,255,255,.06)]">
+              {Math.round(k * 100)}%
+            </div>
+          )}
+
+          {!bare && <EssayNav theme={theme} menu="mega" instant shrink cta="always" blur={false} badge="Alpha" github={REPO} download={DOWNLOADS.silicon} githubIcon={<GithubMark className="size-[18px]" />} downloadIcon={<AppleMark className="size-[14px]" />} />}
+        </div>
+      </ClockCtx.Provider>
+    </ThemeCtx.Provider>
+  )
+}
+
+// What follows the canvas (landing/CanvasSections) loads on its own, so the first screen's code doesn't wait for it.
+const CanvasSections = lazy(() => import("./landing/CanvasSections").then((m) => ({ default: m.CanvasSections })))
+const CanvasFooter = lazy(() => import("./landing/CanvasSections").then((m) => ({ default: m.CanvasFooter })))
+
+/**
+ * The canvas landing in either theme (AntidrawLandingCanvasLight renders the light one). `full` makes it the
+ * whole page: the canvas is its first screen, the essay landing's sections follow it, then the footer, by
+ * default the last call, "start on the canvas.", over the columns. The website renders the same page as
+ * separate islands (src/pages/index.astro, src/components/islands), so the sections' and footer's code loads after the hero's.
+ */
+export function CanvasLanding({ theme = "dark", hero, scale, bare = false, full = false, footer = "closeColumns" }: { theme?: Theme; hero?: ReactNode; scale?: number; bare?: boolean; full?: boolean; footer?: FooterStyle }) {
   // The page's scrollbar in its own colours: a faint thumb on the page, no light track beside the dark page.
   // The document behind it in the page's colour too, so scrolling past either end (the bounce) shows the page, not black.
   useEffect(() => {
@@ -599,68 +720,18 @@ export function CanvasLanding({ theme = "dark", hero, scale, bare = false, full 
       root.backgroundColor = was.bg
     }
   }, [full, theme])
-  const canvas = (
-    <div className={cn("relative overflow-hidden antialiased", scale && "h-full", tone.page)} style={{ fontFamily: fontStack("schibsted"), height: scale ? undefined : heroH }}>
-      <LandingFontFaces />
-
-      {/* The canvas: plain and drifting, the frames placed around the screen's centre. */}
-      <motion.div className="absolute left-1/2" style={{ top: centre }} animate={DRIFT} transition={{ duration: 22, repeat: Infinity, ease: "easeInOut" }}>
-        <div style={{ transform: `scale(${k})`, transformOrigin: "0 0" }}>
-          <div aria-hidden className="font-sans">
-            <Build name="OrbitSite" at={ORBIT} nw={SITE_W} nh={SITE_H} s={SITE_S} color={AGENTS.blue} period={8}>
-              <OrbitSite />
-            </Build>
-            <GlowTuning />
-            <Player />
-            <CanvasFrame name="BoardingCard" x={BOARD.x} y={BOARD.y} nw={BOARD_W} nh={BOARD_H} s={BOARD.s}>
-              <BoardingCard />
-            </CanvasFrame>
-            <CanvasFrame name="PastelPoster" x={PASTEL.x} y={PASTEL.y} nw={POSTER_W} nh={POSTER_H} s={PASTEL.s}>
-              <PastelPoster />
-            </CanvasFrame>
-            <YouStory />
-          </div>
-
-        </div>
-      </motion.div>
-      {narrow && !bare && !hero ? (
-        <main className="absolute inset-x-0 z-20 px-5 text-center" style={{ top: NAV_H + 48 }}>
-          {title}
-        </main>
-      ) : (
-        <div className="absolute left-1/2 z-20" style={{ top: centre }}>
-          <div style={{ transform: `scale(${kt})`, transformOrigin: "0 0" }}>
-            {/* The title, placed on the canvas above the frames but held still: it doesn't drift with them. */}
-            {bare ? null : hero ?? <main className="absolute text-center" style={{ left: -TITLE.w / 2, top: ((TITLE.y + TITLE.h) * k) / kt - TITLE.h, width: TITLE.w }}>{title}</main>}
-          </div>
-        </div>
-      )}
-
-      {/* The canvas's own controls: the zoom at the bottom right (not on the landing page). */}
-      {!bare && !full && <div className="absolute right-5 bottom-5 z-30 rounded-[10px] bg-[#262626] px-3 py-1.5 font-sans text-[12px] text-white/60 tabular-nums shadow-[0_4px_16px_rgba(0,0,0,.4),0_0_0_1px_rgba(255,255,255,.06)]">
-        {Math.round(k * 100)}%
-      </div>}
-
-      {!bare && <EssayNav theme={theme} menu="mega" instant shrink cta="always" blur={false} badge="Alpha" github={REPO} download={DOWNLOADS.silicon} githubIcon={<GithubMark className="size-[18px]" />} downloadIcon={<AppleMark className="size-[14px]" />} />}
-    </div>
-  )
+  const canvas = <CanvasHero theme={theme} hero={hero} scale={scale} bare={bare} readout={!full} />
+  if (!full) return canvas
   return (
-    <ThemeCtx.Provider value={theme}>
-      {full ? (
-        <div className={cn("antialiased", tone.page)} style={{ fontFamily: fontStack("schibsted"), "--landing-page": PAGE_BG[theme] } as CSSProperties}>
-          {canvas}
-          {/* Set against the hero's 32px title: no heading below outgrows it. */}
-          <TypeScaleCtx.Provider value="compact">
-            <main className="px-5 sm:px-16">
-              <EssaySections theme={theme} first="mt-16 sm:mt-24" />
-              <LandingFooter style={footer} theme={theme} className="mt-32" />
-            </main>
-          </TypeScaleCtx.Provider>
-        </div>
-      ) : (
-        canvas
-      )}
-    </ThemeCtx.Provider>
+    <div className={cn("antialiased", TONES[theme].page)} style={{ fontFamily: fontStack("schibsted"), "--landing-page": PAGE_BG[theme] } as CSSProperties}>
+      {canvas}
+      <main className="px-5 sm:px-16">
+        <Suspense fallback={null}>
+          <CanvasSections theme={theme} />
+          <CanvasFooter theme={theme} footer={footer} />
+        </Suspense>
+      </main>
+    </div>
   )
 }
 

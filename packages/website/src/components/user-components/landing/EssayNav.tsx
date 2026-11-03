@@ -12,14 +12,18 @@
  * Below lg the role links fold into a menu button: it opens a sheet under the bar listing each role and its
  * use cases, and GitHub moves into it below sm.
  */
-import { useEffect, useRef, useState, type ReactNode } from "react"
+import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react"
 import { ChevronDown, Menu, X } from "lucide-react"
 import { AnimatePresence, motion } from "motion/react"
 
 import { cn } from "@/lib/utils"
-import { USE_CASE_ROLES } from "./UseCases"
-import { MegaMenu, RoleMenu, WIDE, type MenuStyle } from "./NavMenus"
+import { USE_CASE_ROLES } from "./use-case-roles"
+import { WIDE, type MenuStyle } from "./nav-menu-styles"
 import iconUrl from "./antidraw-icon.svg?url"
+
+// The menus carry every use case's scene, so they load on their own, after the page, and only where they can open.
+const MegaMenu = lazy(() => import("./NavMenus").then((m) => ({ default: m.MegaMenu })))
+const RoleMenu = lazy(() => import("./NavMenus").then((m) => ({ default: m.RoleMenu })))
 
 /** The navbar's height; the page leaves this much room above the hero, and pinned rows sit below it. */
 export const NAV_H = 72
@@ -89,14 +93,24 @@ export function EssayNav({
   const [sheet, setSheet] = useState(false)
   const small = shrink && scrolled
   // The mega panel mounts once the page is idle, then stays mounted: opening it, or moving between roles, never mounts a card.
+  // Only on a screen wide enough to show the role links (lg); below it the panel can never open, so it never mounts.
   const [megaReady, setMegaReady] = useState(false)
   useEffect(() => {
-    if (menu !== "mega") return
+    if (menu !== "mega" || megaReady) return
+    const mq = window.matchMedia("(min-width: 1024px)")
     const ric = window.requestIdleCallback ?? ((f: () => void) => window.setTimeout(f, 300))
     const cic = window.cancelIdleCallback ?? window.clearTimeout
-    const id = ric(() => setMegaReady(true))
-    return () => cic(id)
-  }, [menu])
+    let id: number | undefined
+    const arm = () => {
+      if (mq.matches && id === undefined) id = ric(() => setMegaReady(true))
+    }
+    arm()
+    mq.addEventListener("change", arm)
+    return () => {
+      mq.removeEventListener("change", arm)
+      if (id !== undefined) cic(id)
+    }
+  }, [menu, megaReady])
   const closeTimer = useRef(0)
   const headerRef = useRef<HTMLElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
@@ -181,7 +195,7 @@ export function EssayNav({
               {!WIDE[menu] && (
                 // The padding bridges the gap, so the menu doesn't close on the way down to it.
                 <div className={cn("absolute top-full left-1/2 -translate-x-1/2 pt-2 transition-[opacity,translate] duration-200", open === ri ? "visible translate-y-0 opacity-100" : "invisible -translate-y-1 opacity-0")}>
-                  {open === ri && <RoleMenu ri={ri} style={menu} theme={theme} onPick={(ci) => (jump(`uc-${ri}-${ci}`), setOpen(-1))} onRole={() => (jump(`role-${ri}`), setOpen(-1))} />}
+                  {open === ri && <Suspense fallback={null}><RoleMenu ri={ri} style={menu} theme={theme} onPick={(ci) => (jump(`uc-${ri}-${ci}`), setOpen(-1))} onRole={() => (jump(`role-${ri}`), setOpen(-1))} /></Suspense>}
                 </div>
               )}
             </div>
@@ -192,8 +206,11 @@ export function EssayNav({
         {menu === "mega" ? (
           (megaReady || open >= 0) &&
           (instant ? (
-            <div ref={panelRef} className={cn("absolute inset-x-5 top-full pt-1 sm:inset-x-16", open < 0 && "pointer-events-none invisible opacity-0")}>
-              <MegaMenu instant open={open} theme={theme} onPick={(ci, ri) => (jump(`uc-${ri}-${ci}`), setOpen(-1))} onRole={(ri) => (jump(`role-${ri}`), setOpen(-1))} />
+            // Closed, it's hidden but still mounted: data-paused (global.css) stops its cards' CSS loops until it opens.
+            <div ref={panelRef} data-paused={open < 0 ? "" : undefined} className={cn("absolute inset-x-5 top-full pt-1 sm:inset-x-16", open < 0 && "pointer-events-none invisible opacity-0")}>
+              <Suspense fallback={null}>
+                <MegaMenu instant open={open} theme={theme} onPick={(ci, ri) => (jump(`uc-${ri}-${ci}`), setOpen(-1))} onRole={(ri) => (jump(`role-${ri}`), setOpen(-1))} />
+              </Suspense>
             </div>
           ) : (
             <motion.div
@@ -202,9 +219,12 @@ export function EssayNav({
               animate={open >= 0 ? { opacity: 1, y: 0, visibility: "visible" } : { opacity: 0, y: -6, transitionEnd: { visibility: "hidden" } }}
               transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
               className={cn("absolute inset-x-5 top-full pt-1 sm:inset-x-16", open < 0 && "pointer-events-none")}
+              data-paused={open < 0 ? "" : undefined}
               style={{ opacity: 0, visibility: "hidden" }}
             >
-              <MegaMenu open={open} theme={theme} onPick={(ci, ri) => (jump(`uc-${ri}-${ci}`), setOpen(-1))} onRole={(ri) => (jump(`role-${ri}`), setOpen(-1))} />
+              <Suspense fallback={null}>
+                <MegaMenu open={open} theme={theme} onPick={(ci, ri) => (jump(`uc-${ri}-${ci}`), setOpen(-1))} onRole={(ri) => (jump(`role-${ri}`), setOpen(-1))} />
+              </Suspense>
             </motion.div>
           ))
         ) : (
@@ -218,7 +238,9 @@ export function EssayNav({
                 transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
                 className="absolute inset-x-5 top-full pt-1 sm:inset-x-16"
               >
-                <RoleMenu ri={open} style={menu} theme={theme} onPick={(ci) => (jump(`uc-${open}-${ci}`), setOpen(-1))} onRole={() => (jump(`role-${open}`), setOpen(-1))} />
+                <Suspense fallback={null}>
+                  <RoleMenu ri={open} style={menu} theme={theme} onPick={(ci) => (jump(`uc-${open}-${ci}`), setOpen(-1))} onRole={() => (jump(`role-${open}`), setOpen(-1))} />
+                </Suspense>
               </motion.div>
             )}
           </AnimatePresence>

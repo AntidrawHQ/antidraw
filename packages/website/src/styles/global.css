@@ -4,6 +4,17 @@
 
 @source "../components/**/*.{ts,tsx}";
 
+/*
+ * The landing's typeface (landing/LandingFonts' "schibsted"), declared here rather than from a script so
+ * the browser finds it with the page; index.astro preloads the same file.
+ */
+@font-face {
+  font-family: "Schibsted Grotesk Variable";
+  src: url("../components/user-components/landing/fonts/schibsted-grotesk.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+
 /* The design's radius scale, off a 0.625rem base: rounded-md is 8px, rounded-lg 10px. */
 @theme {
   --radius-sm: calc(0.625rem - 4px);
@@ -19,4 +30,15 @@
     border-color: oklch(0.922 0 0);
     outline-color: color-mix(in oklab, oklch(0.708 0 0) 50%, transparent);
   }
+}
+
+/*
+ * A scene that is off screen or covered by the next row in its stack (motion/canvas-ai/kit's Scene sets
+ * data-paused) stops its CSS loops too: spinners, shimmers and carets keep their frame and resume from it
+ * when it plays again.
+ */
+[data-paused] *,
+[data-paused] *::before,
+[data-paused] *::after {
+  animation-play-state: paused !important;
 }
