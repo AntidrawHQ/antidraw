@@ -65,8 +65,8 @@ const image = new URL("/og.png", Astro.site).href
         <LandingUseCases client:visible={{ rootMargin: "400px" }} />
         <LandingFooter client:visible={{ rootMargin: "400px" }} />
       </main>
-      <!-- The page signs off with the wordmark over the glowing columns, the full width of the page. Static: rendered to HTML, no script. -->
-      <LandingWordmark />
+      <!-- The page signs off with the wordmark over the glowing columns, the full width of the page. Its parts answer clicks with easter eggs. -->
+      <LandingWordmark client:visible={{ rootMargin: "200px" }} />
     </div>
 
     <!--

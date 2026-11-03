@@ -4,16 +4,17 @@
  * it, over the glowing columns — with the wordmark at 0.625 of the banner's and the chrome at its own size,
  * as the hero's frames are.
  *
- * Static: it holds no state and runs no effects (the columns don't breathe), so the website renders it as
- * plain HTML with no script. BAND's values apply from sm up; a phone keeps its own.
+ * It looks clickable, so it is, a little: the wordmark, its toolbar, both cursors and the columns each
+ * answer a click with an easter egg (landing/easter-eggs). BAND's values apply from sm up; a phone keeps its own.
  */
-import type { CSSProperties } from "react"
+import { useRef, type CSSProperties } from "react"
 
 import { AGENTS, BLUE, Pointer } from "../readme-art/pointer"
 import { PillToggleToolbar } from "../landing-canvas/PillToggleToolbar"
 import { COLUMN_GLOW_DEFAULTS, ColumnGlow, type ColumnGlowSettings } from "../parts/ColumnGlow"
 import { GLOW_PALETTES } from "../landing-canvas/glowdial"
 import iconUrl from "./antidraw-icon.svg?url"
+import { useEasterEggs, type Eggs } from "./easter-eggs"
 
 /** The banner's selection (644×168) at 0.625. */
 const SEL = { w: 403, h: 105 }
@@ -24,21 +25,54 @@ const GLOW: ColumnGlowSettings = { ...COLUMN_GLOW_DEFAULTS, colors: [...PALETTE]
 /** The band at sm and up: its height, the glow's, the wordmark's scale and its top. */
 const BAND = { height: 360, glowHeight: 260, scale: 1, top: 88 }
 
+/** What each part says when clicked, in turn. */
+const EGGS: Eggs = {
+  lines: {
+    wordmark: [
+      "Yes, it's selected. No, you can't drag it. We tried.",
+      "The wordmark, at 80px. The agent wanted 81.",
+      "Approved by three agents and one very tired human.",
+    ],
+    toolbar: [
+      "See Code? It's a span and an img. Very senior engineering.",
+      "Fullscreen would just be a bigger antidraw. Trust us.",
+    ],
+    you: [
+      "That's you. Well, a you. You look great.",
+      "This cursor has hovered here since launch. Commitment.",
+    ],
+    agent: [
+      "Hi! I'd help, but I'm a footer.",
+      "Waiting for your next comment. No pressure.",
+      "I've been asked to make the logo bigger 14 times.",
+    ],
+    glow: [
+      "You reached the bottom. Here's a glow for your trouble.",
+      "48 columns, Glacier palette, zero meetings.",
+      "This is where good scrolls go to rest.",
+    ],
+  },
+  out: "That's everything the footer knows. The rest is in the app.",
+  tenth: "Ten clicks on a footer. You'd be great at QA.",
+}
+
 export function FooterWordmark() {
   const [glow, band] = [GLOW, BAND]
+  const ref = useRef<HTMLDivElement>(null)
+  const egg = useEasterEggs(ref, EGGS)
   const vars = { "--band-h": `${band.height}px`, "--glow-h": `${band.glowHeight}px`, "--mark-top": `${band.top}px`, "--mark-k": band.scale } as CSSProperties
 
   return (
     <>
-      <div aria-hidden className="relative h-[280px] overflow-hidden text-white sm:h-(--band-h)" style={vars}>
+      <div ref={ref} onClick={egg.onClick} className="relative h-[280px] overflow-hidden text-white sm:h-(--band-h)" style={vars}>
         {/* ColumnGlow's root is always `relative`, which outranks an `absolute` passed in, so a wrapper holds it to the bottom. */}
-        <div className="absolute inset-x-0 bottom-0 h-[200px] sm:h-(--glow-h)">
+        <div aria-hidden data-egg="glow" className="absolute inset-x-0 bottom-0 h-[200px] sm:h-(--glow-h)">
           <ColumnGlow {...glow} className="h-full" />
         </div>
 
         {/* Shrunk on a phone so it fits the width. */}
-        <div className="absolute inset-x-0 top-[64px] flex justify-center sm:top-(--mark-top)">
-          <div className="relative origin-top scale-[0.72] sm:scale-(--mark-k)" style={{ width: SEL.w, height: SEL.h }}>
+        <div aria-hidden className="pointer-events-none absolute inset-x-0 top-[64px] flex justify-center sm:top-(--mark-top)">
+          <div data-egg="wordmark" className="pointer-events-auto relative origin-top scale-[0.72] sm:scale-(--mark-k)" style={{ width: SEL.w, height: SEL.h }}>
             <div className="absolute bottom-full left-0 pb-1">
               <PillToggleToolbar componentName="Wordmark" nodeId="Wordmark" selected onSeeCode={() => {}} />
             </div>
@@ -60,10 +94,11 @@ export function FooterWordmark() {
                 />
               ))}
             </div>
-            <Pointer x={SEL.w - 25} y={SEL.h - 16} label="You" />
-            <Pointer x={-40} y={19} color={AGENTS.violet} label="Antidraw" agent />
+            <Pointer x={SEL.w - 25} y={SEL.h - 16} label="You" egg="you" />
+            <Pointer x={-40} y={19} color={AGENTS.violet} label="Antidraw" agent egg="agent" />
           </div>
         </div>
+        {egg.bubble}
       </div>
 
     </>

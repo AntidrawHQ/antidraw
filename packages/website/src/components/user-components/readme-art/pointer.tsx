@@ -10,10 +10,13 @@ export const AGENTS = { blue: "#3a5fb0", violet: "#7c5cff", green: "#16a34a", pi
 
 const ARROW = "M3 2.5 L3 17.5 L7.2 13.6 L10.1 19.6 L12.6 18.4 L9.8 12.6 L15.5 12.4 Z"
 
-/** A cursor with its name tag: an Antidraw agent's (`agent`, with the icon) or yours ("You", black). */
-export function Pointer({ x, y, color = "#111", label, agent }: { x: number; y: number; color?: string; label: string; agent?: boolean }) {
+/**
+ * A cursor with its name tag: an Antidraw agent's (`agent`, with the icon) or yours ("You", black). `egg`
+ * makes it clickable, as `data-egg` (landing/easter-eggs); otherwise clicks pass through it.
+ */
+export function Pointer({ x, y, color = "#111", label, agent, egg }: { x: number; y: number; color?: string; label: string; agent?: boolean; egg?: string }) {
   return (
-    <div className="pointer-events-none absolute z-50" style={{ left: x, top: y }}>
+    <div data-egg={egg} className={egg ? "absolute z-50" : "pointer-events-none absolute z-50"} style={{ left: x, top: y }}>
       <svg width="22" height="22" viewBox="0 0 22 22" className="drop-shadow-[0_2px_4px_rgba(0,0,0,0.35)]">
         <path d={ARROW} fill={color} stroke="white" strokeWidth="1.4" strokeLinejoin="round" />
       </svg>
