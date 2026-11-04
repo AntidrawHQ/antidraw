@@ -326,9 +326,12 @@ it("doesn't leave an earlier account's token on disk when it can't encrypt", asy
 
 it("answers the account routes only with this launch's app key", async () => {
   // Electron hands the protocol handler no Origin, and no referrer for the
-  // app's own requests, so the key is what tells them apart.
-  const { accountController } = await import("../../api/controllers/account.controller");
-  const { APP_KEY } = await import("../../lib/app-key");
+  // app's own requests, so the key is what tells them apart. Mounted as
+  // index.ts mounts it: behind the check every /api route has.
+  const { Hono } = await import("hono");
+  const { accountController: controller } = await import("../../api/controllers/account.controller");
+  const { APP_KEY, requireAppKey } = await import("../../lib/app-key");
+  const accountController = new Hono().use(requireAppKey).route("/", controller);
   const keys = { "another key": "x".repeat(APP_KEY.length), "a prefix of it": APP_KEY.slice(0, 10), none: undefined };
   const routes = [["GET", "/"], ["POST", "/sign-in"], ["POST", "/sign-in/cancel"], ["POST", "/sign-out"]];
   const refused = await Promise.all(

@@ -65,8 +65,12 @@ import { commentController } from "./controllers/comment.controller";
 import { markCommentsSent } from "./services/comment.service";
 import { editController } from "./controllers/edit.controller";
 import { checkEditsPending, markEditsApplied, restoreApplied } from "./services/edit.service";
+import { requireAppKey } from "@/main/lib/app-key";
 
 const api = new Hono();
+
+// Every route, before any other: see app-key.ts.
+api.use(requireAppKey);
 
 api.route("/workspaces", workspaceController);
 api.route("/workspaces", commentController);

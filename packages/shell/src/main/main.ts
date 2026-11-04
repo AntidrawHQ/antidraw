@@ -64,10 +64,9 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 
-// The app's own pages. A window stays on them: the main window's preload
-// hands out the account key (lib/app-key.ts), and a page that replaced the app
-// would get it. Web links (an assistant reply's markdown, say) open in the
-// browser instead.
+// The app's own pages. A window stays on them: its preload hands out the app
+// key (lib/app-key.ts), and a page that replaced the app would get it. Web
+// links (an assistant reply's markdown, say) open in the browser instead.
 const APP_PAGE = process.env.NODE_ENV === "development" ? "http://localhost:5173/" : "antidraw://app/";
 
 const openInBrowser = (url: string) => {
@@ -195,7 +194,8 @@ app.whenReady().then(async () => {
 
     // Chrome like the main window's: the page draws the titlebar
     // (renderer/PreviewWindow.tsx) and shows the component in a frame under
-    // it. No account key: the page has no use for it.
+    // it. The app key, as the main window has it: the page calls the API
+    // (its comments). The component's frame never runs the preload.
     const previewWindow = new BrowserWindow({
       width: 1200,
       height: 800,
@@ -206,6 +206,7 @@ app.whenReady().then(async () => {
       backgroundColor: "#0a0a0a",
       webPreferences: {
         preload: path.join(__dirname, "../preload/preload.cjs"),
+        additionalArguments: [`${APP_KEY_ARG}${APP_KEY}`],
         contextIsolation: true,
         nodeIntegration: false,
         backgroundThrottling: false,
