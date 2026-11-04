@@ -31,6 +31,8 @@ export type UploadSiteOptions = {
   retryDelayMs?: number;
   signal?: AbortSignal;
   onProgress?: (progress: UploadProgress) => void;
+  /** Called with each file once it's uploaded, before its onProgress. */
+  onFileUploaded?: (file: HashedFile) => void;
 };
 
 export type UploadSiteResult = UploadProgress & { commit: CommitResult };
@@ -94,6 +96,7 @@ export async function uploadSite(options: UploadSiteOptions): Promise<UploadSite
     await uploadAll(queue, concurrency, options.transport, retry, (file) => {
       progress.uploadedFiles++;
       progress.uploadedBytes += file.size;
+      options.onFileUploaded?.(file);
       report("uploading");
     });
 

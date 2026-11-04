@@ -41,6 +41,19 @@ export type PublishError = {
   message: string;
 };
 
+/** The steps main runs, in order. Checking the account is the renderer's. */
+export type PublishStep = "runtime" | "build" | "upload" | "live";
+
+/** How a publish is going, for the panel that shows it. */
+export type PublishEvent =
+  | { type: "step"; step: PublishStep }
+  /** A line of the build's output. */
+  | { type: "log"; line: string }
+  /** What a step found, once it's done. */
+  | { type: "meta"; step: PublishStep; text: string }
+  /** `unchanged` files are already on the server and aren't sent. */
+  | { type: "upload"; done: number; total: number; unchanged: number; file: string };
+
 export type PublishOptions = {
   /** The workspace's project folder. */
   sourceDir: string;
@@ -60,6 +73,7 @@ export type PublishOptions = {
   onSiteCreated: (site: PublishedSite) => Promise<void>;
   /** The site's git repo, given the server's address and token for it (artifactsRemote in the app). */
   sourceRemote: (access: { remote: string; token: string }) => SourceRemote;
+  onEvent?: (event: PublishEvent) => void;
 };
 
 class Failure extends Error {
@@ -74,16 +88,24 @@ const fail = (status: PublishError["status"], code: PublishError["code"], messag
 
 const SIGNED_OUT = () => fail(401, "SIGNED_OUT", "Not signed in");
 
+const kB = (bytes: number) => `${Math.round(bytes / 1000)} kB`;
+
 export const publishSite = async (options: PublishOptions): Promise<Result<{ url: string }, PublishError>> => {
+  const emit = options.onEvent ?? (() => {});
   const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "antidraw-publish-"));
   try {
-    await checkRuntime(options.sourceDir);
+    emit({ type: "step", step: "runtime" });
+    const runtime = await checkRuntime(options.sourceDir);
     // Before the build, which can take a while, so a workspace that can't be
     // published says so at once.
     await initSource(options.gitDir);
     const files = await listSource(options.sourceDir);
     const problem = sourceProblem(files);
     if (problem) fail(422, problem.code, problem.message);
+    emit({ type: "meta", step: "runtime", text: runtime });
+
+    emit({ type: "step", step: "build" });
+    const started = Date.now();
     await build(options, outDir);
     // The commit has to be what was built.
     const changed = await changedSince(options.sourceDir, files);
@@ -92,16 +114,32 @@ export const publishSite = async (options: PublishOptions): Promise<Result<{ url
       fail(409, "SOURCE_CHANGED", `${named} changed while publishing. Publish again to include the changes.`);
     }
     const immutable = await hashedFiles(outDir);
+    const seconds = ((Date.now() - started) / 1000).toFixed(1);
+    emit({ type: "meta", step: "build", text: `${seconds}s · ${kB(await dirSize(outDir))}` });
     await fs.writeFile(path.join(outDir, "canvas.json"), JSON.stringify(options.canvas));
 
+    // Saving the source is part of uploading, as the panel tells it.
+    emit({ type: "step", step: "upload" });
     const { site, access } = await siteSource(options);
     const commit = await pushSource(options, files, access);
     const uploadUrl = await startPublish(options, site, commit);
     try {
+      let file = "";
       await uploadSite({
         dir: outDir,
         transport: createHttpTransport({ baseUrl: uploadUrl, fetch: (url, init) => options.request(String(url), init) }),
         immutable: (file) => immutable.has(file),
+        onFileUploaded: (uploaded) => void (file = uploaded.path),
+        onProgress: (progress) => {
+          const unchanged = progress.totalFiles - progress.toUploadFiles;
+          if (progress.phase === "uploading") {
+            emit({ type: "upload", done: progress.uploadedFiles, total: progress.toUploadFiles, unchanged, file });
+          } else if (progress.phase === "committing") {
+            const sent = progress.uploadedFiles;
+            emit({ type: "meta", step: "upload", text: unchanged ? `${sent} sent · ${unchanged} cached` : `${sent} files` });
+            emit({ type: "step", step: "live" });
+          }
+        },
       });
     } catch (error) {
       if (!(error instanceof SiteUploadError)) throw error;
@@ -118,7 +156,8 @@ export const publishSite = async (options: PublishOptions): Promise<Result<{ url
 };
 
 // Older runtimes build the dev app, not a site. The installed copy is found as
-// Node would find it: node_modules here or in a folder above.
+// Node would find it: node_modules here or in a folder above. Answers its
+// version.
 const checkRuntime = async (sourceDir: string) => {
   let version: string | null = null;
   for (let dir = sourceDir; version === null; dir = path.dirname(dir)) {
@@ -134,39 +173,62 @@ const checkRuntime = async (sourceDir: string) => {
     fail(
       409,
       "RUNTIME_TOO_OLD",
-      `Publishing needs @antidrawapp/runtime 0.5.0 or later; this workspace has ${version ?? "none installed"}`,
+      version
+        ? `This workspace has @antidrawapp/runtime ${version}. Publishing needs 0.5.0 or later.`
+        : "This workspace doesn't have @antidrawapp/runtime. Publishing needs 0.5.0 or later.",
     );
   }
+  return version!;
 };
 
+// Vite's output as the user should see it: paths from the workspace, and
+// no stack.
+const cleanLines = (lines: string[], sourceDir: string) =>
+  lines
+    .filter((line) => !/^\s+at /.test(line))
+    .map((line) => line.replaceAll(sourceDir + path.sep, ""));
+
 // The workspace's own vite, as `npm run build` would run it, but writing to
-// outDir so the workspace's dist/ is left alone.
-const build = async ({ npm, sourceDir }: PublishOptions, outDir: string) => {
+// outDir so the workspace's dist/ is left alone. Its output goes out a line
+// at a time as it comes.
+const build = async ({ npm, sourceDir, onEvent }: PublishOptions, outDir: string) => {
   const child = npm(["exec", "--no", "--", "vite", "build", "--outDir", outDir, "--emptyOutDir"], sourceDir, {
     env: { NODE_ENV: "production", NO_COLOR: "1" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let output = "";
-  child.stdout?.on("data", (data: Buffer) => (output += data));
-  child.stderr?.on("data", (data: Buffer) => (output += data));
+  let pending = "";
+  const take = (data: Buffer | string) => {
+    output += data;
+    const lines = (pending + data).split(/\r?\n/);
+    pending = lines.pop()!;
+    for (const line of cleanLines(lines, sourceDir)) onEvent?.({ type: "log", line });
+  };
+  child.stdout?.on("data", take);
+  child.stderr?.on("data", take);
   const code = await new Promise<number | null>((resolve) => {
     child.on("close", resolve);
     child.on("error", (error) => {
-      output += error.message;
+      take(error.message);
       resolve(1);
     });
   });
+  if (pending) take("\n");
   if (code !== 0) {
-    // Vite's error, with paths from the workspace and without the stack.
     const start = output.indexOf("error during build:");
-    const log = (start === -1 ? output.split("\n").slice(-20).join("\n") : output.slice(start))
-      .split("\n")
-      .filter((line) => !/^\s+at /.test(line))
+    const log = cleanLines((start === -1 ? output : output.slice(start)).split("\n").slice(start === -1 ? -20 : 0), sourceDir)
       .join("\n")
-      .replaceAll(sourceDir + path.sep, "")
       .trim();
-    fail(422, "BUILD_FAILED", `Couldn't build the workspace\n${log}`);
+    fail(422, "BUILD_FAILED", `Couldn't build the workspace.\n${log}`);
   }
+};
+
+const dirSize = async (dir: string) => {
+  const entries = await fs.readdir(dir, { recursive: true, withFileTypes: true });
+  const sizes = await Promise.all(
+    entries.filter((entry) => entry.isFile()).map(async (entry) => (await fs.stat(path.join(entry.parentPath, entry.name))).size),
+  );
+  return sizes.reduce((sum, size) => sum + size, 0);
 };
 
 // Vite's manifest lists the content-hashed files, which can be cached for
@@ -189,7 +251,7 @@ const api = async (options: PublishOptions, pathname: string, body?: unknown) =>
       ...(body !== undefined && { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
     });
   } catch {
-    return fail(502, "SERVER_ERROR", "Couldn't reach the Antidraw server");
+    return fail(502, "SERVER_ERROR", "Couldn't reach Antidraw. Check your connection and try again.");
   }
   if (response.status === 401) SIGNED_OUT();
   return response;

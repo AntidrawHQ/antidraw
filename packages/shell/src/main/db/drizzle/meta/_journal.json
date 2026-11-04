@@ -64,6 +64,13 @@
       "when": 1791582112492,
       "tag": "0008_add_comments",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1791962503403,
+      "tag": "0009_add_workspace_published_at",
+      "breakpoints": true
     }
   ]
 }

@@ -10,7 +10,7 @@ import { getWorkspace } from "@/main/api/services/workspace.service";
 import { db } from "@/main/db";
 import { spawnNpm } from "@/main/lib/package-manager";
 import { cloudFetch } from "@/main/services/account.service";
-import { publishSite, type PublishError } from "@/main/services/publish";
+import { publishSite, type PublishError, type PublishEvent } from "@/main/services/publish";
 import { artifactsRemote } from "@/main/services/source";
 
 type PublishWorkspaceError =
@@ -18,19 +18,44 @@ type PublishWorkspaceError =
   | { status: 404 | 500; code: string; message: string }
   | { status: 502; code: "SERVER_UNREACHABLE" | "SERVER_ERROR"; message: string };
 
-// One publish per workspace at a time; a second click joins the first.
-const running = new Map<string, Promise<Result<{ url: string }, PublishWorkspaceError>>>();
+export type { PublishEvent };
 
-export const publishWorkspace = (workspaceId: string) => {
-  let publish = running.get(workspaceId);
-  if (!publish) {
-    publish = run(workspaceId).finally(() => running.delete(workspaceId));
-    running.set(workspaceId, publish);
-  }
-  return publish;
+type Publish = {
+  result: Promise<Result<{ url: string }, PublishWorkspaceError>>;
+  /** What it has said so far, for whoever joins late. */
+  events: PublishEvent[];
+  listeners: Set<(event: PublishEvent) => void>;
 };
 
-const run = async (workspaceId: string): Promise<Result<{ url: string }, PublishWorkspaceError>> => {
+// One publish per workspace at a time; a second click joins the first, and
+// hears what it has said so far before what it says next.
+const running = new Map<string, Publish>();
+
+export const publishWorkspace = (workspaceId: string, onEvent?: (event: PublishEvent) => void) => {
+  let publish = running.get(workspaceId);
+  if (!publish) {
+    const events: PublishEvent[] = [];
+    const listeners = new Set<(event: PublishEvent) => void>();
+    const emit = (event: PublishEvent) => {
+      events.push(event);
+      listeners.forEach((listener) => listener(event));
+    };
+    publish = { result: run(workspaceId, emit).finally(() => running.delete(workspaceId)), events, listeners };
+    running.set(workspaceId, publish);
+  }
+  if (onEvent) {
+    publish.events.forEach(onEvent);
+    publish.listeners.add(onEvent);
+    const { listeners } = publish;
+    void publish.result.finally(() => listeners.delete(onEvent)).catch(() => {});
+  }
+  return publish.result;
+};
+
+const run = async (
+  workspaceId: string,
+  onEvent: (event: PublishEvent) => void,
+): Promise<Result<{ url: string }, PublishWorkspaceError>> => {
   const workspace = await getWorkspace(workspaceId);
   if (workspace.isErr()) return err(workspace.error);
   const components = await listComponents(workspaceId);
@@ -40,7 +65,7 @@ const run = async (workspaceId: string): Promise<Result<{ url: string }, Publish
 
   const { name, siteId, siteUrl } = workspace.value;
   const gitDir = path.join(getWorkspacePath(workspaceId), "publish.git");
-  return publishSite({
+  const published = await publishSite({
     sourceDir: getWorkspaceSourcePath(workspaceId),
     gitDir,
     // Over net.fetch, as the app's requests to the Worker go: the system's
@@ -72,5 +97,10 @@ const run = async (workspaceId: string): Promise<Result<{ url: string }, Publish
     onSiteCreated: async (site) => {
       await db.update(workspaces).set({ siteId: site.id, siteUrl: site.url }).where(eq(workspaces.id, workspaceId));
     },
+    onEvent,
   });
+  if (published.isOk()) {
+    await db.update(workspaces).set({ publishedAt: new Date() }).where(eq(workspaces.id, workspaceId));
+  }
+  return published;
 };

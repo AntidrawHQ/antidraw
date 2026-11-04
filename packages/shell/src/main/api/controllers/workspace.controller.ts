@@ -15,7 +15,7 @@ import {
   stopDevServer,
   getDevServerStatus,
 } from "@/main/services/dev-server.service";
-import { publishWorkspace } from "@/main/services/publish.service";
+import { publishWorkspace, type PublishEvent } from "@/main/services/publish.service";
 import { readThumbnail } from "@/main/services/thumbnail.service";
 import { listConversations } from "../services/chat.service";
 import {
@@ -45,6 +45,12 @@ const componentNameParamSchema = z.object({
 });
 
 export type { CreateWorkspaceEvent as CreateWorkspaceResponse };
+
+/** A publish as it goes, then how it ended. */
+export type PublishStreamEvent =
+  | PublishEvent
+  | { type: "done"; url: string }
+  | { type: "error"; code: string; message: string };
 
 workspaceController.post(
   "/",
@@ -140,21 +146,33 @@ workspaceController.get(
   }
 );
 
-// Builds the workspace and publishes it to its cloud site; answers the share
-// page's URL.
+// Builds the workspace and publishes it to its cloud site, streaming each
+// step as it goes; ends with the share page's URL, or why it couldn't.
 workspaceController.post(
   "/:workspaceId/publish",
   zValidator("param", workspaceIdParamSchema),
   async (ctx) => {
     const { workspaceId } = ctx.req.valid("param");
-    const result = await publishWorkspace(workspaceId);
 
-    if (result.isErr()) {
-      const { status, code, message } = result.error;
-      return ctx.json({ error: { code, message } }, status);
-    }
-
-    return ctx.json(result.value);
+    return streamSSE(ctx, async (stream) => {
+      // In order, and none lost to a reader that went away.
+      let writing = Promise.resolve();
+      const write = (event: PublishStreamEvent) => {
+        writing = writing.then(() => stream.writeSSE({ data: JSON.stringify(event) })).catch(() => {});
+      };
+      try {
+        const result = await publishWorkspace(workspaceId, write);
+        write(
+          result.isOk()
+            ? { type: "done", url: result.value.url }
+            : { type: "error", code: result.error.code, message: result.error.message },
+        );
+      } catch (error) {
+        console.error("Publish failed:", error);
+        write({ type: "error", code: "INTERNAL_ERROR", message: "Something went wrong while publishing. Try again." });
+      }
+      await writing;
+    });
   }
 );
 
