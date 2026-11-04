@@ -12,6 +12,7 @@ import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({
   getAccount: vi.fn(),
+  getFeatures: vi.fn(),
   signIn: vi.fn(),
   cancelSignIn: vi.fn(),
   signOut: vi.fn(),
@@ -42,6 +43,7 @@ let root: Root | undefined;
 beforeEach(() => {
   for (const fn of Object.values(api)) fn.mockReset();
   api.getAccount.mockResolvedValue(ok(null));
+  api.getFeatures.mockResolvedValue(ok({ publish: true }));
   api.cancelSignIn.mockResolvedValue(ok(true));
 });
 afterEach(() => {
@@ -61,6 +63,8 @@ const render = async (workspace = { id: "w1", name: "Paper Shaders" }) => {
       </QueryClientProvider>,
     );
   await act(async () => show(workspace));
+  // The button shows once main says publishing is on.
+  await settle();
   /** Switches the active workspace, as the titlebar does. */
   return { switchTo: (ws: typeof workspace) => act(async () => show(ws)) };
 };
@@ -414,6 +418,52 @@ it("puts focus on Try again when sign-in fails while focus is on Cancel", async 
         "Once you're signed in, Paper Shaders goes live on a link you can share.",
       ],
       "focus": "Try again",
+    }
+  `);
+});
+
+it("shows no Publish button until publishing is on, or while that can't be told", async () => {
+  const shown = async () => {
+    await render();
+    const found = [...document.querySelectorAll("button")].some((b) => /Publish/.test(b.textContent ?? ""));
+    act(() => root?.unmount());
+    root = undefined;
+    return found;
+  };
+  api.getFeatures.mockResolvedValue(ok({ publish: false }));
+  const off = await shown();
+  api.getFeatures.mockResolvedValue(failure(500, "NETWORK_ERROR"));
+  const unknown = await shown();
+  api.getFeatures.mockResolvedValue(ok({ publish: true }));
+  expect({ off, unknown, on: await shown() }).toMatchInlineSnapshot(`
+    {
+      "off": false,
+      "on": true,
+      "unknown": false,
+    }
+  `);
+});
+
+it("says publishing isn't available when the server refuses, then hides the button", async () => {
+  api.getAccount.mockResolvedValue(ok(ADA));
+  api.publishWorkspace.mockResolvedValue(
+    err({ status: 403, code: "PUBLISH_DISABLED", message: "Publishing isn't available yet." }),
+  );
+  await render();
+  // Turned off for this user since the button showed.
+  api.getFeatures.mockResolvedValue(ok({ publish: false }));
+  await click(/^Publish$/);
+  const refused = screen().alert;
+  await click(/Dismiss/);
+  expect({
+    refused,
+    asked: api.getFeatures.mock.calls.length,
+    afterDismiss: document.querySelectorAll("button").length,
+  }).toMatchInlineSnapshot(`
+    {
+      "afterDismiss": 0,
+      "asked": 2,
+      "refused": "Publishing isn't available yet.",
     }
   `);
 });

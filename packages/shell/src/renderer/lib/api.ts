@@ -1,5 +1,6 @@
 import type {
   Account,
+  Features,
   Comment,
   CommentChat,
   ComponentListItem,
@@ -1178,6 +1179,31 @@ export const getAccount = async () => {
       status: 500 as const,
       code: "NETWORK_ERROR",
       message: "Failed to get account",
+    });
+  }
+};
+
+// Which cloud features to show (main asks the server; off when it can't say).
+export const getFeatures = async () => {
+  try {
+    const response = await fetch("antidraw://app/api/account/features", { headers: appKeyHeader() });
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      return err({
+        status: response.status as 500,
+        code: (errorBody?.error?.code as string) ?? "FETCH_ERROR",
+        message: (errorBody?.error?.message as string) ?? response.statusText,
+      });
+    }
+
+    const data: { features: Features } = await response.json();
+    return ok(data.features);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "NETWORK_ERROR",
+      message: "Failed to get features",
     });
   }
 };
