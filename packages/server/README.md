@@ -242,8 +242,9 @@ Three Workers: this API at `api.antidraw.com`, `@antidraw/site-worker`, which
 serves published sites at `<slug>.antidraw.app`, and `@antidraw/share-page` at
 `antidraw.com/s/*`. The API and the site Worker share the D1 database
 `antidraw` (its id is in both `wrangler.jsonc` files) and the R2 bucket
-`antidraw-sites`. Everything below has been done once; it's here for a fresh
-account or a rebuild.
+`antidraw-sites`. Everything below has been done once, except step 2b (the
+Flagship app), which is new and must be done before the next deploy; the rest
+is here for a fresh account or a rebuild.
 
 ```sh
 npx wrangler login
