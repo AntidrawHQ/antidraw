@@ -36,7 +36,9 @@ mac:
         - x64
 dmg:
   title: Antidraw
-  artifactName: ${productName}-${version}-${arch}.${ext}
+  # No version in the name, so the website can link to
+  # releases/latest/download/Antidraw-<arch>.dmg.
+  artifactName: ${productName}-${arch}.${ext}
   background: build/dmg-bg.png
   # The volume icon only reads .icns, so point it at the pre-rounded one rather
   # than the 256px fallback electron-builder derives from icon.icon.

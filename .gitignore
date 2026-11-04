@@ -166,3 +166,6 @@ release/
 # TanStack Router
 .tanstack
 **/routeTree.gen.ts
+
+# Astro
+.astro/

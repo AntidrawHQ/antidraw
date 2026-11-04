@@ -1,0 +1,76 @@
+/*
+ * The canvas landing's hero layout (AntidrawLandingCanvas's CanvasHero), worked out from --k, the canvas's
+ * zoom: the window's fit of the 1440×900 world, 0.55–1.25. index.astro's head script sets --k on <html> before
+ * first paint and the hero keeps it current, so the server-rendered page is placed right with no script.
+ *
+ * In world px at 1×: the title block is 520 wide and 182 tall (three lines and the buttons), its foot at
+ * y -171; the lowest frame's foot (PastelPoster's) is 430 below the centre; the navbar is 72 tall.
+ */
+.cl-hero {
+  /* The title's zoom: never under 0.75, so it stays legible on a tablet. It grows upward: its foot stays where the canvas puts it. */
+  --kt: max(var(--k, 1), 0.75);
+  /* Room above the centre (the title, clear of the navbar and 32px under it) and below it (the frames, and 24px). */
+  --above: calc(171 * var(--k, 1) + 182 * var(--kt) + 104);
+  --below: calc(430 * var(--k, 1) + 24);
+  /* The centre splits the hero in the same proportion, title to frames. */
+  --centre: calc(var(--above) / (var(--above) + var(--below)) * 100%);
+}
+/*
+ * The hero is as tall as the screen, up to what the canvas needs at this zoom. In a window narrower than it
+ * is tall the zoom is set by the width, and a full-height hero would leave a band of empty canvas over the
+ * title and under the frames; capped, the title starts just under the navbar and the next section follows the frames.
+ */
+.cl-hero:not(.cl-fixed) {
+  height: min(100vh, max(680px, calc((var(--above) + var(--below)) * 1px)));
+}
+/* A fixed zoom (the `scale` prop) scales the title with the canvas. */
+.cl-hero.cl-fixed {
+  --kt: var(--k, 1);
+}
+
+.cl-stage {
+  top: var(--centre);
+}
+.cl-stage-scale {
+  transform: scale(var(--k, 1));
+  transform-origin: 0 0;
+}
+
+.cl-title {
+  left: 50%;
+  top: var(--centre);
+}
+.cl-title-scale {
+  transform: scale(var(--kt));
+  transform-origin: 0 0;
+}
+.cl-title-main {
+  position: absolute;
+  left: -260px;
+  width: 520px;
+  top: calc(-171px * var(--k, 1) / var(--kt) - 182px);
+  text-align: center;
+}
+
+/* Below md (Tailwind's 768px): the title leaves the canvas for a spot under the navbar, at its own size, and the canvas moves down to clear it. */
+@media (max-width: 767.98px) {
+  .cl-hero:not(.cl-fixed) {
+    --centre: max(50%, 480px);
+    height: calc(504px + 430px * var(--k, 1));
+  }
+  .cl-title-fit {
+    left: 0;
+    right: 0;
+    top: 120px;
+  }
+  .cl-title-fit .cl-title-scale {
+    transform: none;
+  }
+  .cl-title-fit .cl-title-main {
+    left: 0;
+    right: 0;
+    width: auto;
+    top: 0;
+    padding: 0 20px;
+  }
+}

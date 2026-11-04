@@ -1,0 +1,16 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  // The Worker that served the coming-soon page, so the website takes its route in place.
+  "name": "antidraw-landing",
+  "compatibility_date": "2026-09-01",
+  // Astro's static build only; no Worker script runs.
+  "assets": {
+    "directory": "./dist"
+  },
+  "routes": [
+    // All of antidraw.com except /s/*, which @antidraw/share-page's more
+    // specific route takes. The zone's proxied apex record (AAAA 100::) lets
+    // requests reach the route.
+    { "pattern": "antidraw.com/*", "zone_name": "antidraw.com" }
+  ]
+}
