@@ -678,7 +678,9 @@ function Composer({
             onPaste={handlePaste}
           />
           <PromptInputActions className="justify-between pt-2">
-            <div className="flex items-center gap-2">
+            {/* On a narrow panel this group gives way, so the model name
+                truncates and attach / send stay in the box. */}
+            <div className="flex min-w-0 items-center gap-2">
               <ModelPicker
                 models={composer.models}
                 value={composer.selectedModelId}
@@ -690,7 +692,7 @@ function Composer({
                 onChange={composer.handleEffortChange}
               />
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex shrink-0 items-center gap-2">
               <PromptInputAction tooltip="Attach image">
                 <FileUploadTrigger asChild>
                   <Button
