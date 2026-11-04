@@ -27,9 +27,10 @@ import {
 export type PublishedSite = { id: string; url: string };
 
 export type PublishError = {
-  status: 401 | 409 | 422 | 502;
+  status: 401 | 403 | 409 | 422 | 502;
   code:
     | "SIGNED_OUT"
+    | "PUBLISH_DISABLED"
     | "RUNTIME_TOO_OLD"
     | "FILE_TOO_LARGE"
     | "SOURCE_TOO_LARGE"
@@ -74,6 +75,11 @@ const fail = (status: PublishError["status"], code: PublishError["code"], messag
 
 const SIGNED_OUT = () => fail(401, "SIGNED_OUT", "Not signed in");
 
+// The server's publish flag doesn't let this user in (yet, or any more).
+// Its own code, so the app can hide Publish rather than offer a retry.
+const PUBLISH_DISABLED = (message?: string) =>
+  fail(403, "PUBLISH_DISABLED", message ?? "Publishing isn't available yet.");
+
 export const publishSite = async (options: PublishOptions): Promise<Result<{ url: string }, PublishError>> => {
   const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "antidraw-publish-"));
   try {
@@ -106,6 +112,8 @@ export const publishSite = async (options: PublishOptions): Promise<Result<{ url
     } catch (error) {
       if (!(error instanceof SiteUploadError)) throw error;
       if (error.status === 401) SIGNED_OUT();
+      // Turned off while this publish was uploading.
+      if (error.status === 403 && (error.code as string) === "PUBLISH_DISABLED") PUBLISH_DISABLED(error.message);
       fail(502, "UPLOAD_FAILED", `Couldn't upload the site: ${error.message}`);
     }
     return ok({ url: site.url });
@@ -201,6 +209,7 @@ const errorBody = async (response: Response) => (await response.json().catch(() 
 
 const serverError = async (response: Response, body?: ErrorBody): Promise<never> => {
   const { error } = (body === undefined ? await errorBody(response) : body) ?? {};
+  if (response.status === 403 && error?.code === "PUBLISH_DISABLED") return PUBLISH_DISABLED(error.message);
   return fail(502, "SERVER_ERROR", error?.message ?? `The server answered ${response.status}`);
 };
 
