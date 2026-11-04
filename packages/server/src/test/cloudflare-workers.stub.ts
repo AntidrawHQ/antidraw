@@ -1,7 +1,8 @@
 // Stand-in for the `cloudflare:workers` built-in under vitest, which runs in
-// plain Node (see vitest.config.ts). Only `env` is imported by app code. D1 and
-// R2 (and Artifacts) are throwing stubs: building the auth instance doesn't touch them, and a
-// test that reaches storage should fail loudly rather than pass on a fake.
+// plain Node (see vitest.config.ts). Only `env` is imported by app code. D1,
+// R2, Artifacts and Flagship are throwing stubs: building the auth instance
+// doesn't touch them, and a test that reaches storage should fail loudly
+// rather than pass on a fake.
 // Tests that need storage run the real Worker (see test/harness.ts).
 import type { Bindings } from "../lib/env";
 
@@ -16,6 +17,7 @@ export const env: Bindings = {
   DB: unavailable<D1Database>("D1"),
   SITES: unavailable<R2Bucket>("R2"),
   ARTIFACTS: unavailable<Bindings["ARTIFACTS"]>("Artifacts"),
+  FLAGS: unavailable<Flagship>("Flagship"),
   SHARE_URL_PATTERN: "http://localhost:8786/s/*",
   BETTER_AUTH_SECRET: "test-secret-with-enough-entropy-0123456789abcdef",
   BETTER_AUTH_URL: "http://localhost:8799",

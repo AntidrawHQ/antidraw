@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createHttpTransport, uploadSite } from "@antidraw/site-upload/client";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { startServer, type TestServer } from "../test/harness";
 
 // The publish flow end to end, against the real Worker with local D1 and R2:
@@ -834,6 +834,150 @@ describe("the site's source", () => {
           "status": 404,
         },
         "calls": [],
+      }
+    `);
+  });
+});
+
+describe("with publishing off", () => {
+  // The harness starts with it on (see startServer).
+  afterEach(async () => {
+    await server.flags.setFailing(false);
+    await server.flags.set("publish", true);
+  });
+
+  it("refuses every site route, but still asks for sign-in first", async () => {
+    const user = await server.signIn();
+    // Made, and a publish started, while it was on.
+    const site = await createSite(user);
+    const { publishId } = await startPublish(user, site.id);
+    await server.flags.set("publish", false);
+
+    const base = `/api/sites/${site.id}/publishes/${publishId}`;
+    const content = "<h1>hi</h1>";
+    const statuses = {
+      create: (await post(user, "/api/sites", { title: "x" })).status,
+      source: (await post(user, `/api/sites/${site.id}/source`)).status,
+      start: (await post(user, `/api/sites/${site.id}/publishes`, { commit: "c".repeat(40) })).status,
+      plan: (await post(user, `${base}/plan`, { v: 1, files: { "index.html": { h: sha256(content), s: content.length } } }))
+        .status,
+      file: (
+        await server.fetch(`${base}/files/${sha256(content)}`, {
+          method: "PUT",
+          headers: { authorization: user.authorization },
+          body: content,
+        })
+      ).status,
+      commit: (await post(user, `${base}/commit`, {})).status,
+      signedOut: (await post(null, "/api/sites", { title: "x" })).status,
+    };
+    expect({
+      refused: await answer(await post(user, "/api/sites", { title: "x" })),
+      statuses,
+      stored: await stored(site.id),
+      live: await liveOf(site.id),
+    }).toMatchInlineSnapshot(`
+      {
+        "live": {
+          "live": null,
+          "previous": null,
+          "seq": 0,
+        },
+        "refused": {
+          "body": {
+            "error": {
+              "code": "PUBLISH_DISABLED",
+              "message": "Publishing isn't available yet.",
+            },
+          },
+          "status": 403,
+        },
+        "statuses": {
+          "commit": 403,
+          "create": 403,
+          "file": 403,
+          "plan": 403,
+          "signedOut": 401,
+          "source": 403,
+          "start": 403,
+        },
+        "stored": [],
+      }
+    `);
+  });
+
+  it("lets in only the users the flag lists", async () => {
+    const tester = await server.signIn();
+    const other = await server.signIn();
+    await server.flags.set("publish", { users: [tester.userId] });
+    expect({
+      tester: (await post(tester, "/api/sites", { title: "x" })).status,
+      other: (await post(other, "/api/sites", { title: "x" })).status,
+    }).toMatchInlineSnapshot(`
+      {
+        "other": 403,
+        "tester": 201,
+      }
+    `);
+  });
+
+  it("stays off when the flag can't be read", async () => {
+    const user = await server.signIn();
+    await server.flags.setFailing(true);
+    expect((await post(user, "/api/sites", { title: "x" })).status).toBe(403);
+  });
+});
+
+describe("which features are on", () => {
+  afterEach(() => server.flags.set("publish", true));
+
+  const features = async (user?: User) => {
+    const res = await server.fetch(
+      user ? "/api/me" : "/api/features",
+      user ? { headers: { authorization: user.authorization } } : {},
+    );
+    const { features } = (await res.json()) as { features: unknown };
+    return { status: res.status, cache: res.headers.get("cache-control"), features };
+  };
+
+  it("answers for everyone at /api/features, and for the user at /api/me", async () => {
+    const tester = await server.signIn();
+    const other = await server.signIn();
+    await server.flags.set("publish", { users: [tester.userId] });
+    const listed = { everyone: await features(), tester: await features(tester), other: await features(other) };
+    await server.flags.set("publish", true);
+    expect({ listed, on: await features() }).toMatchInlineSnapshot(`
+      {
+        "listed": {
+          "everyone": {
+            "cache": "no-store",
+            "features": {
+              "publish": false,
+            },
+            "status": 200,
+          },
+          "other": {
+            "cache": null,
+            "features": {
+              "publish": false,
+            },
+            "status": 200,
+          },
+          "tester": {
+            "cache": null,
+            "features": {
+              "publish": true,
+            },
+            "status": 200,
+          },
+        },
+        "on": {
+          "cache": "no-store",
+          "features": {
+            "publish": true,
+          },
+          "status": 200,
+        },
       }
     `);
   });

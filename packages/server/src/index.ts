@@ -4,6 +4,7 @@ import type { AppEnv, Bindings } from "./lib/env";
 import { respondError } from "./lib/respond";
 import { healthController } from "./controllers/health.controller";
 import { authController, meController } from "./controllers/auth.controller";
+import { featureController } from "./controllers/feature.controller";
 import { siteController } from "./controllers/site.controller";
 
 // Built by a factory so tests can mount extra routes on a real app (with the
@@ -16,6 +17,7 @@ export const createApp = () => {
   api.route("/health", healthController);
   api.route("/auth", authController); // better-auth: /api/auth/*
   api.route("/me", meController);
+  api.route("/features", featureController);
   api.route("/sites", siteController);
 
   const app = new Hono<AppEnv>();
