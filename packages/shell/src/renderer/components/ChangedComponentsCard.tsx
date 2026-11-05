@@ -10,8 +10,9 @@ import { parseReportChangesInput } from "@/shared/utils/changed-components";
  * ChangedComponentsCard: the components a turn created and updated, each
  * with a View that focuses it on the canvas.
  *
- * The agent renders it once the components are written, so there are no
- * loading or in-progress states: everything listed is on disk.
+ * It is the turn's record, so it always lists everything the turn reported.
+ * Only View follows the canvas: a component since deleted or renamed keeps
+ * its row, without a View.
  *
  * The rows are the transcript's tool rows: GROUP is Chat.tsx's TOOL_GROUP,
  * TITLE and the View button's classes are components/ui/tool.tsx's.
@@ -24,6 +25,8 @@ export type ChangedComponentsCardProps = {
   updated: string[];
   /** Focuses the component on the canvas. */
   onView: (componentName: string) => void;
+  /** Whether a component can be viewed (it is on the canvas now). Defaults to all. */
+  canView?: (componentName: string) => boolean;
   /** Starts collapsed to its header. Defaults to open. */
   defaultOpen?: boolean;
   className?: string;
@@ -39,7 +42,9 @@ const TITLE = "min-w-0 flex-1 truncate text-left text-[13px] text-neutral-300";
 const VIEW =
   "flex shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap border-l border-white/[0.06] px-2.5 text-[13px] font-medium text-neutral-400 hover:bg-white/[0.025] hover:text-neutral-100 focus-visible:text-neutral-100";
 
-function ComponentRow({ name, onView }: { name: string; onView: (name: string) => void }) {
+type RowActions = { onView: (name: string) => void; canView: (name: string) => boolean };
+
+function ComponentRow({ name, onView, canView }: { name: string } & RowActions) {
   return (
     <div className="flex items-stretch">
       <div className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-2">
@@ -48,28 +53,39 @@ function ComponentRow({ name, onView }: { name: string; onView: (name: string) =
         </span>
         <span className={TITLE}>{name}</span>
       </div>
-      <button type="button" onClick={() => onView(name)} title={`View ${name}`} className={VIEW}>
-        <ArrowUpRight className="size-3.5" />
-        View
-      </button>
+      {canView(name) && (
+        <button type="button" onClick={() => onView(name)} title={`View ${name}`} className={VIEW}>
+          <ArrowUpRight className="size-3.5" />
+          View
+        </button>
+      )}
     </div>
   );
 }
 
-function Section({ title, names, onView }: { title: string; names: string[]; onView: (name: string) => void }) {
+function Section({ title, names, ...actions }: { title: string; names: string[] } & RowActions) {
   return (
     <section className="flex flex-col gap-1.5">
       <h3 className="px-0.5 text-[12px] text-neutral-500">{title}</h3>
       <div className={GROUP}>
         {names.map((name) => (
-          <ComponentRow key={name} name={name} onView={onView} />
+          <ComponentRow key={name} name={name} {...actions} />
         ))}
       </div>
     </section>
   );
 }
 
-export function ChangedComponentsCard({ created, updated, onView, defaultOpen = true, className }: ChangedComponentsCardProps) {
+const ALL = () => true;
+
+export function ChangedComponentsCard({
+  created,
+  updated,
+  onView,
+  canView = ALL,
+  defaultOpen = true,
+  className,
+}: ChangedComponentsCardProps) {
   const [open, setOpen] = useState(defaultOpen);
   if (created.length === 0 && updated.length === 0) return null;
 
@@ -97,8 +113,8 @@ export function ChangedComponentsCard({ created, updated, onView, defaultOpen = 
 
       {open && (
         <div className="flex flex-col gap-3 border-t border-white/[0.06] px-3 pb-3 pt-2.5">
-          {created.length > 0 && <Section title="New components" names={created} onView={onView} />}
-          {updated.length > 0 && <Section title="Updated components" names={updated} onView={onView} />}
+          {created.length > 0 && <Section title="New components" names={created} onView={onView} canView={canView} />}
+          {updated.length > 0 && <Section title="Updated components" names={updated} onView={onView} canView={canView} />}
         </div>
       )}
     </div>
@@ -111,9 +127,9 @@ export function ChangedComponentsCard({ created, updated, onView, defaultOpen = 
  * The card for a report_changes call in the transcript. Shown only once the
  * call succeeded (main checked every name is on disk); while it runs there is
  * nothing to show, and a call that failed or can't be read is an ordinary
- * tool row, so its error stays visible. Names no longer on the canvas (the
- * agent later deleted or renamed them) are left out, as a tool row's View is,
- * so no View focuses nothing.
+ * tool row, so its error stays visible. A name no longer on the canvas (the
+ * agent later deleted or renamed it) keeps its row but loses its View, as a
+ * tool row's does, so no View focuses nothing.
  */
 export const ChangedComponents = memo(function ChangedComponents({ toolPart }: { toolPart: ToolPart }) {
   const workspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
@@ -129,9 +145,10 @@ export const ChangedComponents = memo(function ChangedComponents({ toolPart }: {
   const onCanvas = (name: string) => userComponents?.some((c) => c.name === name) ?? false;
   return (
     <ChangedComponentsCard
-      created={input.created.filter(onCanvas)}
-      updated={input.updated.filter(onCanvas)}
+      created={input.created}
+      updated={input.updated}
       onView={setFocusComponentName}
+      canView={onCanvas}
     />
   );
 });

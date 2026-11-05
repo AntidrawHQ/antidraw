@@ -45,7 +45,8 @@ const render = (props: Partial<ChangedComponentsCardProps> = {}) => {
   return { host, onView };
 };
 
-// What the card shows, as data: the header, then each section's rows.
+// What the card shows, as data: the header, then each section's rows, each
+// as its name and its View button's title (or "no View").
 const view = (host: HTMLElement) => {
   const header = host.querySelector<HTMLButtonElement>("button[aria-expanded]");
   if (!header) return null;
@@ -53,7 +54,10 @@ const view = (host: HTMLElement) => {
     header: `${header.textContent} (${header.getAttribute("aria-expanded") === "true" ? "open" : "closed"})`,
     sections: [...host.querySelectorAll("section")].map((s) => ({
       title: s.querySelector("h3")?.textContent,
-      rows: [...s.querySelectorAll("button")].map((b) => `${b.parentElement?.textContent?.replace(/View$/, "")} · ${b.title}`),
+      rows: [...s.querySelectorAll(":scope > div > div")].map((row) => {
+        const button = row.querySelector("button");
+        return `${row.firstElementChild?.textContent} · ${button?.title ?? "no View"}`;
+      }),
     })),
   };
 };
@@ -115,6 +119,17 @@ describe("ChangedComponentsCard", () => {
     expect(view(host)?.sections.map((s) => s.title)).toEqual(["New components"]);
   });
 
+  test("a component that can't be viewed keeps its row, without a View", () => {
+    const { host } = render({ canView: (name) => name !== "PricingTier" });
+    expect(view(host)?.sections.flatMap((s) => s.rows)).toEqual([
+      "FaqAccordion · View FaqAccordion",
+      "PlanCompareTable · View PlanCompareTable",
+      "PricingPage · View PricingPage",
+      "PricingTier · no View",
+      "PricingFooter · View PricingFooter",
+    ]);
+  });
+
   test("renders nothing with nothing to list", () => {
     expect(render({ created: [], updated: [] }).host.innerHTML).toBe("");
   });
@@ -129,9 +144,12 @@ describe("ChangedComponents (connected)", () => {
     ...(state === "output-error" ? { errorText: "Not components: Nope." } : {}),
   });
 
-  const connected = (toolPart: ToolPart, onCanvas = ["FaqAccordion", "PricingPage", "PricingTier"]) => {
+  // onCanvas null: the component list hasn't loaded.
+  const connected = (toolPart: ToolPart, onCanvas: string[] | null = ["FaqAccordion", "PricingPage", "PricingTier"]) => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
-    client.setQueryData(queryKeys.userComponents.byWorkspace(WS), onCanvas.map((name) => ({ name })));
+    if (onCanvas) client.setQueryData(queryKeys.userComponents.byWorkspace(WS), onCanvas.map((name) => ({ name })));
+    // Never resolves, so an unseeded list stays loading.
+    else client.setQueryDefaults(queryKeys.userComponents.byWorkspace(WS), { queryFn: () => new Promise(() => {}) });
     useWorkspaceStore.setState({ activeWorkspaceId: WS, focusComponentName: null });
     return mount(
       <QueryClientProvider client={client}>
@@ -140,13 +158,14 @@ describe("ChangedComponents (connected)", () => {
     );
   };
 
-  test("lists only what is still on the canvas, each name once", () => {
+  test("lists everything the turn reported, each name once; only what is on the canvas gets a View", () => {
     const host = connected(
       done({ created: ["FaqAccordion", "Deleted", "FaqAccordion"], updated: ["PricingPage", "FaqAccordion", "PricingTier"] }),
     );
-    expect(view(host)?.header).toBe("Changes1 new · 2 updated (open)");
+    expect(view(host)?.header).toBe("Changes2 new · 2 updated (open)");
     expect(view(host)?.sections.flatMap((s) => s.rows)).toEqual([
       "FaqAccordion · View FaqAccordion",
+      "Deleted · no View",
       "PricingPage · View PricingPage",
       "PricingTier · View PricingTier",
     ]);
@@ -171,7 +190,19 @@ describe("ChangedComponents (connected)", () => {
     expect(host.querySelector("section")).toBeNull();
   });
 
-  test("everything gone from the canvas renders nothing", () => {
-    expect(connected(done({ created: ["Deleted"], updated: [] }), []).innerHTML).toBe("");
+  test("keeps the record when everything has left the canvas", () => {
+    const host = connected(done({ created: ["Deleted"], updated: ["Renamed"] }), []);
+    expect(view(host)).toEqual({
+      header: "Changes1 new · 1 updated (open)",
+      sections: [
+        { title: "New components", rows: ["Deleted · no View"] },
+        { title: "Updated components", rows: ["Renamed · no View"] },
+      ],
+    });
+  });
+
+  test("lists the names while the component list loads, without Views", () => {
+    const host = connected(done({ created: ["FaqAccordion"], updated: ["PricingPage"] }), null);
+    expect(view(host)?.sections.flatMap((s) => s.rows)).toEqual(["FaqAccordion · no View", "PricingPage · no View"]);
   });
 });
