@@ -10,6 +10,8 @@ declare global {
       onCommentsShown: (callback: (request: { workspaceId: string; commentId: number; send: boolean; chat?: string }) => void) => () => void;
       /** In the main window: saves what it shows at `rect` (CSS px) as the workspace's thumbnail. */
       captureThumbnail: (workspaceId: string, rect: { x: number; y: number; width: number; height: number }) => Promise<void>;
+      /** A content-free analytics event; see renderer/lib/analytics.ts. */
+      track: (event: string, properties?: Record<string, unknown>) => void;
       getUpdateStatus: () => Promise<{ pendingVersion: string | null }>;
       installUpdate: () => Promise<void>;
       onUpdateDownloaded: (callback: (version: string) => void) => () => void;

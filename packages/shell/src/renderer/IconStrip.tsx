@@ -7,6 +7,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "./components/ui/tooltip";
+import { track } from "@/renderer/lib/analytics";
 
 const tabs = [
   { id: "chat" as const, icon: MessageSquare, label: "Chat" },
@@ -27,7 +28,9 @@ export const IconStrip = () => {
       const mod = isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
       if (e.key !== "b" || !mod || e.shiftKey || e.altKey) return;
       e.preventDefault();
-      useWorkspaceStore.getState().toggleSidePanel();
+      const s = useWorkspaceStore.getState();
+      track("panel_toggled", { panel: "side", open: !s.sidePanelOpen, via: "shortcut" });
+      s.toggleSidePanel();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -41,7 +44,10 @@ export const IconStrip = () => {
           <Tooltip key={tab.id}>
             <TooltipTrigger asChild>
               <button
-                onClick={() => setActiveSidePanel(tab.id)}
+                onClick={() => {
+                  track("side_panel_tab_selected", { tab: tab.id });
+                  setActiveSidePanel(tab.id);
+                }}
                 className={cn(
                   "h-12 flex items-center justify-center border-none cursor-pointer transition-colors",
                   isActive

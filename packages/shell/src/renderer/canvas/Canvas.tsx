@@ -83,6 +83,7 @@ const useCoarsePointer = () =>
 type FrameActions = {
   onFullscreen: (url: string) => void;
   onSeeCode?: (componentName: string) => void;
+  onRefresh?: () => void;
   frameLayer?: FrameLayer;
   framesTakePointer?: boolean;
   onFrameActivity?: () => void;
@@ -212,7 +213,7 @@ const IframeNodeRenderer = ({
   // Only a selected node asks: each of them counting every node on each
   // store change (every step of a zoom) is frames × frames.
   const multiSelected = useStore((s) => selected && s.nodes.filter((n) => n.selected).length > 1);
-  const { onFullscreen, onSeeCode, onFrameActivity } = useContext(FrameActionsContext);
+  const { onFullscreen, onSeeCode, onRefresh, onFrameActivity } = useContext(FrameActionsContext);
 
   useEffect(() => {
     let cancelled = false;
@@ -240,8 +241,9 @@ const IframeNodeRenderer = ({
   }, [onFrameActivity]);
 
   const handleRefresh = useCallback(() => {
+    onRefresh?.();
     setRefreshCounter((c) => c + 1);
-  }, []);
+  }, [onRefresh]);
 
   // The frame's own URL, not the runtime's ?fullscreen=true: that drops the
   // component's preview marker and keeps the frame agent out, and the
@@ -382,6 +384,8 @@ type CanvasProps = {
   onFullscreen: (url: string) => void;
   // Without it, frames have no See Code button.
   onSeeCode?: (componentName: string) => void;
+  // A frame's Refresh button was pressed, for a host that counts it.
+  onRefresh?: () => void;
   frameLayer?: FrameLayer;
   // The frames have the pointer, for a host's tool that picks in them
   // (the shell's inspector): no layer over them takes it.
@@ -400,6 +404,7 @@ export const Canvas = ({
   onFrameActivity,
   onFullscreen,
   onSeeCode,
+  onRefresh,
   frameLayer,
   framesTakePointer,
   className,
@@ -594,8 +599,8 @@ export const Canvas = ({
   );
 
   const frameActions = useMemo(
-    () => ({ onFullscreen, onSeeCode, frameLayer, framesTakePointer, onFrameActivity }),
-    [onFullscreen, onSeeCode, frameLayer, framesTakePointer, onFrameActivity],
+    () => ({ onFullscreen, onSeeCode, onRefresh, frameLayer, framesTakePointer, onFrameActivity }),
+    [onFullscreen, onSeeCode, onRefresh, frameLayer, framesTakePointer, onFrameActivity],
   );
 
   return (

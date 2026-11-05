@@ -13,6 +13,7 @@ import {
   usePublishWorkspace,
   useSignIn,
 } from "@/renderer/lib/account-ops";
+import { track } from "@/renderer/lib/analytics";
 
 /* ────────────────────────────────────────────────────────────
    Publish button for the titlebar. Signed out, it opens a minimal
@@ -213,6 +214,7 @@ export const PublishButton = ({
 
   const onPublishClick = () => {
     if (stepRef.current === "publishing" || stepRef.current === "checking") return;
+    track("publish_clicked", { workspace_id: workspaceId });
     target.current = { id: workspaceId, name: workspaceName };
     setFailure(null);
     void checkThenPublish();
@@ -520,6 +522,7 @@ export const PublishButton = ({
                 type="button"
                 onClick={() => {
                   navigator.clipboard?.writeText(link).catch(() => {});
+                  track("publish_link_copied", { workspace_id: target.current.id });
                   setCopied(true);
                 }}
                 className="flex h-7 items-center gap-1.5 rounded-md bg-white/[0.08] px-2.5 text-[12px] font-medium text-neutral-200 transition-colors hover:bg-white/[0.12]"

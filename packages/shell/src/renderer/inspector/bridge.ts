@@ -13,6 +13,7 @@ import {
   type WheelMode,
 } from "@/agent/protocol";
 import { useInspectorStore, type Picked } from "./store";
+import { track } from "@/renderer/lib/analytics";
 
 // The shell's side of its agent in each preview frame (@/agent/protocol):
 // which iframe is which frame, requests and their answers, and the frames'
@@ -354,6 +355,7 @@ export async function tagSelection() {
   if (!selection) return;
   const [seen] = await getElementContext([selection]);
   store.getState().addTag({ ...selection, seen: seen ?? null });
+  track("element_tagged");
 }
 
 // An element's styles as the Design panel edits them, as its frame shows it

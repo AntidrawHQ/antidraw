@@ -15,6 +15,7 @@ import {
 import type { CommentContext } from "@/shared/utils/canvas-comments";
 import { commentEvents } from "@/main/lib/comment-events";
 import { conversationEvents } from "@/main/lib/conversation-store";
+import { track } from "@/main/lib/posthog";
 
 // A workspace's comments for Claude, under /workspaces/:workspaceId/comments.
 export const commentController = new Hono();
@@ -65,11 +66,13 @@ commentController.post(
   zValidator("json", addSchema),
   async (ctx) => {
     const { workspaceId } = ctx.req.valid("param");
-    const result = await addComment(workspaceId, ctx.req.valid("json"));
+    const input = ctx.req.valid("json");
+    const result = await addComment(workspaceId, input);
     if (result.isErr()) {
       const { status, code, message } = result.error;
       return ctx.json({ error: { code, message } }, status);
     }
+    track("comment_added", { workspace_id: workspaceId, on_element: input.element !== null });
     return ctx.json(result.value, 201);
   },
 );
@@ -85,6 +88,7 @@ commentController.patch(
       const { status, code, message } = result.error;
       return ctx.json({ error: { code, message } }, status);
     }
+    track("comment_edited", { workspace_id: workspaceId });
     return ctx.json(result.value);
   },
 );
@@ -99,6 +103,7 @@ commentController.delete(
       const { status, code, message } = result.error;
       return ctx.json({ error: { code, message } }, status);
     }
+    track("comment_deleted", { workspace_id: workspaceId });
     return ctx.json({ ok: true });
   },
 );
@@ -113,6 +118,7 @@ commentController.post(
       const { status, code, message } = result.error;
       return ctx.json({ error: { code, message } }, status);
     }
+    track("comments_cleared", { workspace_id: workspaceId });
     return ctx.json({ ok: true });
   },
 );

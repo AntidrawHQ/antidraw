@@ -6,6 +6,7 @@ import {
 } from "@/renderer/components/UpdateToast";
 import { useUpdateStatus } from "@/renderer/hooks/use-update-status";
 import { useUpdateStore } from "@/renderer/store/update";
+import { track } from "@/renderer/lib/analytics";
 
 // Which half of the update prompt is showing. The toast is up until the user
 // picks "Later", after which the titlebar reminder is the way back to it.
@@ -34,8 +35,14 @@ export const useUpdateToast = () => {
 
     showUpdateToast({
       version: pendingVersion,
-      onRestart: () => void window.electronAPI.installUpdate(),
-      onDismiss: () => dismissVersion(pendingVersion),
+      onRestart: () => {
+        track("update_restart_clicked", { version: pendingVersion });
+        void window.electronAPI.installUpdate();
+      },
+      onDismiss: () => {
+        track("update_dismissed", { version: pendingVersion });
+        dismissVersion(pendingVersion);
+      },
     });
   }, [showToast, pendingVersion, dismissVersion]);
 

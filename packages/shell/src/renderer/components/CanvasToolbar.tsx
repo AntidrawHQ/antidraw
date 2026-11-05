@@ -2,7 +2,7 @@ import { Panel } from "@xyflow/react";
 import { MessageCircle, MousePointer2, SquareDashedMousePointer } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/renderer/components/ui/tooltip";
-import { setCanvasTool, useCanvasTool, type CanvasTool } from "@/renderer/comments/store";
+import { pickCanvasTool, useCanvasTool, type CanvasTool } from "@/renderer/comments/store";
 
 // The canvas's tool rail, floating at its top left. The active tool stays
 // neutral: a soft white fill and a brighter icon, no mode colours.
@@ -68,7 +68,7 @@ export const CanvasToolbar = () => {
   const mode = useCanvasTool();
 
   // Picking a tool selects it; picking the active one again leaves it on.
-  const select = (id: Mode) => setCanvasTool(id);
+  const select = (id: Mode) => pickCanvasTool(id, "click");
 
   return (
     <Panel position="top-left">

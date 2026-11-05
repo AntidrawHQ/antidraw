@@ -7,6 +7,7 @@ import {
   PopoverTrigger,
   PopoverContent,
 } from "@/renderer/components/ui/popover";
+import { track } from "@/renderer/lib/analytics";
 
 type CopyDropdownProps = {
   code: string;
@@ -22,6 +23,7 @@ export const CopyDropdown = ({ code, filePath }: CopyDropdownProps) => {
   const doCopy = useCallback(
     (text: string, label: string) => {
       navigator.clipboard.writeText(text).catch(() => {});
+      track("frame_copied", { what: label });
       setCopied(label);
       setOpen(false);
       clearTimeout(timerRef.current);

@@ -17,6 +17,7 @@ import { useConversationMessages } from "@/renderer/lib/claude-code-ops";
 import { toFlow, type Actions } from "./model";
 import { FLOAT, floatShadow } from "./pieces";
 import { setCanvasTool, useCommentStore } from "./store";
+import { track } from "@/renderer/lib/analytics";
 
 // A comment whose frame isn't on the canvas (it's gone, or there's no canvas
 // up) has nowhere to go to: say so, rather than switch tools to nothing.
@@ -89,7 +90,9 @@ export const useCommentActions = ({ model, effort }: { model?: string; effort?: 
       await Promise.allSettled([...adding]);
       const list = queryClient.getQueryData<CommentList>(queryKeys.comments.byWorkspace(workspaceId));
       const drafts = list?.comments.filter((c) => c.state === "draft") ?? [];
-      return await sendComments.send({ drafts, model, effort });
+      const sent = await sendComments.send({ drafts, model, effort });
+      if (sent) track("comments_sent", { workspace_id: workspaceId, count: drafts.length });
+      return sent;
     } finally {
       setSending(false);
     }

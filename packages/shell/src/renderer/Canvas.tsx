@@ -19,6 +19,7 @@ import { EditBar } from "./design/EditBar";
 import { DesignSync } from "./design/use-design";
 import { showCode } from "./design/store";
 import { useCanvasThumbnail } from "./lib/thumbnail";
+import { track } from "@/renderer/lib/analytics";
 
 // Over each frame: the tools (the inspector's and the Comment tool's).
 const renderFrameLayers: FrameLayer = (frame) => (
@@ -44,7 +45,14 @@ const FocusRequestedComponent = () => {
   return null;
 };
 
+const trackRefresh = () => track("frame_refreshed");
+const seeCode = (componentName: string) => {
+  track("frame_code_viewed");
+  showCode(componentName);
+};
+
 const openFullscreen = (url: string) => {
+  track("frame_opened_in_window");
   window.electronAPI.openPreviewWindow(url, useWorkspaceStore.getState().activeWorkspaceId ?? undefined);
 };
 
@@ -86,7 +94,8 @@ const WorkspaceCanvas = ({
       onLayoutsChange={saveLayouts}
       onFrameActivity={onFrameActivity}
       onFullscreen={openFullscreen}
-      onSeeCode={showCode}
+      onSeeCode={seeCode}
+      onRefresh={trackRefresh}
       frameLayer={renderFrameLayers}
       framesTakePointer={picking}
       className={className}
