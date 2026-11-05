@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, test, expect, beforeAll } from "vitest";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { app } from "@/main/api";
+import { withAppKey } from "./with-app-key";
 import type { ConversationWithMessages, StreamEvent } from "@/main/api";
 import { db } from "@/main/db";
 import { workspaces } from "@/main/api/schema";
@@ -39,9 +40,9 @@ const openStream = (conversationId: string) => {
   let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
   const pump = (async () => {
-    const res = await app.request(`/api/chat/${conversationId}/stream`, {
+    const res = await app.request(`/api/chat/${conversationId}/stream`, withAppKey({
       signal: abort.signal,
-    });
+    }));
     expect(res.status).toBe(200);
     reader = res.body!.getReader();
     const decoder = new TextDecoder();
@@ -105,17 +106,17 @@ const until = async <T>(
 };
 
 const post = async (body: Record<string, unknown>) => {
-  const res = await app.request("/api/chat/message", {
+  const res = await app.request("/api/chat/message", withAppKey({
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ workspaceId, model: MODEL, ...body }),
-  });
+  }));
   expect(res.status).toBe(202);
   return (await res.json()) as { conversationId: string };
 };
 
 const getConversation = async (id: string) => {
-  const res = await app.request(`/api/chat/${id}`);
+  const res = await app.request(`/api/chat/${id}`, withAppKey());
   expect(res.status).toBe(200);
   return (await res.json()) as ConversationWithMessages;
 };

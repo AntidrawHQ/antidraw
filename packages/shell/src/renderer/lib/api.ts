@@ -24,10 +24,19 @@ import { ok, err } from "neverthrow";
 
 export type { StreamEvent, EffortLevel } from "@/main/api";
 
+// Every API route answers only the app's own pages, which prove it with
+// main's per-launch key (main/lib/app-key.ts); a workspace preview, in the
+// same session, never has it.
+export const appKeyHeader = () => ({ "x-antidraw-app-key": window.electronAPI?.appKey ?? "" });
+
+// fetch, for the API: with the app key.
+const apiFetch = (url: string, init: RequestInit = {}) =>
+  fetch(url, { ...init, headers: { ...appKeyHeader(), ...(init.headers as Record<string, string>) } });
+
 // The CLI's live model catalog (from main's session-lifetime cache).
 export const getSupportedModels = async () => {
   try {
-    const response = await fetch("antidraw://app/api/models");
+    const response = await apiFetch("antidraw://app/api/models");
 
     if (!response.ok) {
       const errorBody = await response.json().catch(() => ({}));
@@ -55,7 +64,7 @@ export const getSupportedModels = async () => {
 
 export const getPreference = async (key: string) => {
   try {
-    const response = await fetch(`antidraw://app/api/preferences/${key}`);
+    const response = await apiFetch(`antidraw://app/api/preferences/${key}`);
 
     if (!response.ok) {
       const errorBody = await response.json().catch(() => ({}));
@@ -79,7 +88,7 @@ export const getPreference = async (key: string) => {
 
 export const setPreference = async (key: string, value: string) => {
   try {
-    const response = await fetch(`antidraw://app/api/preferences/${key}`, {
+    const response = await apiFetch(`antidraw://app/api/preferences/${key}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ value }),
@@ -110,7 +119,7 @@ export const setPreference = async (key: string, value: string) => {
 
 export const triggerClaudeLogin = async () => {
   try {
-    const response = await fetch("antidraw://app/api/claude-cli/auth/login", {
+    const response = await apiFetch("antidraw://app/api/claude-cli/auth/login", {
       method: "POST",
     });
 
@@ -147,6 +156,7 @@ export async function* createWorkspace(
       fetchEventSource("antidraw://app/api/workspaces", {
         method: "POST",
         headers: {
+          ...appKeyHeader(),
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ name }),
@@ -177,7 +187,7 @@ export async function* createWorkspace(
 
 export const listWorkspaces = async () => {
   try {
-    const response = await fetch("antidraw://app/api/workspaces");
+    const response = await apiFetch("antidraw://app/api/workspaces");
 
     if (!response.ok) {
       const errorBody = await response.json().catch(() => ({}));
@@ -201,7 +211,7 @@ export const listWorkspaces = async () => {
 
 export const getWorkspace = async (id: string) => {
   try {
-    const response = await fetch(`antidraw://app/api/workspaces/${id}`);
+    const response = await apiFetch(`antidraw://app/api/workspaces/${id}`);
 
     if (!response.ok) {
       const errorBody = await response.json().catch(() => ({}));
@@ -225,7 +235,7 @@ export const getWorkspace = async (id: string) => {
 
 export const deleteWorkspace = async (id: string) => {
   try {
-    const response = await fetch(`antidraw://app/api/workspaces/${id}`, {
+    const response = await apiFetch(`antidraw://app/api/workspaces/${id}`, {
       method: "DELETE",
     });
 
@@ -258,7 +268,7 @@ export type { DevServerState, DevServerInfo } from "@/main/api";
 
 export const startDevServer = async (workspaceId: string) => {
   try {
-    const response = await fetch(
+    const response = await apiFetch(
       `antidraw://app/api/workspaces/${workspaceId}/dev-server`,
       { method: "POST" },
     );
@@ -285,7 +295,7 @@ export const startDevServer = async (workspaceId: string) => {
 
 export const stopDevServer = async (workspaceId: string) => {
   try {
-    const response = await fetch(
+    const response = await apiFetch(
       `antidraw://app/api/workspaces/${workspaceId}/dev-server`,
       { method: "DELETE" },
     );
@@ -312,7 +322,7 @@ export const stopDevServer = async (workspaceId: string) => {
 
 export const getDevServerStatus = async (workspaceId: string) => {
   try {
-    const response = await fetch(
+    const response = await apiFetch(
       `antidraw://app/api/workspaces/${workspaceId}/dev-server`,
     );
 
@@ -354,7 +364,7 @@ export const getDevServerStatus = async (workspaceId: string) => {
 
 export const listComponents = async (workspaceId: string) => {
   try {
-    const response = await fetch(
+    const response = await apiFetch(
       `antidraw://app/api/workspaces/${workspaceId}/components`,
     );
 
@@ -383,7 +393,7 @@ export const getComponentSource = async (
   componentName: string,
 ) => {
   try {
-    const response = await fetch(
+    const response = await apiFetch(
       `antidraw://app/api/workspaces/${workspaceId}/components/${encodeURIComponent(componentName)}/source`,
     );
 
@@ -413,7 +423,7 @@ export const getComponentSource = async (
 
 export const listWorkspaceConversations = async (workspaceId: string) => {
   try {
-    const response = await fetch(
+    const response = await apiFetch(
       `antidraw://app/api/workspaces/${workspaceId}/conversations`,
     );
 
@@ -456,7 +466,7 @@ export const sendMessage = async (params: {
   editIds?: number[];
 }) => {
   try {
-    const response = await fetch("antidraw://app/api/chat/message", {
+    const response = await apiFetch("antidraw://app/api/chat/message", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(params),
@@ -592,6 +602,7 @@ export const subscribeToConversation = async function* (
       }
 
       fetchEventSource(url.toString(), {
+        headers: appKeyHeader(),
         signal: abort.signal,
         onopen: async (response) => {
           if (!response.ok) {
@@ -647,7 +658,7 @@ export const cancelQueuedMessage = async (
   userMessageId: string,
 ) => {
   try {
-    const response = await fetch(
+    const response = await apiFetch(
       `antidraw://app/api/chat/${conversationId}/message/${userMessageId}`,
       { method: "DELETE" },
     );
@@ -681,7 +692,7 @@ export const answerQuestion = async (
   answers: AskUserQuestionAnswers,
 ) => {
   try {
-    const response = await fetch(
+    const response = await apiFetch(
       `antidraw://app/api/chat/${conversationId}/question/${encodeURIComponent(toolUseId)}`,
       {
         method: "POST",
@@ -715,7 +726,7 @@ export const declineQuestion = async (
   toolUseId: string,
 ) => {
   try {
-    const response = await fetch(
+    const response = await apiFetch(
       `antidraw://app/api/chat/${conversationId}/question/${encodeURIComponent(toolUseId)}`,
       { method: "DELETE" },
     );
@@ -746,7 +757,7 @@ export const declineQuestion = async (
 // when it is asked.
 export const getFailedMessageIds = async (conversationId: string) => {
   try {
-    const response = await fetch(
+    const response = await apiFetch(
       `antidraw://app/api/chat/${conversationId}/undelivered`,
     );
 
@@ -773,7 +784,7 @@ export const getFailedMessageIds = async (conversationId: string) => {
 // Cancel an active stream
 export const cancelConversationStream = async (conversationId: string) => {
   try {
-    const response = await fetch(
+    const response = await apiFetch(
       `antidraw://app/api/chat/${conversationId}/stream`,
       { method: "DELETE" },
     );
@@ -800,7 +811,7 @@ export const cancelConversationStream = async (conversationId: string) => {
 
 export const getConversationWithMessages = async (conversationId: string) => {
   try {
-    const response = await fetch(`antidraw://app/api/chat/${conversationId}`);
+    const response = await apiFetch(`antidraw://app/api/chat/${conversationId}`);
 
     if (!response.ok) {
       const errorBody = await response.json().catch(() => ({}));
@@ -824,7 +835,7 @@ export const getConversationWithMessages = async (conversationId: string) => {
 
 export const createConversation = async (workspaceId: string) => {
   try {
-    const response = await fetch("antidraw://app/api/chat/conversation", {
+    const response = await apiFetch("antidraw://app/api/chat/conversation", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -859,7 +870,7 @@ export const generateConversationTitle = async (
   firstMessage: string,
 ) => {
   try {
-    const response = await fetch(
+    const response = await apiFetch(
       `antidraw://app/api/chat/${conversationId}/generate-title`,
       {
         method: "POST",
@@ -903,7 +914,7 @@ export type FrameLayoutData = {
 
 export const getFrameLayouts = async (workspaceId: string) => {
   try {
-    const response = await fetch(
+    const response = await apiFetch(
       `antidraw://app/api/workspaces/${workspaceId}/frame-layouts`,
     );
 
@@ -938,7 +949,7 @@ export const saveFrameLayouts = async (
   }[],
 ) => {
   try {
-    const response = await fetch(
+    const response = await apiFetch(
       `antidraw://app/api/workspaces/${workspaceId}/frame-layouts`,
       {
         method: "PUT",
@@ -982,7 +993,7 @@ const commentsRequest = async <T>(
   init?: { method: string; body?: unknown },
 ) => {
   try {
-    const response = await fetch(url, {
+    const response = await apiFetch(url, {
       method: init?.method,
       ...(init?.body !== undefined
         ? {
@@ -1085,6 +1096,7 @@ const watchChanges = (url: string, onChange: () => void) => {
       delay = Math.min(delay * 2, 30_000);
     };
     fetchEventSource(url, {
+      headers: appKeyHeader(),
       signal: abort.signal,
       openWhenHidden: true,
       onopen: async (response) => {
@@ -1155,13 +1167,9 @@ export const watchEdits = (workspaceId: string, onChange: () => void) =>
 // Cloud account API
 // ============================================================================
 
-// The account routes answer only the app's own pages, which prove it with
-// main's per-launch key (main/lib/app-key.ts).
-const appKeyHeader = () => ({ "x-antidraw-app-key": window.electronAPI?.appKey ?? "" });
-
 export const getAccount = async () => {
   try {
-    const response = await fetch("antidraw://app/api/account", { headers: appKeyHeader() });
+    const response = await apiFetch("antidraw://app/api/account");
 
     if (!response.ok) {
       const errorBody = await response.json().catch(() => ({}));
@@ -1212,8 +1220,7 @@ export const getFeatures = async () => {
 // TIMED_OUT / ACCESS_DENIED if they don't.
 export const signIn = async () => {
   try {
-    const response = await fetch("antidraw://app/api/account/sign-in", {
-      headers: appKeyHeader(),
+    const response = await apiFetch("antidraw://app/api/account/sign-in", {
       method: "POST",
     });
 
@@ -1239,8 +1246,7 @@ export const signIn = async () => {
 
 export const cancelSignIn = async () => {
   try {
-    await fetch("antidraw://app/api/account/sign-in/cancel", {
-      headers: appKeyHeader(),
+    await apiFetch("antidraw://app/api/account/sign-in/cancel", {
       method: "POST",
     });
     return ok(true);
@@ -1255,9 +1261,8 @@ export const cancelSignIn = async () => {
 
 export const signOut = async () => {
   try {
-    await fetch("antidraw://app/api/account/sign-out", {
+    await apiFetch("antidraw://app/api/account/sign-out", {
       method: "POST",
-      headers: appKeyHeader(),
     });
     return ok(true);
   } catch (_e) {
@@ -1273,7 +1278,7 @@ export const signOut = async () => {
 // Takes as long as the build and upload do.
 export const publishWorkspace = async (workspaceId: string) => {
   try {
-    const response = await fetch(
+    const response = await apiFetch(
       `antidraw://app/api/workspaces/${workspaceId}/publish`,
       { method: "POST" },
     );

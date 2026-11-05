@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, test, expect, beforeAll } from "vitest";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { app } from "@/main/api";
+import { withAppKey } from "./with-app-key";
 import type { ConversationWithMessages } from "@/main/api";
 import { db } from "@/main/db";
 import { workspaces } from "@/main/api/schema";
@@ -18,7 +19,7 @@ const workspaceId = crypto.randomUUID();
 const MODEL = "haiku";
 
 const getConversation = async (id: string): Promise<ConversationWithMessages> => {
-  const res = await app.request(`/api/chat/${id}`);
+  const res = await app.request(`/api/chat/${id}`, withAppKey());
   expect(res.status).toBe(200);
   return (await res.json()) as ConversationWithMessages;
 };
@@ -54,7 +55,7 @@ describe("POST /api/chat/message", () => {
   test("a message travels end to end: POST → CLI → DB → GET", { timeout: 120_000 }, async () => {
     const userMessageId = crypto.randomUUID();
 
-    const res = await app.request("/api/chat/message", {
+    const res = await app.request("/api/chat/message", withAppKey({
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -63,7 +64,7 @@ describe("POST /api/chat/message", () => {
         userMessageId,
         model: MODEL,
       }),
-    });
+    }));
 
     expect(res.status).toBe(202);
     const { conversationId } = (await res.json()) as { conversationId: string };

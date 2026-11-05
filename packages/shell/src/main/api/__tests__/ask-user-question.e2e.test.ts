@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, test, expect, beforeAll } from "vitest";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { app } from "@/main/api";
+import { withAppKey } from "./with-app-key";
 import type { ConversationWithMessages, StreamEvent } from "@/main/api";
 import { db } from "@/main/db";
 import { workspaces } from "@/main/api/schema";
@@ -49,7 +50,7 @@ const until = async <T>(
 };
 
 const getConversation = async (id: string) =>
-  (await (await app.request(`/api/chat/${id}`)).json()) as ConversationWithMessages;
+  (await (await app.request(`/api/chat/${id}`, withAppKey())).json()) as ConversationWithMessages;
 
 type Block = { type: string; id?: string; name?: string; input?: unknown; tool_use_id?: string; is_error?: boolean; content?: unknown };
 const blocksOf = (c: ConversationWithMessages) =>
@@ -72,7 +73,7 @@ const textOf = (content: unknown): string =>
 // Starts a turn whose first act is a question, and waits until the CLI is
 // blocked on it. Returns the question as the transcript holds it.
 const askedTurn = async () => {
-  const res = await app.request("/api/chat/message", {
+  const res = await app.request("/api/chat/message", withAppKey({
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -85,7 +86,7 @@ const askedTurn = async () => {
       userMessageId: crypto.randomUUID(),
       model: MODEL,
     }),
-  });
+  }));
   expect(res.status).toBe(202);
   const { conversationId } = (await res.json()) as { conversationId: string };
 
@@ -169,11 +170,11 @@ describe("AskUserQuestion against the real CLI", () => {
 
     const res = await app.request(
       `/api/chat/${conversationId}/question/${toolUseId}`,
-      {
+      withAppKey({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ answers: { [q.question]: blue.label } }),
-      },
+      }),
     );
     expect(res.status).toBe(200);
 
@@ -216,9 +217,9 @@ describe("AskUserQuestion against the real CLI", () => {
   test("declining hands the model our message as the tool's error", { timeout: TIMEOUT }, async () => {
     const { conversationId, toolUseId, off } = await askedTurn();
 
-    const res = await app.request(`/api/chat/${conversationId}/question/${toolUseId}`, {
+    const res = await app.request(`/api/chat/${conversationId}/question/${toolUseId}`, withAppKey({
       method: "DELETE",
-    });
+    }));
     expect(await res.json()).toEqual({ declined: true });
 
     const done = await turnOver(conversationId);
@@ -246,7 +247,7 @@ describe("AskUserQuestion against the real CLI", () => {
   test("Stop while the CLI waits takes the question down", { timeout: TIMEOUT }, async () => {
     const { conversationId, events, off } = await askedTurn();
 
-    const stop = await app.request(`/api/chat/${conversationId}/stream`, { method: "DELETE" });
+    const stop = await app.request(`/api/chat/${conversationId}/stream`, withAppKey({ method: "DELETE" }));
     expect(await stop.json()).toEqual({ cancelled: true });
 
     await until(

@@ -12,6 +12,7 @@ import {
   releaseHandle,
 } from "@/main/lib/conversation-store";
 import { buildPrompt } from "@/main/api/claude-code-ops";
+import { withAppKey } from "./with-app-key";
 
 // The backlog read is the only asynchronous step between attaching the
 // listener and sending the seeds, so it is where the interesting interleavings
@@ -113,7 +114,7 @@ const textOf = (m: Message) => {
 // backend listeners rather than leaking them into the next test.
 const openStream = async (path: string) => {
   const abort = new AbortController();
-  const res = await app.request(path, { signal: abort.signal });
+  const res = await app.request(path, withAppKey({ signal: abort.signal }));
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
   const queue: StreamEvent[] = [];
@@ -446,6 +447,7 @@ describe("stream replay", () => {
   test("a conversation that does not exist is refused, not streamed", async () => {
     const res = await app.request(
       `/api/chat/${crypto.randomUUID()}/stream?afterSeq=0`,
+      withAppKey(),
     );
 
     // Without the guard the route opens an SSE stream for a row that is not
@@ -462,6 +464,7 @@ describe("stream replay", () => {
     const conversationId = await newConversation();
     const res = await app.request(
       `/api/chat/${conversationId}/stream?afterSeq=-1`,
+      withAppKey(),
     );
     expect(res.status).toBe(400);
   });
@@ -479,7 +482,7 @@ describe("stream teardown", () => {
 
     // No AbortSignal in play at all: this is the shipped path, where the only
     // thing that ever happens is the body being cancelled.
-    const res = await app.request(`/api/chat/${conversationId}/stream`);
+    const res = await app.request(`/api/chat/${conversationId}/stream`, withAppKey());
     const reader = res.body!.getReader();
     await reader.read(); // a seed — proof the handler attached
     expect(conversationEvents.listenerCount("message")).toBe(before + 1);
@@ -494,9 +497,9 @@ describe("stream teardown", () => {
     const before = conversationEvents.listenerCount("message");
 
     const abort = new AbortController();
-    const res = await app.request(`/api/chat/${conversationId}/stream`, {
+    const res = await app.request(`/api/chat/${conversationId}/stream`, withAppKey({
       signal: abort.signal,
-    });
+    }));
     const reader = res.body!.getReader();
     await reader.read();
     expect(conversationEvents.listenerCount("message")).toBe(before + 1);
@@ -516,9 +519,9 @@ describe("stream teardown", () => {
   test("the handler returns on departure, so the body ends", async () => {
     const conversationId = await newConversation();
     const abort = new AbortController();
-    const res = await app.request(`/api/chat/${conversationId}/stream`, {
+    const res = await app.request(`/api/chat/${conversationId}/stream`, withAppKey({
       signal: abort.signal,
-    });
+    }));
     const reader = res.body!.getReader();
     await reader.read(); // the seeds
 
@@ -548,7 +551,7 @@ describe("stream teardown", () => {
     const abort = new AbortController();
     const res = await app.request(
       `/api/chat/${conversationId}/stream?afterSeq=0`,
-      { signal: abort.signal },
+      withAppKey({ signal: abort.signal }),
     );
     const reader = res.body!.getReader();
 
@@ -614,6 +617,7 @@ describe("stream teardown", () => {
       // leak.
       const res = await app.request(
         `/api/chat/${conversationId}/stream?afterSeq=0`,
+        withAppKey(),
       );
       expect(await res.text()).toBe(""); // body ended cleanly, nothing sent
 

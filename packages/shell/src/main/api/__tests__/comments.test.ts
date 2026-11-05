@@ -20,6 +20,7 @@ import { commentEvents } from "@/main/lib/comment-events";
 import { conversationEvents } from "@/main/lib/conversation-store";
 import { splitComments } from "@/shared/utils/canvas-comments";
 import { app } from "@/main/api";
+import { withAppKey } from "./with-app-key";
 import { listEdits, putEdit } from "@/main/api/services/edit.service";
 import type { ElementInfo } from "@/agent/protocol";
 import type { Style } from "@/shared/design";
@@ -125,21 +126,21 @@ describe("comments", () => {
   test("the chat send refuses a message whose comments went out, before any turn", async () => {
     const c = await add("Make it pop");
     await send([c.id]);
-    const res = await app.request("/api/chat/message", {
+    const res = await app.request("/api/chat/message", withAppKey({
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message: "x", workspaceId, userMessageId: crypto.randomUUID(), commentIds: [c.id] }),
-    });
+    }));
     expect(res.status).toBe(409);
   });
 
   test("a send refused for its edits leaves its comments drafts; edits need the chat's workspace too", async () => {
     const post = (body: Record<string, unknown>) =>
-      app.request("/api/chat/message", {
+      app.request("/api/chat/message", withAppKey({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: "x", workspaceId, userMessageId: crypto.randomUUID(), ...body }),
-      });
+      }));
     const c = await add("Make it pop");
     const stale = await post({ commentIds: [c.id], editIds: [987654] });
     expect(stale.status).toBe(409);
@@ -188,7 +189,7 @@ describe("comments", () => {
     const before = [commentEvents.listenerCount("changed"), conversationEvents.listenerCount("error")];
     const failed = await send([(await add("fails")).id]);
     const abort = new AbortController();
-    const res = await app.request(`/api/workspaces/${workspaceId}/comments/events`, { signal: abort.signal });
+    const res = await app.request(`/api/workspaces/${workspaceId}/comments/events`, withAppKey({ signal: abort.signal }));
     const reader = res.body!.getReader();
     const next = async () => new TextDecoder().decode((await reader.read()).value);
 

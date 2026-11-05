@@ -1,5 +1,4 @@
 import { Hono } from "hono";
-import { APP_KEY_HEADER, isAppKey } from "@/main/lib/app-key";
 import {
   cancelSignIn,
   getAccount,
@@ -8,20 +7,8 @@ import {
   signOut,
 } from "@/main/services/account.service";
 
+// The app key is checked for every /api route, these included (index.ts).
 export const accountController = new Hono();
-
-// The app's own pages only: workspace previews run in the same session and
-// could otherwise read the account, sign the user out, or keep opening
-// sign-in tabs. See app-key.ts.
-accountController.use(async (ctx, next) => {
-  if (!isAppKey(ctx.req.header(APP_KEY_HEADER))) {
-    return ctx.json(
-      { error: { code: "FORBIDDEN", message: "Not available to this page" } },
-      403,
-    );
-  }
-  await next();
-});
 
 // The signed-in cloud account, or null. Never exposes the token.
 accountController.get("/", async (ctx) => {
