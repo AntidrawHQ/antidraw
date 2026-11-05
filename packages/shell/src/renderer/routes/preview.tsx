@@ -23,7 +23,17 @@ const PreviewError = () => (
 
 const Preview = () => {
   const { url, workspace } = Route.useSearch();
-  return <PreviewWindow url={url} workspaceId={workspace ?? null} />;
+  const navigate = Route.useNavigate();
+  // Afresh for each component: what was tagged, commented or reloaded here
+  // was the last one's.
+  return (
+    <PreviewWindow
+      key={url}
+      url={url}
+      workspaceId={workspace ?? null}
+      onSwitch={(to) => void navigate({ search: { url: to, workspace }, replace: true })}
+    />
+  );
 };
 
 export const Route = createFileRoute("/preview")({
