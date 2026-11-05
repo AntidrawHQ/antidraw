@@ -3,7 +3,6 @@ import { IconStrip } from "./IconStrip";
 import { SidePanel } from "./SidePanel";
 import { useAutoSelectWorkspace } from "@/renderer/lib/workspace-ops";
 import { useConversationSubscription } from "@/renderer/lib/claude-code-ops";
-import { CodeSidePanel } from "./components/CodeSidePanel";
 
 const App = () => {
   useAutoSelectWorkspace();
@@ -16,7 +15,6 @@ const App = () => {
       <IconStrip />
       <SidePanel />
       <AppCanvas className="flex-1 border-l border-[#333]" />
-      <CodeSidePanel />
     </div>
   );
 };
