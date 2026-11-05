@@ -9,6 +9,8 @@ export type Bindings = {
   SITES: R2Bucket;
   // Each site's source: a git repo per site (services/source.service.ts).
   ARTIFACTS: Artifacts;
+  // Feature flags (Flagship); read them through lib/features.ts.
+  FLAGS: Flagship;
   // A published site's share page, with * for its slug: https://antidraw.com/s/*
   SHARE_URL_PATTERN: string;
   BETTER_AUTH_SECRET: string;

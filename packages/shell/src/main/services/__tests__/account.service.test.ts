@@ -57,6 +57,10 @@ const worker = {
   // How Google's step ends: a code, or better-auth's ?error= value.
   google: "code" as "code" | { error: string },
   meBody: null as string | null,
+  // Whether publishing is on: for everyone (/api/features), and for the
+  // signed-in account (/api/me).
+  publish: { everyone: false, account: true },
+  featuresBody: null as string | null,
   tokens: 0,
   exchange: { delayMs: 0, status: 200 },
   // /api/me waits for this before answering, when set.
@@ -102,7 +106,15 @@ beforeAll(async () => {
       if (!worker.valid.has(token)) return res.writeHead(401).end();
       if (worker.meBody !== null) return res.writeHead(200, { "content-type": "text/html" }).end(worker.meBody);
       res.writeHead(200, { "content-type": "application/json" }).end(
-        JSON.stringify({ user: { id: "u1", name: "Ada", email: "ada@example.com", image: null } }),
+        JSON.stringify({
+          user: { id: "u1", name: "Ada", email: "ada@example.com", image: null },
+          features: { publish: worker.publish.account },
+        }),
+      );
+    } else if (url.pathname === "/api/features") {
+      if (worker.featuresBody !== null) return res.writeHead(200, { "content-type": "text/html" }).end(worker.featuresBody);
+      res.writeHead(200, { "content-type": "application/json" }).end(
+        JSON.stringify({ features: { publish: worker.publish.everyone } }),
       );
     } else {
       res.writeHead(404).end();
@@ -139,6 +151,8 @@ beforeEach(() => {
     healthy: true,
     google: "code",
     meBody: null,
+    publish: { everyone: false, account: true },
+    featuresBody: null,
     tokens: 0,
     exchange: { delayMs: 0, status: 200 },
     me: { hold: null },
@@ -330,7 +344,7 @@ it("answers the account routes only with this launch's app key", async () => {
   const { accountController } = await import("../../api/controllers/account.controller");
   const { APP_KEY } = await import("../../lib/app-key");
   const keys = { "another key": "x".repeat(APP_KEY.length), "a prefix of it": APP_KEY.slice(0, 10), none: undefined };
-  const routes = [["GET", "/"], ["POST", "/sign-in"], ["POST", "/sign-in/cancel"], ["POST", "/sign-out"]];
+  const routes = [["GET", "/"], ["GET", "/features"], ["POST", "/sign-in"], ["POST", "/sign-in/cancel"], ["POST", "/sign-out"]];
   const refused = await Promise.all(
     Object.entries(keys).flatMap(([name, key]) =>
       routes.map(async ([method, route]) => {
@@ -344,14 +358,17 @@ it("answers the account routes only with this launch's app key", async () => {
     {
       "refused": [
         "another key: GET / → 403",
+        "another key: GET /features → 403",
         "another key: POST /sign-in → 403",
         "another key: POST /sign-in/cancel → 403",
         "another key: POST /sign-out → 403",
         "a prefix of it: GET / → 403",
+        "a prefix of it: GET /features → 403",
         "a prefix of it: POST /sign-in → 403",
         "a prefix of it: POST /sign-in/cancel → 403",
         "a prefix of it: POST /sign-out → 403",
         "none: GET / → 403",
+        "none: GET /features → 403",
         "none: POST /sign-in → 403",
         "none: POST /sign-in/cancel → 403",
         "none: POST /sign-out → 403",
@@ -449,4 +466,75 @@ it("reports a page that isn't the account as a server error, not a crash", async
       "err": "SERVER_ERROR",
     }
   `);
+});
+
+it("shows the account's features when signed in, and everyone's when not", async () => {
+  const { signIn, getFeatures } = await service();
+  const signedOut = await getFeatures();
+  await signIn();
+  const signedIn = await getFeatures();
+  // The server forgets the token: the app is signed out again.
+  worker.valid.clear();
+  worker.log = [];
+  const tokenGone = await getFeatures();
+  worker.publish.everyone = true;
+  const onForEveryone = await getFeatures();
+  expect({ signedOut, signedIn, tokenGone, onForEveryone, requests: worker.log }).toMatchInlineSnapshot(`
+    {
+      "onForEveryone": {
+        "publish": true,
+      },
+      "requests": [
+        "GET /api/me as token-1",
+        "GET /api/features",
+        "GET /api/features",
+      ],
+      "signedIn": {
+        "publish": true,
+      },
+      "signedOut": {
+        "publish": false,
+      },
+      "tokenGone": {
+        "publish": false,
+      },
+    }
+  `);
+});
+
+it("hides features when the server can't say", async () => {
+  const { signIn, getFeatures } = await service();
+  worker.publish.everyone = true;
+  worker.featuresBody = "<html>Sign in to the Wi-Fi</html>";
+  const portal = await getFeatures();
+  worker.featuresBody = null;
+  const url = process.env.ANTIDRAW_SERVER_URL;
+  process.env.ANTIDRAW_SERVER_URL = "http://127.0.0.1:1";
+  const unreachable = await getFeatures().finally(() => (process.env.ANTIDRAW_SERVER_URL = url));
+  await signIn();
+  worker.meBody = "<html>Sign in to the Wi-Fi</html>";
+  const signedInPortal = await getFeatures();
+  expect({ portal, unreachable, signedInPortal }).toMatchInlineSnapshot(`
+    {
+      "portal": {
+        "publish": false,
+      },
+      "signedInPortal": {
+        "publish": false,
+      },
+      "unreachable": {
+        "publish": false,
+      },
+    }
+  `);
+});
+
+it("shows Publish with ANTIDRAW_SHOW_PUBLISH=1, whatever the server says", async () => {
+  const { getFeatures } = await service();
+  process.env.ANTIDRAW_SHOW_PUBLISH = "1";
+  try {
+    expect(await getFeatures()).toEqual({ publish: true });
+  } finally {
+    delete process.env.ANTIDRAW_SHOW_PUBLISH;
+  }
 });

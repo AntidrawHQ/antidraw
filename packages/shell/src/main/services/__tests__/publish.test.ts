@@ -24,6 +24,8 @@ type TestServer = {
     SITES: { get(key: string): Promise<{ json(): Promise<unknown>; text(): Promise<string> } | null> };
   };
   artifacts: { pushed(name: string, commit: string): Promise<void> };
+  /** Starts with `publish` on. */
+  flags: { set(key: string, value: unknown): Promise<void> };
   signIn(): Promise<{ userId: string; authorization: string }>;
   close(): Promise<void>;
 };
@@ -110,6 +112,8 @@ const publish = async (
     duringBuild = (_dir: string) => {},
     // Changes where a request goes, as a server without that route would see it.
     route = (pathname: string) => pathname,
+    // Runs just before each request is sent.
+    beforeRequest = async (_pathname: string) => {},
   } = {},
 ) => {
   const requests: string[] = [];
@@ -121,11 +125,12 @@ const publish = async (
     sourceRemote: ({ remote }) => fakeRemote(remote, pushes, pushFails),
     canvas,
     site,
-    request: (url, init = {}) => {
+    request: async (url, init = {}) => {
       const target = new URL(route(String(url)), server.url);
       requests.push(`${init.method ?? "GET"} ${target.pathname}`);
       const headers = new Headers(init.headers);
       headers.set("authorization", authorization(target.pathname));
+      await beforeRequest(target.pathname);
       return fetch(target, { ...init, headers });
     },
     npm: (args, cwd, { env, ...options }) => {
@@ -135,6 +140,16 @@ const publish = async (
     onSiteCreated: async (site) => void created.push(site),
   });
   return { result, requests, created, pushes, git };
+};
+
+/** Runs `publish` with the server's publish flag off, as for a user it doesn't let in yet. */
+const withPublishingOff = async <T>(run: () => Promise<T>) => {
+  await server.flags.set("publish", false);
+  try {
+    return await run();
+  } finally {
+    await server.flags.set("publish", true);
+  }
 };
 
 /** The commit the site's live publish says it was built from. */
@@ -369,6 +384,19 @@ it("says why when it can't publish", async () => {
       git: firstGit,
       authorization: (pathname) => (pathname.endsWith("/plan") ? "Bearer nobody" : user.authorization),
     }),
+    // Not let in yet: a new site, and one published before.
+    publishingOff: await withPublishingOff(() => publish(workspace(), null)),
+    publishingOffSavedSite: await withPublishingOff(() => publish(workspace(), first, { git: firstGit })),
+    // Turned off once the upload has started.
+    publishingOffMidUpload: await withPublishingOff(async () => {
+      await server.flags.set("publish", true);
+      return publish(workspace(), first, {
+        git: firstGit,
+        beforeRequest: async (pathname) => {
+          if (pathname.endsWith("/plan")) await server.flags.set("publish", false);
+        },
+      });
+    }),
   };
   expect(
     readable(
@@ -412,6 +440,29 @@ it("says why when it can't publish", async () => {
         "code": "RUNTIME_TOO_OLD",
         "message": "Publishing needs @antidrawapp/runtime 0.5.0 or later; this workspace has 0.4.2",
         "requests": [],
+      },
+      "publishingOff": {
+        "code": "PUBLISH_DISABLED",
+        "message": "Publishing isn't available yet.",
+        "requests": [
+          "POST /api/sites",
+        ],
+      },
+      "publishingOffMidUpload": {
+        "code": "PUBLISH_DISABLED",
+        "message": "Publishing isn't available yet.",
+        "requests": [
+          "POST /api/sites/<site>/source",
+          "POST /api/sites/<site>/publishes",
+          "POST /api/sites/<site>/publishes/<publish>/plan",
+        ],
+      },
+      "publishingOffSavedSite": {
+        "code": "PUBLISH_DISABLED",
+        "message": "Publishing isn't available yet.",
+        "requests": [
+          "POST /api/sites/<site>/source",
+        ],
       },
       "pushRaced": {
         "code": "SOURCE_FAILED",

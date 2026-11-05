@@ -1,27 +1,45 @@
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { SiteStore, type Bucket, type Files } from "@antidraw/site-upload/server";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createTestHarness } from "wrangler";
 import type { Env } from "./index";
 
 // This Worker in workerd with local D1 (the server's migrations) and R2, via
 // Wrangler's test harness. Sites are published the way the server does it:
 // a site row in D1, SiteStore's plan and upload under its id, then the row
-// records the publish as live.
+// records the publish as live. FLAGS is the server's stub Worker
+// (packages/server/src/test/flags-stub), which serves each flag's fallback
+// until a test sets it.
+
+/** The Flagship stand-in, driven from Node. */
+type FlagsStub = {
+  set(key: string, value: boolean): Promise<void>;
+  clear(key: string): Promise<void>;
+  setFailing(value: boolean): Promise<void>;
+};
 
 let harness: ReturnType<typeof createTestHarness>;
 let env: Env;
 let store: SiteStore;
+let flags: FlagsStub;
 beforeAll(async () => {
   harness = createTestHarness({
     root: fileURLToPath(new URL("..", import.meta.url)),
-    workers: [{ configPath: "./wrangler.jsonc", vars: { SITE_DOMAIN: "sites.test", SHARE_URL_PATTERN: "https://share.test/s/*" } }],
+    workers: [
+      {
+        configPath: "./wrangler.jsonc",
+        vars: { SITE_DOMAIN: "sites.test", SHARE_URL_PATTERN: "https://share.test/s/*" },
+        bindingOverrides: { FLAGS: "flags-stub" },
+      },
+      { configPath: "../server/src/test/flags-stub/wrangler.jsonc" },
+    ],
   });
   await harness.listen();
   const worker = harness.getWorker<Env>();
   await worker.applyD1Migrations("DB");
   env = await worker.getEnv();
+  flags = (await harness.getWorker("flags-stub").getExport()) as unknown as FlagsStub;
   store = new SiteStore({ bucket: env.SITES as unknown as Bucket });
   await env.DB.prepare(
     "INSERT INTO user (id, name, email, email_verified, created_at, updated_at) VALUES ('u1', 'u', 'u@example.com', 1, 0, 0)",
@@ -62,8 +80,9 @@ async function republish(siteId: string, publishId: string, contents: Record<str
 /** Status, the headers worth reviewing, and the body. */
 async function get(url: string) {
   const res = await harness.getWorker().fetch(url, { redirect: "manual" });
+  const names = ["content-type", "cache-control", "location", "access-control-allow-origin", "retry-after", "x-robots-tag"];
   const headers = Object.fromEntries(
-    ["content-type", "cache-control", "location", "access-control-allow-origin", "retry-after"].flatMap((name) => {
+    names.flatMap((name) => {
       const value = res.headers.get(name);
       return value === null ? [] : [[name, value]];
     }),
@@ -81,6 +100,7 @@ describe("site worker", () => {
         "headers": {
           "cache-control": "public, max-age=0, must-revalidate",
           "content-type": "text/html; charset=utf-8",
+          "x-robots-tag": "noindex",
         },
         "status": 200,
       }
@@ -91,6 +111,7 @@ describe("site worker", () => {
         "headers": {
           "cache-control": "public, max-age=0, must-revalidate",
           "content-type": "text/javascript; charset=utf-8",
+          "x-robots-tag": "noindex",
         },
         "status": 200,
       }
@@ -126,6 +147,7 @@ describe("site worker", () => {
         "headers": {
           "cache-control": "no-store",
           "location": "https://share.test/s/shared",
+          "x-robots-tag": "noindex",
         },
         "status": 302,
       }
@@ -146,12 +168,14 @@ describe("site worker", () => {
             "access-control-allow-origin": "*",
             "cache-control": "public, max-age=0, must-revalidate",
             "content-type": "application/json",
+            "x-robots-tag": "noindex",
           },
           "status": 200,
         },
         "preview": {
           "cache-control": "public, max-age=0, must-revalidate",
           "content-type": "text/html; charset=utf-8",
+          "x-robots-tag": "noindex",
         },
       }
     `);
@@ -176,16 +200,16 @@ describe("site worker", () => {
     const answers = await Promise.all(
       hosts.map(async (url) => {
         const { status, headers, body } = await get(url);
-        return `${status} ${headers["cache-control"]} ${body} ${headers["access-control-allow-origin"] ?? "-"}`;
+        return `${status} ${headers["cache-control"]} ${body} ${headers["access-control-allow-origin"] ?? "-"} ${headers["x-robots-tag"]}`;
       }),
     );
     expect(answers).toMatchInlineSnapshot(`
       [
-        "404 no-store Site not found -",
-        "404 no-store Site not found -",
-        "404 no-store Site not found -",
-        "404 no-store Site not found -",
-        "404 no-store Site not found *",
+        "404 no-store Site not found - noindex",
+        "404 no-store Site not found - noindex",
+        "404 no-store Site not found - noindex",
+        "404 no-store Site not found - noindex",
+        "404 no-store Site not found * noindex",
       ]
     `);
   });
@@ -204,6 +228,7 @@ describe("site worker", () => {
             "access-control-allow-origin": "*",
             "cache-control": "no-store",
             "content-type": "text/plain; charset=utf-8",
+            "x-robots-tag": "noindex",
           },
           "status": 404,
         },
@@ -212,11 +237,72 @@ describe("site worker", () => {
           "headers": {
             "cache-control": "no-store",
             "content-type": "text/plain; charset=utf-8",
+            "x-robots-tag": "noindex",
           },
           "status": 404,
         },
       }
     `);
+  });
+
+  describe("with sites-serving off", () => {
+    afterEach(async () => {
+      await flags.setFailing(false);
+      await flags.clear("sites-serving");
+    });
+
+    it("answers every host with the unavailable page, before looking the site up", async () => {
+      await publish("taken-down", { "preview.html": "preview", "canvas.json": "{}" });
+      await flags.set("sites-serving", false);
+
+      const page = await get("https://taken-down.sites.test/preview");
+      const others = await Promise.all(
+        [
+          "https://taken-down.sites.test/", // not the redirect
+          "https://nobody.sites.test/preview", // no such slug: never looked up
+          "https://a.b.sites.test/", // can't name a site
+        ].map(async (url) => {
+          const { status, headers } = await get(url);
+          return `${status} ${headers["content-type"]} ${headers["access-control-allow-origin"] ?? "-"} ${headers["x-robots-tag"]}`;
+        }),
+      );
+      const canvas = await get("https://taken-down.sites.test/canvas.json");
+      expect({
+        page: { ...page, body: /<h1[^>]*>(.*)<\/h1>/.exec(page.body)?.[1] },
+        others,
+        canvas: { status: canvas.status, cors: canvas.headers["access-control-allow-origin"] },
+      }).toMatchInlineSnapshot(`
+        {
+          "canvas": {
+            "cors": "*",
+            "status": 503,
+          },
+          "others": [
+            "503 text/html; charset=utf-8 - noindex",
+            "503 text/html; charset=utf-8 - noindex",
+            "503 text/html; charset=utf-8 - noindex",
+          ],
+          "page": {
+            "body": "Antidraw sites are temporarily unavailable.",
+            "headers": {
+              "cache-control": "no-store",
+              "content-type": "text/html; charset=utf-8",
+              "retry-after": "3600",
+              "x-robots-tag": "noindex",
+            },
+            "status": 503,
+          },
+        }
+      `);
+    });
+
+    it("serves sites when the flag can't be read", async () => {
+      await publish("fails-open", { "preview.html": "still here" });
+      await flags.setFailing(true);
+
+      const { status, body } = await get("https://fails-open.sites.test/preview");
+      expect(`${status} ${body}`).toBe("200 still here");
+    });
   });
 
   // Last: it breaks D1 for a moment.
@@ -236,6 +322,7 @@ describe("site worker", () => {
               "cache-control": "no-store",
               "content-type": "text/plain; charset=utf-8",
               "retry-after": "1",
+              "x-robots-tag": "noindex",
             },
             "status": 503,
           },
@@ -245,6 +332,7 @@ describe("site worker", () => {
               "cache-control": "no-store",
               "content-type": "text/plain; charset=utf-8",
               "retry-after": "1",
+              "x-robots-tag": "noindex",
             },
             "status": 503,
           },

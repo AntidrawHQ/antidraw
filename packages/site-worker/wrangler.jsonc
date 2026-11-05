@@ -27,6 +27,11 @@
     }
   ],
   "r2_buckets": [{ "binding": "SITES", "bucket_name": "antidraw-sites" }],
+  "flagship": [
+    // The server's Flagship app: `sites-serving` is the switch that takes
+    // every site down, or one site with a rule on its slug (src/index.ts).
+    { "binding": "FLAGS", "app_id": "9abbf580-f788-44c2-8676-4544595e70c9" }
+  ],
   "vars": {
     // Sites are served at <slug>.<SITE_DOMAIN>: a domain of their own, apart
     // from antidraw.com, so published code never shares an origin or cookies
@@ -60,7 +65,9 @@
           "migrations_dir": "../server/src/db/migrations"
         }
       ],
-      "r2_buckets": [{ "binding": "SITES", "bucket_name": "antidraw-sites" }]
+      "r2_buckets": [{ "binding": "SITES", "bucket_name": "antidraw-sites" }],
+      // Local, in the server's state with the rest: its flags apply here.
+      "flagship": [{ "binding": "FLAGS", "app_id": "9abbf580-f788-44c2-8676-4544595e70c9" }]
     }
   }
 }

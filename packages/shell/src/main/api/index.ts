@@ -17,7 +17,7 @@ export type {
 export type { DevServerState } from "@/main/lib/runtime-store";
 export type { DevServerInfo } from "@/main/services/dev-server.service";
 export type { EffortLevel, ModelInfo } from "./claude-code-ops";
-export type { Account, AccountError } from "@/main/services/account.service";
+export type { Account, AccountError, Features } from "@/main/services/account.service";
 export type {
   ComponentListItem,
   ComponentSource,

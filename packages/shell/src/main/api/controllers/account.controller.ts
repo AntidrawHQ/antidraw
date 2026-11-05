@@ -3,6 +3,7 @@ import { APP_KEY_HEADER, isAppKey } from "@/main/lib/app-key";
 import {
   cancelSignIn,
   getAccount,
+  getFeatures,
   signIn,
   signOut,
 } from "@/main/services/account.service";
@@ -33,6 +34,9 @@ accountController.get("/", async (ctx) => {
 
   return ctx.json({ account: result.value });
 });
+
+// Which cloud features to show; off when the server can't say.
+accountController.get("/features", async (ctx) => ctx.json({ features: await getFeatures() }));
 
 // Opens the system browser and stays open until the user finishes (or the flow
 // is cancelled or times out), then answers with the account.
