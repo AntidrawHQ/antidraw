@@ -14,6 +14,7 @@ import { useAnchoredFlow } from "./anchors";
 import type { Actions } from "./model";
 import { sayNotOnCanvas, useCommentActions } from "./use-comment-actions";
 import { setCanvasTool, useCommentStore, type Pos } from "./store";
+import { showComments } from "@/renderer/design/store";
 
 // Comments for Claude, on the canvas, with the Comment tool on (design:
 // CommentFlow, variation A — the box by the pin; the list is the right
@@ -140,6 +141,8 @@ export const CommentFlow = () => {
           const list = queryClient.getQueryData<CommentList>(queryKey);
           // On the comment's own chat, where it asked for that (Open chat).
           if (chat) showConversation(chat);
+          // The list has it either way, on the canvas or not.
+          showComments();
           // Shown on the canvas only where its frame is; the send goes either way.
           const c = list?.comments.find((x) => x.id === commentId);
           if (c && !useCommentStore.getState().onCanvas(c.componentName)) sayNotOnCanvas(c.componentName);
