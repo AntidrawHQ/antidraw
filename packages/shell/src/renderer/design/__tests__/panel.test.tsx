@@ -16,7 +16,7 @@ import { useInspectorStore } from "@/renderer/inspector/store";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
 import { RightPanel } from "../RightPanel";
 import { EditBar } from "../EditBar";
-import { PANEL_W, showCode, useDesignStore } from "../store";
+import { PANEL_W, showCode, showComments, useDesignStore } from "../store";
 
 // The code viewer highlights in a worker, which jsdom hasn't: the source as text.
 vi.mock("@pierre/diffs/react", () => ({
@@ -307,6 +307,16 @@ it("Code: how to pick a component, then See Code's source in the panel, shown if
   // Another workspace's components are its own: the section starts over.
   act(() => useWorkspaceStore.getState().setActiveWorkspaceId("8a3c2f00-0000-4000-8000-000000000002"));
   expect(text()).toContain("Pick a component");
+});
+
+it("a frame window's Show: Comments, the panel shown, though the Comment tool was on already", async () => {
+  act(() => setCanvasTool("comment"));
+  await render({ edits: [], applied: [] });
+  await press("Code");
+  await press("Hide panel (Ctrl+Alt+B)");
+  await act(async () => showComments());
+  expect(useDesignStore.getState()).toMatchObject({ panelOpen: true, tab: "comments" });
+  expect(text()).toContain("No comments yet");
 });
 
 it("⌥⌘B (Ctrl+Alt+B off macOS, as here) hides the panel and brings it back; ⌘B alone is the side panel's", async () => {

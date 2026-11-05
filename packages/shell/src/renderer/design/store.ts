@@ -64,4 +64,9 @@ export const showCode = (componentName: string) => {
   useDesignStore.setState({ tab: "code", panelOpen: true });
 };
 
+// A frame window's Show or Open chat: the comments in the panel's Comments
+// section, the panel shown if it was hidden. Picking the Comment tool opens
+// the section only when the tool wasn't on already.
+export const showComments = () => useDesignStore.setState({ tab: "comments", panelOpen: true });
+
 export const useTab = (): Tab => useDesignStore((s) => s.tab);
