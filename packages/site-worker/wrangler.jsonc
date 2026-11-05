@@ -30,7 +30,7 @@
   "flagship": [
     // The server's Flagship app: `sites-serving` is the switch that takes
     // every site down, or one site with a rule on its slug (src/index.ts).
-    { "binding": "FLAGS", "app_id": "REPLACE_WITH_FLAGSHIP_APP_ID" }
+    { "binding": "FLAGS", "app_id": "9abbf580-f788-44c2-8676-4544595e70c9" }
   ],
   "vars": {
     // Sites are served at <slug>.<SITE_DOMAIN>: a domain of their own, apart
@@ -67,7 +67,7 @@
       ],
       "r2_buckets": [{ "binding": "SITES", "bucket_name": "antidraw-sites" }],
       // Local, in the server's state with the rest: its flags apply here.
-      "flagship": [{ "binding": "FLAGS", "app_id": "REPLACE_WITH_FLAGSHIP_APP_ID" }]
+      "flagship": [{ "binding": "FLAGS", "app_id": "9abbf580-f788-44c2-8676-4544595e70c9" }]
     }
   }
 }

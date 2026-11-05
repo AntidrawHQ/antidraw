@@ -216,6 +216,11 @@ The app reads them from `GET /api/features` → `{ "features": { "publish": bool
 # Let testers publish, while it stays off for everyone else.
 npx wrangler flagship flags update <APP_ID> publish --add-rule "serve=on; when=userId in [<user id>,<user id>]" --remote
 
+# Turn publishing off for everyone, testers included. `set --variation off`
+# alone keeps the rules, so it wouldn't stop anyone a rule lets in; `disable`
+# serves the default, which for publish is off, and ignores the rules.
+npx wrangler flagship flags disable <APP_ID> publish --remote
+
 # Take every site down. `set`, not `disable`: a disabled flag serves its
 # default variation, which for sites-serving is on.
 npx wrangler flagship flags set <APP_ID> sites-serving --variation off --remote
@@ -242,9 +247,9 @@ Three Workers: this API at `api.antidraw.com`, `@antidraw/site-worker`, which
 serves published sites at `<slug>.antidraw.app`, and `@antidraw/share-page` at
 `antidraw.com/s/*`. The API and the site Worker share the D1 database
 `antidraw` (its id is in both `wrangler.jsonc` files) and the R2 bucket
-`antidraw-sites`. Everything below has been done once, except step 2b (the
-Flagship app), which is new and must be done before the next deploy; the rest
-is here for a fresh account or a rebuild.
+`antidraw-sites`. Everything below has been done once (step 2b's Flagship app
+is `9abbf580-f788-44c2-8676-4544595e70c9`); it is here for a fresh account or
+a rebuild.
 
 ```sh
 npx wrangler login
