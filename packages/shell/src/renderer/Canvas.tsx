@@ -17,6 +17,7 @@ import { useCanvasTool } from "./comments/store";
 import { RightPanel, ShowPanel } from "./design/RightPanel";
 import { EditBar } from "./design/EditBar";
 import { DesignSync } from "./design/use-design";
+import { showCode } from "./design/store";
 import { useCanvasThumbnail } from "./lib/thumbnail";
 
 // Over each frame: the tools (the inspector's and the Comment tool's).
@@ -60,7 +61,6 @@ const WorkspaceCanvas = ({
   savedLayouts: FrameLayoutData[] | undefined;
   className?: string;
 }) => {
-  const setCodePanelComponentName = useWorkspaceStore((s) => s.setCodePanelComponentName);
   // Inspect and Comment pick in the frames themselves.
   const picking = useCanvasTool() !== "pointer";
   const onFrameActivity = useCanvasThumbnail(workspaceId);
@@ -86,7 +86,7 @@ const WorkspaceCanvas = ({
       onLayoutsChange={saveLayouts}
       onFrameActivity={onFrameActivity}
       onFullscreen={openFullscreen}
-      onSeeCode={setCodePanelComponentName}
+      onSeeCode={showCode}
       frameLayer={renderFrameLayers}
       framesTakePointer={picking}
       className={className}
