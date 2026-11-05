@@ -20,3 +20,5 @@ export {
   COMMENTS_MCP_SERVER_NAME,
   createCommentsMcpServer,
 } from "@/main/api/tools/comments";
+
+export { createChangesMcpServer } from "@/main/api/tools/changes";
