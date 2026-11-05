@@ -47,8 +47,9 @@ const getClient = (): PostHog | null => {
 // A random id for this install, made on first launch: the distinct_id of
 // every event, so the first launch and onboarding are seen too, long before
 // a Claude account is known. Once one is (trackMessageSent), the install is
-// aliased to its email, and both name one person.
-type Identity = { installId: string; aliased: string[]; isNew: boolean };
+// aliased to its email, and both name one person. Only the first account's:
+// see aliasInstall.
+type Identity = { installId: string; aliasedTo: string | null; isNew: boolean };
 
 let identity: Identity | undefined;
 const identityPath = () => path.join(app.getPath("userData"), "analytics.json");
@@ -60,7 +61,7 @@ const getIdentity = (): Identity => {
     if (typeof saved.installId === "string") {
       identity = {
         installId: saved.installId,
-        aliased: Array.isArray(saved.aliased) ? saved.aliased.filter((e) => typeof e === "string") : [],
+        aliasedTo: typeof saved.aliasedTo === "string" ? saved.aliasedTo : null,
         isNew: false,
       };
       return identity;
@@ -68,14 +69,14 @@ const getIdentity = (): Identity => {
   } catch {
     // None yet, or unreadable: a new one below.
   }
-  identity = { installId: randomUUID(), aliased: [], isNew: true };
+  identity = { installId: randomUUID(), aliasedTo: null, isNew: true };
   saveIdentity(identity);
   return identity;
 };
 
-const saveIdentity = ({ installId, aliased }: Identity) => {
+const saveIdentity = ({ installId, aliasedTo }: Identity) => {
   try {
-    fs.writeFileSync(identityPath(), JSON.stringify({ installId, aliased }));
+    fs.writeFileSync(identityPath(), JSON.stringify({ installId, aliasedTo }));
   } catch (e) {
     console.error("[posthog] failed to save the install id:", e);
   }
@@ -122,12 +123,16 @@ export const track = (
   }
 };
 
-// Joins this install to the account's person, once per email.
+// Joins this install to the first account's person, once. A later account
+// (a switch on the same machine) is not aliased: the install id already
+// belongs to the first person, so a second alias would pull the new account
+// into it and merge two accounts for good, which PostHog can't undo. That
+// account's message_sent still lands on its own person, by email.
 const aliasInstall = (posthog: PostHog, email: string) => {
   const id = getIdentity();
-  if (id.aliased.includes(email)) return;
+  if (id.aliasedTo !== null) return;
   posthog.alias({ distinctId: email, alias: id.installId });
-  id.aliased.push(email);
+  id.aliasedTo = email;
   saveIdentity(id);
 };
 
