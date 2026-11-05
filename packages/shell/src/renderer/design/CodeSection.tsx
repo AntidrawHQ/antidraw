@@ -65,7 +65,7 @@ export const CodeSection = () => {
       <Empty
         icon={Code}
         title="Pick a component"
-        body="Hover a frame on the canvas and choose See Code to read its source here, and copy it or a prompt for your agent."
+        body="Select a frame on the canvas and choose See Code to read its source here, and copy it or a prompt for your agent."
       />
     );
   if (isError)
