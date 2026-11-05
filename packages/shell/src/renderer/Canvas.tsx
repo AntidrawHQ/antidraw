@@ -164,8 +164,8 @@ export const AppCanvas = ({ className }: AppCanvasProps) => {
   // A new workspace: the onboarding's prompts, each run in the chat.
   if (userComponents.length === 0) {
     return (
-      <div className={cn("flex-1 flex items-center justify-center bg-[#282828] relative overflow-auto", className)}>
-        <OnboardingList />
+      <div className={cn("flex-1 flex bg-[#282828] relative overflow-auto", className)}>
+        <OnboardingList className="m-auto" />
       </div>
     );
   }
