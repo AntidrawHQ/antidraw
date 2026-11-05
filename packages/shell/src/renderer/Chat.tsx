@@ -39,6 +39,8 @@ import type { ToolPart } from "@/renderer/components/ui/tool";
 import { liveToolPart, viewableComponent } from "./lib/tool-utils";
 import { AskUserQuestion } from "@/renderer/components/AskUserQuestionCard";
 import { ASK_USER_QUESTION_TOOL } from "@/shared/utils/ask-user-question";
+import { ChangedComponents } from "@/renderer/components/ChangedComponentsCard";
+import { REPORT_CHANGES_TOOL } from "@/shared/utils/changed-components";
 import { AuthError } from "@/renderer/components/auth-error";
 import { StreamError } from "@/renderer/components/stream-error";
 import { useWorkspaceStore } from "./store/workspace";
@@ -198,15 +200,18 @@ const MessageRow = memo(
       return null;
     }
 
-    // A question is its own kind: "tool" would pull it up against the group
-    // above (TOOL_ROW) and join its edges to that group's.
+    // A question, and the card of changes, are their own kinds: "tool" would
+    // pull them up against the group above (TOOL_ROW) and join their edges to
+    // that group's.
     const kind = blocks.some((b) => b.type === "text")
       ? "text"
       : blocks.some((b) => b.type === "tool_use" && b.name === ASK_USER_QUESTION_TOOL)
         ? "question"
-        : blocks.some((b) => b.type === "tool_use" || b.type === "tool_result")
-          ? "tool"
-          : "text";
+        : blocks.some((b) => b.type === "tool_use" && b.name === REPORT_CHANGES_TOOL)
+          ? "changes"
+          : blocks.some((b) => b.type === "tool_use" || b.type === "tool_result")
+            ? "tool"
+            : "text";
 
     // Text in order, with each run of consecutive tool calls in one group.
     const renderBlocks = () => {
@@ -241,6 +246,12 @@ const MessageRow = memo(
                 toolPart={toolPart}
               />
             );
+            return;
+          }
+          // The turn's closing card: stands on its own like a question.
+          if (toolPart?.type === REPORT_CHANGES_TOOL) {
+            flush();
+            nodes.push(<ChangedComponents key={idx} toolPart={toolPart} />);
             return;
           }
           if (toolPart) {
@@ -388,8 +399,14 @@ const LiveTail = memo(({ conversationId, toolMap, isStreaming }: LiveTailProps) 
   // For tool_use, the list's normal flow can't render the in-flight block —
   // it only iterates persisted message content. Synthesize a Tool from the
   // block (state: "input-streaming") and render it after the messages.
+  //
+  // Not the card of changes: it has no in-progress state, and shows once the
+  // call has succeeded.
   const liveTool =
-    live && live.block.type === "tool_use" && !toolMap.has(live.block.id)
+    live &&
+    live.block.type === "tool_use" &&
+    live.block.name !== REPORT_CHANGES_TOOL &&
+    !toolMap.has(live.block.id)
       ? liveToolPart(live)
       : null;
 

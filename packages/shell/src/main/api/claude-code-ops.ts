@@ -18,9 +18,14 @@ import { getWorkspaceSourcePath } from "@/main/api/init";
 import {
   COMMENTS_MCP_SERVER_NAME,
   DEV_SERVER_MCP_SERVER_NAME,
+  createChangesMcpServer,
   createCommentsMcpServer,
   createDevServerMcpServer,
 } from "@/main/api/tools";
+import {
+  CHANGES_MCP_SERVER_NAME,
+  REPORT_CHANGES_TOOL,
+} from "@/shared/utils/changed-components";
 import type { ImageAttachment } from "@/shared/utils/message";
 import { createUserSDKMessage } from "@/shared/utils/message";
 
@@ -271,6 +276,7 @@ export const sendMessage = (params: {
         mcpServers: {
           [DEV_SERVER_MCP_SERVER_NAME]: createDevServerMcpServer(workspaceId),
           [COMMENTS_MCP_SERVER_NAME]: createCommentsMcpServer(conversationId),
+          [CHANGES_MCP_SERVER_NAME]: createChangesMcpServer(workspaceId),
         },
         hooks: onEffortLevel
           ? {
@@ -306,6 +312,9 @@ IMPORTANT RULES:
 - Each component must be its own file (e.g., src/components/user-components/MyButton.tsx)
 - Export components as default exports
 - Avoid modifying src/main.tsx unless the user explicitly requests it and understands the risks. Warn them that modifying main.tsx can break the app or interfere with workspace updates.
+
+REPORTING WHAT CHANGED:
+When a turn creates or updates components, end it with ${REPORT_CHANGES_TOOL}: write your closing message first, then call it once with the components the turn created and updated, by name (the file name without .tsx). The user sees it as a card listing them, each with a View that focuses it on the canvas, so don't list them again in text, and write nothing after it. If it returns an error, fix the names and call it again. Don't call it when the turn changed no component.
 
 ELEMENTS THE USER POINTS AT:
 When the user picks elements on the canvas, their message starts with a <canvas-selection> block. "This", "here" and "it" in the message mean those elements. They're grouped by the component whose frame they were picked in: <component> gives its name, its file, the URL its preview loads, and the frame's size; one <element> follows for each element picked in it.
