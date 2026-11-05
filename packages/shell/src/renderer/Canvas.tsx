@@ -8,7 +8,7 @@ import { saveFrameLayouts, type FrameLayoutData } from "./lib/api";
 import { cn } from "./lib/utils";
 import { Canvas, useFocusComponent, type FrameLayer, type FrameLayout } from "./canvas/Canvas";
 import { CanvasToolbar } from "./components/CanvasToolbar";
-import { EmptyState } from "./components/EmptyState";
+import { OnboardingList } from "./onboarding/OnboardingList";
 import { renderFrameInspector } from "./inspector/FrameInspector";
 import { InspectorControls } from "./inspector/InspectorControls";
 import { CommentFlow, renderFrameComments } from "./comments/CommentFlow";
@@ -17,6 +17,7 @@ import { useCanvasTool } from "./comments/store";
 import { RightPanel, ShowPanel } from "./design/RightPanel";
 import { EditBar } from "./design/EditBar";
 import { DesignSync } from "./design/use-design";
+import { showCode } from "./design/store";
 import { useCanvasThumbnail } from "./lib/thumbnail";
 import { track } from "@/renderer/lib/analytics";
 
@@ -45,6 +46,10 @@ const FocusRequestedComponent = () => {
 };
 
 const trackRefresh = () => track("frame_refreshed");
+const seeCode = (componentName: string) => {
+  track("frame_code_viewed");
+  showCode(componentName);
+};
 
 const openFullscreen = (url: string) => {
   track("frame_opened_in_window");
@@ -64,14 +69,6 @@ const WorkspaceCanvas = ({
   savedLayouts: FrameLayoutData[] | undefined;
   className?: string;
 }) => {
-  const setCodePanelComponentName = useWorkspaceStore((s) => s.setCodePanelComponentName);
-  const seeCode = useCallback(
-    (componentName: string) => {
-      track("frame_code_viewed");
-      setCodePanelComponentName(componentName);
-    },
-    [setCodePanelComponentName],
-  );
   // Inspect and Comment pick in the frames themselves.
   const picking = useCanvasTool() !== "pointer";
   const onFrameActivity = useCanvasThumbnail(workspaceId);
@@ -173,10 +170,11 @@ export const AppCanvas = ({ className }: AppCanvasProps) => {
     return <CanvasPlaceholder subtitle="Error loading components" className={className} />;
   }
 
+  // A new workspace: the onboarding's prompts, each run in the chat.
   if (userComponents.length === 0) {
     return (
-      <div className={cn("flex-1 flex items-center justify-center bg-[#282828] relative", className)}>
-        <EmptyState className="z-10" />
+      <div className={cn("flex-1 flex bg-[#282828] relative overflow-auto", className)}>
+        <OnboardingList className="m-auto" />
       </div>
     );
   }

@@ -42,12 +42,12 @@ src/
     index.ts             # getDb(env) -> request-scoped drizzle client
     schema.ts            # re-exports every models/*.model.ts
     migrations/          # generated SQL, applied via wrangler
-  lib/                   # env (bindings), errors, respond helper, auth wiring
+  lib/                   # env (bindings), errors, respond helper, auth wiring, feature flags
 ```
 
-Worker binding types are hand-maintained in `src/lib/env.ts` — with five
-bindings that is the single source of truth, so there is no `wrangler types`
-step to keep in sync.
+Worker binding types are hand-maintained in `src/lib/env.ts` — with four
+bindings (D1, R2, Artifacts, Flagship) and a few vars and secrets, that is the
+single source of truth, so there is no `wrangler types` step to keep in sync.
 
 ## Develop
 
@@ -64,7 +64,9 @@ directly. Artifacts has no local mode, so tests run
 `src/test/wrangler.jsonc`, which binds `ARTIFACTS` to a stub Worker
 (`src/test/artifacts-stub`), and `npm run dev` uses a real namespace of its
 own, `sites-dev` (wrangler.jsonc's `dev` environment; a `wrangler login` is
-needed), so a local server never reaches production's repos.
+needed), so a local server never reaches production's repos. `FLAGS` is bound
+to another stub (`src/test/flags-stub`), so a test sets each flag
+(`TestServer.flags`); the harness starts with `publish` on.
 
 `GET /api/health` → `{ "status": "ok", "service": "antidraw-server" }`.
 
@@ -184,14 +186,70 @@ it was ever sent. To reclaim space, run `SiteStore.cleanup(siteId, { keep })`
 by hand while nothing publishes to that site, keeping at least its live and
 previous publishes.
 
+## Feature flags
+
+Features that aren't ready for everyone launch behind
+[Flagship](https://developers.cloudflare.com/flagship/) flags (the `FLAGS`
+binding, `src/lib/features.ts`), so they can be turned on for a few users,
+and off again, without a deploy. Both flags live in one Flagship app, bound
+by this Worker and `@antidraw/site-worker`.
+
+| Flag            | Default | Read by         | Asked with | If it can't be read |
+| --------------- | ------- | --------------- | ---------- | ------------------- |
+| `publish`       | off     | this API        | `userId`   | off (fails closed)  |
+| `sites-serving` | on      | the site Worker | `slug`     | on (fails open)     |
+
+- **`publish`** gates every `/api/sites` route. A signed-in user it doesn't
+  let in gets `403` with `PUBLISH_DISABLED` ("Publishing isn't available
+  yet."); one who isn't signed in still gets the `401` first. Testers are let
+  in with a rule on `userId` (`user.id`). Apps that predate the flag show
+  Publish anyway and report the refusal as a plain error; newer ones hide it.
+- **`sites-serving`** is the emergency switch: off, every site answers a
+  `503` page, before its slug is even looked up. A rule on `slug` takes one
+  site down.
+
+The app reads them from `GET /api/features` → `{ "features": { "publish": bool } }`
+(everyone; rules on `userId` don't apply; `cache-control: no-store`) and from
+`GET /api/me`, which answers `{ user, features }` for the signed-in user.
+
+```sh
+# Let testers publish, while it stays off for everyone else.
+npx wrangler flagship flags update <APP_ID> publish --add-rule "serve=on; when=userId in [<user id>,<user id>]" --remote
+
+# Turn publishing off for everyone, testers included. `set --variation off`
+# alone keeps the rules, so it wouldn't stop anyone a rule lets in; `disable`
+# serves the default, which for publish is off, and ignores the rules.
+npx wrangler flagship flags disable <APP_ID> publish --remote
+
+# Take every site down. `set`, not `disable`: a disabled flag serves its
+# default variation, which for sites-serving is on.
+npx wrangler flagship flags set <APP_ID> sites-serving --variation off --remote
+# One site.
+npx wrangler flagship flags update <APP_ID> sites-serving --add-rule "serve=off; when=slug equals <slug>" --remote
+```
+
+Locally, `wrangler dev` reads a local flag store in `.wrangler/state`, which
+the site Worker's `npm run dev` shares. It starts empty, so `publish` is off
+(and the app hides Publish) until it's seeded, from `packages/server`:
+
+```sh
+npx wrangler flagship flags create <APP_ID> publish --local
+npx wrangler flagship flags set <APP_ID> publish --variation on --local
+# or copy the real app's flags: npx wrangler flagship flags pull <APP_ID>
+```
+
+The shell shows Publish whatever the server says with `ANTIDRAW_SHOW_PUBLISH=1`,
+for signing in as a tester while the flag is off for everyone.
+
 ## Deploy (needs a Cloudflare login)
 
 Three Workers: this API at `api.antidraw.com`, `@antidraw/site-worker`, which
 serves published sites at `<slug>.antidraw.app`, and `@antidraw/share-page` at
 `antidraw.com/s/*`. The API and the site Worker share the D1 database
 `antidraw` (its id is in both `wrangler.jsonc` files) and the R2 bucket
-`antidraw-sites`. Everything below has been done once; it's here for a fresh
-account or a rebuild.
+`antidraw-sites`. Everything below has been done once (step 2b's Flagship app
+is `9abbf580-f788-44c2-8676-4544595e70c9`); it is here for a fresh account or
+a rebuild.
 
 ```sh
 npx wrangler login
@@ -205,6 +263,13 @@ npx wrangler r2 bucket create antidraw-sites
 
 # 2. Apply migrations to the remote database (from packages/server).
 npm run db:migrate
+
+# 2b. The Flagship app and its two flags. Put the app's id into
+#     wrangler.jsonc here and in packages/site-worker/wrangler.jsonc (both
+#     the top level and env.dev), in place of REPLACE_WITH_FLAGSHIP_APP_ID.
+npx wrangler flagship apps create antidraw
+npx wrangler flagship flags create <APP_ID> publish --remote
+npx wrangler flagship flags create <APP_ID> sites-serving --default on --remote
 
 # 3. Ship the API with its secrets. The Worker checks BETTER_AUTH_SECRET at
 #    startup, and Cloudflare validates startup on deploy, so the first deploy

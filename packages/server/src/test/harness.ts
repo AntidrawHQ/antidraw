@@ -5,8 +5,8 @@ import type { Bindings } from "../lib/env";
 
 // Runs this package's real Worker (test/wrangler.jsonc) in workerd with local D1 and
 // R2, through Wrangler's integration-test harness, for tests that need storage.
-// Only Artifacts is stubbed (artifacts-stub/): requests go through better-auth,
-// drizzle and R2.
+// Only Artifacts and Flagship are stubbed (artifacts-stub/, flags-stub/):
+// requests go through better-auth, drizzle and R2.
 
 const SECRET = "test-secret-with-enough-entropy-0123456789abcdef";
 
@@ -20,11 +20,20 @@ export type ArtifactsStub = {
   setFailing(value: boolean): Promise<void>;
 };
 
+/** The Flagship stand-in (flags-stub/index.ts), driven from Node. */
+export type FlagsStub = {
+  set(key: string, value: boolean | { users: string[] }): Promise<void>;
+  clear(key: string): Promise<void>;
+  setFailing(value: boolean): Promise<void>;
+};
+
 export type TestServer = {
   url: URL;
   /** The Worker's bindings, driven from Node: seed and inspect D1 and R2. */
   env: Bindings;
   artifacts: ArtifactsStub;
+  /** Starts with `publish` on; a test that changes a flag puts it back. */
+  flags: FlagsStub;
   fetch(path: string, init?: RequestInit): Promise<Response>;
   /** A new user with a session; returns its Authorization header value. */
   signIn(name?: string): Promise<{ userId: string; authorization: string }>;
@@ -36,7 +45,7 @@ export async function startServer(): Promise<TestServer> {
     root: fileURLToPath(new URL("../..", import.meta.url)),
     workers: [
       {
-        // The package's wrangler.jsonc with ARTIFACTS bound to the stub below.
+        // The package's wrangler.jsonc with ARTIFACTS and FLAGS bound to the stubs below.
         configPath: "./src/test/wrangler.jsonc",
         secrets: {
           BETTER_AUTH_SECRET: SECRET,
@@ -47,6 +56,7 @@ export async function startServer(): Promise<TestServer> {
         vars: { SHARE_URL_PATTERN: "https://share.test/s/*" },
       },
       { configPath: "./src/test/artifacts-stub/wrangler.jsonc" },
+      { configPath: "./src/test/flags-stub/wrangler.jsonc" },
     ],
   });
   const { url } = await harness.listen();
@@ -54,12 +64,18 @@ export async function startServer(): Promise<TestServer> {
   await worker.applyD1Migrations("DB");
   const env = await worker.getEnv();
   const artifacts = (await harness.getWorker("artifacts-stub").getExport()) as unknown as ArtifactsStub;
+  const flags = (await harness.getWorker("flags-stub").getExport()) as unknown as FlagsStub;
+  // A test default, so the tests of what publishing does (here and in the
+  // shell) run with it on. In production the flag starts off, and so does an
+  // unset flag here (features.ts falls back to off).
+  await flags.set("publish", true);
 
   let users = 0;
   return {
     url,
     env,
     artifacts,
+    flags,
     fetch: (path, init) => fetch(new URL(path, url), init),
     async signIn(name = `user${++users}`) {
       // What better-auth writes when Google sign-in succeeds, and the signed

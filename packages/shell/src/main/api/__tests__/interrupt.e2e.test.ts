@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, test, expect, beforeAll } from "vitest";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { app } from "@/main/api";
+import { withAppKey } from "./with-app-key";
 import type { ConversationWithMessages } from "@/main/api";
 import { db } from "@/main/db";
 import { workspaces } from "@/main/api/schema";
@@ -41,7 +42,7 @@ describe("stopping a turn mid-block", () => {
     "leaves no stale block behind for the next subscriber",
     { timeout: 300_000 },
     async () => {
-      const res = await app.request("/api/chat/message", {
+      const res = await app.request("/api/chat/message", withAppKey({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -51,7 +52,7 @@ describe("stopping a turn mid-block", () => {
           userMessageId: crypto.randomUUID(),
           model: "haiku",
         }),
-      });
+      }));
       expect(res.status).toBe(202);
       const { conversationId } = (await res.json()) as { conversationId: string };
 
@@ -64,9 +65,9 @@ describe("stopping a turn mid-block", () => {
       }, "a block to be streaming");
       expect(midBlock).not.toBeNull();
 
-      const stop = await app.request(`/api/chat/${conversationId}/stream`, {
+      const stop = await app.request(`/api/chat/${conversationId}/stream`, withAppKey({
         method: "DELETE",
-      });
+      }));
       expect(await stop.json()).toEqual({ cancelled: true });
 
       // interrupt deliberately keeps the handle open, so this is not the
@@ -80,7 +81,7 @@ describe("stopping a turn mid-block", () => {
       // The question this test exists to answer: nothing else clears the
       // block, because the CLI never persisted an assistant message for it.
       const conversation = (await (
-        await app.request(`/api/chat/${conversationId}`)
+        await app.request(`/api/chat/${conversationId}`, withAppKey())
       ).json()) as ConversationWithMessages;
       const persisted = conversation.messages
         .filter((m) => m.sdkMessage.type === "assistant")

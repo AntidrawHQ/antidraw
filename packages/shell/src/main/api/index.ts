@@ -17,7 +17,7 @@ export type {
 export type { DevServerState } from "@/main/lib/runtime-store";
 export type { DevServerInfo } from "@/main/services/dev-server.service";
 export type { EffortLevel, ModelInfo } from "./claude-code-ops";
-export type { Account, AccountError } from "@/main/services/account.service";
+export type { Account, AccountError, Features } from "@/main/services/account.service";
 export type {
   ComponentListItem,
   ComponentSource,
@@ -65,8 +65,12 @@ import { commentController } from "./controllers/comment.controller";
 import { markCommentsSent } from "./services/comment.service";
 import { editController } from "./controllers/edit.controller";
 import { checkEditsPending, markEditsApplied, restoreApplied } from "./services/edit.service";
+import { requireAppKey } from "@/main/lib/app-key";
 
 const api = new Hono();
+
+// Every route, before any other: see app-key.ts.
+api.use(requireAppKey);
 
 api.route("/workspaces", workspaceController);
 api.route("/workspaces", commentController);

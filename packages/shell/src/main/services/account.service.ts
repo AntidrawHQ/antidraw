@@ -178,6 +178,41 @@ export const getAccount = async (): Promise<
   }
 };
 
+// Cloud features the server can turn on and off (@antidraw/server's
+// lib/features.ts). They only decide what the app shows: the server refuses
+// a feature that's off whatever the app does.
+export type Features = { publish: boolean };
+
+const OFF: Features = { publish: false };
+
+const featuresOf = async (response: Response): Promise<Features> => {
+  if (!response.ok) return OFF;
+  const body = (await response.json()) as { features?: { publish?: unknown } } | null;
+  return { publish: body?.features?.publish === true };
+};
+
+// Signed in, what's on for this account (a feature can be on for a few
+// accounts first); signed out, or once the token turns out dead, what's on
+// for everyone. A server that can't say counts as off, so a feature that
+// hasn't launched stays hidden.
+export const getFeatures = async (): Promise<Features> => {
+  // Shows Publish whatever the server says, as ANTIDRAW_SERVER_URL points the
+  // app elsewhere: for an account a rule lets in while everyone else is off,
+  // which can only sign in from inside Publish.
+  if (process.env.ANTIDRAW_SHOW_PUBLISH === "1") return { publish: true };
+  try {
+    const me = await cloudFetch("/api/me", { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+    if (me.isOk()) return await featuresOf(me.value);
+    if (me.error.code !== "SIGNED_OUT") return OFF;
+    return await featuresOf(
+      await workerFetch(`${serverUrl()}/api/features`, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) }),
+    );
+  } catch {
+    // Unreachable, or a body that isn't the server's (a captive portal's page).
+    return OFF;
+  }
+};
+
 // Best effort: ends a token's session on the server. Offline, the session
 // just expires there. better-auth refuses the request (415) without a JSON body.
 const revoke = async (value: string) => {

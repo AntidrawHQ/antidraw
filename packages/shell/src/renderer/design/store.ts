@@ -9,7 +9,7 @@ import { useWorkspaceStore } from "@/renderer/store/workspace";
 // shows, and the selected element as its frame showed it when picked. The
 // edits themselves are server state (lib/edit-ops).
 
-export type Tab = "design" | "comments";
+export type Tab = "design" | "comments" | "code";
 
 // The selected element before any edit of it: its styles, whether text is
 // written in it, and what its frame said about it (null if it couldn't). An
@@ -50,8 +50,23 @@ useCommentStore.subscribe((s, prev) => {
   if (s.active && !prev.active) useDesignStore.getState().setTab("comments");
 });
 
+// Another workspace has other components: its Code section starts empty.
 useWorkspaceStore.subscribe((s, prev) => {
-  if (s.activeWorkspaceId !== prev.activeWorkspaceId) useDesignStore.setState({ read: null });
+  if (s.activeWorkspaceId === prev.activeWorkspaceId) return;
+  useDesignStore.setState({ read: null });
+  if (s.codePanelComponentName !== null) useWorkspaceStore.getState().setCodePanelComponentName(null);
 });
+
+// A frame's See Code: its source in the panel's Code section, the panel
+// shown if it was hidden.
+export const showCode = (componentName: string) => {
+  useWorkspaceStore.getState().setCodePanelComponentName(componentName);
+  useDesignStore.setState({ tab: "code", panelOpen: true });
+};
+
+// A frame window's Show or Open chat: the comments in the panel's Comments
+// section, the panel shown if it was hidden. Picking the Comment tool opens
+// the section only when the tool wasn't on already.
+export const showComments = () => useDesignStore.setState({ tab: "comments", panelOpen: true });
 
 export const useTab = (): Tab => useDesignStore((s) => s.tab);

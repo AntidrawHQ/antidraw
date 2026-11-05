@@ -16,7 +16,13 @@ import { useInspectorStore } from "@/renderer/inspector/store";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
 import { RightPanel } from "../RightPanel";
 import { EditBar } from "../EditBar";
-import { PANEL_W, useDesignStore } from "../store";
+import { PANEL_W, showCode, showComments, useDesignStore } from "../store";
+
+// The code viewer highlights in a worker, which jsdom hasn't: the source as text.
+vi.mock("@pierre/diffs/react", () => ({
+  File: ({ file }: { file: { contents: string } }) => <pre>{file.contents}</pre>,
+}));
+vi.mock("@pierre/diffs", () => ({ preloadHighlighter: async () => {} }));
 
 // The right panel and the canvas's edit bar, over what the app's API holds:
 // the edits and the comments.
@@ -153,7 +159,7 @@ beforeEach(() => {
     }),
   );
   client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
-  useWorkspaceStore.setState({ activeWorkspaceId: WS, activeConversationId: null });
+  useWorkspaceStore.setState({ activeWorkspaceId: WS, activeConversationId: null, codePanelComponentName: null });
   useCommentStore.setState({ onCanvas: () => true });
   document.body.innerHTML = `<div id="root"></div>`;
   host = document.getElementById("root")!;
@@ -281,6 +287,36 @@ it("Comments: the drafts by Send, the rest Open or Resolved; Pointer keeps the s
   // Hidden, then back from the canvas's corner.
   await press("Hide panel (Ctrl+Alt+B)");
   expect(useDesignStore.getState().panelOpen).toBe(false);
+});
+
+it("Code: how to pick a component, then See Code's source in the panel, shown if it was hidden", async () => {
+  await render({ edits: [], applied: [] });
+  await press("Code");
+  expect(text()).toContain("Pick a component");
+  await press("Hide panel (Ctrl+Alt+B)");
+  client.setQueryData(queryKeys.userComponents.source(WS, "Card"), {
+    source: "export const Card = () => <div />;",
+    fileName: "Card.tsx",
+    filePath: "/ws/src/components/Card.tsx",
+  });
+  await act(async () => showCode("Card"));
+  expect(useDesignStore.getState()).toMatchObject({ panelOpen: true, tab: "code" });
+  expect(text()).toContain("Card.tsx");
+  expect(text()).toContain("export const Card = () => <div />;");
+  expect(button("Copy Prompt For Agents")).toBeTruthy();
+  // Another workspace's components are its own: the section starts over.
+  act(() => useWorkspaceStore.getState().setActiveWorkspaceId("8a3c2f00-0000-4000-8000-000000000002"));
+  expect(text()).toContain("Pick a component");
+});
+
+it("a frame window's Show: Comments, the panel shown, though the Comment tool was on already", async () => {
+  act(() => setCanvasTool("comment"));
+  await render({ edits: [], applied: [] });
+  await press("Code");
+  await press("Hide panel (Ctrl+Alt+B)");
+  await act(async () => showComments());
+  expect(useDesignStore.getState()).toMatchObject({ panelOpen: true, tab: "comments" });
+  expect(text()).toContain("No comments yet");
 });
 
 it("⌥⌘B (Ctrl+Alt+B off macOS, as here) hides the panel and brings it back; ⌘B alone is the side panel's", async () => {

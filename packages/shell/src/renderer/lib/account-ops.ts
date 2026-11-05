@@ -4,6 +4,7 @@ import { queryKeys } from "./query-keys";
 import {
   cancelSignIn,
   getAccount,
+  getFeatures,
   publishWorkspace,
   signIn,
   signOut,
@@ -38,6 +39,24 @@ export const useAccount = () => {
   });
 };
 
+// Which cloud features to show. Hidden until this answers (loading, or an
+// error, reads as off). Asked again after a minute, and whenever signing in or
+// out, or a publish the server refused, may have changed the answer.
+export const useFeatures = () => {
+  return useQuery({
+    queryKey: queryKeys.features,
+    queryFn: async () => {
+      const result = await getFeatures();
+      if (result.isErr()) {
+        throw new AccountRequestError(result.error.code, result.error.message);
+      }
+      return result.value;
+    },
+    staleTime: 60_000,
+    retry: false,
+  });
+};
+
 // Pending for as long as the user is in the browser.
 export const useSignIn = () => {
   const queryClient = useQueryClient();
@@ -52,6 +71,7 @@ export const useSignIn = () => {
     },
     onSuccess: (account) => {
       queryClient.setQueryData(queryKeys.account, account);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.features });
     },
   });
 };
@@ -67,6 +87,7 @@ export const useSignOut = () => {
     mutationFn: signOut,
     onSuccess: () => {
       queryClient.setQueryData(queryKeys.account, null);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.features });
     },
   });
 };
@@ -86,6 +107,10 @@ export const usePublishWorkspace = () => {
       // The stored token died; main already dropped it.
       if (error.code === "SIGNED_OUT") {
         queryClient.setQueryData(queryKeys.account, null);
+      }
+      // Turned off for this user, or signed out of the account it was on for.
+      if (error.code === "PUBLISH_DISABLED" || error.code === "SIGNED_OUT") {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.features });
       }
     },
   });

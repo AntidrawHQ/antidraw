@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { describe, test, expect, beforeAll } from "vitest";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { app } from "@/main/api";
+import { withAppKey } from "./with-app-key";
 import type { StreamEvent } from "@/main/api";
 import { db } from "@/main/db";
 import { workspaces } from "@/main/api/schema";
@@ -57,14 +58,14 @@ const askedConversation = async () => {
 };
 
 const post = (id: string, toolUseId: string, body: unknown) =>
-  app.request(`/api/chat/${id}/question/${toolUseId}`, {
+  app.request(`/api/chat/${id}/question/${toolUseId}`, withAppKey({
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
-  });
+  }));
 
 const del = (id: string, toolUseId: string) =>
-  app.request(`/api/chat/${id}/question/${toolUseId}`, { method: "DELETE" });
+  app.request(`/api/chat/${id}/question/${toolUseId}`, withAppKey({ method: "DELETE" }));
 
 const reply = async (res: Response) => ({ status: res.status, body: await res.json() });
 
@@ -199,7 +200,7 @@ describe("DELETE /chat/:conversationId/question/:toolUseId", () => {
 // The first `count` frames of the conversation's stream, then hang up.
 const firstFrames = async (id: string, count: number): Promise<StreamEvent[]> => {
   const leave = new AbortController();
-  const res = await app.request(`/api/chat/${id}/stream`, { signal: leave.signal });
+  const res = await app.request(`/api/chat/${id}/stream`, withAppKey({ signal: leave.signal }));
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
   const events: StreamEvent[] = [];

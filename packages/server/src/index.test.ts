@@ -5,7 +5,7 @@ import { err } from "neverthrow";
 import { createApp } from "./index";
 import { apiError } from "./lib/errors";
 import { respond } from "./lib/respond";
-import type { AppEnv } from "./lib/env";
+import type { AppEnv, Bindings } from "./lib/env";
 
 const app = createApp();
 
@@ -71,6 +71,29 @@ describe("antidraw-server", () => {
     expect(await res.json()).toEqual({
       error: { code: "HTTP_ERROR", message: "I am a teapot" },
     });
+  });
+});
+
+describe("GET /api/features", () => {
+  // Only FLAGS is read; the rest of the bindings are never touched.
+  const features = async (FLAGS: Pick<Flagship, "getBooleanValue">) =>
+    (await app.request("/api/features", {}, { FLAGS } as unknown as Bindings)).json();
+
+  it("says what the flag serves", async () => {
+    expect(await features({ getBooleanValue: async () => true })).toEqual({ features: { publish: true } });
+  });
+
+  it("counts a feature whose flag can't be read as off", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const failing = {
+      getBooleanValue: async (): Promise<boolean> => {
+        throw new Error("Flagship is down");
+      },
+    };
+
+    expect(await features(failing)).toEqual({ features: { publish: false } });
+    expect(logged).toHaveBeenCalled();
+    logged.mockRestore();
   });
 });
 

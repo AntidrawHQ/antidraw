@@ -8,6 +8,7 @@ import type { StreamEvent } from "@/main/api";
 const h = vi.hoisted(() => ({
   calls: [] as {
     url: string;
+    headers: Record<string, string>;
     signal: AbortSignal;
     onmessage: (ev: { data: string }) => void;
     onclose: () => void;
@@ -22,6 +23,9 @@ vi.mock("@microsoft/fetch-event-source", () => ({
     return new Promise(() => {});
   },
 }));
+
+// The key the main window's preload hands the page.
+vi.stubGlobal("window", { electronAPI: { appKey: "the-app-key" } });
 
 const { subscribeToConversation, StreamDisconnectedError } = await import(
   "../api"
@@ -60,6 +64,13 @@ describe("subscribeToConversation", () => {
 
     expect(call().url).toBe("antidraw://app/api/chat/abc/stream?afterSeq=12");
     expect(call(1).url).toBe("antidraw://app/api/chat/abc/stream");
+  });
+
+  test("carries the app key, which every API route wants", async () => {
+    void drain(subscribeToConversation("abc"), []);
+    await flush();
+
+    expect(call().headers).toEqual({ "x-antidraw-app-key": "the-app-key" });
   });
 
   test("a release ends the iteration cleanly and aborts the fetch", async () => {

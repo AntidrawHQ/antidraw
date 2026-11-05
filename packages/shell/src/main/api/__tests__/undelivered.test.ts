@@ -9,6 +9,7 @@ import { drizzle } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { sql } from "drizzle-orm";
 import { app } from "@/main/api";
+import { withAppKey } from "./with-app-key";
 import { db } from "@/main/db";
 import * as schema from "@/main/api/schema";
 import { conversations, messages, workspaces } from "@/main/api/schema";
@@ -64,7 +65,7 @@ const ack = async (conversationId: string, id: string) => {
 };
 
 const failed = async (conversationId: string): Promise<string[]> => {
-  const res = await app.request(`/api/chat/${conversationId}/undelivered`);
+  const res = await app.request(`/api/chat/${conversationId}/undelivered`, withAppKey());
   expect(res.status).toBe(200);
   const body = (await res.json()) as { failedUserMessageIds: string[] };
   return body.failedUserMessageIds;

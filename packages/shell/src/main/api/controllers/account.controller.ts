@@ -1,27 +1,15 @@
 import { Hono } from "hono";
-import { APP_KEY_HEADER, isAppKey } from "@/main/lib/app-key";
 import {
   cancelSignIn,
   getAccount,
+  getFeatures,
   signIn,
   signOut,
 } from "@/main/services/account.service";
 import { track } from "@/main/lib/posthog";
 
+// The app key is checked for every /api route, these included (index.ts).
 export const accountController = new Hono();
-
-// The app's own pages only: workspace previews run in the same session and
-// could otherwise read the account, sign the user out, or keep opening
-// sign-in tabs. See app-key.ts.
-accountController.use(async (ctx, next) => {
-  if (!isAppKey(ctx.req.header(APP_KEY_HEADER))) {
-    return ctx.json(
-      { error: { code: "FORBIDDEN", message: "Not available to this page" } },
-      403,
-    );
-  }
-  await next();
-});
 
 // The signed-in cloud account, or null. Never exposes the token.
 accountController.get("/", async (ctx) => {
@@ -34,6 +22,9 @@ accountController.get("/", async (ctx) => {
 
   return ctx.json({ account: result.value });
 });
+
+// Which cloud features to show; off when the server can't say.
+accountController.get("/features", async (ctx) => ctx.json({ features: await getFeatures() }));
 
 // Opens the system browser and stays open until the user finishes (or the flow
 // is cancelled or times out), then answers with the account.

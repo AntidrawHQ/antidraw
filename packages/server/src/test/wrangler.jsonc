@@ -2,7 +2,8 @@
   "$schema": "../../../../node_modules/wrangler/config-schema.json",
   // This package's Worker as tests run it (harness.ts): ../../wrangler.jsonc,
   // but with ARTIFACTS bound to a stub Worker (artifacts-stub/), since
-  // Artifacts has no local mode. Keep the rest in step with that file.
+  // Artifacts has no local mode, and FLAGS to another (flags-stub/), so tests
+  // set the flags. Keep the rest in step with that file.
   "name": "antidraw-server",
   "main": "../index.ts",
   "compatibility_date": "2026-06-27",
@@ -16,7 +17,10 @@
     }
   ],
   "r2_buckets": [{ "binding": "SITES", "bucket_name": "antidraw-sites" }],
-  "services": [{ "binding": "ARTIFACTS", "service": "artifacts-stub" }],
+  "services": [
+    { "binding": "ARTIFACTS", "service": "artifacts-stub" },
+    { "binding": "FLAGS", "service": "flags-stub" }
+  ],
   "vars": {
     "SHARE_URL_PATTERN": "https://antidraw.com/s/*",
     "BETTER_AUTH_URL": "https://api.antidraw.com"

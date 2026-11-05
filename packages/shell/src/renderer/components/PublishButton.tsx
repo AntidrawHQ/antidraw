@@ -9,6 +9,7 @@ import {
   AccountRequestError,
   useAccount,
   useCancelSignIn,
+  useFeatures,
   usePublishWorkspace,
   useSignIn,
 } from "@/renderer/lib/account-ops";
@@ -124,6 +125,7 @@ export const PublishButton = ({
   const checkRun = useRef(0);
 
   const { refetch: refetchAccount } = useAccount();
+  const { data: features } = useFeatures();
   const signInMutation = useSignIn();
   const cancelSignInMutation = useCancelSignIn();
   const publishMutation = usePublishWorkspace();
@@ -295,6 +297,13 @@ export const PublishButton = ({
     const t = setTimeout(() => setCopied(false), 1400);
     return () => clearTimeout(t);
   }, [copied]);
+
+  // Publishing launches behind a server flag: until it's on for this user
+  // (or while that can't be told) there's no button, and no sign-in, which
+  // lives in its panel. Only once the button is at rest, so a flow under way
+  // finishes, and a "Publishing isn't available yet." toast stays up until
+  // dismissed.
+  if (features?.publish !== true && step === "closed") return null;
 
   // A retry of the account check keeps the panel it came from.
   const rechecking = step === "checking" && failure?.retry === "publish";

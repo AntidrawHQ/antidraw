@@ -1,13 +1,14 @@
 /**
  * The right panel, docked at the canvas's right: 280px to start, wider by
- * its left edge. Two sections, Design and
- * Comments. Picking Inspect (I) opens Design and Comment (C) opens Comments;
- * a tab only changes the section, never the tool. Design's footer is the
+ * its left edge. Three sections: Design, Comments and Code. Picking
+ * Inspect (I) opens Design, Comment (C) opens Comments and a frame's See
+ * Code opens Code; a tab only changes the section, never the tool. Design's footer is the
  * canvas's edit bar (EditBar).
  */
 import { useEffect, useRef } from "react";
 import { PanelRight, PanelRightClose } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
+import { CodeSection } from "./CodeSection";
 import { DesignSection } from "./sections";
 import { IconButton, MONO } from "./dial";
 import { useOutbox } from "./Outbox";
@@ -16,6 +17,12 @@ import { useDesign } from "./use-design";
 import { track } from "@/renderer/lib/analytics";
 
 const setTab = (t: Tab) => useDesignStore.getState().setTab(t);
+
+const TABS: { tab: Tab; label: string; title: string }[] = [
+  { tab: "design", label: "Design", title: "Design (I)" },
+  { tab: "comments", label: "Comments", title: "Comments (C)" },
+  { tab: "code", label: "Code", title: "Code" },
+];
 
 // ⌥⌘B shows and hides the panel, as VS Code's secondary side bar, beside
 // ⌘B for the side panel (Ctrl+Alt+B off macOS). By the key, not the
@@ -42,17 +49,17 @@ const useToggleKey = () =>
 // slides between them, the other reads dim.
 const Tabs = ({ tab, changes, drafts }: { tab: Tab; changes: number; drafts: number }) => (
   <div className="flex items-center gap-0.5">
-    {(["design", "comments"] as Tab[]).map((t) => {
+    {TABS.map(({ tab: t, label, title }) => {
       const on = tab === t;
       const mark =
         t === "design"
           ? changes > 0 && <span className="size-1 rounded-full bg-[#60a5fa]/80" />
-          : drafts > 0 && <span className={cn(MONO, "text-[11px] text-white/30")}>{drafts}</span>;
+          : t === "comments" && drafts > 0 && <span className={cn(MONO, "text-[11px] text-white/30")}>{drafts}</span>;
       return (
         <button
           key={t}
           type="button"
-          title={t === "design" ? "Design (I)" : "Comments (C)"}
+          title={title}
           onClick={() => {
             if (t !== tab) track("right_panel_tab_selected", { tab: t });
             setTab(t);
@@ -63,7 +70,7 @@ const Tabs = ({ tab, changes, drafts }: { tab: Tab; changes: number; drafts: num
           )}
         >
           {on && <span className="absolute inset-0 rounded-md bg-white/[0.06]" />}
-          <span className="relative">{t === "design" ? "Design" : "Comments"}</span>
+          <span className="relative">{label}</span>
           {mark && <span className="relative flex items-center">{mark}</span>}
         </button>
       );
@@ -180,11 +187,18 @@ export const RightPanel = () => {
               <PanelRightClose className="size-3.5" strokeWidth={1.75} />
             </IconButton>
           </div>
-          <div className="dk-scroll min-h-0 flex-1 overflow-y-auto">
-            <div className="pb-3">{tab === "design" ? <DesignBody d={d} /> : comments.body}</div>
-          </div>
+          {tab === "code" ? (
+            // The code scrolls in its own viewer, under a header that stays.
+            <div className="min-h-0 flex-1">
+              <CodeSection />
+            </div>
+          ) : (
+            <div className="dk-scroll min-h-0 flex-1 overflow-y-auto">
+              <div className="pb-3">{tab === "design" ? <DesignBody d={d} /> : comments.body}</div>
+            </div>
+          )}
           {/* Design's footer is the canvas's edit bar (EditBar). */}
-          {tab === "design" ? null : comments.foot}
+          {tab === "comments" ? comments.foot : null}
         </div>
       </aside>
     )

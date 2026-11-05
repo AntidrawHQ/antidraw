@@ -3,6 +3,7 @@ import { zValidator } from "@hono/zod-validator";
 import { handleUpload } from "@antidraw/site-upload/server";
 import { z } from "zod";
 import { getDb } from "../db";
+import { requireFeature } from "../lib/features";
 import { requireBearer, type AuthedEnv } from "../lib/require-session";
 import { respond, respondError } from "../lib/respond";
 import { siteStore } from "../lib/site-store";
@@ -25,9 +26,15 @@ import { endSourcePush, hasSourceCommit, sourceAccess } from "../services/source
 // publish. Publishes of a site may overlap: the first to commit goes live, and
 // the others get SUPERSEDED (see commitPublish). Nothing is deleted while
 // publishing; clearing old files is SiteStore.cleanup(), run by hand.
+//
+// Every route here is behind the `publish` flag (lib/features.ts), asked
+// about the signed-in user: 403 PUBLISH_DISABLED for a user it doesn't let
+// in. Sign-in is checked first, so a caller without a session learns nothing
+// about the flag, and the flag before the site, so a site of the user's
+// answers the same 403 as a new one.
 export const siteController = new Hono<AuthedEnv>();
 
-siteController.use(requireBearer);
+siteController.use(requireBearer, requireFeature("publish"));
 
 const createBody = z.object({ title: z.string().trim().min(1).max(200) });
 

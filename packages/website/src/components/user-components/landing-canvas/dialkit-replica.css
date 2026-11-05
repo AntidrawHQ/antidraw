@@ -1,0 +1,239 @@
+/*
+ * DialKit's dark panel (dialkit 2.1.0, dist/styles.css), trimmed to what dialkit-replica.tsx renders:
+ * a root Folder holding Select rows, Sliders and a spring curve. Values are DialKit's own.
+ * Differences: no Google Fonts @import (values use the system's monospace in place of Geist Mono), and
+ * no backdrop-filter or will-change, which drew nothing on this opaque panel but cost a GPU layer each.
+ */
+.dialkit-root {
+  position: relative;
+  --dial-surface: rgba(255, 255, 255, 0.05);
+  --dial-surface-active: rgba(255, 255, 255, 0.11);
+  --dial-surface-subtle: rgba(255, 255, 255, 0.06);
+  --dial-text-root: #ffffff;
+  --dial-text-label: rgba(255, 255, 255, 0.7);
+  --dial-text-focus: #ffffff;
+  --dial-text-primary: rgba(255, 255, 255, 0.95);
+  --dial-border: rgba(255, 255, 255, 0.1);
+  --dial-border-hover: rgba(255, 255, 255, 0.15);
+  --dial-glass-bg: #212121;
+  --dial-radius: 8px;
+  --dial-row-height: 36px;
+  --dial-row-gap: 6px;
+  --dial-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  font-family: system-ui, -apple-system, "SF Pro Display", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.dialkit-panel {
+  position: relative;
+  overflow: visible;
+}
+
+.dialkit-panel-inner {
+  box-sizing: border-box;
+  background: var(--dial-glass-bg);
+  border: 1px solid var(--dial-border);
+  border-radius: 14px;
+  box-shadow: var(--dial-shadow);
+  padding: 10px 12px;
+  transform: translateZ(0);
+}
+
+.dialkit-folder-root {
+  padding-bottom: 0;
+  margin-bottom: 0;
+}
+
+.dialkit-panel-header {
+  padding-bottom: 6px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--dial-surface-subtle);
+}
+
+.dialkit-folder-header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 0 8px 0;
+}
+
+.dialkit-folder-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.dialkit-folder-title-root {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--dial-text-root);
+  transform: translateZ(0);
+}
+
+.dialkit-panel-icon {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 16px;
+  height: 16px;
+  color: var(--dial-text-focus);
+  z-index: 1;
+}
+
+.dialkit-folder-inner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dial-row-gap);
+}
+
+/* Slider */
+.dialkit-slider-wrapper {
+  position: relative;
+  height: var(--dial-row-height);
+}
+
+.dialkit-slider {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: var(--dial-surface);
+  border-radius: var(--dial-radius);
+}
+
+.dialkit-slider-hashmarks {
+  position: absolute;
+  inset: 0;
+}
+
+.dialkit-slider-hashmark {
+  position: absolute;
+  top: 50%;
+  width: 1px;
+  height: 8px;
+  border-radius: 999px;
+  transform: translateX(-50%) translateY(-50%);
+  background: rgba(255, 255, 255, 0);
+  transition: background 200ms;
+}
+
+.dialkit-slider-active .dialkit-slider-hashmark {
+  background: var(--dial-border-hover);
+}
+
+.dialkit-slider-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  background: var(--dial-surface-active);
+  transition: background 0.15s;
+}
+
+.dialkit-slider-active .dialkit-slider-fill {
+  background: var(--dial-border-hover);
+}
+
+/* DialKit springs the handle (scaleX 0.25 → 1 over ~0.25s, bounce 0.15); a slight overshoot curve stands in. */
+.dialkit-slider-handle {
+  position: absolute;
+  top: 50%;
+  width: 3px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--dial-text-primary);
+  transition:
+    opacity 0.15s,
+    transform 0.25s cubic-bezier(0.34, 1.3, 0.64, 1);
+}
+
+.dialkit-slider-label {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(calc(-50% - 0.5px));
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--dial-text-label);
+  transition: color 0.15s;
+  display: inline-flex;
+  align-items: center;
+}
+
+.dialkit-slider-value {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(calc(-50% + 0.5px));
+  font-size: 13px;
+  font-weight: 500;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--dial-text-label);
+  transition: color 0.15s;
+  border-bottom: 1px solid transparent;
+  padding-bottom: 1px;
+}
+
+.dialkit-slider-active .dialkit-slider-value {
+  color: var(--dial-text-focus);
+}
+
+/* Select */
+.dialkit-select-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  height: var(--dial-row-height);
+  padding: 0 12px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--dial-text-label);
+  background: var(--dial-surface);
+  border-radius: var(--dial-radius);
+}
+
+.dialkit-select-label,
+.dialkit-select-value {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--dial-text-label);
+  transform: translateY(-0.5px);
+}
+
+.dialkit-select-label {
+  flex-shrink: 0;
+}
+
+.dialkit-select-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dialkit-select-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dialkit-select-chevron {
+  width: 20px;
+  height: 20px;
+  padding: 2px;
+  box-sizing: border-box;
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+
+/* Spring curve */
+.dialkit-spring-viz {
+  width: 100%;
+  border-radius: var(--dial-radius);
+  background: var(--dial-surface);
+  overflow: visible;
+}

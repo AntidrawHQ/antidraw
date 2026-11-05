@@ -20,6 +20,8 @@ import { SiteServer, SiteStore, type Current, type FileCache } from "@antidraw/s
 export interface Env {
   DB: D1Database;
   SITES: R2Bucket;
+  // The server's Flagship app, for `sites-serving` (see fetch below).
+  FLAGS: Flagship;
   SITE_DOMAIN: string;
   // A site's share page, with * for its slug: https://antidraw.com/s/*
   SHARE_URL_PATTERN: string;
@@ -74,43 +76,97 @@ const currentOf = async (db: D1Database, siteId: string): Promise<Current> => {
   return row ?? { live: null, previous: null };
 };
 
+// What every site answers while sites-serving is off: a page of its own, with
+// nothing to load, since it may be all a visitor sees for a while.
+const UNAVAILABLE_PAGE = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Temporarily unavailable · Antidraw</title>
+</head>
+<body style="margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#1e1e1e;color:#e0e0e0;font:15px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
+<main style="max-width:360px;padding:24px;text-align:center">
+<p style="margin:0 0 6px;font-size:13px;font-weight:600;color:#9a9a9a">Antidraw</p>
+<h1 style="margin:0;font-size:18px;font-weight:500">Antidraw sites are temporarily unavailable.</h1>
+<p style="margin:8px 0 0;color:#9a9a9a">Try again later.</p>
+</main>
+</body>
+</html>
+`;
+
+const unavailable = (pathname: string) => {
+  const response = new Response(UNAVAILABLE_PAGE, {
+    status: 503,
+    headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "retry-after": "3600" },
+  });
+  // So the share page can tell canvas.json's 503 from a network failure.
+  cors(pathname, response.headers);
+  return response;
+};
+
+// `sites-serving` is the emergency switch: off takes every site down, and a
+// rule on `slug` takes one down. Unlike a feature that hasn't launched, it
+// fails open: Flagship being unreachable mustn't take every site with it.
+const isServing = async (flags: Flagship, slug: string) => {
+  try {
+    return await flags.getBooleanValue("sites-serving", true, { slug });
+  } catch (error) {
+    console.error("Couldn't evaluate the sites-serving flag:", error);
+    return true;
+  }
+};
+
 // One server per isolate, so its caches last across requests.
 let server: SiteServer | undefined;
+
+const serve = async (request: Request, env: Env, ctx: ExecutionContext, slug: string, pathname: string) => {
+  if (!SLUG_RE.test(slug)) return notFound(pathname);
+  let siteId: string | null;
+  try {
+    siteId = await siteIdFor(env.DB, slug, Date.now());
+  } catch (error) {
+    // D1 failed: answer as SiteServer does when R2 fails, a 503 the share
+    // page can see and retry, not the runtime's error page.
+    console.error(error);
+    return plain(pathname, 503, "Temporarily unavailable", { "retry-after": "1" });
+  }
+  if (!siteId) return notFound(pathname);
+
+  if (pathname === "/") {
+    // 302: where the share page lives may change.
+    return new Response(null, {
+      status: 302,
+      headers: { location: env.SHARE_URL_PATTERN.replace("*", slug), "cache-control": "no-store" },
+    });
+  }
+
+  server ??= new SiteServer({
+    store: new SiteStore({ bucket: env.SITES }),
+    current: (id) => currentOf(env.DB, id),
+    cache: (caches as unknown as { default: FileCache }).default,
+  });
+  const response = await server.fetch(request, siteId, ctx);
+  // Public, and fetched without credentials, so any origin will do: the
+  // share page, and the web canvas's dev server and preview deployments.
+  cors(pathname, response.headers);
+  return response;
+};
 
 export default {
   async fetch(request, env, ctx) {
     const { hostname: host, pathname } = new URL(request.url);
     const suffix = `.${env.SITE_DOMAIN}`;
     const slug = host.endsWith(suffix) ? host.slice(0, -suffix.length) : "";
-    if (!SLUG_RE.test(slug)) return notFound(pathname);
-    let siteId: string | null;
-    try {
-      siteId = await siteIdFor(env.DB, slug, Date.now());
-    } catch (error) {
-      // D1 failed: answer as SiteServer does when R2 fails, a 503 the share
-      // page can see and retry, not the runtime's error page.
-      console.error(error);
-      return plain(pathname, 503, "Temporarily unavailable", { "retry-after": "1" });
-    }
-    if (!siteId) return notFound(pathname);
-
-    if (pathname === "/") {
-      // 302: where the share page lives may change.
-      return new Response(null, {
-        status: 302,
-        headers: { location: env.SHARE_URL_PATTERN.replace("*", slug), "cache-control": "no-store" },
-      });
-    }
-
-    server ??= new SiteServer({
-      store: new SiteStore({ bucket: env.SITES }),
-      current: (id) => currentOf(env.DB, id),
-      cache: (caches as unknown as { default: FileCache }).default,
-    });
-    const response = await server.fetch(request, siteId, ctx);
-    // Public, and fetched without credentials, so any origin will do: the
-    // share page, and the web canvas's dev server and preview deployments.
-    cors(pathname, response.headers);
+    // Asked first, so a site that's down answers the same whether or not it
+    // exists, and D1 isn't read while sites are off.
+    const response = (await isServing(env.FLAGS, slug))
+      ? await serve(request, env, ctx, slug, pathname)
+      : unavailable(pathname);
+    // Sites are whatever their owners published, nothing we vouch for, so
+    // none of them is offered to search engines. A header, not a robots.txt
+    // Disallow, which would stop crawlers from ever seeing it.
+    response.headers.set("x-robots-tag", "noindex");
     return response;
   },
 } satisfies ExportedHandler<Env>;

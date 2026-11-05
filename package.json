@@ -21,6 +21,9 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "runtime:local": "tsx scripts/use-local-runtime.ts",
-    "runtime:npm": "tsx scripts/use-npm-runtime.ts"
+    "runtime:npm": "tsx scripts/use-npm-runtime.ts",
+    "dev:website": "npm run dev -w @antidraw/website",
+    "build:website": "npm run build -w @antidraw/website",
+    "deploy:website": "npm run deploy -w @antidraw/website"
   }
 }

@@ -10,7 +10,7 @@ import type { ComponentStreamEvent } from "@/main/api";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
 import { queryKeys } from "@/renderer/lib/query-keys";
 import { requestThumbnail } from "@/renderer/lib/thumbnail";
-import { listComponents, getComponentSource } from "@/renderer/lib/api";
+import { appKeyHeader, listComponents, getComponentSource } from "@/renderer/lib/api";
 
 export const useUserComponents = (workspaceId: string | null) => {
   return useQuery({
@@ -40,6 +40,7 @@ export const useUserComponentsWatcher = (workspaceId: string | null) => {
     fetchEventSource(
       `antidraw://app/api/workspaces/${workspaceId}/components/stream`,
       {
+        headers: appKeyHeader(),
         signal: abort.signal,
         openWhenHidden: true,
         onmessage: (ev) => {

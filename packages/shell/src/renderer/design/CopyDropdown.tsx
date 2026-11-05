@@ -64,17 +64,18 @@ export const CopyDropdown = ({ code, filePath }: CopyDropdownProps) => {
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverAnchor asChild>
-        <div className="flex items-center bg-white/[0.06] rounded-lg overflow-hidden">
+        <div className="flex min-w-0 max-w-full items-center bg-white/[0.06] rounded-lg overflow-hidden">
           <button
             onClick={() => doCopy(prompt, "prompt")}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-transparent border-none cursor-pointer hover:bg-white/[0.06] transition-[background] duration-[120ms]"
+            title="Copy Prompt For Agents"
+            className="flex min-w-0 items-center gap-1.5 px-2.5 py-1.5 bg-transparent border-none cursor-pointer hover:bg-white/[0.06] transition-[background] duration-[120ms]"
           >
             {copied ? (
-              <IconCircleCheckFilled size={14} color="#7c6cd6" />
+              <IconCircleCheckFilled size={14} color="#7c6cd6" className="shrink-0" />
             ) : (
-              <Bot size={12} className="text-[#a3a3a3]" />
+              <Bot size={12} className="shrink-0 text-[#a3a3a3]" />
             )}
-            <span className="text-[13px] font-medium text-[#e5e5e5] whitespace-nowrap">
+            <span className="min-w-0 truncate text-[13px] font-medium text-[#e5e5e5]">
               {copied ? "Copied!" : "Copy Prompt For Agents"}
             </span>
           </button>
