@@ -8,7 +8,7 @@ import { saveFrameLayouts, type FrameLayoutData } from "./lib/api";
 import { cn } from "./lib/utils";
 import { Canvas, useFocusComponent, type FrameLayer, type FrameLayout } from "./canvas/Canvas";
 import { CanvasToolbar } from "./components/CanvasToolbar";
-import { EmptyState } from "./components/EmptyState";
+import { OnboardingList } from "./onboarding/OnboardingList";
 import { renderFrameInspector } from "./inspector/FrameInspector";
 import { InspectorControls } from "./inspector/InspectorControls";
 import { CommentFlow, renderFrameComments } from "./comments/CommentFlow";
@@ -161,10 +161,11 @@ export const AppCanvas = ({ className }: AppCanvasProps) => {
     return <CanvasPlaceholder subtitle="Error loading components" className={className} />;
   }
 
+  // A new workspace: the onboarding's prompts, each run in the chat.
   if (userComponents.length === 0) {
     return (
-      <div className={cn("flex-1 flex items-center justify-center bg-[#282828] relative", className)}>
-        <EmptyState className="z-10" />
+      <div className={cn("flex-1 flex bg-[#282828] relative overflow-auto", className)}>
+        <OnboardingList className="m-auto" />
       </div>
     );
   }
