@@ -33,6 +33,19 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // doesn't know.
   track: (event: string, properties?: Record<string, unknown>) =>
     ipcRenderer.send("analytics:track", event, properties),
+  // For agents outside the app (main/mcp): the main window's canvas as it
+  // is now, and their asks of it.
+  mirrorCanvas: (state: unknown) => ipcRenderer.send("canvas:mirror", state),
+  onOpenWorkspace: (callback: (workspaceId: string) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, workspaceId: string) => callback(workspaceId);
+    ipcRenderer.on("mcp:open-workspace", listener);
+    return () => ipcRenderer.removeListener("mcp:open-workspace", listener);
+  },
+  onFocusComponent: (callback: (name: string) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, name: string) => callback(name);
+    ipcRenderer.on("mcp:focus-component", listener);
+    return () => ipcRenderer.removeListener("mcp:focus-component", listener);
+  },
   getUpdateStatus: () => ipcRenderer.invoke("update:get-status"),
   installUpdate: () => ipcRenderer.invoke("update:install"),
   onUpdateDownloaded: (callback: (version: string) => void) => {

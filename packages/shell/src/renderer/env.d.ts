@@ -12,6 +12,12 @@ declare global {
       captureThumbnail: (workspaceId: string, rect: { x: number; y: number; width: number; height: number }) => Promise<void>;
       /** A content-free analytics event; see renderer/lib/analytics.ts. */
       track: (event: string, properties?: Record<string, unknown>) => void;
+      /** In the main window: its canvas as it is now, for agents outside the app (main/mcp). */
+      mirrorCanvas: (state: import("@/shared/canvas-mirror").CanvasMirror) => void;
+      /** In the main window: an outside agent's open_workspace. */
+      onOpenWorkspace: (callback: (workspaceId: string) => void) => () => void;
+      /** In the main window: an outside agent's focus_component. */
+      onFocusComponent: (callback: (name: string) => void) => () => void;
       getUpdateStatus: () => Promise<{ pendingVersion: string | null }>;
       installUpdate: () => Promise<void>;
       onUpdateDownloaded: (callback: (version: string) => void) => () => void;

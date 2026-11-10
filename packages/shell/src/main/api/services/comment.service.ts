@@ -138,7 +138,8 @@ export const removeComment = async (workspaceId: string, id: number) => {
   }
 };
 
-// Completed comments off the list, from sets whose chats have ended.
+// Completed comments off the list, from sets whose chats have ended, and
+// those an outside agent closed (no chat to wait on).
 export const clearCompleted = async (workspaceId: string) => {
   try {
     const done = await db
@@ -147,13 +148,12 @@ export const clearCompleted = async (workspaceId: string) => {
       .where(
         and(
           eq(comments.workspaceId, workspaceId),
-          eq(comments.state, "done"),
+          inArray(comments.state, ["done", "dismissed"]),
           isNull(comments.clearedAt),
-          isNotNull(comments.conversationId),
         ),
       );
     const ids = done
-      .filter((c) => phaseOf(c.conversationId!) === "ended")
+      .filter((c) => (c.conversationId ? phaseOf(c.conversationId) === "ended" : true))
       .map((c) => c.id);
     if (ids.length) {
       await db
@@ -259,6 +259,52 @@ export const completeComment = async (
     return dbError("Failed to complete comment");
   }
 };
+
+// An outside agent's report on a comment (main/mcp): done with what it
+// changed, or dismissed with why. Only one no chat holds, a draft or one it
+// closed before (marking it again replaces the note): a sent one is its
+// chat's to mark. Closed this way it keeps no conversation, which is how the
+// list tells it was an outside agent.
+const closeOutside = async (
+  workspaceId: string,
+  id: number,
+  state: "done" | "dismissed",
+  note: string,
+) => {
+  try {
+    const where = and(eq(comments.id, id), eq(comments.workspaceId, workspaceId));
+    const [row] = await db
+      .update(comments)
+      .set({ state, note: note.trim(), completedAt: new Date() })
+      .where(
+        and(
+          where,
+          isNull(comments.conversationId),
+          isNull(comments.clearedAt),
+          inArray(comments.state, ["draft", "done", "dismissed"]),
+        ),
+      )
+      .returning();
+    if (!row) {
+      const [held] = await db.select({ id: comments.id }).from(comments).where(and(where, isNotNull(comments.conversationId)));
+      return notFound(
+        held
+          ? `Comment ${id} was sent to a chat in Antidraw, which handles it`
+          : `No open comment ${id} in this workspace`,
+      );
+    }
+    commentEvents.emit("changed", workspaceId);
+    return ok(row);
+  } catch (_e) {
+    return dbError("Failed to close comment");
+  }
+};
+
+export const completeCommentOutside = (workspaceId: string, id: number, note: string) =>
+  closeOutside(workspaceId, id, "done", note);
+
+export const dismissCommentOutside = (workspaceId: string, id: number, reason: string) =>
+  closeOutside(workspaceId, id, "dismissed", reason);
 
 // Whether a conversation is one of the workspace's comment chats: its phase
 // is part of the list, so its state changes are the list's news too.

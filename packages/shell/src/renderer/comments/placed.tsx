@@ -56,10 +56,12 @@ const PinMark = ({ c, i, lit, a }: { c: Cmt; i?: number; lit: boolean; a: Action
   );
 };
 
-// Completed ones lose their pin, unless open.
+// Completed ones lose their pin, unless open; so do those an outside agent
+// closed.
 export const Pins = ({ f, lit, a }: { f: Flow; lit: number | null; a: Actions }) => (
   <>
     {f.sends.flatMap((s) => s.comments.filter((c) => c.state !== "done" || a.opened === c.id).map((c) => <PinMark key={c.id} c={c} lit={lit === c.id} a={a} />))}
+    {f.outside.filter((c) => a.opened === c.id).map((c) => <PinMark key={c.id} c={c} lit={lit === c.id} a={a} />)}
     {f.draft.map((c, i) => (
       <PinMark key={c.id} c={c} i={i + 1} lit={lit === c.id} a={a} />
     ))}
@@ -80,7 +82,7 @@ export const useBeside = (frame: string, pos: Pos) => {
 export const CommentCard = ({ f, id, editing, a, onClose }: { f: Flow; id: number; editing: boolean; a: Actions; onClose?: () => void }) => {
   const i = f.draft.findIndex((c) => c.id === id);
   const s = f.sends.find((x) => x.comments.some((c) => c.id === id));
-  const c = i >= 0 ? f.draft[i] : s?.comments.find((x) => x.id === id);
+  const c = i >= 0 ? f.draft[i] : (s?.comments.find((x) => x.id === id) ?? f.outside.find((x) => x.id === id));
   const [v, setV] = useState(c?.text ?? "");
   const ref = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
@@ -167,12 +169,18 @@ export const CommentCard = ({ f, id, editing, a, onClose }: { f: Flow; id: numbe
           )
         ) : (
           <>
-            {/* Only Completed is said: a sent one's row says Sent. */}
-            <span className="flex-1 text-neutral-500">{c.state === "done" ? LABEL.done : ""}</span>
-            <TextBtn onClick={() => s && a.chat(s.conversationId)} className="flex items-center gap-1 font-medium">
-              <ArrowUpRight className="size-3.5" />
-              Open chat
-            </TextBtn>
+            {/* Only Completed is said: a sent one's row says Sent. One an
+                outside agent closed has no chat to open: its note says what it did. */}
+            <span className="flex-1 text-neutral-500">
+              {c.state === "sent" ? "" : LABEL[c.state]}
+              {!s && " by an outside agent"}
+            </span>
+            {s && (
+              <TextBtn onClick={() => a.chat(s.conversationId)} className="flex items-center gap-1 font-medium">
+                <ArrowUpRight className="size-3.5" />
+                Open chat
+              </TextBtn>
+            )}
             {s?.phase === "ended" && c.state === "sent" && (
               <TextBtn
                 onClick={() => {

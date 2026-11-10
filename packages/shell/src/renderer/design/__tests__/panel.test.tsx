@@ -319,6 +319,31 @@ it("a frame window's Show: Comments, the panel shown, though the Comment tool wa
   expect(text()).toContain("No comments yet");
 });
 
+it("Comments an outside agent closed: Resolved, with its note and no chat", async () => {
+  act(() => setCanvasTool("comment"));
+  const closed = (id: number, text: string, state: Comment["state"], note: string) => ({
+    ...comment(id, text, state),
+    note,
+    completedAt: new Date(),
+  });
+  await render(
+    { edits: [], applied: [] },
+    { comments: [closed(1, "Bigger title", "done", "Title 24 → 32px"), closed(2, "Softer shadow", "dismissed", "Already soft")], chats: [] },
+  );
+  expect(text()).not.toContain("No comments yet");
+  expect(text()).toContain("Nothing with the agent right now.");
+  // The tab carries its count: "Resolved2".
+  await act(async () => [...host.querySelectorAll("button")].find((b) => b.textContent === "Resolved2")!.click());
+  expect(text()).toContain("Bigger title");
+  expect(text()).toContain("Title 24 → 32px");
+  expect(text()).toContain("Dismissed");
+  expect(text()).toContain("Already soft");
+  expect(text()).toContain("Outside agent");
+  expect(text()).not.toContain("Chat ");
+  // Nothing to wait on: Clear takes them off.
+  expect(button("Clear")).toBeTruthy();
+});
+
 it("⌥⌘B (Ctrl+Alt+B off macOS, as here) hides the panel and brings it back; ⌘B alone is the side panel's", async () => {
   await render({ edits: [], applied: [] });
   // Option makes B another character: the key counts, not what it types.

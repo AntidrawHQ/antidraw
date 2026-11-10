@@ -98,6 +98,17 @@ export const markEditsApplied = (workspaceId: string, conversationId: string, id
     return true;
   });
 
+// Edits an outside agent (main/mcp) has written into the code: off the
+// list, all or none, so their preview drops and the frames show the code.
+// No set to show them in: no chat of the app's is applying them.
+export const markEditsWritten = (workspaceId: string, ids: number[]) =>
+  checkEditsPending(workspaceId, ids).map((taken) => {
+    const list = of(workspaceId);
+    list.edits = list.edits.filter((e) => !taken.includes(e));
+    changed(workspaceId);
+    return taken.map((e) => e.id);
+  });
+
 // The message that carried a set was withdrawn before its turn: its edits
 // are pending again. One whose element was edited since keeps that edit,
 // from where the set's started.

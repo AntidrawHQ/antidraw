@@ -15,7 +15,9 @@
  *             chat's, never a comment's
  *   unmarked  its chat ended and Claude didn't mark it
  *   done      Claude marked it, with a note
- * The chat it went to is metadata, not a container.
+ *   dismissed an agent outside the app (main/mcp) closed it, with why
+ * The chat it went to is metadata, not a container. One an outside agent
+ * closed (done or dismissed) went to no chat, and says so instead.
  */
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import Avatar from "boring-avatars";
@@ -109,8 +111,10 @@ const Hint = ({ children }: { children: ReactNode }) => <p className="m-0 px-3 p
 
 // Where a comment has got to. Working is its chat's, not the comment's own:
 // antidraw can't say which one the agent is on.
-type Kind = "draft" | "working" | "unmarked" | "done";
-const kindOf = (c: Cmt, s: Send | null): Kind => (!s ? "draft" : c.state === "done" ? "done" : s.phase === "ended" ? "unmarked" : "working");
+type Kind = "draft" | "working" | "unmarked" | "done" | "dismissed";
+const kindOf = (c: Cmt, s: Send | null): Kind =>
+  c.state === "dismissed" ? "dismissed" : c.state === "done" ? "done" : !s ? "draft" : s.phase === "ended" ? "unmarked" : "working";
+const closed = (c: Cmt) => c.state === "done" || c.state === "dismissed";
 
 const StatusMark = ({ kind, n }: { kind: Kind; n?: number }) =>
   kind === "draft" ? (
@@ -122,6 +126,8 @@ const StatusMark = ({ kind, n }: { kind: Kind; n?: number }) =>
     </span>
   ) : kind === "unmarked" ? (
     <span className="text-[11.5px] text-white/40">Not marked</span>
+  ) : kind === "dismissed" ? (
+    <span className="text-[11.5px] text-white/40">Dismissed</span>
   ) : (
     <span className="text-white/40" title="Resolved">
       <Done />
@@ -164,7 +170,7 @@ const Card = ({ a, c, s, n }: { a: Actions; c: Cmt; s: Send | null; n?: number }
             </IconButton>
           )}
         </div>
-        <p className={cn("m-0 mt-0.5 break-words text-[13px] leading-[19px]", kind === "done" ? "text-white/55" : "text-white/85")}>{c.text}</p>
+        <p className={cn("m-0 mt-0.5 break-words text-[13px] leading-[19px]", closed(c) ? "text-white/55" : "text-white/85")}>{c.text}</p>
         <div className="mt-1 flex min-w-0 items-center gap-1.5 whitespace-nowrap text-[11.5px] text-white/35">
           <span className="min-w-0 truncate">{c.frame}</span>
           {c.element && (
@@ -183,9 +189,16 @@ const Card = ({ a, c, s, n }: { a: Actions; c: Cmt; s: Send | null; n?: number }
               </span>
             </>
           )}
+          {!s && closed(c) && (
+            <>
+              <span className="shrink-0 text-white/20">·</span>
+              <span className="shrink-0">Outside agent</span>
+            </>
+          )}
         </div>
-        {/* The agent's reply: its note, from complete_comment. */}
-        {kind === "done" && c.note && (
+        {/* The agent's reply: its note, from complete_comment (or, from an
+            outside agent, dismiss_comment's reason). */}
+        {closed(c) && c.note && (
           <div className="mt-2.5 flex gap-2 border-l border-white/10 pl-2.5">
             <Agent />
             <div className="min-w-0 flex-1">
@@ -268,10 +281,10 @@ export const useOutbox = () => {
     return () => clearInterval(t);
   }, []);
 
-  const sent = f.sends.flatMap((s) => s.comments.map((c) => ({ c, s })));
-  const openOnes = sent.filter(({ c }) => c.state !== "done").sort((x, y) => x.c.at - y.c.at);
-  const resolved = sent.filter(({ c }) => c.state === "done").sort((x, y) => (y.c.doneAt ?? 0) - (x.c.doneAt ?? 0));
-  const hasDone = f.sends.some((s) => s.phase === "ended" && s.comments.some((c) => c.state === "done"));
+  const sent = [...f.sends.flatMap((s) => s.comments.map((c) => ({ c, s }))), ...f.outside.map((c) => ({ c, s: null }))];
+  const openOnes = sent.filter(({ c }) => !closed(c)).sort((x, y) => x.c.at - y.c.at);
+  const resolved = sent.filter(({ c }) => closed(c)).sort((x, y) => (y.c.doneAt ?? 0) - (x.c.doneAt ?? 0));
+  const hasDone = f.sends.some((s) => s.phase === "ended" && s.comments.some((c) => c.state === "done")) || f.outside.length > 0;
   const [view, setView] = useState<"open" | "resolved">("open");
   const list = view === "open" ? openOnes : resolved;
 

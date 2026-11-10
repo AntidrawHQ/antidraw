@@ -25,13 +25,15 @@ export type Cmt = {
 };
 export type Phase = ChatPhase;
 export type Send = { n: number; phase: Phase; conversationId: string; comments: Cmt[] };
-export type Flow = { draft: Cmt[]; sends: Send[] };
+// `outside`: those an agent outside the app closed (main/mcp), done or
+// dismissed, in no chat.
+export type Flow = { draft: Cmt[]; sends: Send[]; outside: Cmt[] };
 
 export const isActive = (s: Send) => s.phase === "opening" || s.phase === "running";
 export const count = (s: Send, st: CState) => s.comments.filter((c) => c.state === st).length;
 export const allDone = (s: Send) => s.phase === "ended" && s.comments.every((c) => c.state === "done");
 
-export const LABEL: Record<CState, string> = { draft: "", sent: "Sent", done: "Completed" };
+export const LABEL: Record<CState, string> = { draft: "", sent: "Sent", done: "Completed", dismissed: "Dismissed" };
 
 const cmt = (c: Comment): Cmt => ({
   id: c.id,
@@ -46,12 +48,13 @@ const cmt = (c: Comment): Cmt => ({
 });
 
 export const toFlow = (list: CommentList | undefined): Flow => {
-  if (!list) return { draft: [], sends: [] };
+  if (!list) return { draft: [], sends: [], outside: [] };
   return {
     draft: list.comments.filter((c) => c.state === "draft").map(cmt),
     sends: list.chats
       .map((ch) => ({ ...ch, comments: list.comments.filter((c) => c.conversationId === ch.conversationId).map(cmt) }))
       .filter((s) => s.comments.length),
+    outside: list.comments.filter((c) => c.state !== "draft" && !c.conversationId).map(cmt),
   };
 };
 
