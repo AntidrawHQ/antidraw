@@ -1,4 +1,5 @@
 import { ipcMain, type BrowserWindow, type WebContents } from "electron";
+import { installBridgeCommand, writeToolCache } from "./bridge-install";
 import { dropMirrorWith, setMirror } from "./canvas-mirror";
 import { loadMcpConfig, mcpPort } from "./config";
 import { localCanvasState, localWorkspaceHost } from "./local";
@@ -7,7 +8,8 @@ import { startMcpHttpServer, type RunningMcpServer } from "./server";
 // The MCP server for outside agents (./server.ts), started once the app is
 // ready and stopped as it quits; and the main window's mirrored canvas it
 // reads (./canvas-mirror.ts). A server that can't start (its port taken)
-// is logged and left: the app runs without it.
+// is logged and left: the app runs without it. Agents reach it through
+// `antidraw mcp` (./bridge), put in place here too (./bridge-install.ts).
 
 let running: RunningMcpServer | null = null;
 let stopped = false;
@@ -23,14 +25,18 @@ export const startMcp = async (getMainWindow: () => BrowserWindow | null) => {
     dropMirrorWith(event.sender);
   });
 
+  const deps = { host: localWorkspaceHost, canvas: localCanvasState(getMainWindow) };
+  try {
+    installBridgeCommand();
+    await writeToolCache(deps);
+  } catch (e) {
+    console.error("[mcp] `antidraw mcp` not put in place:", e);
+  }
+
   try {
     const port = mcpPort();
     const { token } = loadMcpConfig(port);
-    const result = await startMcpHttpServer({
-      port,
-      token,
-      deps: { host: localWorkspaceHost, canvas: localCanvasState(getMainWindow) },
-    });
+    const result = await startMcpHttpServer({ port, token, deps });
     if (result.isErr()) return console.error(`[mcp] not started: ${result.error}`);
     if (stopped) return void result.value.close();
     running = result.value;
