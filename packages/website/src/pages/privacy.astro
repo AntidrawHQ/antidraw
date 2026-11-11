@@ -1,0 +1,157 @@
+---
+import Legal from "@/layouts/Legal.astro"
+---
+
+<Legal
+  title="Privacy Policy"
+  description="What Antidraw collects when you use the app, sign in with Google and publish, and what we do with it."
+  updated="November 4, 2026"
+>
+  <p>
+    This policy covers Antidraw: the desktop app, this website at antidraw.com, the Antidraw account you create by signing in
+    with Google, and the sites you publish to <code>antidraw.app</code>. Antidraw is run by an individual based in India
+    (“we”, “us”). If you have a question or a request about your data, email
+    <a href="mailto:hello@antidraw.com">hello@antidraw.com</a>.
+  </p>
+  <p>
+    In short: your workspaces stay on your computer, we don't sell your data, and we only collect what we need to run
+    sign-in and publishing and to understand how much the app gets used.
+  </p>
+
+  <h2>The desktop app</h2>
+  <p>
+    Antidraw runs on your computer. Your workspaces, components, canvases and chat history are stored on your device. We
+    don't receive them unless you publish a site (see below).
+  </p>
+  <p>
+    <strong>Your coding agent.</strong> Antidraw works with Claude Code, which runs on your computer with your own Anthropic
+    account. Your prompts, and the code and files the agent reads, go from your computer to Anthropic under your agreement
+    with Anthropic. They don't go through our servers, and we don't see them. Anthropic's handling of that data is covered by
+    <a href="https://www.anthropic.com/legal/privacy" target="_blank" rel="noreferrer">Anthropic's privacy policy</a>.
+  </p>
+  <p>
+    <strong>Usage analytics.</strong> Each time you send a message to the agent, the app sends a usage event to PostHog, our
+    product analytics provider. The event says that a message was sent, and includes the email address of the Claude account
+    you're signed into, that account's organization, subscription type and API provider, plus the app version and your
+    operating system. <strong>It never includes your messages, code or files.</strong> We use these events to understand how
+    many people use Antidraw and how much they use it.
+  </p>
+  <p>
+    <strong>Updates.</strong> The app checks GitHub for new releases and downloads updates from there, so GitHub sees your IP
+    address and the app's version when it does. GitHub's handling of that is covered by
+    <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement" target="_blank" rel="noreferrer">GitHub's privacy statement</a>.
+  </p>
+
+  <h2>Your Antidraw account</h2>
+  <p>
+    You only need an account to publish. When you sign in with Google, you allow us to see your basic profile and email address
+    (the <code>openid</code>, <code>email</code> and <code>profile</code> permissions). We store:
+  </p>
+  <ul>
+    <li>your name, email address, whether Google has verified that email, and your profile picture's URL;</li>
+    <li>your Google account ID, which links your Google account to your Antidraw account;</li>
+    <li>the tokens Google issues when you sign in. We don't use them to access anything else in your Google account;</li>
+    <li>
+      for each signed-in session: when it started and when it expires, the IP address it signed in from, and your
+      browser's or app's user agent.
+    </li>
+  </ul>
+  <p>
+    We use this information to sign you in, keep you signed in, show you which account you're using, link your published sites
+    to you, and protect the service against abuse. We don't ask Google for any other data, and we don't use your email for
+    marketing.
+  </p>
+
+  <h3>Google user data</h3>
+  <p>
+    Antidraw's use of information received from Google APIs adheres to the
+    <a href="https://developers.google.com/terms/api-services-user-data-policy" target="_blank" rel="noreferrer">Google API Services User Data Policy</a>,
+    including its Limited Use requirements. We use Google user data only to provide sign-in. We don't sell it, use it for
+    advertising, or share it with anyone except the infrastructure providers listed below, which store it for us.
+  </p>
+
+  <h2>Sites you publish</h2>
+  <p>When you publish a workspace, we store:</p>
+  <ul>
+    <li>the site's title and its address (its slug);</li>
+    <li>the built files of your components and your canvas;</li>
+    <li>the source code the site was built from, in a git repository, and a record of each publish.</li>
+  </ul>
+  <p>
+    <strong>Published sites are public.</strong> Anyone with the link can view them at <code>&lt;slug&gt;.antidraw.app</code>
+    and on their share page at <code>antidraw.com/s/&lt;slug&gt;</code>. We keep the source each version was built from so the
+    site can be rebuilt, and Antidraw may let other people view or remix a published site from that source. Don't publish
+    anything you aren't happy to make public, including secrets such as API keys or passwords.
+  </p>
+
+  <h2>This website</h2>
+  <p>
+    antidraw.com uses Cloudflare Web Analytics, which counts page views and measures page performance without cookies and
+    without identifying you. Cloudflare, which hosts the site, also processes your IP address to serve and protect it. The
+    website doesn't set cookies. When you sign in, your browser stores a sign-in cookie for api.antidraw.com, which is used
+    only to keep you signed in.
+  </p>
+
+  <h2>Who processes data for us</h2>
+  <p>We don't sell your personal data. We share it only with these providers, and only so they can run Antidraw for us:</p>
+  <ul>
+    <li><strong>Cloudflare</strong>: hosts the website, the API, our database and published sites, and provides website analytics.</li>
+    <li><strong>Google</strong>: provides sign-in.</li>
+    <li><strong>PostHog</strong> (US): stores the desktop app's usage events.</li>
+    <li><strong>GitHub</strong>: hosts app downloads and updates.</li>
+  </ul>
+  <p>
+    These providers may store and process data outside your country, including in the United States. We may also disclose
+    information if the law requires it, or to protect Antidraw, our users or the public from fraud or abuse.
+  </p>
+
+  <h2>How long we keep it</h2>
+  <ul>
+    <li>Account and session information: for as long as your account exists.</li>
+    <li>Published sites, their files and their source: until you ask us to remove them or delete your account.</li>
+    <li>Usage events: for as long as they are useful for understanding usage, and at most as long as PostHog keeps them.</li>
+  </ul>
+  <p>
+    When you delete your account, we delete your account and session records, your published sites, their files and their
+    source within 30 days. Copies in backups may remain for a short time after that until they are overwritten.
+  </p>
+
+  <h2>Your choices and rights</h2>
+  <p>
+    You can ask us to access, correct or delete your personal data, to send you a copy of it, or to stop processing it. To do
+    so, email <a href="mailto:hello@antidraw.com">hello@antidraw.com</a> from the email address on your account. To delete your
+    account and everything you have published, email us and ask. We'll respond within 30 days. Depending on where you live, for
+    example under India's Digital Personal Data Protection Act, 2023 or the EU and UK GDPR, you may have further rights,
+    including the right to complain to your data protection authority.
+  </p>
+  <p>
+    You can also revoke Antidraw's access in your
+    <a href="https://myaccount.google.com/connections" target="_blank" rel="noreferrer">Google account settings</a>. This stops
+    future sign-ins but doesn't delete the data we already hold, so email us for that.
+  </p>
+
+  <h2>Security</h2>
+  <p>
+    All traffic to our servers is encrypted in transit. The desktop app keeps its own sign-in token and doesn't share it with
+    the web pages it shows. Access to the production systems is limited to us. No system is perfectly secure, but we'll let you
+    know if a breach affects your data.
+  </p>
+
+  <h2>Children</h2>
+  <p>
+    Antidraw isn't intended for anyone under 18, and we don't knowingly collect data from them. If you believe a child has
+    given us personal data, email us and we'll delete it.
+  </p>
+
+  <h2>Changes to this policy</h2>
+  <p>
+    If we change this policy, we'll update the date at the top of this page. If a change matters, for example if we start
+    collecting a new kind of data, we'll also say so on this website or in the app before it takes effect.
+  </p>
+
+  <h2>Contact</h2>
+  <p>
+    For questions, requests or complaints about your data, including as our grievance contact under India's data protection
+    law, email <a href="mailto:hello@antidraw.com">hello@antidraw.com</a>.
+  </p>
+</Legal>

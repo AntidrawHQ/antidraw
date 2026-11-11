@@ -104,6 +104,14 @@ const Logo = ({ t, size = 28 }: { t: Tone; size?: number }) => (
 
 const Copyright = ({ t }: { t: Tone }) => <span className={t.quiet}>© 2026 Antidraw</span>
 
+/** The legal pages, beside the copyright. Same tab: they're part of this site. */
+const LegalLinks = ({ t }: { t: Tone }) => (
+  <>
+    <a href="/privacy" className={cn("transition-colors", t.link)}>Privacy</a>
+    <a href="/terms" className={cn("transition-colors", t.link)}>Terms</a>
+  </>
+)
+
 const RepoLinks = ({ t }: { t: Tone }) => (
   <>
     <A href={REPO} t={t}>GitHub</A>
@@ -131,8 +139,9 @@ function Line({ t }: { t: Tone }) {
         <img src={iconUrl} alt="" className="size-5" />
         <Copyright t={t} />
       </span>
-      <nav className="flex items-center gap-6">
+      <nav className="flex flex-wrap items-center gap-x-6 gap-y-2">
         <RepoLinks t={t} />
+        <LegalLinks t={t} />
       </nav>
     </div>
   )
@@ -182,8 +191,9 @@ function Columns({ t }: { t: Tone }) {
         </div>
         <SiteMap t={t} />
       </div>
-      <div className="mt-16 text-[13px]">
+      <div className="mt-16 flex flex-wrap items-center gap-x-6 gap-y-2 text-[13px]">
         <Copyright t={t} />
+        <LegalLinks t={t} />
       </div>
     </div>
   )
