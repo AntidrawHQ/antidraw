@@ -13,6 +13,7 @@ import { comments, type Comment } from "@/main/api/models/comment.model";
 import { getCliState } from "@/main/lib/conversation-store";
 import { commentEvents } from "@/main/lib/comment-events";
 import {
+  commentRev,
   describeComments,
   type CommentContext,
   type EarlierSet,
@@ -264,28 +265,26 @@ export const completeComment = async (
 // changed, or dismissed with why. Only one no chat holds, a draft or one it
 // closed before (marking it again replaces the note): a sent one is its
 // chat's to mark. Closed this way it keeps no conversation, which is how the
-// list tells it was an outside agent.
+// list tells it was an outside agent. `rev` is the comment as the agent read
+// it (commentRev): one the user has reworded since stays open, as what it
+// asks now wasn't read.
 const closeOutside = async (
   workspaceId: string,
   id: number,
+  rev: string,
   state: "done" | "dismissed",
   note: string,
 ) => {
   try {
     const where = and(eq(comments.id, id), eq(comments.workspaceId, workspaceId));
-    const [row] = await db
-      .update(comments)
-      .set({ state, note: note.trim(), completedAt: new Date() })
-      .where(
-        and(
-          where,
-          isNull(comments.conversationId),
-          isNull(comments.clearedAt),
-          inArray(comments.state, ["draft", "done", "dismissed"]),
-        ),
-      )
-      .returning();
-    if (!row) {
+    const open = and(
+      where,
+      isNull(comments.conversationId),
+      isNull(comments.clearedAt),
+      inArray(comments.state, ["draft", "done", "dismissed"]),
+    );
+    const [read] = await db.select({ text: comments.text }).from(comments).where(open);
+    if (!read) {
       const [held] = await db.select({ id: comments.id }).from(comments).where(and(where, isNotNull(comments.conversationId)));
       return notFound(
         held
@@ -293,6 +292,19 @@ const closeOutside = async (
           : `No open comment ${id} in this workspace`,
       );
     }
+    const reworded = err({
+      status: 409 as const,
+      code: "COMMENT_CHANGED",
+      message: `Comment ${id} was reworded after it was read: get_comments has it as it is now`,
+    });
+    if (commentRev(read) !== rev) return reworded;
+    // The text it was checked against, so a rewording in between isn't closed.
+    const [row] = await db
+      .update(comments)
+      .set({ state, note: note.trim(), completedAt: new Date() })
+      .where(and(open, eq(comments.text, read.text)))
+      .returning();
+    if (!row) return reworded;
     commentEvents.emit("changed", workspaceId);
     return ok(row);
   } catch (_e) {
@@ -300,11 +312,11 @@ const closeOutside = async (
   }
 };
 
-export const completeCommentOutside = (workspaceId: string, id: number, note: string) =>
-  closeOutside(workspaceId, id, "done", note);
+export const completeCommentOutside = (workspaceId: string, id: number, rev: string, note: string) =>
+  closeOutside(workspaceId, id, rev, "done", note);
 
-export const dismissCommentOutside = (workspaceId: string, id: number, reason: string) =>
-  closeOutside(workspaceId, id, "dismissed", reason);
+export const dismissCommentOutside = (workspaceId: string, id: number, rev: string, reason: string) =>
+  closeOutside(workspaceId, id, rev, "dismissed", reason);
 
 // Whether a conversation is one of the workspace's comment chats: its phase
 // is part of the list, so its state changes are the list's news too.

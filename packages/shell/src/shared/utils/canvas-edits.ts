@@ -7,6 +7,7 @@
 import type { ElementContext, ElementInfo } from "../../agent/protocol";
 import { changesOf, previewCss, type Style } from "../design";
 import { componentFile } from "./canvas-comments";
+import { revOf } from "./rev";
 
 // One element's edits, not yet applied: the styles it had (`base`) and has
 // now in the panel. `seen` is what its frame said about it when it was first
@@ -22,6 +23,10 @@ export type EditedElement = {
   now: Style;
   seen: ElementContext | null;
 };
+
+// Which state of an edit something read: its styles, as the panel's next
+// change to the element keeps the edit's id.
+export const editRev = ({ base, now }: Pick<EditedElement, "base" | "now">) => revOf([base, now]);
 
 // Edits handed to a chat by Apply: still shown on the canvas until the
 // chat's turn ends, by when the code has them. `messageId`: the message that

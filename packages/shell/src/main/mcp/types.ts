@@ -41,11 +41,13 @@ export type CanvasState = {
   view: () => CanvasMirror;
   // The comments left for an outside agent: drafts not sent to any chat.
   openComments: (workspaceId: string) => Promise<Result<CanvasComment[], HostError>>;
-  completeComment: (workspaceId: string, id: number, note: string) => Promise<Result<unknown, HostError>>;
-  dismissComment: (workspaceId: string, id: number, reason: string) => Promise<Result<unknown, HostError>>;
+  // `rev`: the comment as it was read (shared/utils/canvas-comments.ts' commentRev).
+  completeComment: (workspaceId: string, id: number, rev: string, note: string) => Promise<Result<unknown, HostError>>;
+  dismissComment: (workspaceId: string, id: number, rev: string, reason: string) => Promise<Result<unknown, HostError>>;
   // The Design panel's edits not yet in the code.
   pendingEdits: (workspaceId: string) => EditedElement[];
-  markEditsApplied: (workspaceId: string, ids: number[]) => Result<number[], HostError>;
+  // Each as it was read (shared/utils/canvas-edits.ts' editRev): all or none.
+  markEditsApplied: (workspaceId: string, read: { id: number; rev: string }[]) => Result<number[], HostError>;
   // Switches the app to the workspace, resolving once it's open.
   openWorkspace: (workspaceId: string) => Promise<Result<void, HostError>>;
   // Scrolls the canvas to a frame of the open workspace.

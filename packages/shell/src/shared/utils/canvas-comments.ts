@@ -9,10 +9,16 @@
 // "&" only where it starts an escape's spelling ("&lt;", "&amp;"), so a
 // literal "&lt;" comes back as written; as in the renderer's
 // <canvas-selection> (renderer/inspector/tags.ts).
+import { revOf } from "./rev";
+
 const escape = (v: string) => v.replace(/&(?=lt;|amp;)/g, "&amp;").replace(/</g, "&lt;");
 const unescape = (v: string) => v.replace(/&(lt|amp);/g, (_, e: string) => (e === "lt" ? "<" : "&"));
 const attr = (name: string, value: string | null | undefined) =>
   value ? ` ${name}=${JSON.stringify(escape(value))}` : "";
+
+// Which state of a comment something read: its text, the one thing the user
+// can still change on a draft.
+export const commentRev = ({ text }: { text: string }) => revOf(text);
 
 // Where a frame's component is written (see main/api/services/component.service.ts).
 export const componentFile = (componentName: string) =>

@@ -348,7 +348,14 @@ Current workspace directory: ${workspacePath}
         // and the ExitPlanMode that would leave it, would come to canUseTool
         // and be denied — the session stuck read-only for the CLI's life.
         // Disallowed, they are off again, as they were before the callback.
-        disallowedTools: ["EnterPlanMode", "ExitPlanMode"],
+        //
+        // "mcp__antidraw": the app's own MCP server for agents outside it
+        // (main/mcp), which the CLI loads here too once the user has added it
+        // to their Claude Code config. Its tools aren't this chat's: with
+        // them it could close drafts the user never sent it, and move the
+        // window. The rule is by the server's name, as the setup command
+        // gives it; the chat's own servers have other names.
+        disallowedTools: ["EnterPlanMode", "ExitPlanMode", "mcp__antidraw"],
         includePartialMessages: true,
         // Ask the CLI to re-emit each stdin user message once it is folded
         // into a turn ({type:"user", isReplay:true, uuid}). That replay is the

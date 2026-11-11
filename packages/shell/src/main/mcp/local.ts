@@ -48,10 +48,12 @@ export const localCanvasState = (getWindow: () => AppWindow | null, openTimeoutM
       (await listComments(workspaceId))
         .map(({ comments }) => comments.filter((c) => c.state === "draft" && !c.conversationId && !c.clearedAt))
         .mapErr(message),
-    completeComment: async (workspaceId, id, note) => (await completeCommentOutside(workspaceId, id, note)).mapErr(message),
-    dismissComment: async (workspaceId, id, reason) => (await dismissCommentOutside(workspaceId, id, reason)).mapErr(message),
+    completeComment: async (workspaceId, id, rev, note) =>
+      (await completeCommentOutside(workspaceId, id, rev, note)).mapErr(message),
+    dismissComment: async (workspaceId, id, rev, reason) =>
+      (await dismissCommentOutside(workspaceId, id, rev, reason)).mapErr(message),
     pendingEdits: (workspaceId) => listEdits(workspaceId).map((l) => l.edits).unwrapOr([]),
-    markEditsApplied: (workspaceId, ids) => markEditsWritten(workspaceId, ids).mapErr(message),
+    markEditsApplied: (workspaceId, read) => markEditsWritten(workspaceId, read).mapErr(message),
     openWorkspace: async (workspaceId) => {
       const win = window();
       if (!win) return err({ message: "Antidraw's main window is closed" });

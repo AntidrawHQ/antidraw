@@ -15,7 +15,7 @@ import { getDevServerStatus } from "@/main/services/dev-server.service";
 import { db } from "@/main/db";
 import { workspaces } from "@/main/api/schema";
 import { getWorkspaceSourcePath } from "@/main/api/init";
-import { addComment, listComments, clearCompleted, markCommentsSent } from "@/main/api/services/comment.service";
+import { addComment, clearCompleted, editComment, listComments, markCommentsSent } from "@/main/api/services/comment.service";
 import { createConversation } from "@/main/api/services/chat.service";
 import { listEdits, putEdit } from "@/main/api/services/edit.service";
 import { commentEvents } from "@/main/lib/comment-events";
@@ -224,6 +224,7 @@ describe("comments", () => {
     expect(comments).toEqual([
       {
         id: tighten.id,
+        rev: expect.any(String),
         component: "Card",
         file: "src/components/user-components/Card.tsx",
         text: "Tighten the gap",
@@ -240,10 +241,11 @@ describe("comments", () => {
     const changed: string[] = [];
     const listen = (id: string) => changed.push(id);
     commentEvents.on("changed", listen);
-    expect(await call("complete_comment", { id: tighten.id, note: " Gap 24 → 12px " })).toEqual({ id: tighten.id, state: "done" });
-    expect(await call("dismiss_comment", { id: pop.id, reason: "Already bold" })).toEqual({ id: pop.id, state: "dismissed" });
-    expect((await call("complete_comment", { id: chatOne.id, note: "x" })).error).toMatch(/sent to a chat/);
-    expect((await call("complete_comment", { id: 99999, note: "x" })).error).toMatch(/No open comment 99999/);
+    const [tightenRev, popRev] = comments.map((c: { rev: string }) => c.rev);
+    expect(await call("complete_comment", { id: tighten.id, rev: tightenRev, note: " Gap 24 → 12px " })).toEqual({ id: tighten.id, state: "done" });
+    expect(await call("dismiss_comment", { id: pop.id, rev: popRev, reason: "Already bold" })).toEqual({ id: pop.id, state: "dismissed" });
+    expect((await call("complete_comment", { id: chatOne.id, rev: "x", note: "x" })).error).toMatch(/sent to a chat/);
+    expect((await call("complete_comment", { id: 99999, rev: "x", note: "x" })).error).toMatch(/No open comment 99999/);
     commentEvents.off("changed", listen);
     expect(changed).toEqual([ws, ws]);
 
@@ -257,6 +259,59 @@ describe("comments", () => {
     (await clearCompleted(ws))._unsafeUnwrap();
     const left = (await listComments(ws))._unsafeUnwrap().comments.map((c) => c.id);
     expect(left).toEqual([chatOne.id]);
+  });
+});
+
+describe("a comment reworded after it was read", () => {
+  // The comment's id in a message, as it differs run to run.
+  const said = (id: number, result: { error?: string }) => result.error?.replace(`Comment ${id} `, "Comment <id> ");
+
+  test("stays open, by either tool, until it's read again", async () => {
+    view(ws);
+    const draft = (await addComment(ws, { componentName: "Card", x: 10, y: 10, text: "Make it pop", element: null }))._unsafeUnwrap();
+    const read = (await call("get_comments")).comments.find((c: { id: number }) => c.id === draft.id);
+    expect({ text: read.text, rev: read.rev }).toMatchInlineSnapshot(`
+      {
+        "rev": "c0929077",
+        "text": "Make it pop",
+      }
+    `);
+
+    (await editComment(ws, draft.id, "Make it pop and move it left"))._unsafeUnwrap();
+    const changed: string[] = [];
+    const listen = (id: string) => changed.push(id);
+    commentEvents.on("changed", listen);
+    expect(said(draft.id, await call("complete_comment", { id: draft.id, rev: read.rev, note: "Bolder title" }))).toMatchInlineSnapshot(`"Comment <id> was reworded after it was read: get_comments has it as it is now"`);
+    expect(said(draft.id, await call("dismiss_comment", { id: draft.id, rev: read.rev, reason: "Already bold" }))).toMatchInlineSnapshot(`"Comment <id> was reworded after it was read: get_comments has it as it is now"`);
+    commentEvents.off("changed", listen);
+    // Nothing closed, so nothing to tell the list.
+    expect(changed).toEqual([]);
+    const row = () => listComments(ws).then((r) => r._unsafeUnwrap().comments.find((c) => c.id === draft.id)!);
+    expect(await row()).toMatchObject({ state: "draft", note: null, text: "Make it pop and move it left" });
+
+    const again = (await call("get_comments")).comments.find((c: { id: number }) => c.id === draft.id);
+    expect({ text: again.text, rev: again.rev }).toMatchInlineSnapshot(`
+      {
+        "rev": "d36f8a19",
+        "text": "Make it pop and move it left",
+      }
+    `);
+    expect(await call("complete_comment", { id: draft.id, rev: again.rev, note: "Bolder, and moved left" })).toEqual({ id: draft.id, state: "done" });
+    expect(await row()).toMatchObject({ state: "done", note: "Bolder, and moved left" });
+
+    // Closed, its text can't change: the rev it was closed with replaces its note.
+    expect(await call("complete_comment", { id: draft.id, rev: again.rev, note: "Bolder only" })).toEqual({ id: draft.id, state: "done" });
+    expect(await row()).toMatchObject({ state: "done", note: "Bolder only" });
+    // And the rev it was first read with is still not it.
+    expect(said(draft.id, await call("complete_comment", { id: draft.id, rev: read.rev, note: "x" }))).toMatchInlineSnapshot(`"Comment <id> was reworded after it was read: get_comments has it as it is now"`);
+  });
+
+  test("a rev is required", async () => {
+    view(ws);
+    const draft = (await addComment(ws, { componentName: "Card", x: 10, y: 10, text: "No rev", element: null }))._unsafeUnwrap();
+    const refused = await client.callTool({ name: "complete_comment", arguments: { id: draft.id, note: "x" } });
+    expect(refused.isError).toBe(true);
+    expect((await listComments(ws))._unsafeUnwrap().comments.find((c) => c.id === draft.id)).toMatchObject({ state: "draft" });
   });
 });
 
@@ -279,6 +334,7 @@ describe("design edits", () => {
       edits: [
         {
           id: edit.id,
+          rev: expect.any(String),
           component: "Card",
           file: "src/components/user-components/Card.tsx",
           element: "button#buy.btn.primary",
@@ -293,16 +349,103 @@ describe("design edits", () => {
       ],
     });
 
-    expect((await call("mark_design_edits_applied", { ids: [edit.id, 999999] })).error).toMatch(/already applied or undone/);
+    const { rev } = (await call("get_design_edits")).edits[0];
+    expect((await call("mark_design_edits_applied", { edits: [{ id: edit.id, rev }, { id: 999999, rev: "x" }] })).error).toMatch(
+      /already applied or undone/,
+    );
     expect(listEdits(ws)._unsafeUnwrap().edits.map((e) => e.id)).toEqual([edit.id]);
 
     const changed: string[] = [];
     const listen = (id: string) => changed.push(id);
     editEvents.on("changed", listen);
-    expect(await call("mark_design_edits_applied", { ids: [edit.id] })).toEqual({ applied: [edit.id] });
+    expect(await call("mark_design_edits_applied", { edits: [{ id: edit.id, rev }] })).toEqual({ applied: [edit.id] });
     editEvents.off("changed", listen);
     expect(changed).toEqual([ws]);
     expect(listEdits(ws)._unsafeUnwrap()).toEqual({ edits: [], applied: [] });
+  });
+
+  test("an edit the user changed after it was read stays pending, with the rest", async () => {
+    view(ws);
+    const base = { radius: 16, corners: [16, 16, 16, 16], gap: 12 } as Style;
+    const put = (loc: string, now: Partial<Style>) =>
+      putEdit(ws, { componentName: "Card", element: info(loc), name: "button", text: false, base, now: { ...base, ...now } as Style, seen: null })._unsafeUnwrap()!;
+    const OTHER_LOC = "src/components/user-components/Card.tsx:20:7";
+    const radius = put(LOC, { radius: 24 });
+    const gap = put(OTHER_LOC, { gap: 8 });
+
+    // What the agent reads, by element rather than id (ids differ run to run).
+    const reading = async () =>
+      (await call("get_design_edits")).edits.map((e: { loc: string; rev: string; changes: string[] }) => ({ loc: e.loc, rev: e.rev, changes: e.changes }));
+    const read = (await call("get_design_edits")).edits.map((e: { id: number; rev: string }) => ({ id: e.id, rev: e.rev }));
+    expect(await reading()).toMatchInlineSnapshot(`
+      [
+        {
+          "changes": [
+            "Corner radius: 16 → 24",
+          ],
+          "loc": "src/components/user-components/Card.tsx:12:5",
+          "rev": "c68d9b36",
+        },
+        {
+          "changes": [
+            "Gap: 12 → 8",
+          ],
+          "loc": "src/components/user-components/Card.tsx:20:7",
+          "rev": "d478173e",
+        },
+      ]
+    `);
+
+    // The user drags the radius on: the same edit, by its id, with new styles.
+    expect(put(LOC, { radius: 32 }).id).toBe(radius.id);
+    const changed: string[] = [];
+    const listen = (id: string) => changed.push(id);
+    editEvents.on("changed", listen);
+    expect(await call("mark_design_edits_applied", { edits: read })).toMatchInlineSnapshot(`
+      {
+        "error": "Some of these edits were changed after they were read: get_design_edits has them as they are now",
+      }
+    `);
+    // Its own, unchanged, doesn't go without it: all or none.
+    editEvents.off("changed", listen);
+    expect(changed).toEqual([]);
+    expect(listEdits(ws)._unsafeUnwrap().edits.map((e) => e.id)).toEqual([radius.id, gap.id]);
+
+    // Read again, it has what the edit is now, and both go.
+    expect(await reading()).toMatchInlineSnapshot(`
+      [
+        {
+          "changes": [
+            "Corner radius: 16 → 32",
+          ],
+          "loc": "src/components/user-components/Card.tsx:12:5",
+          "rev": "dae40e6b",
+        },
+        {
+          "changes": [
+            "Gap: 12 → 8",
+          ],
+          "loc": "src/components/user-components/Card.tsx:20:7",
+          "rev": "d478173e",
+        },
+      ]
+    `);
+    const again = (await call("get_design_edits")).edits.map((e: { id: number; rev: string }) => ({ id: e.id, rev: e.rev }));
+    expect(await call("mark_design_edits_applied", { edits: again })).toEqual({ applied: [radius.id, gap.id] });
+    expect(listEdits(ws)._unsafeUnwrap().edits).toEqual([]);
+  });
+
+  test("an edit put back as it was read has the rev it was read with", async () => {
+    view(ws);
+    const base = { radius: 16, corners: [16, 16, 16, 16], gap: 12 } as Style;
+    const put = (radius: number) =>
+      putEdit(ws, { componentName: "Hero", element: info(LOC), name: "h1", text: false, base, now: { ...base, radius }, seen: null })._unsafeUnwrap()!;
+    const edit = put(24);
+    const [read] = (await call("get_design_edits")).edits;
+    put(32);
+    expect((await call("get_design_edits")).edits[0].rev).not.toBe(read.rev);
+    put(24);
+    expect(await call("mark_design_edits_applied", { edits: [{ id: edit.id, rev: read.rev }] })).toEqual({ applied: [edit.id] });
   });
 });
 

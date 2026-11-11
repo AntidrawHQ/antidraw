@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { componentFile } from "@/shared/utils/canvas-comments";
+import { commentRev, componentFile } from "@/shared/utils/canvas-comments";
 import type { ToolDeps } from "../types";
 import { elementFields, fail, json, resolveWorkspace, workspaceIdArg } from "./shared";
 
@@ -9,6 +9,7 @@ import { elementFields, fail, json, resolveWorkspace, workspaceIdArg } from "./s
 // closed one by one with a note the user sees in the list.
 
 const commentId = z.number().int().describe("The comment's id, from get_comments");
+const commentRevArg = z.string().describe("The comment's rev, from get_comments: its text as you read it");
 
 export const registerCommentTools = (server: McpServer, deps: ToolDeps) => {
   const { canvas } = deps;
@@ -17,10 +18,10 @@ export const registerCommentTools = (server: McpServer, deps: ToolDeps) => {
     "get_comments",
     {
       description:
-        "The open comments the user pinned on the workspace's frames: each with its id, the frame's component and file, " +
+        "The open comments the user pinned on the workspace's frames: each with its id and rev (its text as you read it), the frame's component and file, " +
         "the text, the pin's x/y in the frame's CSS pixels, and the element under the pin as the inspector saw it: loc " +
         "(file:line:col), index (which of the elements rendered there), tag, elementText and callsite (null where the " +
-        "frame couldn't say). Reading claims nothing: close each with complete_comment or dismiss_comment.",
+        "frame couldn't say). Reading claims nothing: close each with complete_comment or dismiss_comment, by its id and rev.",
       inputSchema: { workspaceId: workspaceIdArg },
       annotations: { readOnlyHint: true },
     },
@@ -35,6 +36,7 @@ export const registerCommentTools = (server: McpServer, deps: ToolDeps) => {
           const { loc, index, tag, text, callsite } = elementFields(c.element);
           return {
             id: c.id,
+            rev: commentRev(c),
             component: c.componentName,
             file: componentFile(c.componentName),
             text: c.text,
@@ -55,17 +57,19 @@ export const registerCommentTools = (server: McpServer, deps: ToolDeps) => {
     {
       description:
         "Mark a comment from get_comments done, once you've done what it asks. `note` is one short line on what you " +
-        'changed (e.g. "Gap 24 → 12px"); the user sees it in the comment list. Marking one again replaces its note.',
+        'changed (e.g. "Gap 24 → 12px"); the user sees it in the comment list. Marking one again replaces its note. If the ' +
+        "user reworded it after you read it (its rev differs), it stays open: get_comments again and do what it asks now.",
       inputSchema: {
         id: commentId,
+        rev: commentRevArg,
         note: z.string().trim().min(1).describe("One line on what changed"),
         workspaceId: workspaceIdArg,
       },
     },
-    async ({ id, note, workspaceId }) => {
+    async ({ id, rev, note, workspaceId }) => {
       const ws = await resolveWorkspace(deps, workspaceId);
       if (ws.isErr()) return fail(ws.error);
-      const done = await canvas.completeComment(ws.value.id, id, note);
+      const done = await canvas.completeComment(ws.value.id, id, rev, note);
       return done.isErr() ? fail(done.error.message) : json({ id, state: "done" });
     },
   );
@@ -75,17 +79,19 @@ export const registerCommentTools = (server: McpServer, deps: ToolDeps) => {
     {
       description:
         "Close a comment from get_comments without doing it: it doesn't apply, is already so, or you won't. `reason` is " +
-        "one short line the user sees in the comment list. Ask the user instead where it's only unclear.",
+        "one short line the user sees in the comment list. Ask the user instead where it's only unclear. One the user " +
+        "reworded after you read it (its rev differs) stays open: get_comments again.",
       inputSchema: {
         id: commentId,
+        rev: commentRevArg,
         reason: z.string().trim().min(1).describe("One line on why"),
         workspaceId: workspaceIdArg,
       },
     },
-    async ({ id, reason, workspaceId }) => {
+    async ({ id, rev, reason, workspaceId }) => {
       const ws = await resolveWorkspace(deps, workspaceId);
       if (ws.isErr()) return fail(ws.error);
-      const dismissed = await canvas.dismissComment(ws.value.id, id, reason);
+      const dismissed = await canvas.dismissComment(ws.value.id, id, rev, reason);
       return dismissed.isErr() ? fail(dismissed.error.message) : json({ id, state: "dismissed" });
     },
   );

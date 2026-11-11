@@ -4,6 +4,7 @@ import { editEvents } from "@/main/lib/edit-events";
 import { same } from "@/shared/design";
 import {
   describeEdits,
+  editRev,
   type AppliedSet,
   type EditContext,
   type EditedElement,
@@ -98,16 +99,33 @@ export const markEditsApplied = (workspaceId: string, conversationId: string, id
     return true;
   });
 
+// An edit as something read it: its id, and its styles then (editRev).
+export type ReadEdit = { id: number; rev: string };
+
 // Edits an outside agent (main/mcp) has written into the code: off the
 // list, all or none, so their preview drops and the frames show the code.
-// No set to show them in: no chat of the app's is applying them.
-export const markEditsWritten = (workspaceId: string, ids: number[]) =>
-  checkEditsPending(workspaceId, ids).map((taken) => {
-    const list = of(workspaceId);
-    list.edits = list.edits.filter((e) => !taken.includes(e));
-    changed(workspaceId);
-    return taken.map((e) => e.id);
-  });
+// Each as the agent read it: one the user has changed since stays, with
+// the rest, as the code doesn't have what it is now. No set to show them
+// in: no chat of the app's is applying them.
+export const markEditsWritten = (workspaceId: string, read: ReadEdit[]) => {
+  const pending = checkEditsPending(
+    workspaceId,
+    read.map((r) => r.id),
+  );
+  if (pending.isErr()) return err(pending.error);
+  const taken = pending.value;
+  const revs = new Map(read.map((r) => [r.id, r.rev]));
+  if (taken.some((e) => editRev(e) !== revs.get(e.id)))
+    return err({
+      status: 409 as const,
+      code: "EDITS_CHANGED",
+      message: "Some of these edits were changed after they were read: get_design_edits has them as they are now",
+    });
+  const list = of(workspaceId);
+  list.edits = list.edits.filter((e) => !taken.includes(e));
+  changed(workspaceId);
+  return ok(taken.map((e) => e.id));
+};
 
 // The message that carried a set was withdrawn before its turn: its edits
 // are pending again. One whose element was edited since keeps that edit,
