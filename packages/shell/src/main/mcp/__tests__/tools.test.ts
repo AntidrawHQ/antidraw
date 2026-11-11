@@ -143,6 +143,34 @@ describe("orientation", () => {
     expect((await call("get_comments", { workspaceId: crypto.randomUUID() })).error).toMatch(/^No workspace /);
   });
 
+  test("an empty workspaceId is none given: the open workspace's", async () => {
+    view(ws);
+    const named = async (tool: string) => {
+      const result = await call(tool, { workspaceId: "" });
+      return result.error ?? (result.workspaceId ?? result.id) === ws;
+    };
+    expect({
+      get_comments: await named("get_comments"),
+      get_design_edits: await named("get_design_edits"),
+      get_selection: await named("get_selection"),
+      get_dev_server_info: (await call("get_dev_server_info", { workspaceId: "" })).running,
+    }).toMatchInlineSnapshot(`
+      {
+        "get_comments": true,
+        "get_design_edits": true,
+        "get_dev_server_info": true,
+        "get_selection": true,
+      }
+    `);
+    // With none open there's still none to fall back to.
+    view(null);
+    expect(await call("get_comments", { workspaceId: "" })).toMatchInlineSnapshot(`
+      {
+        "error": "No workspace is open in Antidraw. list_workspaces lists them; pass a workspaceId, or open_workspace one.",
+      }
+    `);
+  });
+
   test("the open workspace: where its source is, its frames with their previews, its dev server", async () => {
     view(ws);
     const active = await call("get_active_workspace");

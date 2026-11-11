@@ -35,7 +35,8 @@ export const resolveWorkspace = async (
   { host, canvas }: ToolDeps,
   given: string | undefined,
 ): Promise<Result<WorkspaceSummary, string>> => {
-  const id = given ?? canvas.view().activeWorkspaceId;
+  // An empty id is none given: some clients fill an optional argument in.
+  const id = given || canvas.view().activeWorkspaceId;
   if (!id) return err(NO_WORKSPACE);
   return (await host.getWorkspace(id)).mapErr((e) => e.message);
 };

@@ -1,5 +1,5 @@
 import { ipcMain, type BrowserWindow, type WebContents } from "electron";
-import { clearMirror, setMirror } from "./canvas-mirror";
+import { dropMirrorWith, setMirror } from "./canvas-mirror";
 import { loadMcpConfig, mcpPort } from "./config";
 import { localCanvasState, localWorkspaceHost } from "./local";
 import { startMcpHttpServer, type RunningMcpServer } from "./server";
@@ -20,7 +20,7 @@ export const startMcp = async (getMainWindow: () => BrowserWindow | null) => {
     if (event.sender !== getMainWindow()?.webContents || !setMirror(value)) return;
     if (watched.has(event.sender)) return;
     watched.add(event.sender);
-    event.sender.once("destroyed", clearMirror);
+    dropMirrorWith(event.sender);
   });
 
   try {

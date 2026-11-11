@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import type { WebContents } from "electron";
 import { z } from "zod";
 import { EMPTY_MIRROR, type CanvasMirror } from "@/shared/canvas-mirror";
 
@@ -36,6 +37,18 @@ export const setMirror = (value: unknown) => {
 export const clearMirror = () => {
   mirror = EMPTY_MIRROR;
   events.emit("changed", mirror);
+};
+
+// The mirror goes with the page that sent it: when its window closes, its
+// renderer dies, or it loads anew (a reload keeps the WebContents, and the
+// page that comes up mirrors again as it starts). A route change within the
+// page is the same document, and keeps it.
+export const dropMirrorWith = (page: WebContents) => {
+  page.once("destroyed", clearMirror);
+  page.on("render-process-gone", clearMirror);
+  page.on("did-start-navigation", (details) => {
+    if (details.isMainFrame && !details.isSameDocument) clearMirror();
+  });
 };
 
 // Resolves true once the mirror is as `until` wants it, false after `ms`.
