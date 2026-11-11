@@ -7,8 +7,11 @@ import { conversations } from "./chat.model";
 // A comment left for Claude on a frame. "draft" until Send, which hands it
 // to a new conversation as "sent"; "done" once Claude marks it completed
 // (complete_comment) with a note on what it changed. The comments sent
-// together are a set: they share their conversation.
-export type CommentState = "draft" | "sent" | "done";
+// together are a set: they share their conversation. An agent outside the
+// app (main/mcp) closes a draft itself, "done" or "dismissed" with its note
+// (the reason, for a dismissal), and no conversation: a closed comment
+// without one is by definition an outside agent's.
+export type CommentState = "draft" | "sent" | "done" | "dismissed";
 
 export const comments = sqliteTable(
   "comments",

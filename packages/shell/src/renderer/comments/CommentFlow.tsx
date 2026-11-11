@@ -98,7 +98,7 @@ export const CommentFlow = () => {
   const flow = useStoreApi();
   const focusComponent = useFocusComponent();
   const reveal = (id: number) => {
-    const c = [...f.draft, ...f.sends.flatMap((s) => s.comments)].find((x) => x.id === id);
+    const c = [...f.draft, ...f.sends.flatMap((s) => s.comments), ...f.outside].find((x) => x.id === id);
     if (!c) return;
     const { nodeLookup, transform, width, height } = flow.getState();
     const at = nodeLookup.get(frameNodeId(c.frame))?.internals.positionAbsolute;

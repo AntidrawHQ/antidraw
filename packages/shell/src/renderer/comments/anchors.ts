@@ -25,7 +25,7 @@ export const pinIn = (c: Cmt, now: Rect | null | undefined): Pos => {
 // The flow with each pin where its element is now, for the frames `shown`
 // says are on screen here.
 export const useAnchoredFlow = (f: Flow, shown: (frame: string) => boolean = () => true): Flow => {
-  const all = [...f.draft, ...f.sends.flatMap((s) => s.comments)].filter((c) => c.element && shown(c.frame));
+  const all = [...f.draft, ...f.sends.flatMap((s) => s.comments), ...f.outside].filter((c) => c.element && shown(c.frame));
   // What to follow in each frame, as a key that changes only when that does.
   const byFrame = new Map<string, Cmt[]>();
   for (const c of all) byFrame.set(c.frame, [...(byFrame.get(c.frame) ?? []), c]);
@@ -51,6 +51,6 @@ export const useAnchoredFlow = (f: Flow, shown: (frame: string) => boolean = () 
 
   return useMemo(() => {
     const place = (c: Cmt) => (rects.has(c.id) ? { ...c, pos: pinIn(c, rects.get(c.id)) } : c);
-    return { draft: f.draft.map(place), sends: f.sends.map((s) => ({ ...s, comments: s.comments.map(place) })) };
+    return { draft: f.draft.map(place), sends: f.sends.map((s) => ({ ...s, comments: s.comments.map(place) })), outside: f.outside.map(place) };
   }, [f, rects]);
 };

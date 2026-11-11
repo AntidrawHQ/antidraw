@@ -32,6 +32,7 @@ import { APP_KEY, APP_KEY_ARG } from "@/main/lib/app-key";
 import { injectFrameAgent } from "./frame-agent";
 import { verifyCertificate } from "@/main/lib/certificate-verify";
 import { saveThumbnail } from "./services/thumbnail.service";
+import { startMcp, stopMcp } from "./mcp";
 
 // Keep the renderer responsive when the window is unfocused or occluded.
 // Without these, Chromium throttles rAF/timers/request scheduling in packaged
@@ -181,6 +182,8 @@ app.whenReady().then(async () => {
   });
 
   createWindow();
+  // For coding agents outside the app (main/mcp).
+  void startMcp(() => mainWindow);
 
   void listWorkspaces().then((workspaces) => {
     const workspaceCount = workspaces.isOk() ? workspaces.value.length : null;
@@ -382,5 +385,6 @@ app.on("window-all-closed", () => {
 // Graceful shutdown - stop all dev servers and flush analytics before quitting
 app.on("before-quit", () => {
   stopAllDevServers();
+  stopMcp();
   void shutdownPostHog();
 });

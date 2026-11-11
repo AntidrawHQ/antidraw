@@ -137,7 +137,9 @@ export const useCommentActions = ({ model, effort }: { model?: string; effort?: 
     },
     clearDone: () => {
       const open = useCommentStore.getState().opened;
-      const done = f.sends.some((s) => s.phase === "ended" && s.comments.some((c) => c.id === open?.id && c.state === "done"));
+      const done =
+        f.sends.some((s) => s.phase === "ended" && s.comments.some((c) => c.id === open?.id && c.state === "done")) ||
+        f.outside.some((c) => c.id === open?.id);
       if (open && done) closeIf(open.id);
       clearCompleted.mutate();
     },
@@ -147,7 +149,7 @@ export const useCommentActions = ({ model, effort }: { model?: string; effort?: 
     // goes to it (CommentFlow).
     open: (id, edit = false) => {
       const s = useCommentStore.getState();
-      const c = [...f.draft, ...f.sends.flatMap((x) => x.comments)].find((x) => x.id === id);
+      const c = [...f.draft, ...f.sends.flatMap((x) => x.comments), ...f.outside].find((x) => x.id === id);
       if (c && !s.onCanvas(c.frame)) return void sayNotOnCanvas(c.frame);
       if (!s.active) setCanvasTool("comment");
       s.setBox(null);
