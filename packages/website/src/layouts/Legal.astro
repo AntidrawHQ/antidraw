@@ -1,0 +1,167 @@
+---
+// The privacy policy's and terms' page: the landing's background and type, a narrow column of prose, and a
+// way back to the landing. No scripts, so the page is the HTML alone.
+import { PAGE_BG, SCROLL } from "@/components/user-components/AntidrawLandingCanvas"
+import { fontStack } from "@/components/user-components/landing/LandingFonts"
+import schibstedUrl from "@/components/user-components/landing/fonts/schibsted-grotesk.woff2?url"
+import iconUrl from "@/components/user-components/landing/antidraw-icon.svg?url"
+import "@/styles/global.css"
+
+interface Props {
+  title: string
+  description: string
+  updated: string
+}
+
+const { title, description, updated } = Astro.props
+const url = new URL(Astro.url.pathname, Astro.site).href
+---
+
+<html lang="en" style={`background-color: ${PAGE_BG.dark}; color-scheme: dark; scrollbar-color: ${SCROLL.dark} ${PAGE_BG.dark}`}>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title} · Antidraw</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={url} />
+    <meta name="theme-color" content={PAGE_BG.dark} />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="preload" href={schibstedUrl} as="font" type="font/woff2" crossorigin />
+  </head>
+  <body style={`background-color: ${PAGE_BG.dark}; font-family: ${fontStack("schibsted")}`}>
+    <header>
+      <a href="/" class="home">
+        <img src={iconUrl} alt="" width="24" height="24" />
+        <span>Antidraw</span>
+      </a>
+    </header>
+    <main>
+      <h1>{title}</h1>
+      <p class="updated">Last updated {updated}</p>
+      <slot />
+    </main>
+    <footer>
+      <span>© 2026 Antidraw</span>
+      <nav>
+        <a href="/privacy">Privacy</a>
+        <a href="/terms">Terms</a>
+        <a href="mailto:hello@antidraw.com">hello@antidraw.com</a>
+      </nav>
+    </footer>
+
+    <script is:inline type="module" src="https://static.cloudflareinsights.com/beacon.min.js" data-cf-beacon='{"token": "10930b0f22894b0e9dd1812143073bea"}'></script>
+  </body>
+</html>
+
+<style>
+  body {
+    margin: 0;
+    color: rgb(255 255 255 / 0.72);
+    -webkit-font-smoothing: antialiased;
+  }
+  header,
+  main,
+  footer {
+    max-width: 680px;
+    margin: 0 auto;
+    padding-inline: 20px;
+  }
+  header {
+    padding-top: 28px;
+  }
+  .home {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    color: #fff;
+    font-size: 17px;
+    font-weight: 500;
+    letter-spacing: -0.02em;
+    text-decoration: none;
+  }
+  main {
+    padding-top: 72px;
+    padding-bottom: 96px;
+    font-size: 16px;
+    line-height: 1.7;
+  }
+  footer {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 12px 24px;
+    padding-bottom: 40px;
+    border-top: 1px solid rgb(255 255 255 / 0.08);
+    padding-top: 24px;
+    font-size: 14px;
+    color: rgb(255 255 255 / 0.4);
+  }
+  footer nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 24px;
+  }
+  footer a {
+    color: rgb(255 255 255 / 0.6);
+    text-decoration: none;
+  }
+  footer a:hover {
+    color: #fff;
+  }
+  h1 {
+    margin: 0;
+    color: #fff;
+    font-size: clamp(32px, 6vw, 44px);
+    font-weight: 500;
+    letter-spacing: -0.03em;
+    line-height: 1.1;
+  }
+  .updated {
+    margin: 12px 0 48px;
+    font-size: 14px;
+    color: rgb(255 255 255 / 0.4);
+  }
+  main :global(h2) {
+    margin: 56px 0 12px;
+    color: #fff;
+    font-size: 21px;
+    font-weight: 500;
+    letter-spacing: -0.015em;
+    line-height: 1.3;
+  }
+  main :global(h3) {
+    margin: 32px 0 8px;
+    color: #fff;
+    font-size: 16px;
+    font-weight: 500;
+  }
+  main :global(p),
+  main :global(ul) {
+    margin: 0 0 16px;
+  }
+  main :global(ul) {
+    padding-left: 20px;
+  }
+  main :global(li) {
+    margin-bottom: 8px;
+  }
+  main :global(strong) {
+    color: #fff;
+    font-weight: 500;
+  }
+  main :global(a) {
+    color: #fff;
+    text-decoration: underline;
+    text-decoration-color: rgb(255 255 255 / 0.3);
+    text-underline-offset: 3px;
+  }
+  main :global(a:hover) {
+    text-decoration-color: #fff;
+  }
+  main :global(code) {
+    font-size: 0.9em;
+    color: #fff;
+  }
+</style>
