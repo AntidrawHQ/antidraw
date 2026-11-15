@@ -611,8 +611,8 @@ export const Canvas = ({
           onNodesChange={handleNodesChange}
           nodeTypes={nodeTypes}
           fitView
-          maxZoom={4}
-          minZoom={0.1}
+          maxZoom={8}
+          minZoom={0.05}
           nodesDraggable={true}
           nodesConnectable={false}
           elementsSelectable={true}
@@ -620,6 +620,9 @@ export const Canvas = ({
           selectionOnDrag={!touch}
           selectionMode={SelectionMode.Partial}
           panOnScroll={true}
+          // React Flow's default (0.5) pans at half the trackpad's distance,
+          // which feels heavy next to a scrolling page.
+          panOnScrollSpeed={1.2}
           panOnDrag={touch ? true : [1, 2]}
           panActivationKeyCode="Space"
           onlyRenderVisibleElements={false}
