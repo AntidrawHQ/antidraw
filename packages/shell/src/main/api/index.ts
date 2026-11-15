@@ -61,6 +61,7 @@ import { workspaceController } from "./controllers/workspace.controller";
 import { preferenceController } from "./controllers/preference.controller";
 import { claudeCliInteractionsController } from "./controllers/claude-cli-interactions.controller";
 import { accountController } from "./controllers/account.controller";
+import { mcpSetupController } from "./controllers/mcp-setup.controller";
 import { commentController } from "./controllers/comment.controller";
 import { markCommentsSent } from "./services/comment.service";
 import { editController } from "./controllers/edit.controller";
@@ -78,6 +79,7 @@ api.route("/workspaces", editController);
 api.route("/preferences", preferenceController);
 api.route("/claude-cli", claudeCliInteractionsController);
 api.route("/account", accountController);
+api.route("/mcp-setup", mcpSetupController);
 
 const imageAttachmentSchema = z.object({
   data: z.string(),

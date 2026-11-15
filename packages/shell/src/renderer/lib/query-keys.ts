@@ -56,4 +56,5 @@ export const queryKeys = {
   update: {
     status: ["update", "status"] as const,
   },
+  mcpSetup: ["mcp-setup"] as const,
 } as const;

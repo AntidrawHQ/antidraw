@@ -19,6 +19,7 @@ import type { ImageAttachment } from "@/shared/utils/message";
 import type { CommentContext } from "@/shared/utils/canvas-comments";
 import type { EditContext, EditedElement, EditList } from "@/shared/utils/canvas-edits";
 import type { AskUserQuestionAnswers } from "@/shared/utils/ask-user-question";
+import type { McpAgentId, McpSetup } from "@/shared/mcp-agents";
 import { fetchEventSource } from "@microsoft/fetch-event-source";
 import { ok, err } from "neverthrow";
 
@@ -1302,3 +1303,51 @@ export const publishWorkspace = async (workspaceId: string) => {
     });
   }
 };
+
+// The MCP setup (main/mcp/setup): the command coding agents run, and which
+// of them already have it in their config.
+export const getMcpSetup = async () => {
+  try {
+    const response = await apiFetch("antidraw://app/api/mcp-setup");
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      return err({
+        status: response.status as 500,
+        code: (errorBody?.error?.code as string) ?? "FETCH_ERROR",
+        message: (errorBody?.error?.message as string) ?? response.statusText,
+      });
+    }
+
+    return ok((await response.json()) as McpSetup);
+  } catch (_e) {
+    return err({ status: 500 as const, code: "NETWORK_ERROR", message: "Failed to get the MCP setup" });
+  }
+};
+
+// One of the setup's actions on an agent; `fallback` is what to say when main says nothing.
+const mcpSetupAction = async (agent: McpAgentId, action: "add" | "install-link", fallback: string) => {
+  try {
+    const response = await apiFetch(`antidraw://app/api/mcp-setup/${agent}/${action}`, { method: "POST" });
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      return err({
+        status: response.status as 500,
+        code: (errorBody?.error?.code as string) ?? "FETCH_ERROR",
+        message: (errorBody?.error?.message as string) ?? fallback,
+      });
+    }
+
+    return ok(true);
+  } catch (_e) {
+    return err({ status: 500 as const, code: "NETWORK_ERROR", message: fallback });
+  }
+};
+
+// Writes the server into the agent's own config.
+export const addMcpToAgent = (agent: McpAgentId) => mcpSetupAction(agent, "add", "Couldn't add it.");
+
+// Opens the agent's own install prompt (Cursor, VS Code).
+export const openMcpInstallLink = (agent: McpAgentId) =>
+  mcpSetupAction(agent, "install-link", "Couldn't open the agent.");
