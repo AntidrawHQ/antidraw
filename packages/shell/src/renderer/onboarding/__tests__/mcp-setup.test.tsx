@@ -17,11 +17,14 @@ const api = vi.hoisted(() => ({
   openMcpInstallLink: vi.fn(),
 }));
 vi.mock("@/renderer/lib/api", () => api);
+const analytics = vi.hoisted(() => ({ track: vi.fn() }));
+vi.mock("@/renderer/lib/analytics", () => analytics);
 
 const { McpSetup } = await import("@/renderer/components/McpSetup");
 const { useAgentStatesStore } = await import("../agent-states");
 const { AGENTS } = await import("../agents");
 const { TwoWaysRows } = await import("../TwoWaysRows");
+const { OnboardingTwoWays } = await import("../OnboardingTwoWays");
 
 const BRIDGE = "/Users/me/.antidraw/bin/antidraw";
 const setup = (added: string[] = []): Setup => ({
@@ -36,6 +39,7 @@ let root: Root | null = null;
 
 beforeEach(() => {
   for (const fn of Object.values(api)) fn.mockReset();
+  analytics.track.mockReset();
   api.getMcpSetup.mockResolvedValue(ok(setup()));
   api.addMcpToAgent.mockResolvedValue(ok(true));
   api.openMcpInstallLink.mockResolvedValue(ok(true));
@@ -244,4 +248,55 @@ it("gives any other agent the command's full path, as its server settings and co
   expect(other.querySelector("pre")?.textContent).toContain(`"command": "${BRIDGE}"`);
   await click(button(other, "Prompt"));
   expect(other.querySelector("pre")?.textContent).toContain(`runs \`${BRIDGE} mcp\` over stdio`);
+});
+
+// What analytics hears: where the setup was shown, which agent, and what was
+// done. Never a config's path, the command, or why a config wasn't changed.
+it("counts the setup by where it's shown, each agent's Add, and leaving onboarding with what was added", async () => {
+  const events = () => analytics.track.mock.calls.map(([event, props]) => [event, props]);
+
+  let page = await show(<McpSetup />);
+  expect(events()).toEqual([]);
+  await click(entry(page));
+  expect(events()).toEqual([["mcp_setup_viewed", { source: "titlebar" }]]);
+
+  analytics.track.mockReset();
+  api.addMcpToAgent.mockResolvedValue(err({ status: 409, code: "CONFIG_NOT_CHANGED", message: "config.toml wasn't changed: /Users/me/.codex is locked." }));
+  await click(label(page, "Add to Codex"));
+  expect(events()).toEqual([
+    ["mcp_agent_added", { source: "titlebar", agent: "codex", ok: false, error_code: "CONFIG_NOT_CHANGED" }],
+  ]);
+  act(() => root?.unmount());
+
+  analytics.track.mockReset();
+  api.addMcpToAgent.mockResolvedValue(ok(true));
+  const opened = vi.fn();
+  page = await show(<OnboardingTwoWays onOpenWorkspace={opened} />);
+  await click(label(page, "Add to Claude Code"));
+  api.getMcpSetup.mockResolvedValue(ok(setup(["claude"])));
+  await act(async () => void window.dispatchEvent(new Event("focus")));
+  await settle();
+
+  await click(label(page, "VS Code: set it up manually"));
+  await click(row(page, "VS Code").querySelector('[aria-label="Copy"]'));
+  await click(button(row(page, "VS Code"), "Or install it from VS Code"));
+  // Closing a row isn't opening one.
+  await click(label(page, "VS Code: set it up manually"));
+  await click(label(page, "Other agent: set it up manually"));
+  await click(button(row(page, "Other agent"), "Prompt"));
+  await click(row(page, "Other agent").querySelector('[aria-label="Copy"]'));
+  await click(button(page, "Open workspace"));
+
+  expect(events()).toEqual([
+    ["mcp_setup_viewed", { source: "onboarding" }],
+    ["mcp_agent_added", { source: "onboarding", agent: "claude", ok: true, error_code: null }],
+    ["mcp_manual_steps_opened", { source: "onboarding", agent: "vscode" }],
+    ["mcp_setup_copied", { source: "onboarding", agent: "vscode", what: "config" }],
+    ["mcp_install_link_opened", { source: "onboarding", agent: "vscode", ok: true, error_code: null }],
+    ["mcp_manual_steps_opened", { source: "onboarding", agent: "other" }],
+    ["mcp_setup_copied", { source: "onboarding", agent: "other", what: "prompt" }],
+    ["onboarding_two_ways_continued", { agents_added: ["claude"], agents_added_count: 1 }],
+  ]);
+  expect(opened).toHaveBeenCalledOnce();
+  expect(JSON.stringify(events())).not.toMatch(/Users|antidraw|locked|mcp\.json/);
 });

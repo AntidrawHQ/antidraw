@@ -9,6 +9,7 @@ import type { ReactNode } from "react";
 import { ArrowUpRight, Check, Copy, Loader2 } from "lucide-react";
 import { openInstallPrompt, useBridge, type State } from "./agent-states";
 import { agent, bridgeCommand, mcpJson, pastePrompt, type Agent, type AgentId } from "./agents";
+import { trackSetup, useSetupPlace, type Copied } from "./setup-analytics";
 
 // A plain join, as the design has it: no class is merged away.
 export const cx = (...c: (string | false | null | undefined)[]) => c.filter(Boolean).join(" ");
@@ -145,11 +146,13 @@ export const Reveal = ({ open, children }: { open: boolean; children: ReactNode 
 );
 
 // Copy is an icon: the command keeps the width, and wraps less.
-const CopyIcon = ({ text }: { text: string }) => {
+const CopyIcon = ({ text, what }: { text: string; what: Copied }) => {
   const [copied, setCopied] = useState(false);
   const timer = useRef<number | undefined>(undefined);
+  const place = useSetupPlace();
   const copy = () => {
     navigator.clipboard?.writeText(text).catch(() => {});
+    trackSetup("mcp_setup_copied", place, { what });
     setCopied(true);
     window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => setCopied(false), 1600);
@@ -183,7 +186,7 @@ const words = (text: string) =>
   }, []);
 
 /** One command; a long one wraps between words, never inside one. */
-export const CodeLine = ({ text }: { text: string }) => (
+export const CodeLine = ({ text, what }: { text: string; what: Copied }) => (
   <div className={cx(CODE, "flex items-start gap-2 py-1 pl-3 pr-1")}>
     <span className="select-none py-1 font-mono text-[12px] leading-5 text-neutral-500">$</span>
     <code className="min-w-0 flex-1 py-1 font-mono text-[12px] leading-5 text-neutral-200">
@@ -194,16 +197,16 @@ export const CodeLine = ({ text }: { text: string }) => (
         </Fragment>
       ))}
     </code>
-    <CopyIcon text={text} />
+    <CopyIcon text={text} what={what} />
   </div>
 );
 
 /** A few lines (a config, a prompt) under the name of where they go. */
-export const CodeBlock = ({ text, label, wrap }: { text: string; label: string; wrap?: boolean }) => (
+export const CodeBlock = ({ text, label, wrap, what }: { text: string; label: string; wrap?: boolean; what: Copied }) => (
   <div className={cx(CODE, "overflow-hidden")}>
     <div className="flex items-center justify-between border-b border-white/[0.06] py-0.5 pl-3 pr-1">
       <span className="truncate font-mono text-[11px] text-neutral-400">{label}</span>
-      <CopyIcon text={text} />
+      <CopyIcon text={text} what={what} />
     </div>
     <pre
       className={cx(
@@ -223,6 +226,7 @@ const Hint = ({ children }: { children: ReactNode }) => <p className={cx(META, "
 export const ManualSteps = ({ id }: { id: AgentId }) => {
   const i = agent(id).install;
   const bridge = useBridge();
+  const { source } = useSetupPlace();
   // Why the agent's install prompt couldn't be opened.
   const [linkError, setLinkError] = useState<string | null>(null);
 
@@ -230,7 +234,7 @@ export const ManualSteps = ({ id }: { id: AgentId }) => {
     return (
       <>
         <Hint>{i.hint}</Hint>
-        <CodeLine text={i.command(bridge.shell)} />
+        <CodeLine text={i.command(bridge.shell)} what="command" />
       </>
     );
 
@@ -238,11 +242,11 @@ export const ManualSteps = ({ id }: { id: AgentId }) => {
     return (
       <>
         <Hint>Add it to {i.where ?? `${i.app}'s MCP config`}:</Hint>
-        <CodeBlock text={i.json(bridge.command)} label={i.file} />
+        <CodeBlock text={i.json(bridge.command)} label={i.file} what="config" />
         <button
           type="button"
           // The agent's own install prompt, which main opens.
-          onClick={() => void openInstallPrompt(id).then(setLinkError)}
+          onClick={() => void openInstallPrompt(id, source).then(setLinkError)}
           className={cx(
             "mt-2.5 flex items-center gap-1 rounded-[4px] text-[12px] leading-[18px] text-neutral-300 underline decoration-white/20 underline-offset-[3px] transition-colors hover:text-neutral-50 hover:decoration-white/50",
             FOCUS,
@@ -295,9 +299,9 @@ export const OtherSteps = () => {
       </div>
       <Hint>{OTHER_TABS.find((t) => t.id === tab)!.hint}</Hint>
       {/* What an agent's server settings and config take: the absolute path, as no shell expands its ~. */}
-      {tab === "command" && <CodeLine text={bridgeCommand(bridge.command)} />}
-      {tab === "config" && <CodeBlock text={mcpJson(bridge.command)} label="mcp.json" />}
-      {tab === "prompt" && <CodeBlock text={pastePrompt(bridge.command)} label="Prompt" wrap />}
+      {tab === "command" && <CodeLine text={bridgeCommand(bridge.command)} what="command" />}
+      {tab === "config" && <CodeBlock text={mcpJson(bridge.command)} label="mcp.json" what="config" />}
+      {tab === "prompt" && <CodeBlock text={pastePrompt(bridge.command)} label="Prompt" wrap what="prompt" />}
     </>
   );
 };

@@ -7,8 +7,35 @@
  * and "Open workspace" is the page's one solid button.
  */
 import { ArrowRight } from "lucide-react";
+import { track } from "@/renderer/lib/analytics";
+import { useAgentStates } from "./agent-states";
+import { AGENTS } from "./agents";
 import { FOCUS, cx } from "./McpParts";
 import { TwoWaysRows } from "./TwoWaysRows";
+
+// Leaving the step, counted with the agents whose config has Antidraw by then.
+const OpenWorkspace = ({ onOpenWorkspace }: { onOpenWorkspace: () => void }) => {
+  const { state } = useAgentStates();
+  const open = () => {
+    const added = AGENTS.filter((a) => state(a.id) === "added").map((a) => a.id);
+    track("onboarding_two_ways_continued", { agents_added: added, agents_added_count: added.length });
+    onOpenWorkspace();
+  };
+  return (
+    <button
+      type="button"
+      onClick={open}
+      className={cx(
+        "group flex h-9 w-fit items-center gap-1.5 rounded-[10px] pl-3.5 pr-3 text-[14px] font-medium transition-colors",
+        "bg-neutral-100 text-neutral-900 hover:bg-white",
+        FOCUS,
+      )}
+    >
+      Open workspace
+      <ArrowRight className="size-4 transition-transform duration-200 group-hover:translate-x-0.5" strokeWidth={1.75} />
+    </button>
+  );
+};
 
 export const OnboardingTwoWays = ({ onOpenWorkspace }: { onOpenWorkspace: () => void }) => (
   // The page scrolls under the titlebar: an open row is taller than the window.
@@ -30,18 +57,7 @@ export const OnboardingTwoWays = ({ onOpenWorkspace }: { onOpenWorkspace: () => 
           <TwoWaysRows />
         </div>
         <div className="mt-8">
-          <button
-            type="button"
-            onClick={onOpenWorkspace}
-            className={cx(
-              "group flex h-9 w-fit items-center gap-1.5 rounded-[10px] pl-3.5 pr-3 text-[14px] font-medium transition-colors",
-              "bg-neutral-100 text-neutral-900 hover:bg-white",
-              FOCUS,
-            )}
-          >
-            Open workspace
-            <ArrowRight className="size-4 transition-transform duration-200 group-hover:translate-x-0.5" strokeWidth={1.75} />
-          </button>
+          <OpenWorkspace onOpenWorkspace={onOpenWorkspace} />
         </div>
       </div>
     </div>

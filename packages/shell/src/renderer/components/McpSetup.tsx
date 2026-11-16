@@ -53,7 +53,7 @@ export const McpSetup = () => {
         className="max-h-[min(calc(100vh-60px),var(--radix-popover-content-available-height))] w-[min(392px,calc(100vw-16px))] overflow-y-auto rounded-[14px] border border-[#2d2d2d] bg-[#2c2c2c] p-0 text-left font-[450] shadow-[0_24px_80px_-20px_rgba(0,0,0,0.8)] [color-scheme:dark] data-[state=open]:animate-[onb-pop_0.18s_cubic-bezier(0.23,1,0.32,1)]"
         style={NO_DRAG}
       >
-        <McpRows bare compact />
+        <McpRows bare compact source="titlebar" />
       </PopoverContent>
     </Popover>
   );
