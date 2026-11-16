@@ -4,8 +4,9 @@ import { timingSafeEqual } from "node:crypto";
 import { err, ok, type Result } from "neverthrow";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { AGENT_HEADER, agentName } from "./bridge/bridge";
 import { INSTRUCTIONS } from "./instructions";
-import { registerTools } from "./tools";
+import { countingCalls, registerTools, type ToolCall } from "./tools";
 import type { ToolDeps } from "./types";
 
 // The app's MCP server, for coding agents outside it (Claude Code, Codex,
@@ -13,11 +14,17 @@ import type { ToolDeps } from "./types";
 // POST a server of its own, no session to keep) and pull-only (no GET
 // stream: nothing is pushed).
 
-export const createMcpServer = (deps: ToolDeps) => {
+// `onCall`: told of each tool call as it ends (./tools' countingCalls).
+export const createMcpServer = (deps: ToolDeps, onCall?: (call: ToolCall) => void) => {
   const server = new McpServer({ name: "antidraw", version: "1.0.0" }, { instructions: INSTRUCTIONS });
-  registerTools(server, deps);
+  registerTools(onCall ? countingCalls(server, onCall) : server, deps);
   return server;
 };
+
+// `agent`: the agent `antidraw mcp` passed the call on for, by the name its
+// client gave in `initialize`. Stateless, so one that posts here itself,
+// with no bridge, names none on a tool call.
+export type McpToolCall = ToolCall & { agent: string | null };
 
 const sameSecret = (given: string, token: string) => {
   const a = Buffer.from(given);
@@ -45,10 +52,12 @@ export const startMcpHttpServer = ({
   port,
   token,
   deps,
+  onToolCall,
 }: {
   port: number;
   token: string;
   deps: ToolDeps;
+  onToolCall?: (call: McpToolCall) => void;
 }): Promise<Result<RunningMcpServer, McpStartError>> => {
   const server = http.createServer(async (req, res) => {
     const { port: at } = server.address() as AddressInfo;
@@ -60,7 +69,8 @@ export const startMcpHttpServer = ({
       return refuse(res, 401, "Missing or wrong bearer token", { "WWW-Authenticate": "Bearer" });
     if (req.method !== "POST") return refuse(res, 405, "Method not allowed", { Allow: "POST" });
 
-    const mcp = createMcpServer(deps);
+    const agent = agentName(req.headers[AGENT_HEADER]);
+    const mcp = createMcpServer(deps, onToolCall && ((call) => onToolCall({ ...call, agent })));
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on("close", () => {
       void transport.close();

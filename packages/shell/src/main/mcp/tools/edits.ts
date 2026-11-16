@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { ToolRegistry } from "./index";
 import { changesOf, previewCss } from "@/shared/design";
 import { componentFile } from "@/shared/utils/canvas-comments";
 import { editRev } from "@/shared/utils/canvas-edits";
@@ -10,7 +10,7 @@ import { elementFields, fail, json, resolveWorkspace, workspaceIdArg } from "./s
 // until something writes them into it. As the built-in chat's
 // <canvas-edits> (shared/utils/canvas-edits.ts) says them, as data.
 
-export const registerEditTools = (server: McpServer, deps: ToolDeps) => {
+export const registerEditTools = (server: ToolRegistry, deps: ToolDeps) => {
   const { canvas } = deps;
 
   server.registerTool(

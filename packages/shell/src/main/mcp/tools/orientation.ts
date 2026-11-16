@@ -1,5 +1,5 @@
 import { ok } from "neverthrow";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { ToolRegistry } from "./index";
 import { componentFile } from "@/shared/utils/canvas-comments";
 import type { MirroredPick } from "@/shared/canvas-mirror";
 import type { ToolDeps } from "../types";
@@ -39,7 +39,7 @@ const pickOf = ({ frame, info, seen }: MirroredPick) => {
   };
 };
 
-export const registerOrientationTools = (server: McpServer, deps: ToolDeps) => {
+export const registerOrientationTools = (server: ToolRegistry, deps: ToolDeps) => {
   const { host, canvas } = deps;
 
   server.registerTool(

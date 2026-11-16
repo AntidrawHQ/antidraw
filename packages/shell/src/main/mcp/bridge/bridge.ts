@@ -24,13 +24,29 @@ export type AppAddress = { port: number; token: string };
 
 export type AppReply = { status: number; contentType: string; text: string };
 
+// What the bridge learned in `initialize` and says with each later request:
+// the protocol version agreed, as HTTP asks; and the agent, the name its
+// client gave (clientInfo.name, as "claude-code"), for the app's analytics
+// to count calls by. Stateless, the app hears neither otherwise.
+export type Session = { protocolVersion: string | null; agent: string | null };
+
+export const AGENT_HEADER = "x-antidraw-agent";
+
+// A client's name as analytics may have it: a plain identifier, or "other"
+// for anything else, so nothing free-form is counted, and nothing a header
+// can't carry (fetch throws on that) is sent.
+export const agentName = (name: unknown): string | null => {
+  if (typeof name !== "string" || name === "") return null;
+  return /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$/.test(name) ? name : "other";
+};
+
 export type BridgeIo = {
   // Read each time: the app may have been opened, or moved port, since.
   address: () => AppAddress | null;
   cache: () => ToolCache | null;
   // Rejects when nothing answers at the address within timeoutMs, as fetch
   // does: why is in the error (notReached).
-  post: (address: AppAddress, protocolVersion: string | null, body: string, timeoutMs: number) => Promise<AppReply>;
+  post: (address: AppAddress, session: Session, body: string, timeoutMs: number) => Promise<AppReply>;
 };
 
 // How long the app has to answer. A tool waits on the canvas at most 10s
@@ -113,16 +129,15 @@ const messagesIn = (reply: AppReply): unknown[] => {
 };
 
 export const createBridge = (io: BridgeIo, timeouts: BridgeTimeouts = TIMEOUTS) => {
-  // The version agreed in `initialize`, sent with each later request as
-  // HTTP asks. Agreed with the cache when the app was closed then: the
-  // app's server agrees to the same.
-  let protocolVersion: string | null = null;
+  // A version agreed with the cache, the app closed at `initialize`, is
+  // one the app's server agrees to as well.
+  const session: Session = { protocolVersion: null, agent: null };
 
   const toApp = async (message: Message): Promise<unknown[]> => {
     const address = io.address();
     if (!address) return whileClosed(message, io.cache());
     const timeoutMs = message.method === "tools/call" ? timeouts.toolCallMs : timeouts.otherMs;
-    const sent = await io.post(address, protocolVersion, JSON.stringify(message), timeoutMs).then(
+    const sent = await io.post(address, session, JSON.stringify(message), timeoutMs).then(
       (reply) => ({ reply }),
       (error: unknown) => ({ error }),
     );
@@ -138,11 +153,14 @@ export const createBridge = (io: BridgeIo, timeouts: BridgeTimeouts = TIMEOUTS) 
   };
 
   const pass = async (message: Message): Promise<unknown[]> => {
+    if (message.method === "initialize") {
+      session.agent = agentName((message.params?.clientInfo as { name?: unknown } | undefined)?.name);
+    }
     const answers = await toApp(message);
     if (message.method === "initialize")
       for (const answer of answers) {
         const agreed = (answer as { result?: { protocolVersion?: unknown } }).result?.protocolVersion;
-        if (typeof agreed === "string") protocolVersion = agreed;
+        if (typeof agreed === "string") session.protocolVersion = agreed;
       }
     return answers;
   };
@@ -187,7 +205,7 @@ export const createBridge = (io: BridgeIo, timeouts: BridgeTimeouts = TIMEOUTS) 
 };
 
 // The app's server, as ../server.ts takes a request.
-export const postToApp: BridgeIo["post"] = async ({ port, token }, protocolVersion, body, timeoutMs) => {
+export const postToApp: BridgeIo["post"] = async ({ port, token }, { protocolVersion, agent }, body, timeoutMs) => {
   const res = await fetch(`http://127.0.0.1:${port}/mcp`, {
     method: "POST",
     signal: AbortSignal.timeout(timeoutMs),
@@ -196,6 +214,7 @@ export const postToApp: BridgeIo["post"] = async ({ port, token }, protocolVersi
       "Content-Type": "application/json",
       Accept: "application/json, text/event-stream",
       ...(protocolVersion ? { "MCP-Protocol-Version": protocolVersion } : {}),
+      ...(agent ? { [AGENT_HEADER]: agent } : {}),
     },
     body,
   });
