@@ -4,7 +4,8 @@ import { installBridgeCommand, writeToolCache } from "./bridge-install";
 import { dropMirrorWith, setMirror } from "./canvas-mirror";
 import { clearMcpPort, loadMcpToken, mcpConfigPath, mcpPort, reclaimMcpPort, saveMcpPort } from "./config";
 import { localCanvasState, localWorkspaceHost } from "./local";
-import { startMcpHttpServerPreferring, type RunningMcpServer } from "./server";
+import { track } from "@/main/lib/posthog";
+import { startMcpHttpServerPreferring, type McpToolCall, type RunningMcpServer } from "./server";
 
 // The MCP server for outside agents (./server.ts), started once the app is
 // ready and stopped as it quits; and the main window's mirrored canvas it
@@ -13,6 +14,11 @@ import { startMcpHttpServerPreferring, type RunningMcpServer } from "./server";
 // doesn't hold. A server that can't start is logged and left: the app runs
 // without it. Agents reach it through `antidraw mcp` (./bridge), put in
 // place here too (./bridge-install.ts).
+
+// Which tool an outside agent called, for which agent, and how it went:
+// never what it was called with or what it returned.
+const trackToolCall = ({ tool, ok, durationMs, agent }: McpToolCall) =>
+  track("mcp_tool_called", { tool, ok, duration_ms: durationMs, agent });
 
 let running: RunningMcpServer | null = null;
 let stopped = false;
@@ -38,7 +44,7 @@ export const startMcp = async (getMainWindow: () => BrowserWindow | null) => {
 
   try {
     const token = loadMcpToken();
-    const result = await startMcpHttpServerPreferring({ port: mcpPort(), token, deps });
+    const result = await startMcpHttpServerPreferring({ port: mcpPort(), token, deps, onToolCall: trackToolCall });
     if (result.isErr()) return console.error(`[mcp] not started: ${result.error.message}`);
     if (stopped) return void result.value.close();
     running = result.value;

@@ -1,12 +1,12 @@
 import { z } from "zod";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { ToolRegistry } from "./index";
 import type { ToolDeps } from "../types";
 import { fail, json, resolveOpenWorkspace, workspaceIdArg } from "./shared";
 
 // Moving the user's view: the workspace the app shows, and the frame its
 // canvas is on. The user's view, so only with a reason.
 
-export const registerViewTools = (server: McpServer, deps: ToolDeps) => {
+export const registerViewTools = (server: ToolRegistry, deps: ToolDeps) => {
   const { host, canvas } = deps;
 
   server.registerTool(

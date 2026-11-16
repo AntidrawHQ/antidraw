@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { ToolRegistry } from "./index";
 import { commentRev, componentFile } from "@/shared/utils/canvas-comments";
 import type { ToolDeps } from "../types";
 import { elementFields, fail, json, resolveWorkspace, workspaceIdArg } from "./shared";
@@ -11,7 +11,7 @@ import { elementFields, fail, json, resolveWorkspace, workspaceIdArg } from "./s
 const commentId = z.number().int().describe("The comment's id, from get_comments");
 const commentRevArg = z.string().describe("The comment's rev, from get_comments: its text as you read it");
 
-export const registerCommentTools = (server: McpServer, deps: ToolDeps) => {
+export const registerCommentTools = (server: ToolRegistry, deps: ToolDeps) => {
   const { canvas } = deps;
 
   server.registerTool(
