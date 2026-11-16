@@ -161,11 +161,17 @@ export const trackMessageSent = (params: { query: Query }): void => {
       console.error("[posthog] failed to read account info:", e);
     }
 
-    // Bail unless we have a signed-in email — it's this event's distinct_id,
-    // and what the install is aliased to. No email means we don't know who
-    // the user is, so we skip rather than emit a junk event.
     const posthog = getClient();
-    if (!posthog || !account?.email) return;
+    if (!posthog) return;
+
+    // No email: the user isn't signed in to Claude (or the CLI couldn't say).
+    // The message was still sent, so it counts, under the install's id; the
+    // CLI will answer with an agent_error. Without it, everyone who tried
+    // before signing in would look like they never tried at all.
+    if (!account?.email) {
+      track("message_sent", { signed_in: false });
+      return;
+    }
 
     aliasInstall(posthog, account.email);
 
@@ -175,6 +181,7 @@ export const trackMessageSent = (params: { query: Query }): void => {
       properties: {
         app_version: app.getVersion(),
         platform: process.platform,
+        signed_in: true,
         // Refresh the person profile with the current account on every event.
         $set: {
           email: account.email,
@@ -187,6 +194,17 @@ export const trackMessageSent = (params: { query: Query }): void => {
       },
     });
   })().catch((e) => console.error("[posthog] trackMessageSent failed:", e));
+};
+
+/**
+ * An assistant message that came back as an error (authentication_failed,
+ * billing_error, rate_limit, ...): the SDK's code only, never its text.
+ * Returns whether one was tracked.
+ */
+export const trackAgentError = (sdkMessage: { type: string; error?: string }): boolean => {
+  if (sdkMessage.type !== "assistant" || !sdkMessage.error) return false;
+  track("agent_error", { error_code: sdkMessage.error });
+  return true;
 };
 
 /** Flush any buffered events before the app exits. */
