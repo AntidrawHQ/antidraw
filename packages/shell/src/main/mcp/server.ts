@@ -34,6 +34,8 @@ const refuse = (res: http.ServerResponse, status: number, message: string, heade
 
 export type RunningMcpServer = { port: number; close: () => Promise<void> };
 
+export type McpStartError = { inUse: boolean; message: string };
+
 // Only from this machine, and not from a web page: workspace previews run
 // arbitrary code on localhost, and a page can reach 127.0.0.1. A browser
 // always sends an Origin on a cross-origin POST, and a page on a rebound DNS
@@ -47,7 +49,7 @@ export const startMcpHttpServer = ({
   port: number;
   token: string;
   deps: ToolDeps;
-}): Promise<Result<RunningMcpServer, string>> => {
+}): Promise<Result<RunningMcpServer, McpStartError>> => {
   const server = http.createServer(async (req, res) => {
     const { port: at } = server.address() as AddressInfo;
     if (req.headers.origin !== undefined) return refuse(res, 403, "Requests from web pages aren't accepted");
@@ -75,7 +77,13 @@ export const startMcpHttpServer = ({
 
   return new Promise((resolve) => {
     server.once("error", (e: NodeJS.ErrnoException) =>
-      resolve(err(e.code === "EADDRINUSE" ? `port ${port} is already in use` : e.message)),
+      resolve(
+        err(
+          e.code === "EADDRINUSE"
+            ? { inUse: true, message: `port ${port} is already in use` }
+            : { inUse: false, message: e.message },
+        ),
+      ),
     );
     server.listen(port, "127.0.0.1", () =>
       resolve(
@@ -90,4 +98,15 @@ export const startMcpHttpServer = ({
       ),
     );
   });
+};
+
+// On `port` when it's free, for agents set up with the URL; else on a free
+// one, which `antidraw mcp` finds in mcp.json all the same.
+export const startMcpHttpServerPreferring = async (options: Parameters<typeof startMcpHttpServer>[0]) => {
+  const preferred = await startMcpHttpServer(options);
+  if (preferred.isOk() || !preferred.error.inUse || options.port === 0) return preferred;
+  console.warn(
+    `[mcp] port ${options.port} is already in use: listening on a free one. \`antidraw mcp\` finds it; an agent set up with the URL won't.`,
+  );
+  return startMcpHttpServer({ ...options, port: 0 });
 };
