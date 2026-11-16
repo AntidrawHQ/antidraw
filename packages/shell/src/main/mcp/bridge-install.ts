@@ -56,20 +56,69 @@ export const writeToolCache = async (deps: ToolDeps) => {
 
 const quoted = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
 
-// The app's executable, run as Node on the bridge's script.
-export const bridgeScript = ({ executable, script, root }: { executable: string; script: string; root: string }) =>
-  `#!/bin/sh
+// What the command runs: an app's executable, as Node, on its bridge script.
+export type BridgeTarget = { executable: string; script: string };
+
+// The app where it's installed: what the command runs when the copy that
+// last opened is gone (opened from its DMG, or a download, or a dev
+// checkout since deleted).
+export const INSTALLED_APP: BridgeTarget = {
+  executable: "/Applications/Antidraw.app/Contents/MacOS/Antidraw",
+  script: "/Applications/Antidraw.app/Contents/Resources/app.asar.unpacked/dist/main/mcp-bridge.mjs",
+};
+
+// The copy that last opened, else the fallback, else a reason on stderr,
+// which agents keep in their MCP logs.
+export const bridgeScript = ({ executable, script, root, fallback }: BridgeTarget & { root: string; fallback?: BridgeTarget }) => {
+  const missing = `[ ! -x "$app" ] || [ ! -f "$script" ]`;
+  const fallBack = fallback
+    ? `if ${missing}; then
+  app=${quoted(fallback.executable)}
+  script=${quoted(fallback.script)}
+fi
+`
+    : "";
+  const where = fallback ? `, or at ${/^(.*?\.app)\//.exec(fallback.executable)?.[1] ?? fallback.executable}` : "";
+  const lost = `antidraw: Antidraw isn't where it last opened from${where}. Open it once from where it's installed, then try again.`;
+  return `#!/bin/sh
 # Antidraw's command for coding agents: \`antidraw mcp\`.
 # Written by the app each time it opens; edits here are lost.
-ANTIDRAW_ROOT=${quoted(root)} ELECTRON_RUN_AS_NODE=1 exec ${quoted(executable)} ${quoted(script)} "$@"
+app=${quoted(executable)}
+script=${quoted(script)}
+${fallBack}if ${missing}; then
+  echo ${quoted(lost)} >&2
+  exit 1
+fi
+ANTIDRAW_ROOT=${quoted(root)} ELECTRON_RUN_AS_NODE=1 exec "$app" "$script" "$@"
 `;
+};
 
 // Beside main's bundle; in a packaged app, outside its archive (asarUnpack).
 const bridgeScriptPath = () => path.join(__dirname, "mcp-bridge.mjs").replace(/app\.asar(?=[\\/])/, "app.asar.unpacked");
 
-export const installBridgeCommand = () =>
-  replace(
-    bridgeCommandPath(),
-    bridgeScript({ executable: process.execPath, script: bridgeScriptPath(), root: getAntidrawRoot() }),
-    0o755,
-  );
+// Opened from somewhere that won't last: the DMG it came on, or the copy
+// macOS runs a downloaded app from until it's moved (App Translocation).
+export const isTransient = (executable: string) =>
+  executable.startsWith("/Volumes/") || executable.includes("/AppTranslocation/");
+
+// Whether the command an earlier launch left still finds its app.
+const stillRuns = (file: string) => {
+  let text: string;
+  try {
+    text = fs.readFileSync(file, "utf-8");
+  } catch {
+    return false;
+  }
+  const value = (name: string) =>
+    new RegExp(String.raw`^${name}='((?:[^']|'\\'')*)'$`, "m").exec(text)?.[1]?.replaceAll(`'\\''`, "'");
+  const [app, script] = [value("app"), value("script")];
+  return !!app && !!script && fs.existsSync(app) && fs.existsSync(script);
+};
+
+export const installBridgeCommand = ({ executable = process.execPath, platform = process.platform } = {}) => {
+  const file = bridgeCommandPath();
+  // A command that still runs isn't swapped for one that soon won't.
+  if (isTransient(executable) && stillRuns(file)) return;
+  const fallback = platform === "darwin" && executable !== INSTALLED_APP.executable ? INSTALLED_APP : undefined;
+  replace(file, bridgeScript({ executable, script: bridgeScriptPath(), root: getAntidrawRoot(), fallback }), 0o755);
+};

@@ -1,12 +1,26 @@
 import "@/main/api/__tests__/e2e-env"; // must stay the first import: a tmp ANTIDRAW_ROOT
 import fs from "node:fs";
+import http from "node:http";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { ok } from "neverthrow";
-import { APP_CLOSED, createBridge, postToApp, type AppAddress, type ToolCache } from "@/main/mcp/bridge/bridge";
 import {
+  APP_CLOSED,
+  createBridge,
+  postToApp,
+  type AppAddress,
+  type BridgeTimeouts,
+  type ToolCache,
+} from "@/main/mcp/bridge/bridge";
+import {
+  INSTALLED_APP,
   bridgeCommandPath,
   bridgeScript,
   installBridgeCommand,
+  isTransient,
   toolCachePath,
   writeToolCache,
 } from "@/main/mcp/bridge-install";
@@ -31,23 +45,40 @@ const token = "t".repeat(43);
 let server: RunningMcpServer;
 let cache: ToolCache;
 
+// A port nothing listens on: the app closed. Listened on once and let go,
+// so connecting is refused, as it is once the app has quit.
+let CLOSED: AppAddress;
+
+// An HTTP server on a free port that handles a request as given.
+const serving = async (handler: http.RequestListener) => {
+  const fake = http.createServer(handler);
+  await new Promise<void>((done) => fake.listen(0, "127.0.0.1", done));
+  return {
+    address: { port: (fake.address() as AddressInfo).port, token },
+    close: () => {
+      fake.closeAllConnections();
+      return new Promise<void>((done) => fake.close(() => done()));
+    },
+  };
+};
+
 beforeAll(async () => {
+  const gone = await serving(() => {});
+  await gone.close();
+  CLOSED = gone.address;
   server = (await startMcpHttpServer({ port: 0, token, deps }))._unsafeUnwrap();
   await writeToolCache(deps);
   cache = JSON.parse(fs.readFileSync(toolCachePath(), "utf-8")) as ToolCache;
 });
 afterAll(() => server.close());
 
-// A port nothing listens on: the app closed.
-const CLOSED: AppAddress = { port: 1, token };
-
 type Answer = {
   id?: number;
   result: { protocolVersion?: string; tools?: unknown[]; content?: { text: string }[]; isError?: boolean };
 };
 
-const bridgeTo = (address: () => AppAddress | null, tools: ToolCache | null = cache) => {
-  const bridge = createBridge({ address, cache: () => tools, post: postToApp });
+const bridgeTo = (address: () => AppAddress | null, tools: ToolCache | null = cache, timeouts?: BridgeTimeouts) => {
+  const bridge = createBridge({ address, cache: () => tools, post: postToApp }, timeouts);
   return async (message: object) => (await bridge(JSON.stringify(message))).map((line) => JSON.parse(line) as Answer);
 };
 
@@ -145,6 +176,59 @@ describe("antidraw mcp, with the app closed", () => {
   });
 });
 
+describe("antidraw mcp, with the app reached but not answering", () => {
+  const listed = () => [{ jsonrpc: "2.0", id: 2, result: { tools: cache.tools } }];
+  const failedCall = (id: number, text: RegExp) => [
+    { jsonrpc: "2.0", id, result: { content: [{ type: "text", text: expect.stringMatching(text) }], isError: true } },
+  ];
+
+  test("too slow: the call says so, connecting and listing still answer", async () => {
+    const stuck = await serving(() => {});
+    try {
+      const send = bridgeTo(() => stuck.address, cache, { toolCallMs: 300, otherMs: 300 });
+      expect(await send(callTool(1, "get_comments"))).toEqual(failedCall(1, /^Antidraw is open but didn't answer within 0.3s/));
+      expect(await send(listTools(2))).toEqual(listed());
+    } finally {
+      await stuck.close();
+    }
+  });
+
+  test("dropped while it ran: the call may have taken effect, and says so", async () => {
+    const quitting = await serving((req) => req.socket.destroy());
+    try {
+      const send = bridgeTo(() => quitting.address);
+      expect(await send(callTool(1, "complete_comment"))).toEqual(
+        failedCall(1, /^Antidraw dropped the connection before answering \(other side closed\).*may or may not have taken effect/),
+      );
+      expect(await send(listTools(2))).toEqual(listed());
+      expect(await send({ jsonrpc: "2.0", id: 3, method: "resources/list" })).toEqual([
+        { jsonrpc: "2.0", id: 3, error: { code: -32000, message: expect.stringMatching(/^Antidraw dropped the connection/) } },
+      ]);
+    } finally {
+      await quitting.close();
+    }
+  });
+
+  test("a port fetch won't connect to is named, with what to change", async () => {
+    expect(await bridgeTo(() => ({ port: 6000, token }))(callTool(1, "get_comments"))).toEqual(
+      failedCall(1, /port 6000, which Node's fetch refuses.*ANTIDRAW_MCP_PORT/),
+    );
+  });
+
+  test("something else on the port, answering without this request's answer, is said, not waited on", async () => {
+    const other = await serving((_req, res) => res.writeHead(200, { "Content-Type": "text/html" }).end("<html></html>"));
+    try {
+      const send = bridgeTo(() => other.address);
+      expect(await send(callTool(1, "get_comments"))).toEqual(
+        failedCall(1, /^What answered at Antidraw's address \(HTTP 200, text\/html\) didn't answer this request/),
+      );
+      expect(await send({ jsonrpc: "2.0", method: "notifications/initialized" })).toEqual([]);
+    } finally {
+      await other.close();
+    }
+  });
+});
+
 describe("antidraw mcp, the line it's given", () => {
   test("what isn't JSON is a parse error, and a blank line is nothing", async () => {
     const bridge = createBridge({ address: () => CLOSED, cache: () => cache, post: postToApp });
@@ -162,12 +246,23 @@ describe("what the app leaves for antidraw mcp", () => {
         executable: "/Applications/Antidraw.app/Contents/MacOS/Antidraw",
         script: "/Users/o'neil/My Apps/mcp-bridge.mjs",
         root: "/Users/o'neil/.antidraw",
+        fallback: INSTALLED_APP,
       }),
     ).toMatchInlineSnapshot(`
       "#!/bin/sh
       # Antidraw's command for coding agents: \`antidraw mcp\`.
       # Written by the app each time it opens; edits here are lost.
-      ANTIDRAW_ROOT='/Users/o'\\''neil/.antidraw' ELECTRON_RUN_AS_NODE=1 exec '/Applications/Antidraw.app/Contents/MacOS/Antidraw' '/Users/o'\\''neil/My Apps/mcp-bridge.mjs' "$@"
+      app='/Applications/Antidraw.app/Contents/MacOS/Antidraw'
+      script='/Users/o'\\''neil/My Apps/mcp-bridge.mjs'
+      if [ ! -x "$app" ] || [ ! -f "$script" ]; then
+        app='/Applications/Antidraw.app/Contents/MacOS/Antidraw'
+        script='/Applications/Antidraw.app/Contents/Resources/app.asar.unpacked/dist/main/mcp-bridge.mjs'
+      fi
+      if [ ! -x "$app" ] || [ ! -f "$script" ]; then
+        echo 'antidraw: Antidraw isn'\\''t where it last opened from, or at /Applications/Antidraw.app. Open it once from where it'\\''s installed, then try again.' >&2
+        exit 1
+      fi
+      ANTIDRAW_ROOT='/Users/o'\\''neil/.antidraw' ELECTRON_RUN_AS_NODE=1 exec "$app" "$script" "$@"
       "
     `);
 
@@ -176,6 +271,75 @@ describe("what the app leaves for antidraw mcp", () => {
     const written = fs.statSync(bridgeCommandPath()).mtimeMs;
     installBridgeCommand();
     expect(fs.statSync(bridgeCommandPath()).mtimeMs).toBe(written);
+  });
+
+  test("the command runs the copy that last opened, else the installed app, else says why", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "antidraw-command-"));
+    const echo = path.join(dir, "o'neil echo.mjs");
+    fs.writeFileSync(
+      echo,
+      "process.stdout.write(JSON.stringify({ args: process.argv.slice(2), root: process.env.ANTIDRAW_ROOT, asNode: process.env.ELECTRON_RUN_AS_NODE }))",
+    );
+    const here = { executable: process.execPath, script: echo };
+    const gone = { executable: path.join(dir, "gone", "Antidraw"), script: path.join(dir, "gone", "mcp-bridge.mjs") };
+    const run = (command: string) => {
+      const file = path.join(dir, "antidraw");
+      fs.writeFileSync(file, command, { mode: 0o755 });
+      return spawnSync(file, ["mcp"], { encoding: "utf8" });
+    };
+    try {
+      expect(JSON.parse(run(bridgeScript({ ...here, root: "/r", fallback: gone })).stdout)).toEqual({
+        args: ["mcp"],
+        root: "/r",
+        asNode: "1",
+      });
+      expect(JSON.parse(run(bridgeScript({ ...gone, root: "/r", fallback: here })).stdout)).toMatchObject({
+        args: ["mcp"],
+      });
+      const lost = run(bridgeScript({ ...gone, root: "/r", fallback: gone }));
+      expect(lost.status).toBe(1);
+      expect(lost.stdout).toBe("");
+      expect(lost.stderr).toBe(
+        `antidraw: Antidraw isn't where it last opened from, or at ${gone.executable}. Open it once from where it's installed, then try again.\n`,
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("opened from its DMG or a download, it leaves a command that still runs", () => {
+    const dmg = "/Volumes/Antidraw/Antidraw.app/Contents/MacOS/Antidraw";
+    const translocated = "/private/var/folders/xy/T/AppTranslocation/1A2B/d/Antidraw.app/Contents/MacOS/Antidraw";
+    expect(isTransient(dmg)).toBe(true);
+    expect(isTransient(translocated)).toBe(true);
+    expect(isTransient(INSTALLED_APP.executable)).toBe(false);
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "antidraw-command-"));
+    const script = path.join(dir, "o'neil mcp-bridge.mjs");
+    fs.writeFileSync(script, "");
+    const leave = (executable: string) => {
+      fs.mkdirSync(path.dirname(bridgeCommandPath()), { recursive: true });
+      fs.writeFileSync(bridgeCommandPath(), bridgeScript({ executable, script, root: "/r" }));
+    };
+    const command = () => fs.readFileSync(bridgeCommandPath(), "utf-8");
+    try {
+      leave(process.execPath);
+      const working = command();
+      installBridgeCommand({ executable: dmg });
+      installBridgeCommand({ executable: translocated });
+      expect(command()).toBe(working);
+
+      // One that no longer runs is replaced, even from there.
+      leave(path.join(dir, "gone"));
+      installBridgeCommand({ executable: dmg });
+      expect(command()).toContain(`app='${dmg}'`);
+
+      // The installed app needs no fallback to itself.
+      installBridgeCommand({ executable: INSTALLED_APP.executable, platform: "darwin" });
+      expect(command().match(/\/Applications\/Antidraw\.app\/Contents\/MacOS\/Antidraw/g)).toHaveLength(1);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("the tool list, as the server gives it", () => {

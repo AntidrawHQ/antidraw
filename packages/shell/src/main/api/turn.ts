@@ -33,7 +33,7 @@ import {
   clearPendingQuestions,
   type CliHandle,
 } from "@/main/lib/conversation-store";
-import { trackMessageSent } from "@/main/lib/posthog";
+import { trackAgentError, trackMessageSent } from "@/main/lib/posthog";
 import { createCanUseTool, DENY_MESSAGES } from "./ask-user-question";
 
 // The CLI has taken a prompt: record it and release it from the queue.
@@ -234,6 +234,7 @@ const runColdStart = async (
     const ctx = { conversation, sessionId: claudeCodeSessionID };
 
     for await (const sdkMessage of res.value) {
+      trackAgentError(sdkMessage);
       if (await handleSdkMessageWithoutPersisting(conversation.id, sdkMessage)) {
         continue;
       }

@@ -21,6 +21,8 @@ const readJson = <T>(file: string): T | null => {
   }
 };
 
+// No port in it: the app isn't listening (closed, or its server didn't
+// start), so the cache answers and nothing is sent anywhere.
 const address = (): AppAddress | null => {
   const saved = readJson<Partial<AppAddress>>("mcp.json");
   return typeof saved?.port === "number" && typeof saved.token === "string"
@@ -44,7 +46,13 @@ const serve = () => {
       .finally(() => pending.delete(answering));
     pending.add(answering);
   });
-  lines.on("close", () => void Promise.all(pending).then(() => process.exit(0)));
+  // The agent is done: exit once the last answers are out. A write to a
+  // pipe can still be queued when it returns (past the pipe's 64 KB, on
+  // macOS), and exit would drop it; an empty write's callback comes after.
+  lines.on(
+    "close",
+    () => void Promise.all(pending).then(() => process.stdout.write("", () => process.exit(0))),
+  );
 };
 
 if (process.argv[2] === "mcp") serve();
