@@ -145,6 +145,9 @@ antidraw = "not a server"
       TABLE,
       `[mcp_servers.antidraw]\nargs = [ 'mcp', ]  # the bridge\ncommand = '/Users/me/.antidraw/bin/antidraw'\nenabled = true\n\n[mcp_servers.antidraw.tools.get_comments]\napproval_mode = "approve"\n`,
       `[ mcp_servers . "antidraw" ]\ncommand = "/Users/me/.antidraw/bin/antidraw"\nargs = ["mcp"]`,
+      // As Codex reads it, however it's laid out: arguments on lines of their own, or no table of its own.
+      `[mcp_servers.antidraw]\ncommand = "/Users/me/.antidraw/bin/antidraw"\nargs = [\n  "mcp",\n]\n`,
+      `mcp_servers.antidraw.command = "/Users/me/.antidraw/bin/antidraw"\nmcp_servers.antidraw.args = ["mcp"]\n`,
     ]) {
       expect([text, codexHasServer(text, BRIDGE)]).toEqual([text, true]);
       expect(add(text)._unsafeUnwrap()).toBe(text);
@@ -156,7 +159,6 @@ antidraw = "not a server"
       // Another command, or a server reached another way.
       `[mcp_servers.antidraw]\ncommand = "/somewhere/else/antidraw"\nargs = ["mcp"]\n`,
       `[mcp_servers.antidraw]\nurl = "http://127.0.0.1:47821/mcp"\n`,
-      `[mcp_servers.antidraw]\ncommand = "/Users/me/.antidraw/bin/antidraw"\nargs = [\n  "mcp",\n]\n`,
       // Written where a table of its own would be a second definition.
       `mcp_servers = { antidraw = { command = "x" } }\n`,
       `mcp_servers = {}\n`,

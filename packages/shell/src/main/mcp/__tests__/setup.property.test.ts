@@ -10,9 +10,11 @@ import { addCodexServer, codexHasServer } from "../setup/codex-toml";
 import { readJsonc, setInJsonc, type Json } from "../setup/jsonc";
 
 // "Add" edits a file its owner wrote, so it's checked against configs written
-// every way the formats allow, and against parsers that aren't the app's own:
-// jsonc-parser (VS Code's) for JSON with comments, smol-toml for Codex's TOML.
-// The app checks each JSON edit with its own parser; these check that parser.
+// every way the formats allow, read by parsers: jsonc-parser (VS Code's) for
+// JSON with comments, which isn't the app's own (the app checks each JSON
+// edit with its own parser; this checks that parser), and smol-toml for
+// Codex's TOML, which the app reads it with too (this checks what the app
+// appends, and what it refuses).
 //
 // For both: an edit reads back, by the other parser, as exactly the change;
 // it's refused only when the file can't take it; and nothing else in the file
