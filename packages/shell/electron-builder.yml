@@ -15,6 +15,8 @@ asarUnpack:
   - node_modules/npm/**
   - node_modules/@anthropic-ai/claude-agent-sdk/**
   - resources/**
+  # `antidraw mcp`, run as Node from outside the app (src/main/mcp/bridge).
+  - dist/main/mcp-bridge.mjs
 mac:
   category: public.app-category.developer-tools
   # Icon Composer bundle: macOS 26 draws it natively; the Assets.car it compiles

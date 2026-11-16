@@ -47,6 +47,35 @@ const frameAgent = (): Plugin => {
   };
 };
 
+// `antidraw mcp` (src/main/mcp/bridge): one self-contained script beside
+// main's bundle, dist/main/mcp-bridge.mjs, which the app's executable runs
+// as Node, outside the app. Editing it rebuilds main.
+const mcpBridge = (): Plugin => {
+  let code = "";
+  return {
+    name: "mcp-bridge",
+    async buildStart() {
+      const [out] = [await build({
+        configFile: false,
+        logLevel: "warn",
+        build: {
+          write: false,
+          minify: false,
+          target: "node22",
+          lib: { entry: path.resolve(__dirname, "src/main/mcp/bridge/main.ts"), formats: ["es"] },
+          rollupOptions: { external: [/^node:/] },
+        },
+      })].flat() as Rollup.RollupOutput[];
+      const chunk = out!.output[0];
+      for (const file of chunk.moduleIds) this.addWatchFile(file);
+      code = chunk.code;
+    },
+    generateBundle() {
+      this.emitFile({ type: "asset", fileName: "mcp-bridge.mjs", source: code });
+    },
+  };
+};
+
 export default defineConfig({
   main: {
     build: {
@@ -58,7 +87,7 @@ export default defineConfig({
         },
       },
     },
-    plugins: [copyDrizzleMigrations(), frameAgent()],
+    plugins: [copyDrizzleMigrations(), frameAgent(), mcpBridge()],
     resolve: {
       alias: {
         "@": path.resolve(__dirname, "./src"),

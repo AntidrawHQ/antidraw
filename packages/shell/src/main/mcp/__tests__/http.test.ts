@@ -5,8 +5,8 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { ok } from "neverthrow";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { loadMcpConfig, mcpConfigPath } from "@/main/mcp/config";
-import { startMcpHttpServer, type RunningMcpServer } from "@/main/mcp/server";
+import { clearMcpPort, loadMcpToken, mcpConfigPath, reclaimMcpPort, saveMcpPort } from "@/main/mcp/config";
+import { startMcpHttpServer, startMcpHttpServerPreferring, type RunningMcpServer } from "@/main/mcp/server";
 import { EMPTY_MIRROR } from "@/shared/canvas-mirror";
 import type { CanvasState, WorkspaceHost } from "@/main/mcp/types";
 
@@ -96,23 +96,82 @@ describe("the MCP server over HTTP", () => {
 
   test("a port that's taken is said, not taken over", async () => {
     const result = await startMcpHttpServer({ port: server.port, token, deps: { host, canvas } });
-    expect(result._unsafeUnwrapErr()).toMatch(/already in use/);
+    expect(result._unsafeUnwrapErr()).toEqual({ inUse: true, message: expect.stringMatching(/already in use/) });
+  });
+
+  test("preferring a port that's taken: a free one instead, and it answers", async () => {
+    const other = (
+      await startMcpHttpServerPreferring({ port: server.port, token, deps: { host, canvas } })
+    )._unsafeUnwrap();
+    try {
+      expect(other.port).not.toBe(server.port);
+      const reply = await fetch(`http://127.0.0.1:${other.port}/mcp`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      });
+      expect(reply.status).toBe(200);
+    } finally {
+      await other.close();
+    }
+  });
+
+  test("preferring a port that's free: that one", async () => {
+    const probe = (await startMcpHttpServer({ port: 0, token, deps: { host, canvas } }))._unsafeUnwrap();
+    const free = probe.port;
+    await probe.close();
+    const at = (await startMcpHttpServerPreferring({ port: free, token, deps: { host, canvas } }))._unsafeUnwrap();
+    expect(at.port).toBe(free);
+    await at.close();
   });
 });
 
 describe("mcp.json", () => {
-  test("a token made once and kept, with the port, readable only by the user", () => {
-    const first = loadMcpConfig(47821);
-    expect(first.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  const saved = () => JSON.parse(fs.readFileSync(mcpConfigPath(), "utf-8")) as unknown;
+
+  test("a token made once and kept, readable only by the user", () => {
+    const first = loadMcpToken();
+    expect(first).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(fs.statSync(mcpConfigPath()).mode & 0o777).toBe(0o600);
-    const again = loadMcpConfig(47900);
-    expect(again).toEqual({ port: 47900, token: first.token });
-    expect(JSON.parse(fs.readFileSync(mcpConfigPath(), "utf-8"))).toEqual(again);
+    expect(loadMcpToken()).toBe(first);
+    expect(saved()).toEqual({ token: first });
 
     fs.writeFileSync(mcpConfigPath(), "not json");
     fs.chmodSync(mcpConfigPath(), 0o644);
-    const fresh = loadMcpConfig(47821);
-    expect(fresh.token).not.toBe(first.token);
+    const fresh = loadMcpToken();
+    expect(fresh).not.toBe(first);
     expect(fs.statSync(mcpConfigPath()).mode & 0o777).toBe(0o600);
+  });
+
+  test("the port only while a server listens on it", () => {
+    const token = loadMcpToken();
+    saveMcpPort(token, 47900);
+    expect(saved()).toEqual({ port: 47900, token });
+    expect(fs.statSync(mcpConfigPath()).mode & 0o777).toBe(0o600);
+
+    // Another launch wrote its own since: left to it.
+    clearMcpPort(47901);
+    expect(saved()).toEqual({ port: 47900, token });
+    clearMcpPort(47900);
+    expect(saved()).toEqual({ token });
+
+    // One left by a launch that didn't quit cleanly goes at the next.
+    saveMcpPort(token, 47900);
+    expect(loadMcpToken()).toBe(token);
+    expect(saved()).toEqual({ token });
+  });
+
+  test("a launch still listening puts its port back once another has taken it out", () => {
+    const token = loadMcpToken();
+    reclaimMcpPort(token, 47900);
+    expect(saved()).toEqual({ port: 47900, token });
+    // Another launch's port in it: left to that one.
+    saveMcpPort(token, 47901);
+    reclaimMcpPort(token, 47900);
+    expect(saved()).toEqual({ port: 47901, token });
   });
 });
