@@ -22,7 +22,9 @@ const keyParts = (key: string): string[] | null => {
   for (;;) {
     const m = /^(?:"((?:[^"\\]|\\.)*)"|'([^']*)'|([A-Za-z0-9_-]+))\s*/.exec(rest);
     if (!m) return null;
-    parts.push(m[1] !== undefined ? unescaped(m[1]) : (m[2] ?? m[3]!));
+    const part = m[1] !== undefined ? unescaped(m[1]) : (m[2] ?? m[3]!);
+    if (part === null) return null;
+    parts.push(part);
     rest = rest.slice(m[0].length);
     if (rest === "") return parts;
     if (rest[0] !== ".") return null;
@@ -30,12 +32,32 @@ const keyParts = (key: string): string[] | null => {
   }
 };
 
-const unescaped = (basic: string) => {
-  try {
-    return JSON.parse(`"${basic}"`) as string;
-  } catch {
-    return basic;
+const ESCAPES: Record<string, string> = { b: "\b", t: "\t", n: "\n", f: "\f", r: "\r", e: "\x1b", '"': '"', "\\": "\\" };
+const HEX_WIDTH: Record<string, number> = { x: 2, u: 4, U: 8 };
+
+// A basic string's text, its escapes read as TOML reads them (1.1's \e and
+// \xHH included); null when one isn't TOML's.
+const unescaped = (basic: string): string | null => {
+  let out = "";
+  for (let at = 0; at < basic.length; at++) {
+    if (basic[at] !== "\\") {
+      out += basic[at];
+      continue;
+    }
+    const e = basic[++at] ?? "";
+    if (Object.hasOwn(ESCAPES, e)) {
+      out += ESCAPES[e];
+      continue;
+    }
+    const width = Object.hasOwn(HEX_WIDTH, e) ? HEX_WIDTH[e]! : 0;
+    const digits = basic.slice(at + 1, at + 1 + width);
+    if (width === 0 || !/^[0-9A-Fa-f]+$/.test(digits) || digits.length !== width) return null;
+    const point = parseInt(digits, 16);
+    if (point > 0x10ffff || (point >= 0xd800 && point <= 0xdfff)) return null;
+    out += String.fromCodePoint(point);
+    at += width;
   }
+  return out;
 };
 
 // A line without its comment, and what it leaves open: a multi-line string,
@@ -45,9 +67,14 @@ const scan = (line: string, open: { string: string | null; depth: number }) => {
   let at = 0;
   while (at < line.length) {
     if (open.string) {
-      const end = line.indexOf(open.string, at);
-      if (end === -1) return code;
+      // To its closing delimiter: escapes skipped in a basic one (\""" is a
+      // quote, then two), and up to two quotes before it the string's own.
+      const quote = open.string[0]!;
+      let end = at;
+      while (end < line.length && !line.startsWith(open.string, end)) end += quote === '"' && line[end] === "\\" ? 2 : 1;
+      if (end >= line.length) return code;
       at = end + 3;
+      while (at < end + 5 && line[at] === quote) at++;
       open.string = null;
       continue;
     }
@@ -134,7 +161,7 @@ const isOurCommand = (value: string | null, bridge: string) => {
   if (value === null) return false;
   const basic = /^"((?:[^"\\]|\\.)*)"$/.exec(value);
   const literal = /^'([^']*)'$/.exec(value);
-  return (basic ? unescaped(basic[1]!) : literal?.[1]) === bridge;
+  return (basic ? unescaped(basic[1]!) : (literal?.[1] ?? null)) === bridge;
 };
 
 const isOurs = (table: NonNullable<Reading["table"]>, bridge: string) =>
