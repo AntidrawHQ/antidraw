@@ -186,6 +186,21 @@ title = "[mcp_servers.antidraw]" # [mcp_servers.antidraw]
     expect(codexHasServer(before, BRIDGE)).toBe(false);
     expect(add(before)._unsafeUnwrap()).toBe(`${before}\n${TABLE}`);
   });
+
+  it("reads a multi-line string to its real end, past an escaped quote and the quotes before it", () => {
+    // \""" is a quote, then two; """"" ends the string after two of its own.
+    const once = `instructions = """\nUse \\""" for docstrings.\n"""\n`;
+    expect(add(once)._unsafeUnwrap()).toBe(`${once}\n${TABLE}`);
+    const inside = `instructions = """\nUse \\""" for docstrings.\n[mcp_servers.antidraw]\ncommand = "${BRIDGE}"\nargs = ["mcp"]\nNever \\""" twice.\n"""""\n`;
+    expect(codexHasServer(inside, BRIDGE)).toBe(false);
+    expect(add(inside)._unsafeUnwrap()).toBe(`${inside}\n${TABLE}`);
+  });
+
+  it("reads a quoted key's escapes as TOML has them", () => {
+    const escaped = `[mcp_servers."anti\\U00000064raw"]\ncommand = "/old"\n`;
+    expect(add(escaped)._unsafeUnwrapErr()).toBe("it already has an antidraw server, set up another way");
+    expect(codexHasServer(`[mcp_servers."anti\\x64raw"]\ncommand = "${BRIDGE}"\nargs = ["mcp"]\n`, BRIDGE)).toBe(true);
+  });
 });
 
 describe("a JSON config's last member", () => {
