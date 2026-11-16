@@ -1,6 +1,9 @@
 import "@/main/api/__tests__/e2e-env"; // must stay the first import: a tmp ANTIDRAW_ROOT
 import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { ok } from "neverthrow";
@@ -13,9 +16,11 @@ import {
   type ToolCache,
 } from "@/main/mcp/bridge/bridge";
 import {
+  INSTALLED_APP,
   bridgeCommandPath,
   bridgeScript,
   installBridgeCommand,
+  isTransient,
   toolCachePath,
   writeToolCache,
 } from "@/main/mcp/bridge-install";
@@ -241,12 +246,23 @@ describe("what the app leaves for antidraw mcp", () => {
         executable: "/Applications/Antidraw.app/Contents/MacOS/Antidraw",
         script: "/Users/o'neil/My Apps/mcp-bridge.mjs",
         root: "/Users/o'neil/.antidraw",
+        fallback: INSTALLED_APP,
       }),
     ).toMatchInlineSnapshot(`
       "#!/bin/sh
       # Antidraw's command for coding agents: \`antidraw mcp\`.
       # Written by the app each time it opens; edits here are lost.
-      ANTIDRAW_ROOT='/Users/o'\\''neil/.antidraw' ELECTRON_RUN_AS_NODE=1 exec '/Applications/Antidraw.app/Contents/MacOS/Antidraw' '/Users/o'\\''neil/My Apps/mcp-bridge.mjs' "$@"
+      app='/Applications/Antidraw.app/Contents/MacOS/Antidraw'
+      script='/Users/o'\\''neil/My Apps/mcp-bridge.mjs'
+      if [ ! -x "$app" ] || [ ! -f "$script" ]; then
+        app='/Applications/Antidraw.app/Contents/MacOS/Antidraw'
+        script='/Applications/Antidraw.app/Contents/Resources/app.asar.unpacked/dist/main/mcp-bridge.mjs'
+      fi
+      if [ ! -x "$app" ] || [ ! -f "$script" ]; then
+        echo 'antidraw: Antidraw isn'\\''t where it last opened from, or at /Applications/Antidraw.app. Open it once from where it'\\''s installed, then try again.' >&2
+        exit 1
+      fi
+      ANTIDRAW_ROOT='/Users/o'\\''neil/.antidraw' ELECTRON_RUN_AS_NODE=1 exec "$app" "$script" "$@"
       "
     `);
 
@@ -255,6 +271,75 @@ describe("what the app leaves for antidraw mcp", () => {
     const written = fs.statSync(bridgeCommandPath()).mtimeMs;
     installBridgeCommand();
     expect(fs.statSync(bridgeCommandPath()).mtimeMs).toBe(written);
+  });
+
+  test("the command runs the copy that last opened, else the installed app, else says why", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "antidraw-command-"));
+    const echo = path.join(dir, "o'neil echo.mjs");
+    fs.writeFileSync(
+      echo,
+      "process.stdout.write(JSON.stringify({ args: process.argv.slice(2), root: process.env.ANTIDRAW_ROOT, asNode: process.env.ELECTRON_RUN_AS_NODE }))",
+    );
+    const here = { executable: process.execPath, script: echo };
+    const gone = { executable: path.join(dir, "gone", "Antidraw"), script: path.join(dir, "gone", "mcp-bridge.mjs") };
+    const run = (command: string) => {
+      const file = path.join(dir, "antidraw");
+      fs.writeFileSync(file, command, { mode: 0o755 });
+      return spawnSync(file, ["mcp"], { encoding: "utf8" });
+    };
+    try {
+      expect(JSON.parse(run(bridgeScript({ ...here, root: "/r", fallback: gone })).stdout)).toEqual({
+        args: ["mcp"],
+        root: "/r",
+        asNode: "1",
+      });
+      expect(JSON.parse(run(bridgeScript({ ...gone, root: "/r", fallback: here })).stdout)).toMatchObject({
+        args: ["mcp"],
+      });
+      const lost = run(bridgeScript({ ...gone, root: "/r", fallback: gone }));
+      expect(lost.status).toBe(1);
+      expect(lost.stdout).toBe("");
+      expect(lost.stderr).toBe(
+        `antidraw: Antidraw isn't where it last opened from, or at ${gone.executable}. Open it once from where it's installed, then try again.\n`,
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("opened from its DMG or a download, it leaves a command that still runs", () => {
+    const dmg = "/Volumes/Antidraw/Antidraw.app/Contents/MacOS/Antidraw";
+    const translocated = "/private/var/folders/xy/T/AppTranslocation/1A2B/d/Antidraw.app/Contents/MacOS/Antidraw";
+    expect(isTransient(dmg)).toBe(true);
+    expect(isTransient(translocated)).toBe(true);
+    expect(isTransient(INSTALLED_APP.executable)).toBe(false);
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "antidraw-command-"));
+    const script = path.join(dir, "o'neil mcp-bridge.mjs");
+    fs.writeFileSync(script, "");
+    const leave = (executable: string) => {
+      fs.mkdirSync(path.dirname(bridgeCommandPath()), { recursive: true });
+      fs.writeFileSync(bridgeCommandPath(), bridgeScript({ executable, script, root: "/r" }));
+    };
+    const command = () => fs.readFileSync(bridgeCommandPath(), "utf-8");
+    try {
+      leave(process.execPath);
+      const working = command();
+      installBridgeCommand({ executable: dmg });
+      installBridgeCommand({ executable: translocated });
+      expect(command()).toBe(working);
+
+      // One that no longer runs is replaced, even from there.
+      leave(path.join(dir, "gone"));
+      installBridgeCommand({ executable: dmg });
+      expect(command()).toContain(`app='${dmg}'`);
+
+      // The installed app needs no fallback to itself.
+      installBridgeCommand({ executable: INSTALLED_APP.executable, platform: "darwin" });
+      expect(command().match(/\/Applications\/Antidraw\.app\/Contents\/MacOS\/Antidraw/g)).toHaveLength(1);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("the tool list, as the server gives it", () => {
