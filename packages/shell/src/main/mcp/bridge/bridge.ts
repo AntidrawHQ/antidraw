@@ -28,9 +28,15 @@ export type BridgeIo = {
   // Read each time: the app may have been opened, or moved port, since.
   address: () => AppAddress | null;
   cache: () => ToolCache | null;
-  // Rejects when nothing answers at the address.
-  post: (address: AppAddress, protocolVersion: string | null, body: string) => Promise<AppReply>;
+  // Rejects when nothing answers at the address within timeoutMs, as fetch
+  // does: why is in the error (notReached).
+  post: (address: AppAddress, protocolVersion: string | null, body: string, timeoutMs: number) => Promise<AppReply>;
 };
+
+// How long the app has to answer. A tool waits on the canvas at most 10s
+// (opening a workspace); connecting and listing don't wait on anything.
+export type BridgeTimeouts = { toolCallMs: number; otherMs: number };
+const TIMEOUTS: BridgeTimeouts = { toolCallMs: 60_000, otherMs: 10_000 };
 
 type Id = string | number;
 type Message = { jsonrpc?: string; id?: Id | null; method?: string; params?: Record<string, unknown> };
@@ -69,6 +75,30 @@ const whileClosed = (message: Message, cache: ToolCache | null): unknown[] => {
   return [failure(id, -32601, `Method not found: ${method}`)];
 };
 
+// A request the app didn't answer, said so as the agent's model reads it:
+// a tool call as a failed call, anything else as its error.
+const unanswered = (message: Message, text: string): unknown[] => {
+  const { id, method } = message;
+  if (id === undefined || id === null || method === undefined) return [];
+  if (method === "tools/call") return [result(id, { content: [{ type: "text", text }], isError: true })];
+  return [failure(id, -32000, text)];
+};
+
+// Why a post got no answer, from the error fetch gave; null when nothing
+// listens there, which is the app closed.
+const notReached = (error: unknown, { port }: AppAddress, timeoutMs: number): string | null => {
+  const { name, message, cause } = error as { name?: string; message?: string; cause?: { code?: string; message?: string } };
+  if (cause?.code === "ECONNREFUSED") return null;
+  if (name === "TimeoutError")
+    return `Antidraw is open but didn't answer within ${timeoutMs / 1000}s, so this may still be running there. Check whether it took effect before trying again; if it keeps happening, ask the user whether Antidraw is busy or stuck.`;
+  if (cause?.code === "UND_ERR_SOCKET" || cause?.code === "ECONNRESET" || cause?.code === "EPIPE")
+    return `Antidraw dropped the connection before answering (${cause.message ?? cause.code}), most likely because it was quitting. This may or may not have taken effect: check before trying again, and if Antidraw is now closed, ask the user to open it.`;
+  if (cause?.message === "bad port")
+    return `Antidraw listens on port ${port}, which Node's fetch refuses to connect to. Ask the user to unset ANTIDRAW_MCP_PORT, or set it to another port, and restart Antidraw.`;
+  const why = [message, cause?.code, cause?.message].filter(Boolean).join(": ");
+  return `Couldn't reach Antidraw at http://127.0.0.1:${port}/mcp (${why || String(error)}).`;
+};
+
 // The messages in a reply's body: JSON, one or several, or an event stream
 // of them (the app answers in JSON; a stream is the protocol's other form).
 const messagesIn = (reply: AppReply): unknown[] => {
@@ -82,18 +112,33 @@ const messagesIn = (reply: AppReply): unknown[] => {
   return Array.isArray(body) ? body : [body];
 };
 
-export const createBridge = (io: BridgeIo) => {
+export const createBridge = (io: BridgeIo, timeouts: BridgeTimeouts = TIMEOUTS) => {
   // The version agreed in `initialize`, sent with each later request as
   // HTTP asks. Agreed with the cache when the app was closed then: the
   // app's server agrees to the same.
   let protocolVersion: string | null = null;
 
-  const pass = async (message: Message): Promise<unknown[]> => {
+  const toApp = async (message: Message): Promise<unknown[]> => {
     const address = io.address();
-    const reply = address
-      ? await io.post(address, protocolVersion, JSON.stringify(message)).catch(() => null)
-      : null;
-    const answers = reply ? fromApp(message, reply) : whileClosed(message, io.cache());
+    if (!address) return whileClosed(message, io.cache());
+    const timeoutMs = message.method === "tools/call" ? timeouts.toolCallMs : timeouts.otherMs;
+    const sent = await io.post(address, protocolVersion, JSON.stringify(message), timeoutMs).then(
+      (reply) => ({ reply }),
+      (error: unknown) => ({ error }),
+    );
+    if ("reply" in sent) return fromApp(message, sent.reply);
+    const why = notReached(sent.error, address, timeoutMs);
+    if (why === null) return whileClosed(message, io.cache());
+    console.error("[antidraw mcp]", why);
+    // Connecting and listing still answered from the cache: failing them
+    // fails the agent's whole connection, and the model reads neither.
+    if (message.method === "initialize" || message.method === "tools/list" || message.method === "ping")
+      return whileClosed(message, io.cache());
+    return unanswered(message, why);
+  };
+
+  const pass = async (message: Message): Promise<unknown[]> => {
+    const answers = await toApp(message);
     if (message.method === "initialize")
       for (const answer of answers) {
         const agreed = (answer as { result?: { protocolVersion?: unknown } }).result?.protocolVersion;
@@ -111,7 +156,16 @@ export const createBridge = (io: BridgeIo) => {
     } catch {
       messages = [];
     }
-    if (reply.status < 400) return messages;
+    if (reply.status < 400) {
+      // Something answered, but not with this request's answer: said, or
+      // the agent would wait on it for good.
+      const answered = messages.some((m) => (m as { id?: unknown } | null)?.id === message.id);
+      if (answered || message.method === undefined) return messages;
+      return unanswered(
+        message,
+        `What answered at Antidraw's address (HTTP ${reply.status}, ${reply.contentType || "no content type"}) didn't answer this request. Ask the user whether Antidraw is open and its MCP server started.`,
+      );
+    }
     if (message.id === undefined || message.id === null) return [];
     const refused = (messages[0] as { error?: { code?: number; message?: string } } | undefined)?.error;
     return [failure(message.id, refused?.code ?? -32000, refused?.message ?? `Antidraw answered ${reply.status}`)];
@@ -133,9 +187,10 @@ export const createBridge = (io: BridgeIo) => {
 };
 
 // The app's server, as ../server.ts takes a request.
-export const postToApp: BridgeIo["post"] = async ({ port, token }, protocolVersion, body) => {
+export const postToApp: BridgeIo["post"] = async ({ port, token }, protocolVersion, body, timeoutMs) => {
   const res = await fetch(`http://127.0.0.1:${port}/mcp`, {
     method: "POST",
+    signal: AbortSignal.timeout(timeoutMs),
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",

@@ -1,8 +1,17 @@
 import "@/main/api/__tests__/e2e-env"; // must stay the first import: a tmp ANTIDRAW_ROOT
 import fs from "node:fs";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { ok } from "neverthrow";
-import { APP_CLOSED, createBridge, postToApp, type AppAddress, type ToolCache } from "@/main/mcp/bridge/bridge";
+import {
+  APP_CLOSED,
+  createBridge,
+  postToApp,
+  type AppAddress,
+  type BridgeTimeouts,
+  type ToolCache,
+} from "@/main/mcp/bridge/bridge";
 import {
   bridgeCommandPath,
   bridgeScript,
@@ -31,23 +40,40 @@ const token = "t".repeat(43);
 let server: RunningMcpServer;
 let cache: ToolCache;
 
+// A port nothing listens on: the app closed. Listened on once and let go,
+// so connecting is refused, as it is once the app has quit.
+let CLOSED: AppAddress;
+
+// An HTTP server on a free port that handles a request as given.
+const serving = async (handler: http.RequestListener) => {
+  const fake = http.createServer(handler);
+  await new Promise<void>((done) => fake.listen(0, "127.0.0.1", done));
+  return {
+    address: { port: (fake.address() as AddressInfo).port, token },
+    close: () => {
+      fake.closeAllConnections();
+      return new Promise<void>((done) => fake.close(() => done()));
+    },
+  };
+};
+
 beforeAll(async () => {
+  const gone = await serving(() => {});
+  await gone.close();
+  CLOSED = gone.address;
   server = (await startMcpHttpServer({ port: 0, token, deps }))._unsafeUnwrap();
   await writeToolCache(deps);
   cache = JSON.parse(fs.readFileSync(toolCachePath(), "utf-8")) as ToolCache;
 });
 afterAll(() => server.close());
 
-// A port nothing listens on: the app closed.
-const CLOSED: AppAddress = { port: 1, token };
-
 type Answer = {
   id?: number;
   result: { protocolVersion?: string; tools?: unknown[]; content?: { text: string }[]; isError?: boolean };
 };
 
-const bridgeTo = (address: () => AppAddress | null, tools: ToolCache | null = cache) => {
-  const bridge = createBridge({ address, cache: () => tools, post: postToApp });
+const bridgeTo = (address: () => AppAddress | null, tools: ToolCache | null = cache, timeouts?: BridgeTimeouts) => {
+  const bridge = createBridge({ address, cache: () => tools, post: postToApp }, timeouts);
   return async (message: object) => (await bridge(JSON.stringify(message))).map((line) => JSON.parse(line) as Answer);
 };
 
@@ -142,6 +168,59 @@ describe("antidraw mcp, with the app closed", () => {
     address = { port: server.port, token };
     const [called] = await send(callTool(3, "list_workspaces"));
     expect(called!.result.isError).toBeUndefined();
+  });
+});
+
+describe("antidraw mcp, with the app reached but not answering", () => {
+  const listed = () => [{ jsonrpc: "2.0", id: 2, result: { tools: cache.tools } }];
+  const failedCall = (id: number, text: RegExp) => [
+    { jsonrpc: "2.0", id, result: { content: [{ type: "text", text: expect.stringMatching(text) }], isError: true } },
+  ];
+
+  test("too slow: the call says so, connecting and listing still answer", async () => {
+    const stuck = await serving(() => {});
+    try {
+      const send = bridgeTo(() => stuck.address, cache, { toolCallMs: 300, otherMs: 300 });
+      expect(await send(callTool(1, "get_comments"))).toEqual(failedCall(1, /^Antidraw is open but didn't answer within 0.3s/));
+      expect(await send(listTools(2))).toEqual(listed());
+    } finally {
+      await stuck.close();
+    }
+  });
+
+  test("dropped while it ran: the call may have taken effect, and says so", async () => {
+    const quitting = await serving((req) => req.socket.destroy());
+    try {
+      const send = bridgeTo(() => quitting.address);
+      expect(await send(callTool(1, "complete_comment"))).toEqual(
+        failedCall(1, /^Antidraw dropped the connection before answering \(other side closed\).*may or may not have taken effect/),
+      );
+      expect(await send(listTools(2))).toEqual(listed());
+      expect(await send({ jsonrpc: "2.0", id: 3, method: "resources/list" })).toEqual([
+        { jsonrpc: "2.0", id: 3, error: { code: -32000, message: expect.stringMatching(/^Antidraw dropped the connection/) } },
+      ]);
+    } finally {
+      await quitting.close();
+    }
+  });
+
+  test("a port fetch won't connect to is named, with what to change", async () => {
+    expect(await bridgeTo(() => ({ port: 6000, token }))(callTool(1, "get_comments"))).toEqual(
+      failedCall(1, /port 6000, which Node's fetch refuses.*ANTIDRAW_MCP_PORT/),
+    );
+  });
+
+  test("something else on the port, answering without this request's answer, is said, not waited on", async () => {
+    const other = await serving((_req, res) => res.writeHead(200, { "Content-Type": "text/html" }).end("<html></html>"));
+    try {
+      const send = bridgeTo(() => other.address);
+      expect(await send(callTool(1, "get_comments"))).toEqual(
+        failedCall(1, /^What answered at Antidraw's address \(HTTP 200, text\/html\) didn't answer this request/),
+      );
+      expect(await send({ jsonrpc: "2.0", method: "notifications/initialized" })).toEqual([]);
+    } finally {
+      await other.close();
+    }
   });
 });
 
