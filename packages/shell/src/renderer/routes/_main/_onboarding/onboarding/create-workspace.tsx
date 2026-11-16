@@ -27,8 +27,9 @@ const CreateWorkspacePage = () => {
     start("Default Workspace");
   }, [start]);
 
-  const handleOpenWorkspace = () => {
-    router.navigate({ to: "/" });
+  // On to the two ways to work on it (./two-ways), which opens the workspace.
+  const handleContinue = () => {
+    router.navigate({ to: "/onboarding/two-ways" });
   };
 
   return (
@@ -67,11 +68,11 @@ const CreateWorkspacePage = () => {
               />
 
               <button
-                onClick={handleOpenWorkspace}
+                onClick={handleContinue}
                 disabled={status !== "done"}
                 className="mt-6 w-fit flex items-center justify-center gap-2 px-4 py-2 rounded-[10px] border border-white/[0.12] hover:border-white/[0.24] bg-white/[0.08] hover:bg-white/[0.12] text-[#ccc] text-sm font-medium cursor-pointer disabled:cursor-default disabled:pointer-events-none transition-all duration-200 opacity-100 disabled:opacity-0"
               >
-                Open workspace <ArrowRightIcon />
+                Continue <ArrowRightIcon />
               </button>
             </div>
           </div>
