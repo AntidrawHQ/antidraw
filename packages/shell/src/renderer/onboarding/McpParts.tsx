@@ -1,13 +1,13 @@
 /**
- * The MCP setup's pieces, shared by its two sizes: the onboarding page's rows
- * (./TwoWaysRows) and the titlebar's menu (./McpMenu). One type scale
+ * The MCP setup's pieces, at its two sizes: the onboarding page's rows and
+ * the titlebar's popover, a size down (./TwoWaysRows). One type scale
  * (15 / 13 / 12), three surfaces (page, raised card, recessed well) and one
  * hairline.
  */
 import { Fragment, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ArrowUpRight, Check, Copy, Loader2 } from "lucide-react";
-import { useAgentStates, useBridge, type State } from "./agent-states";
+import { openInstallPrompt, useBridge, type State } from "./agent-states";
 import { agent, bridgeCommand, mcpJson, pastePrompt, type Agent, type AgentId } from "./agents";
 
 // A plain join, as the design has it: no class is merged away.
@@ -26,6 +26,8 @@ export const WELL = "bg-black/[0.16]";
 export const FOCUS = "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white/50";
 
 const GREEN = "text-[#a9c3a4]";
+// A caution, not an alarm: the config was left as it was.
+const SAND = "#d6b98a";
 
 /** An agent's mark; its corner radius follows its size. */
 export const Mark = ({ a, size = 20 }: { a: Agent; size?: number }) => (
@@ -49,25 +51,10 @@ export const Config = ({ a }: { a: Agent }) => {
   return /^[~./]/.test(a.config) ? <span className="font-mono text-[11.5px]">{a.config}</span> : <>{a.config}</>;
 };
 
-export const StatusDot = ({ s }: { s: State }) => (
-  <span className="relative grid size-4 shrink-0 place-items-center">
-    {s === "connected" ? (
-      <Check className={cx("size-3.5", GREEN)} strokeWidth={2.5} />
-    ) : s === "waiting" ? (
-      <>
-        <span className="absolute size-2 animate-ping rounded-full bg-[#d6b98a]/40" />
-        <span className="size-1.5 rounded-full bg-[#d6b98a]" />
-      </>
-    ) : (
-      <span className="size-1.5 rounded-full bg-neutral-500" />
-    )}
-  </span>
-);
-
 /**
  * The one-click add, the quiet button of a list of them: "sm" for the page's
- * rows, "xs" for the menu's. A row shows its status in the button's place
- * once the agent is added.
+ * rows, "xs" for the popover's. A row says how it went in the button's
+ * place: Added, or Failed.
  */
 export const AddButton = ({
   a,
@@ -106,11 +93,39 @@ export const Added = () => (
   </span>
 );
 
-/** Why "Add" left an agent's config as it was, over the steps to do it by hand. */
-export const AddError = ({ children }: { children: ReactNode }) => (
-  // META's size, in the waiting dot's sand: a caution, not a failure of the app.
-  <p role="alert" className="mb-2 text-pretty text-[12px] leading-[18px] text-[#d6b98a]">
+/** In the button's place, for an agent whose "Add" left its config as it was. */
+export const Failed = () => (
+  <span className="flex h-7 shrink-0 items-center gap-1.5 text-[12px] font-medium text-neutral-200">
+    <span className="grid size-3.5 place-items-center">
+      <span className="size-1.5 rounded-full" style={{ background: SAND }} />
+    </span>
+    Failed
+  </span>
+);
+
+/**
+ * Why something left an agent's config as it was, over the steps to do it by
+ * hand; with `onRetry`, a way to try again once whatever was wrong is put right.
+ */
+export const AddError = ({ children, onRetry }: { children: ReactNode; onRetry?: () => void }) => (
+  // META's size.
+  <p role="alert" className="mb-2 text-pretty text-[12px] leading-[18px]" style={{ color: SAND }}>
     {children}
+    {onRetry && (
+      <>
+        {" "}
+        <button
+          type="button"
+          onClick={onRetry}
+          className={cx(
+            "rounded-[4px] font-medium underline decoration-[#d6b98a]/40 underline-offset-[3px] transition-colors hover:decoration-[#d6b98a]",
+            FOCUS,
+          )}
+        >
+          Try again
+        </button>
+      </>
+    )}
   </p>
 );
 
@@ -127,13 +142,12 @@ export const Reveal = ({ open, children }: { open: boolean; children: ReactNode 
 );
 
 // Copy is an icon: the command keeps the width, and wraps less.
-const CopyIcon = ({ text, onCopy }: { text: string; onCopy?: () => void }) => {
+const CopyIcon = ({ text }: { text: string }) => {
   const [copied, setCopied] = useState(false);
   const timer = useRef<number | undefined>(undefined);
   const copy = () => {
     navigator.clipboard?.writeText(text).catch(() => {});
     setCopied(true);
-    onCopy?.();
     window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => setCopied(false), 1600);
   };
@@ -166,7 +180,7 @@ const words = (text: string) =>
   }, []);
 
 /** One command; a long one wraps between words, never inside one. */
-export const CodeLine = ({ text, onCopy }: { text: string; onCopy?: () => void }) => (
+export const CodeLine = ({ text }: { text: string }) => (
   <div className={cx(CODE, "flex items-start gap-2 py-1 pl-3 pr-1")}>
     <span className="select-none py-1 font-mono text-[12px] leading-5 text-neutral-500">$</span>
     <code className="min-w-0 flex-1 py-1 font-mono text-[12px] leading-5 text-neutral-200">
@@ -177,26 +191,16 @@ export const CodeLine = ({ text, onCopy }: { text: string; onCopy?: () => void }
         </Fragment>
       ))}
     </code>
-    <CopyIcon text={text} onCopy={onCopy} />
+    <CopyIcon text={text} />
   </div>
 );
 
 /** A few lines (a config, a prompt) under the name of where they go. */
-export const CodeBlock = ({
-  text,
-  label,
-  wrap,
-  onCopy,
-}: {
-  text: string;
-  label: string;
-  wrap?: boolean;
-  onCopy?: () => void;
-}) => (
+export const CodeBlock = ({ text, label, wrap }: { text: string; label: string; wrap?: boolean }) => (
   <div className={cx(CODE, "overflow-hidden")}>
     <div className="flex items-center justify-between border-b border-white/[0.06] py-0.5 pl-3 pr-1">
       <span className="truncate font-mono text-[11px] text-neutral-400">{label}</span>
-      <CopyIcon text={text} onCopy={onCopy} />
+      <CopyIcon text={text} />
     </div>
     <pre
       className={cx(
@@ -213,16 +217,17 @@ export const CodeBlock = ({
 const Hint = ({ children }: { children: ReactNode }) => <p className={cx(META, "mb-2 text-pretty")}>{children}</p>;
 
 /** Every way but the one-click button: a command, or the server's JSON and the app's own install link. */
-export const ManualSteps = ({ id, onStarted }: { id: AgentId; onStarted: () => void }) => {
+export const ManualSteps = ({ id }: { id: AgentId }) => {
   const i = agent(id).install;
   const bridge = useBridge();
-  const { install } = useAgentStates();
+  // Why the agent's install prompt couldn't be opened.
+  const [linkError, setLinkError] = useState<string | null>(null);
 
   if (i.kind === "command")
     return (
       <>
         <Hint>{i.hint}</Hint>
-        <CodeLine text={i.command(bridge.shell)} onCopy={onStarted} />
+        <CodeLine text={i.command(bridge.shell)} />
       </>
     );
 
@@ -230,11 +235,11 @@ export const ManualSteps = ({ id, onStarted }: { id: AgentId; onStarted: () => v
     return (
       <>
         <Hint>Add it to {i.app}'s MCP config:</Hint>
-        <CodeBlock text={i.json(bridge.command)} label={i.file} onCopy={onStarted} />
+        <CodeBlock text={i.json(bridge.command)} label={i.file} />
         <button
           type="button"
           // The agent's own install prompt, which main opens.
-          onClick={() => void install(id)}
+          onClick={() => void openInstallPrompt(id).then(setLinkError)}
           className={cx(
             "mt-2.5 flex items-center gap-1 rounded-[4px] text-[12px] leading-[18px] text-neutral-300 underline decoration-white/20 underline-offset-[3px] transition-colors hover:text-neutral-50 hover:decoration-white/50",
             FOCUS,
@@ -243,6 +248,11 @@ export const ManualSteps = ({ id, onStarted }: { id: AgentId; onStarted: () => v
           Or install it from {i.app}
           <ArrowUpRight className="size-3.5 text-neutral-500" />
         </button>
+        {linkError && (
+          <div className="mt-2">
+            <AddError>{linkError}</AddError>
+          </div>
+        )}
       </>
     );
 
@@ -257,7 +267,7 @@ const OTHER_TABS: { id: OtherTab; label: string; hint: string }[] = [
 ];
 
 /** An agent Antidraw doesn't know the config of: the command, the config, or a prompt. */
-export const OtherSteps = ({ onStarted }: { onStarted: () => void }) => {
+export const OtherSteps = () => {
   const [tab, setTab] = useState<OtherTab>("command");
   const bridge = useBridge();
   return (
@@ -281,9 +291,9 @@ export const OtherSteps = ({ onStarted }: { onStarted: () => void }) => {
         ))}
       </div>
       <Hint>{OTHER_TABS.find((t) => t.id === tab)!.hint}</Hint>
-      {tab === "command" && <CodeLine text={bridgeCommand(bridge.shell)} onCopy={onStarted} />}
-      {tab === "config" && <CodeBlock text={mcpJson(bridge.command)} label="mcp.json" onCopy={onStarted} />}
-      {tab === "prompt" && <CodeBlock text={pastePrompt(bridge.shell)} label="Prompt" wrap onCopy={onStarted} />}
+      {tab === "command" && <CodeLine text={bridgeCommand(bridge.shell)} />}
+      {tab === "config" && <CodeBlock text={mcpJson(bridge.command)} label="mcp.json" />}
+      {tab === "prompt" && <CodeBlock text={pastePrompt(bridge.shell)} label="Prompt" wrap />}
     </>
   );
 };

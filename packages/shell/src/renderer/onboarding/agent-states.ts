@@ -5,33 +5,34 @@ import { addMcpToAgent, getMcpSetup, openMcpInstallLink } from "@/renderer/lib/a
 import { queryKeys } from "@/renderer/lib/query-keys";
 import type { AgentId } from "./agents";
 
-// Where each agent is in its setup, for the titlebar's button and menu
-// (components/McpSetup) and the onboarding page's rows (./TwoWaysRows) alike:
-// one store, so a row's state shows up on the button.
+// Where each agent is in its setup, for the titlebar's popover
+// (components/McpSetup) and the onboarding page's rows (./TwoWaysRows) alike.
+// Only what the app can know: whether the server is in the agent's config,
+// and how its own "Add" went.
 //
-//   idle       not in the agent's config: the row offers "Add"
-//   adding     the app is writing the config
-//   waiting    added, or its manual step copied, in this session: the agent
-//              picks it up in its next session
-//   added      in the agent's config already, as main reads it
-//   connected  the agent has connected. Nothing sets it yet: main doesn't
-//              record who connects to the MCP server.
+//   idle    not in the agent's config: the row offers "Add"
+//   adding  the app is writing the config
+//   added   in the agent's config, as main reads it
+//   failed  "Add" left the config as it was; the row says why
+//
+// Whether the agent has started a session since, or connected, isn't said:
+// that's the agent's, and main doesn't record who connects.
 
-export type State = "idle" | "adding" | "added" | "waiting" | "connected";
+export type State = "idle" | "adding" | "added" | "failed";
 
 type AgentStatesStore = {
-  // This session's, over what the configs say.
-  states: Partial<Record<AgentId, State>>;
-  // Why an agent's "Add" or install link didn't work, to say in its row.
+  // The agents whose "Add" is on its way.
+  adding: Partial<Record<AgentId, boolean>>;
+  // Why an agent's "Add" didn't work, until it's tried again.
   errors: Partial<Record<AgentId, string>>;
-  set: (id: AgentId, state: State | undefined) => void;
+  setAdding: (id: AgentId, adding: boolean) => void;
   fail: (id: AgentId, error: string | undefined) => void;
 };
 
 export const useAgentStatesStore = create<AgentStatesStore>((set) => ({
-  states: {},
+  adding: {},
   errors: {},
-  set: (id, state) => set((s) => ({ states: { ...s.states, [id]: state } })),
+  setAdding: (id, adding) => set((s) => ({ adding: { ...s.adding, [id]: adding } })),
   fail: (id, error) => set((s) => ({ errors: { ...s.errors, [id]: error } })),
 }));
 
@@ -66,43 +67,39 @@ export const useBridge = (): Bridge => {
 export const useAgentStates = () => {
   const queryClient = useQueryClient();
   const { data } = useMcpSetup();
-  const { states, errors, set, fail } = useAgentStatesStore();
+  const { adding, errors, setAdding, fail } = useAgentStatesStore();
 
+  // What the config says comes before how an earlier try went: an agent
+  // added by hand since is added.
   const state = (id: AgentId): State =>
-    states[id] ?? (isMcpAgentId(id) && data?.agents[id].added ? "added" : "idle");
+    adding[id] ? "adding" : isMcpAgentId(id) && data?.agents[id].added ? "added" : errors[id] ? "failed" : "idle";
 
   return {
     state,
-    error: (id: AgentId) => errors[id],
-    // "Add": main writes the server into the agent's config. False when it
-    // couldn't, with why in `error`.
+    error: (id: AgentId) => (state(id) === "failed" ? errors[id] : undefined),
+    // "Add", and trying again: main writes the server into the agent's
+    // config, and the configs are read again. False when it couldn't, with
+    // why in `error`.
     add: async (id: AgentId) => {
-      if (!isMcpAgentId(id) || state(id) !== "idle") return true;
-      set(id, "adding");
+      if (!isMcpAgentId(id) || adding[id]) return true;
+      setAdding(id, true);
       fail(id, undefined);
       const result = await addMcpToAgent(id);
-      if (result.isErr()) {
-        set(id, undefined);
-        fail(id, result.error.message);
-        return false;
-      }
-      set(id, "waiting");
-      void queryClient.invalidateQueries({ queryKey: queryKeys.mcpSetup });
-      return true;
+      if (result.isErr()) fail(id, result.error.message);
+      else await queryClient.invalidateQueries({ queryKey: queryKeys.mcpSetup });
+      setAdding(id, false);
+      return result.isOk();
     },
-    // A manual step was copied: the agent is the user's to start.
-    started: (id: AgentId) => {
-      if (state(id) === "idle") set(id, "waiting");
-    },
-    // The agent's own install prompt (Cursor, VS Code), opened by main.
-    install: async (id: AgentId) => {
-      if (!isMcpAgentId(id)) return;
-      fail(id, undefined);
-      const result = await openMcpInstallLink(id);
-      if (result.isErr()) return fail(id, result.error.message);
-      if (state(id) === "idle") set(id, "waiting");
-    },
+    // The configs, read again: after the user has been somewhere they may
+    // have changed one (a terminal, the agent's own install prompt).
+    refresh: () => void queryClient.invalidateQueries({ queryKey: queryKeys.mcpSetup }),
   };
 };
 
-export type Agents = ReturnType<typeof useAgentStates>;
+// Opens the agent's own install prompt (Cursor, VS Code), which main makes
+// the link for. Why it couldn't, or null.
+export const openInstallPrompt = async (id: AgentId) => {
+  if (!isMcpAgentId(id)) return null;
+  const result = await openMcpInstallLink(id);
+  return result.isErr() ? result.error.message : null;
+};
