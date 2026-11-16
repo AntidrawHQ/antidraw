@@ -72,13 +72,13 @@ export const WorkspaceSwitcher = () => {
           {activeWorkspace && (
             <AvatarIcon name={activeWorkspace.name} size={18} />
           )}
-          <span className="text-[13px] font-medium text-neutral-200 truncate flex-1">
+          <span className="text-[13px] font-medium text-white/95 truncate flex-1">
             {activeWorkspace?.name ?? "Select workspace"}
           </span>
           {isOpen ? (
-            <ChevronUp className="w-3 h-3 text-neutral-500 shrink-0" />
+            <ChevronUp className="w-3 h-3 text-white/62 shrink-0" />
           ) : (
-            <ChevronDown className="w-3 h-3 text-neutral-500 shrink-0" />
+            <ChevronDown className="w-3 h-3 text-white/62 shrink-0" />
           )}
         </button>
       </PopoverTrigger>

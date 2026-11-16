@@ -65,13 +65,13 @@ const ConversationList = ({ onClose }: ConversationListProps) => {
     >
       {/* Header, matching the components panel */}
       <div className="p-2 border-b border-[#333] flex items-center justify-between">
-        <span className="text-[13px] font-medium text-neutral-400 px-2.5 py-0.5">
+        <span className="text-[13px] font-medium text-white/86 px-2.5 py-0.5">
           Chats
         </span>
         <button
           onClick={handleNewConversation}
           disabled={createConversation.isPending}
-          className="flex items-center gap-1 px-2 py-0.5 rounded-md hover:bg-white/[0.06] text-[12px] text-neutral-500 hover:text-neutral-200 disabled:opacity-50 shrink-0"
+          className="flex items-center gap-1 px-2 py-0.5 rounded-md hover:bg-white/[0.06] text-[12px] text-white/62 hover:text-white/95 disabled:opacity-50 shrink-0"
           title="New conversation"
         >
           <Plus className="w-3 h-3" />
@@ -83,7 +83,7 @@ const ConversationList = ({ onClose }: ConversationListProps) => {
         <Search
           className={cn(
             "w-3.5 h-3.5 shrink-0 transition-colors",
-            search ? "text-neutral-300" : "text-neutral-600"
+            search ? "text-white/90" : "text-white/55"
           )}
         />
         <CommandInput
@@ -91,7 +91,7 @@ const ConversationList = ({ onClose }: ConversationListProps) => {
           placeholder="Search..."
           value={search}
           onValueChange={setSearch}
-          className="placeholder:text-neutral-600"
+          className="text-white/95 placeholder:text-white/55"
         />
       </div>
 
@@ -105,15 +105,15 @@ const ConversationList = ({ onClose }: ConversationListProps) => {
             className="group w-full flex flex-col items-start gap-0.5 py-2 px-2.5 border-none rounded-md text-left mb-0.5"
           >
             <div className="w-full flex items-center justify-between gap-2">
-              <span className="flex-1 text-[13px] font-medium overflow-hidden text-ellipsis whitespace-nowrap text-neutral-400 group-data-[selected=true]:text-neutral-200">
+              <span className="flex-1 text-[13px] font-medium overflow-hidden text-ellipsis whitespace-nowrap text-white/86 group-data-[selected=true]:text-white/95">
                 {conv.title ?? "Untitled Conversation"}
               </span>
-              <span className="text-[10px] text-neutral-600 shrink-0">
+              <span className="text-[10px] text-white/55 shrink-0">
                 {formatRelativeTime(new Date(conv.updatedAt))}
               </span>
             </div>
             {conv.summary && (
-              <span className="text-[11px] text-[#71717a] overflow-hidden text-ellipsis whitespace-nowrap w-full">
+              <span className="text-[11px] text-white/62 overflow-hidden text-ellipsis whitespace-nowrap w-full">
                 {conv.summary}
               </span>
             )}

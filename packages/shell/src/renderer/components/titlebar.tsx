@@ -22,7 +22,7 @@ export const Titlebar = () => {
     >
       {/* Centered on the window, not between the side groups, which differ in
           width. Hidden where the right-hand group would cover it. */}
-      <span className="pointer-events-none absolute inset-x-0 text-center text-[13px] font-medium text-neutral-400 max-[720px]:hidden">
+      <span className="pointer-events-none absolute inset-x-0 text-center text-[13px] font-medium text-white/86 max-[720px]:hidden">
         Antidraw
       </span>
       {/* Shown once the update toast is dismissed; clicking brings it back. */}
