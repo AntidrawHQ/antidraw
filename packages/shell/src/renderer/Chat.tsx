@@ -666,7 +666,7 @@ function Composer({
           onValueChange={setInput}
           isLoading={isLoading}
           onSubmit={handleSubmit}
-          className="bg-neutral-700 border-neutral-600"
+          className="bg-neutral-700 border-neutral-600 rounded-xl p-3"
         >
           <TagChips />
           {attachedImages.length > 0 && (
@@ -691,7 +691,7 @@ function Composer({
           )}
           <PromptInputTextarea
             placeholder="Ask me anything..."
-            className="bg-transparent dark:bg-transparent"
+            className="bg-transparent dark:bg-transparent min-h-[72px]"
             onPaste={handlePaste}
           />
           <PromptInputActions className="justify-between pt-2">
