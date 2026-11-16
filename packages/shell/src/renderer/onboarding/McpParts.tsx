@@ -137,7 +137,10 @@ export const Reveal = ({ open, children }: { open: boolean; children: ReactNode 
       open ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0",
     )}
   >
-    <div className="overflow-hidden">{children}</div>
+    {/* Folded, its controls are out of the tab order and the accessibility tree. */}
+    <div className="overflow-hidden" inert={!open}>
+      {children}
+    </div>
   </div>
 );
 

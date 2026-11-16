@@ -89,12 +89,30 @@ it("opens the agents under the titlebar's button, and closes on Escape or a clic
     AGENTS.map((a) => (a.id === "other" ? `${a.name}Any agent that supports MCP` : `${a.name}${a.config}Add`)),
   );
 
-  await act(async () => void window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
+  // The Escape that closes it is handled: the canvas's own Escape (clearing
+  // a selection, closing a comment) skips a handled one.
+  const canvasSaw: boolean[] = [];
+  const canvas = (e: KeyboardEvent) => void (e.key === "Escape" && canvasSaw.push(e.defaultPrevented));
+  window.addEventListener("keydown", canvas);
+  await act(async () => void document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+  window.removeEventListener("keydown", canvas);
   expect(popover(page)).toBeNull();
+  expect(canvasSaw).toEqual([true]);
 
   await click(entry(page));
-  await click(page.querySelector(".fixed.inset-0"));
+  expect(popover(page)).not.toBeNull();
+  await act(async () => void document.body.dispatchEvent(new Event("pointerdown", { bubbles: true })));
+  await settle();
   expect(popover(page)).toBeNull();
+});
+
+it("keeps a folded row's controls out of the tab order", async () => {
+  const page = await show(<TwoWaysRows />);
+  const steps = () => row(page, "Codex").querySelector("[inert]");
+  expect(steps()).toBeInstanceOf(HTMLElement);
+  expect(steps()!.querySelector('[aria-label="Copy"]')).toBeInstanceOf(HTMLElement);
+  await click(label(page, "Codex: set it up manually"));
+  expect(steps()).toBeNull();
 });
 
 it("adds the server to an agent in a click, and says so once its config has it", async () => {
