@@ -14,6 +14,8 @@ type ObjectNode = {
   // Just past its closing brace.
   end: number;
   members: { key: string; start: number; value: Node }[];
+  // Whether a comma follows its last member.
+  trailingComma: boolean;
 };
 type ValueNode = { kind: "value"; start: number; end: number };
 type Node = ObjectNode | ValueNode;
@@ -70,11 +72,15 @@ const parse = (text: string): Parsed => {
 
     if (c === "{") {
       at++;
-      const node: ObjectNode = { kind: "object", start, end: start, members: [] };
+      const node: ObjectNode = { kind: "object", start, end: start, members: [], trailingComma: false };
       const object: { [key: string]: Json } = {};
+      let comma = false;
       for (;;) {
         skip();
-        if (text[at] === "}") break;
+        if (text[at] === "}") {
+          node.trailingComma = comma;
+          break;
+        }
         if (text[at] !== '"') fail("Expected a key");
         const keyStart = at;
         const key = string();
@@ -86,7 +92,8 @@ const parse = (text: string): Parsed => {
         // As JSON.parse has it: a repeated key's last value wins.
         Object.defineProperty(object, key, { value: member.value, enumerable: true, writable: true, configurable: true });
         skip();
-        if (text[at] === ",") at++;
+        comma = text[at] === ",";
+        if (comma) at++;
         else if (text[at] !== "}") fail("Expected ',' or '}'");
       }
       at++;
@@ -182,21 +189,42 @@ const setInValue = (value: Json | undefined, path: readonly string[], next: Json
 const nest = (path: readonly string[], value: Json): Json =>
   path.reduceRight<Json>((inner, key) => ({ [key]: inner }), value);
 
-// The whitespace a line starts with.
-const lineIndent = (text: string, offset: number) => {
-  const start = text.lastIndexOf("\n", offset - 1) + 1;
-  return /^[ \t]*/.exec(text.slice(start, offset))![0];
+// The spaces and tabs from `start` on, up to `offset` at most.
+const indentFrom = (text: string, start: number, offset: number) => {
+  let end = start;
+  while (end < offset && (text[end] === " " || text[end] === "\t")) end++;
+  return text.slice(start, end);
 };
 
-// One level of the file's indentation: its first indented member's.
+// The whitespace a line starts with.
+const lineIndent = (text: string, offset: number) =>
+  indentFrom(text, text.lastIndexOf("\n", offset - 1) + 1, offset);
+
+// One level of the file's indentation: its first indented member's. The
+// lines' starts are found once: a minified file is one line, and searching
+// back to its start for every member took minutes on a large one.
 const indentUnit = (text: string, root: Node) => {
+  const starts = [0];
+  for (let i = text.indexOf("\n"); i !== -1; i = text.indexOf("\n", i + 1)) starts.push(i + 1);
+  const lineStart = (offset: number) => {
+    let lo = 0;
+    let hi = starts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (starts[mid]! <= offset) lo = mid;
+      else hi = mid - 1;
+    }
+    return starts[lo]!;
+  };
+
   const visit = (node: Node): string | null => {
     if (node.kind !== "object") return null;
+    const parent = indentFrom(text, lineStart(node.start), node.start).length;
     for (const member of node.members) {
-      const indent = lineIndent(text, member.start);
-      const onOwnLine = text.slice(text.lastIndexOf("\n", member.start - 1) + 1, member.start).trim() === "";
-      if (onOwnLine && indent.length > lineIndent(text, node.start).length)
-        return indent.slice(lineIndent(text, node.start).length);
+      const start = lineStart(member.start);
+      const indent = indentFrom(text, start, member.start);
+      const onOwnLine = start + indent.length === member.start;
+      if (onOwnLine && indent.length > parent) return indent.slice(parent);
       const deeper = visit(member.value);
       if (deeper !== null) return deeper;
     }
@@ -276,7 +304,7 @@ const insert = (text: string, object: ObjectNode, key: string, value: Json, unit
     // stays with the member it's beside. The last member gets the comma it
     // lacks; a trailing comma already there is kept as the file's style.
     const indent = lineIndent(text, last.start);
-    const trailingComma = /^(?:\s|\/\/[^\n]*|\/\*[\s\S]*?\*\/)*,/.test(text.slice(last.value.end, close));
+    const trailingComma = object.trailingComma;
     const contentEnd = object.start + text.slice(object.start, close).trimEnd().length;
     const member = `${JSON.stringify(key)}: ${format(value, unit, indent)}${trailingComma ? "," : ""}`;
     return (

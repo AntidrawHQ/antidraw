@@ -176,6 +176,12 @@ it("shows each config's own JSON with the command's full path, and opens the age
   }
 }`);
 
+  // The user's mcp.json, which "Add" writes and reads back, not a project's.
+  expect([...vscode.querySelectorAll("p")].map((p) => p.textContent)).toContain(
+    "Add it to VS Code's user mcp.json (MCP: Open User Configuration):",
+  );
+  expect(vscode.querySelector("pre")?.previousElementSibling?.textContent).toBe("mcp.json");
+
   await click(button(vscode, "Or install it from VS Code"));
   expect(api.openMcpInstallLink.mock.calls).toEqual([["vscode"]]);
   expect(vscode.querySelector('[role="alert"]')).toBeNull();
@@ -209,4 +215,15 @@ it("shows what the agents' configs have, over how an earlier Add went", async ()
   ]);
   expect(row(page, "Codex").querySelector('[role="alert"]')).toBeNull();
   expect(row(page, "VS Code").querySelector('[role="alert"]')?.textContent).toBe("mcp.json wasn't changed. Try again");
+});
+
+it("gives any other agent the command's full path, as its server settings and config take it", async () => {
+  const page = await show(<TwoWaysRows />);
+  await click(label(page, "Other agent: set it up manually"));
+  const other = row(page, "Other agent");
+  expect(other.querySelector("code")?.textContent).toBe(`${BRIDGE} mcp`);
+  await click(button(other, "Config"));
+  expect(other.querySelector("pre")?.textContent).toContain(`"command": "${BRIDGE}"`);
+  await click(button(other, "Prompt"));
+  expect(other.querySelector("pre")?.textContent).toContain(`runs \`${BRIDGE} mcp\` over stdio`);
 });

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeEach, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, expect, test, vi } from "vitest";
 
 // The setup's routes over a throwaway home: what they tell the page, the
 // config an "Add" writes, and the only links they'll open.
@@ -27,13 +27,19 @@ const added = async () => {
   return Object.keys(agents).filter((id) => agents[id]!.added);
 };
 
+// The variables that move an agent's config out of the home directory: the
+// developer's own would point the routes at their real configs.
+const CONFIG_ENV = ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "XDG_CONFIG_HOME", "PI_CODING_AGENT_DIR", "APPDATA"];
+
 beforeEach(() => {
+  for (const name of CONFIG_ENV) vi.stubEnv(name, "");
   openExternal.mockReset();
   openExternal.mockResolvedValue(undefined);
   fs.rmSync(home, { recursive: true, force: true });
   fs.mkdirSync(path.dirname(bridge), { recursive: true });
   fs.writeFileSync(bridge, "#!/bin/sh\n", { mode: 0o755 });
 });
+afterEach(() => vi.unstubAllEnvs());
 afterAll(() => fs.rmSync(home, { recursive: true, force: true }));
 
 test("says the command, as a config and as a shell take it, and which agents have it", async () => {

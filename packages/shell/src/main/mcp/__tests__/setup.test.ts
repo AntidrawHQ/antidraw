@@ -188,6 +188,37 @@ title = "[mcp_servers.antidraw]" # [mcp_servers.antidraw]
   });
 });
 
+describe("a JSON config's last member", () => {
+  const set = (text: string) => setInJsonc(text, ["servers", "antidraw"], 1);
+
+  it("is followed by a comma only when one is there, not one in a comment after it", () => {
+    // A server commented out below the others, and a note: commas in both.
+    const commented = `{\n  "servers": {\n    "github": { "type": "http" }\n    // "playwright": { "command": "npx", "args": ["a", "b"] }\n  }\n}\n`;
+    expect(set(commented)._unsafeUnwrap()).toBe(
+      `{\n  "servers": {\n    "github": { "type": "http" },\n    // "playwright": { "command": "npx", "args": ["a", "b"] }\n    "antidraw": 1\n  }\n}\n`,
+    );
+    const noted = `{\n  "servers": {\n    "linear": { "type": "http" } // OAuth, opens a browser\n  }\n}\n`;
+    expect(set(noted)._unsafeUnwrap()).toBe(
+      `{\n  "servers": {\n    "linear": { "type": "http" }, // OAuth, opens a browser\n    "antidraw": 1\n  }\n}\n`,
+    );
+    // A real trailing comma after a comment is still the file's style.
+    const trailing = `{\n  "servers": {\n    "a": 1 // x, y\n    ,\n  }\n}\n`;
+    expect(readJsonc(set(trailing)._unsafeUnwrap())._unsafeUnwrap()).toEqual({ servers: { a: 1, antidraw: 1 } });
+  });
+
+  it("is found in a large minified config without reading it once per member", () => {
+    // Claude Code's state, compacted onto one line: was minutes, is milliseconds.
+    const projects = Object.fromEntries(
+      Array.from({ length: 8000 }, (_, i) => [`/Users/me/p${i}`, { allowedTools: [], history: [{ display: "x".repeat(100) }] }]),
+    );
+    const text = JSON.stringify({ numStartups: 1, projects, servers: {} });
+    const started = performance.now();
+    const edited = setInJsonc(text, ["servers", "antidraw"], 1)._unsafeUnwrap();
+    expect(performance.now() - started).toBeLessThan(2000);
+    expect((JSON.parse(edited) as { servers: unknown }).servers).toEqual({ antidraw: 1 });
+  });
+});
+
 describe("an agent's config on disk", () => {
   let home: string;
   let machine: Machine;
@@ -292,6 +323,26 @@ describe("an agent's config on disk", () => {
     expect(addAgentServer("claude", BRIDGE, machine).isOk()).toBe(true);
     expect(fs.lstatSync(config("claude")).isSymbolicLink()).toBe(true);
     expect(json(real)).toMatchObject({ numStartups: 3, mcpServers: { antidraw: SERVER } });
+  });
+
+  it("writes the file a dangling link points at, leaving the link", () => {
+    // A dotfiles link put there before the file it points at.
+    const real = path.join(home, "dotfiles", "cursor", "mcp.json");
+    fs.mkdirSync(path.dirname(config("cursor")), { recursive: true });
+    fs.symlinkSync(path.relative(path.dirname(config("cursor")), real), config("cursor"));
+    expect(addAgentServer("cursor", BRIDGE, machine).isOk()).toBe(true);
+    expect(fs.lstatSync(config("cursor")).isSymbolicLink()).toBe(true);
+    expect(json(real)).toEqual({ mcpServers: { antidraw: SERVER } });
+    expect(hasAgentServer("cursor", BRIDGE, machine)).toBe(true);
+  });
+
+  it("leaves a loop of links alone", () => {
+    fs.mkdirSync(path.dirname(config("cursor")), { recursive: true });
+    const other = path.join(path.dirname(config("cursor")), "other.json");
+    fs.symlinkSync(other, config("cursor"));
+    fs.symlinkSync(config("cursor"), other);
+    expect(addAgentServer("cursor", BRIDGE, machine)._unsafeUnwrapErr()).toMatch(/^it couldn't be read/);
+    expect(fs.lstatSync(config("cursor")).isSymbolicLink()).toBe(true);
   });
 
   it("leaves a config it can't read as it is, and says why", () => {

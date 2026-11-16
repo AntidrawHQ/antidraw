@@ -41,7 +41,14 @@ export type AgentId = McpAgentId | "other";
  */
 export type Install =
   | { kind: "command"; command: (shell: string) => string; hint: string }
-  | { kind: "link"; app: string; file: string; json: (command: string) => string }
+  | {
+      kind: "link";
+      app: string;
+      file: string;
+      // Where the JSON goes, when "<app>'s MCP config" doesn't say enough.
+      where?: string;
+      json: (command: string) => string;
+    }
   | { kind: "other" };
 
 export type Agent = {
@@ -55,7 +62,7 @@ export type Agent = {
 };
 
 /** The command a stdio server entry runs. */
-export const bridgeCommand = (shell: string) => `${shell} mcp`;
+export const bridgeCommand = (bridge: string) => `${bridge} mcp`;
 
 // Written out so "args" stays on one line. `servers` is the config's key
 // for its servers; `type` is for the configs that want one said.
@@ -71,8 +78,9 @@ const serverJson = (command: string, servers: string, type?: string) => `{
 /** The server as most agents' configs write one. */
 export const mcpJson = (command: string) => serverJson(command, "mcpServers");
 
-export const pastePrompt = (shell: string) =>
-  `Add an MCP server named "antidraw" that runs \`${bridgeCommand(shell)}\` over stdio. It's Antidraw's design canvas: once it's added, use its tools to read the canvas and write components into the open workspace.`;
+// For an agent to put in its config: the command's absolute path, as a config needs.
+export const pastePrompt = (command: string) =>
+  `Add an MCP server named "antidraw" that runs \`${bridgeCommand(command)}\` over stdio. It's Antidraw's design canvas: once it's added, use its tools to read the canvas and write components into the open workspace.`;
 
 const EVERY_PROJECT = "Run this in your terminal, once. It's added for every project.";
 
@@ -118,7 +126,9 @@ export const AGENTS: Agent[] = [
     install: {
       kind: "link",
       app: "VS Code",
-      file: ".vscode/mcp.json",
+      // The user's, which "Add" writes and reads back: not a project's .vscode/mcp.json.
+      file: "mcp.json",
+      where: "VS Code's user mcp.json (MCP: Open User Configuration)",
       // VS Code's servers are under "servers", each with its type.
       json: (command) => serverJson(command, "servers", "stdio"),
     },

@@ -153,13 +153,23 @@ const readIfThere = (file: string): Result<string | null, string> => {
 };
 
 // Where a write goes: a config that's a link (a dotfiles folder's, say)
-// stays one, and what it points at is written.
+// stays one, and what it points at is written, made if it isn't there yet.
+// A loop of links is left as it is: reading it fails, so nothing is written.
 const target = (file: string) => {
-  try {
-    return fs.realpathSync(file);
-  } catch {
-    return file;
+  let current = file;
+  for (let hops = 0; hops < 40; hops++) {
+    try {
+      return fs.realpathSync(current);
+    } catch {
+      // Not there, or a link to something that isn't.
+    }
+    try {
+      current = path.resolve(path.dirname(current), fs.readlinkSync(current));
+    } catch {
+      return current;
+    }
   }
+  return file;
 };
 
 // Whole or not at all: the agent may be reading it. A new file is the user's alone.

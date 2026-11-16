@@ -234,7 +234,7 @@ export const ManualSteps = ({ id }: { id: AgentId }) => {
   if (i.kind === "link")
     return (
       <>
-        <Hint>Add it to {i.app}'s MCP config:</Hint>
+        <Hint>Add it to {i.where ?? `${i.app}'s MCP config`}:</Hint>
         <CodeBlock text={i.json(bridge.command)} label={i.file} />
         <button
           type="button"
@@ -291,9 +291,10 @@ export const OtherSteps = () => {
         ))}
       </div>
       <Hint>{OTHER_TABS.find((t) => t.id === tab)!.hint}</Hint>
-      {tab === "command" && <CodeLine text={bridgeCommand(bridge.shell)} />}
+      {/* What an agent's server settings and config take: the absolute path, as no shell expands its ~. */}
+      {tab === "command" && <CodeLine text={bridgeCommand(bridge.command)} />}
       {tab === "config" && <CodeBlock text={mcpJson(bridge.command)} label="mcp.json" />}
-      {tab === "prompt" && <CodeBlock text={pastePrompt(bridge.shell)} label="Prompt" wrap />}
+      {tab === "prompt" && <CodeBlock text={pastePrompt(bridge.command)} label="Prompt" wrap />}
     </>
   );
 };
