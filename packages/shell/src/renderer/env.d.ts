@@ -10,6 +10,7 @@ declare global {
       onCommentsShown: (callback: (request: { workspaceId: string; commentId: number; send: boolean; chat?: string }) => void) => () => void;
       /** In the main window: saves what it shows at `rect` (CSS px) as the workspace's thumbnail. */
       captureThumbnail: (workspaceId: string, rect: { x: number; y: number; width: number; height: number }) => Promise<void>;
+      captureCanvas: (rect: { x: number; y: number; width: number; height: number }) => Promise<Uint8Array | null>;
       /** A content-free analytics event; see renderer/lib/analytics.ts. */
       track: (event: string, properties?: Record<string, unknown>) => void;
       /** In the main window: its canvas as it is now, for agents outside the app (main/mcp). */

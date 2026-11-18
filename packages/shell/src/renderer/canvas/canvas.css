@@ -3,9 +3,12 @@
   /* background: transparent; */
   /* box-shadow: 0 0 0 1px rgb(82 82 91); */
   /* neutral-600 */
-  /* GPU acceleration for smoother dragging */
+}
+
+/* A layer of its own for the frame being dragged only. On every frame all
+   the time, each step of a pan repainted about sixty of them. */
+.react-flow__node.dragging {
   will-change: transform;
-  transform: translate3d(0, 0, 0);
 }
 
 .react-flow__node.selected {
@@ -25,9 +28,7 @@
   transition: none !important;
 }
 
-/* Hardware acceleration for iframe containers */
 .iframe-node-container {
-  will-change: contents;
   contain: layout style;
 }
 
@@ -42,4 +43,23 @@
 .react-flow .react-flow__resize-control.line {
   border-width: 2px !important;
   z-index: 1000 !important;
+}
+
+/* The frames' toolbars (Canvas.tsx's FrameToolbar): one layer, moved as one
+   when the canvas pans. Over the frames, under React Flow's panels. */
+.canvas-toolbar-layer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 2;
+  pointer-events: none;
+  will-change: transform;
+}
+
+.canvas-frame-toolbar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: max-content;
+  pointer-events: auto;
 }

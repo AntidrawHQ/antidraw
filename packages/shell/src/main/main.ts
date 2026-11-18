@@ -37,6 +37,12 @@ import { startMcp, stopMcp } from "./mcp";
 // Keep the renderer responsive when the window is unfocused or occluded.
 // Without these, Chromium throttles rAF/timers/request scheduling in packaged
 // builds, which surfaces as SSE drops and canvas stutter.
+// A full garbage collection once a renderer's heap has doubled, not
+// quadrupled (V8's choice when memory is allocated fast on a machine with
+// plenty). A canvas's frames animate on their main thread and leave a few
+// dozen megabytes of garbage a second; left to V8, their process sat at
+// 4 to 6 GB, almost all of it garbage, where 2 GB holds everything live.
+app.commandLine.appendSwitch("js-flags", "--heap-growing-percent=100");
 app.commandLine.appendSwitch("disable-renderer-backgrounding");
 app.commandLine.appendSwitch("disable-background-timer-throttling");
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
@@ -318,6 +324,26 @@ app.whenReady().then(async () => {
       quality: "good",
     });
     await saveThumbnail(workspaceId, thumbnail.toJPEG(80));
+  });
+
+  // The main window's canvas as it is now, for the stills the frames show
+  // while it moves (renderer/canvas/stills.ts). `rect` as for the thumbnail.
+  // JPEG: a still is on screen for the length of a pan, and a PNG of a
+  // window's worth of pixels takes several times as long to make.
+  ipcMain.handle("canvas:capture", async (event, rect: unknown) => {
+    if (event.sender !== mainWindow?.webContents) return null;
+    const { x, y, width, height } = (rect ?? {}) as Record<string, unknown>;
+    if (![x, y, width, height].every((n) => typeof n === "number" && Number.isFinite(n))) return null;
+    const zoom = event.sender.getZoomFactor();
+    const dips = {
+      x: Math.round((x as number) * zoom),
+      y: Math.round((y as number) * zoom),
+      width: Math.round((width as number) * zoom),
+      height: Math.round((height as number) * zoom),
+    };
+    if (dips.width <= 0 || dips.height <= 0) return null;
+    const image = await event.sender.capturePage(dips);
+    return image.isEmpty() ? null : image.toJPEG(92);
   });
 
   // Cleanup any orphaned dev servers from previous crash (non-blocking)

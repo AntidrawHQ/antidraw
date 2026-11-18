@@ -24,6 +24,7 @@ it("imports only what the share page can run", () => {
       "./PillToggleToolbar",
       "./canvas.css",
       "./semaphore",
+      "./stills",
       "@/renderer/hooks/use-mount-effect",
       "@/renderer/lib/utils",
       "@xyflow/react",
@@ -31,6 +32,7 @@ it("imports only what the share page can run", () => {
       "lucide-react",
       "motion/react",
       "react",
+      "react-dom",
     ]
   `);
 });
