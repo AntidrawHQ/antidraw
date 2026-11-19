@@ -127,6 +127,30 @@ it("lets only the frames' origin size them", async () => {
   `);
 });
 
+it("hands a failed frame's place in the loading queue to the next frame, on its origin's word only", async () => {
+  const components = Array.from({ length: 11 }, (_, i) => ({ name: `Card ${i}` }));
+  await renderCanvas(undefined, undefined, { components, savedLayouts: [] });
+  await act(async () => {});
+  // jsdom loads no page, so the ten frames let in keep their places.
+  const loading = () => frames().filter((frame) => frame.src).map((frame) => frame.node!.replace(/-1$/, ""));
+  const postFailed = (origin: string, componentName: string) =>
+    act(async () => {
+      window.dispatchEvent(
+        new MessageEvent("message", { origin, data: { type: "component-failed", componentName } }),
+      );
+    });
+
+  const atFirst = loading();
+  await postFailed("https://elsewhere.test", atFirst[0]!);
+  const afterElsewhere = loading().length;
+  await postFailed(SITE, atFirst[0]!);
+  expect({ atFirst: atFirst.length, afterElsewhere, afterTheSite: loading().length }).toEqual({
+    atFirst: 10,
+    afterElsewhere: 10,
+    afterTheSite: 11,
+  });
+});
+
 it("lines new frames up after the others, and keeps them apart as they grow", async () => {
   const canvas = await renderCanvas();
   const placed = positions();

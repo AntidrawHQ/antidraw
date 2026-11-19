@@ -236,14 +236,15 @@ type IframeReactFlowNode = Node<IframeNodeData, "iframe">;
 
 // How many frames load at once. The frames nearest the middle of the view
 // go first, and a frame in view holds its place until its component has
-// rendered (its first component-size message), not just until its page has
-// loaded: the page's load comes before the component's own code is fetched
-// and run, which is most of the work.
+// rendered (its first component-size message) or failed to (component-failed),
+// not just until its page has loaded: the page's load comes before the
+// component's own code is fetched and run, which is most of the work.
 const frameLoads = new PrioritySemaphore(10);
-// Each loading frame's release, for the message that says it rendered.
+// Each loading frame's release, for the message that says it rendered or failed.
 const frameRendered = new Map<string, () => void>();
-// A component that never reports a size (it threw, or renders nothing) gives
-// its place up this long after its page loads.
+// A frame that sends neither (its component's code never arrives, or its
+// runtime is from before component-failed) gives its place up this long after
+// its page loads.
 const RENDER_TIMEOUT_MS = 4000;
 
 // How far a frame's middle is from the view's, in screen pixels.
@@ -606,7 +607,8 @@ export const Canvas = ({
 
   useMountEffect(() => {
     const handleMessage = (event: MessageEvent) => {
-      if (event.data?.type !== "component-size") return;
+      const type = event.data?.type;
+      if (type !== "component-size" && type !== "component-failed") return;
       const { componentName, width, height } = event.data;
 
       const node = nodesRef.current.find(
@@ -615,8 +617,9 @@ export const Canvas = ({
       // Only the frames' own origin may size them: on the web the canvas sits
       // on a page any other window can post to.
       if (!node || event.origin !== new URL(node.data.url).origin) return;
-      // Rendered: its place in the loading queue is free.
+      // Rendered, or never will be: its place in the loading queue is free.
       frameRendered.get(componentName)?.();
+      if (type === "component-failed") return;
       handleNodesChangeRef.current([
         {
           id: node.id,
