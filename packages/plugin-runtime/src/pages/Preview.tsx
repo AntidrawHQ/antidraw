@@ -57,6 +57,31 @@ const Frame = ({
   )
 }
 
+// What a frame shows when it has no component to show: it failed to load,
+// threw as it rendered, or has a name that can't be loaded. Says so to the
+// canvas, which holds the frame's place in its loading queue for a
+// component-size that will not come.
+const Failed = ({
+  componentName,
+  fullscreen,
+  children,
+}: {
+  componentName: string
+  fullscreen: boolean
+  children: ReactNode
+}) => {
+  useEffect(() => {
+    if (fullscreen) return
+    window.parent.postMessage({ type: "component-failed", componentName }, "*")
+  }, [componentName, fullscreen])
+
+  return (
+    <div className="flex items-center justify-center h-screen text-red-400">
+      <h1 className="text-xl">{children}</h1>
+    </div>
+  )
+}
+
 // A component name is one file-name segment: Preview appends ".tsx" and loads
 // it from src/components/user-components/. "/" and ".." could leave that
 // directory, and "/", "?" and "#" cannot be carried in a URL path at all, so
@@ -88,18 +113,16 @@ export const Preview = () => {
 
   if (!LazyComponent) {
     return (
-      <div className="flex items-center justify-center h-screen text-red-400">
-        <h1 className="text-xl">
-          Component &quot;{componentName}&quot; cannot be previewed: names cannot contain / \ ? or #
-        </h1>
-      </div>
+      <Failed componentName={componentName} fullscreen={!!fullscreen}>
+        Component &quot;{componentName}&quot; cannot be previewed: names cannot contain / \ ? or #
+      </Failed>
     )
   }
 
   const notFound = (
-    <div className="flex items-center justify-center h-screen text-red-400">
-      <h1 className="text-xl">Component &quot;{componentName}&quot; not found</h1>
-    </div>
+    <Failed componentName={componentName} fullscreen={!!fullscreen}>
+      Component &quot;{componentName}&quot; not found
+    </Failed>
   )
 
   return (

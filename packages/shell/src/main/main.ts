@@ -30,9 +30,16 @@ import { isRendererEvent, toAnalyticsProperties } from "@/shared/analytics";
 import { listWorkspaces } from "./api/services/workspace.service";
 import { APP_KEY, APP_KEY_ARG } from "@/main/lib/app-key";
 import { injectFrameAgent } from "./frame-agent";
-import { verifyCertificate } from "@/main/lib/certificate-verify";
+import { trustsCertificateErrorOn, verifyCertificate } from "@/main/lib/certificate-verify";
 import { saveThumbnail } from "./services/thumbnail.service";
 import { startMcp, stopMcp } from "./mcp";
+
+// A full garbage collection once a renderer's heap has doubled, not
+// quadrupled (V8's choice when memory is allocated fast on a machine with
+// plenty). A canvas's frames animate on their main thread and leave a few
+// dozen megabytes of garbage a second; left to V8, their process sat at
+// 4 to 6 GB, almost all of it garbage, where 2 GB holds everything live.
+app.commandLine.appendSwitch("js-flags", "--heap-growing-percent=100");
 
 // Keep the renderer responsive when the window is unfocused or occluded.
 // Without these, Chromium throttles rAF/timers/request scheduling in packaged
@@ -172,6 +179,12 @@ app.whenReady().then(async () => {
   // Trust self-signed certs for localhost (enables HTTPS dev servers without
   // warnings); every other host gets Chromium's own verification.
   session.defaultSession.setCertificateVerifyProc(verifyCertificate);
+  // The same trust for a connection that check never saw (certificate-verify.ts).
+  app.on("certificate-error", (event, _contents, url, _error, _certificate, callback) => {
+    if (!trustsCertificateErrorOn(url)) return;
+    event.preventDefault();
+    callback(true);
+  });
 
   protocol.handle("antidraw", (req) => {
     const url = new URL(req.url);

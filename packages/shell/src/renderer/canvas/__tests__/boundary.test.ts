@@ -31,6 +31,7 @@ it("imports only what the share page can run", () => {
       "lucide-react",
       "motion/react",
       "react",
+      "react-dom",
     ]
   `);
 });
