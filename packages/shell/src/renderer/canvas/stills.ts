@@ -35,6 +35,10 @@ const MIN_SHARPNESS = 0.5;
 // again takes a moment to draw, and the gap would flash its background.
 const UNCOVER_MS = 120;
 
+// How far the canvas's zoom may be from the zoom a still with a label in it
+// was taken at (see Frame.labelled) before the label reads as a ghost.
+const ZOOM_SLACK = 0.03;
+
 type Frame = {
   // The still's own element, over the iframe in the frame's wrapper.
   canvas: HTMLCanvasElement;
@@ -45,7 +49,16 @@ type Frame = {
   height: number;
   pixels: number;
   takenAt: number;
+  // The canvas's zoom when the still was taken.
+  zoom: number;
+  // Another frame's label lay over this one when the still was taken, so the
+  // still has it in. Labels keep their size as the canvas zooms and frames
+  // don't: at any other zoom the label in the still is a ghost beside the
+  // real one. Such a still is right for a pan, and for nothing else.
+  labelled: boolean;
   held: boolean;
+  // Set while a frame let go mid-move is drawing under its still.
+  waking: ReturnType<typeof setTimeout> | undefined;
 };
 
 const intersects = (a: DOMRect, b: DOMRect) =>
@@ -54,6 +67,8 @@ const intersects = (a: DOMRect, b: DOMRect) =>
 export class FrameStills {
   private frames = new Map<string, Frame>();
   private holding = false;
+  // The canvas's zoom, as last told, while holding.
+  private zoom = 1;
   private uncover: ReturnType<typeof setTimeout> | undefined;
   // Counts captures, so one overtaken by a move or a later capture is dropped.
   private generation = 0;
@@ -67,10 +82,16 @@ export class FrameStills {
       height: 0,
       pixels: 0,
       takenAt: 0,
+      zoom: 1,
+      labelled: false,
       held: false,
+      waking: undefined,
     });
     return () => {
-      if (this.frames.get(componentName)?.canvas === canvas) this.frames.delete(componentName);
+      const frame = this.frames.get(componentName);
+      if (frame?.canvas !== canvas) return;
+      clearTimeout(frame.waking);
+      this.frames.delete(componentName);
     };
   }
 
@@ -83,12 +104,21 @@ export class FrameStills {
     if (!this.holding) this.show(frame);
   }
 
-  // A move starts, with the canvas at `zoom`: every frame with a still sharp
-  // enough for it shows the still, and its iframe is held.
-  hold(zoom: number) {
+  // Whether a frame's still can stand in for it with the canvas at `zoom`.
+  private fits(frame: Frame, zoom: number) {
+    if (frame.labelled && Math.abs(zoom / frame.zoom - 1) > ZOOM_SLACK) return false;
+    return frame.canvas.width >= frame.width * zoom * window.devicePixelRatio * MIN_SHARPNESS;
+  }
+
+  // A move starts, with the canvas at `zoom`: every frame with a still that
+  // fits shows the still, and its iframe is held. `zooming`: the move is one
+  // that changes the zoom, as far as its start can tell, so a still with a
+  // label in it is no use from the first step.
+  hold(zoom: number, zooming = false) {
     clearTimeout(this.uncover);
     this.uncover = undefined;
     this.holding = true;
+    this.zoom = zoom;
     this.generation++;
     // Read every size before changing any style: one layout, not one a frame.
     const held: Frame[] = [];
@@ -96,16 +126,30 @@ export class FrameStills {
       const { iframe } = frame;
       if (!iframe || frame.pixels === 0) continue;
       if (iframe.offsetWidth !== frame.width || iframe.offsetHeight !== frame.height) continue;
-      const onScreen = frame.width * zoom * window.devicePixelRatio;
-      if (frame.canvas.width < onScreen * MIN_SHARPNESS) continue;
+      if (!this.fits(frame, zoom) || (zooming && frame.labelled)) continue;
       // The frame being typed in keeps its focus: hiding it would blur it.
       if (document.activeElement === iframe) continue;
       held.push(frame);
     }
     for (const frame of held) {
+      clearTimeout(frame.waking);
+      frame.waking = undefined;
       frame.held = true;
       frame.canvas.style.visibility = "visible";
       frame.iframe!.style.visibility = "hidden";
+    }
+  }
+
+  // The canvas zoomed during the move: a frame whose still no longer fits
+  // (stretched too far, or with a label in it) is live again from here, under
+  // its still until it has drawn.
+  zoomTo(zoom: number) {
+    if (!this.holding || zoom === this.zoom) return;
+    this.zoom = zoom;
+    for (const frame of this.frames.values()) {
+      if (!frame.held || frame.waking !== undefined || this.fits(frame, zoom)) continue;
+      if (frame.iframe) frame.iframe.style.visibility = "";
+      frame.waking = setTimeout(() => this.show(frame), UNCOVER_MS);
     }
   }
 
@@ -129,15 +173,22 @@ export class FrameStills {
   }
 
   // Takes a still of every frame wholly on screen in `area`, for the next
-  // move. Call it while the canvas is at rest. `overlays` are what's drawn
-  // over the canvas at a fixed place (its panels): a frame under one is
-  // skipped, or its still would carry a piece of the panel along.
-  async capture(area: HTMLElement, overlays: Element[], captureArea: CaptureArea) {
+  // move. Call it while the canvas is at rest. `over.panels` are what's drawn
+  // over the canvas at a fixed place: a frame under one is skipped, or its
+  // still would carry a piece of the panel along. `over.labels` are what
+  // moves with the canvas but keeps its size (the frames' toolbars): a frame
+  // under one gets a still for pans only (Frame.labelled).
+  async capture(
+    area: HTMLElement,
+    over: { panels: Element[]; labels: Element[] },
+    captureArea: CaptureArea,
+  ) {
     if (this.moving) return;
     const generation = ++this.generation;
     const bounds = area.getBoundingClientRect();
     if (bounds.width < 1 || bounds.height < 1) return;
-    const covered = overlays.map((el) => el.getBoundingClientRect());
+    const covered = over.panels.map((el) => el.getBoundingClientRect());
+    const labels = over.labels.map((el) => el.getBoundingClientRect());
 
     const wanted: { frame: Frame; rect: DOMRect }[] = [];
     for (const frame of this.frames.values()) {
@@ -212,6 +263,8 @@ export class FrameStills {
       frame.height = iframe.offsetHeight;
       frame.pixels = width * height;
       frame.takenAt = now;
+      frame.zoom = rect.width / iframe.offsetWidth;
+      frame.labelled = labels.some((label) => intersects(rect, label));
     }
     bitmap.close();
     this.trim();
@@ -233,6 +286,8 @@ export class FrameStills {
   }
 
   private show(frame: Frame) {
+    clearTimeout(frame.waking);
+    frame.waking = undefined;
     frame.held = false;
     frame.canvas.style.visibility = "hidden";
     if (frame.iframe) frame.iframe.style.visibility = "";

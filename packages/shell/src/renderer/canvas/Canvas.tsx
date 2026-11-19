@@ -738,7 +738,14 @@ export const Canvas = ({
         const area = store.getState().domNode;
         if (!capture || !area) return;
         stillsTakenAt.current = performance.now();
-        void stills.capture(area, [...area.querySelectorAll(OVER_CANVAS)], capture);
+        void stills.capture(
+          area,
+          {
+            panels: [...area.querySelectorAll(OVER_CANVAS)],
+            labels: [...area.querySelectorAll(".canvas-frame-toolbar")],
+          },
+          capture,
+        );
       }, delay);
     },
     [stills, store],
@@ -747,10 +754,25 @@ export const Canvas = ({
 
   useEffect(() => () => clearTimeout(stillsTimer.current), []);
 
-  const holdFrames = useCallback(() => {
-    clearTimeout(stillsTimer.current);
-    stills.hold(store.getState().transform[2]);
-  }, [stills, store]);
+  const holdFrames = useCallback(
+    (event: MouseEvent | TouchEvent | null) => {
+      clearTimeout(stillsTimer.current);
+      // A pinch (a wheel event with ctrl held, or two fingers on a touch
+      // screen) and a move the canvas makes itself (fitting the view, focusing
+      // a frame) change the zoom; a scroll or a drag pans.
+      const zooming =
+        !event ||
+        (event.type === "wheel" && (event.ctrlKey || event.metaKey)) ||
+        ("touches" in event && event.touches.length > 1);
+      stills.hold(store.getState().transform[2], zooming);
+    },
+    [stills, store],
+  );
+
+  const zoomFrames = useCallback(
+    (_: unknown, viewport: { zoom: number }) => stills.zoomTo(viewport.zoom),
+    [stills],
+  );
 
   const releaseFrames = useCallback(() => {
     stills.release();
@@ -827,6 +849,7 @@ export const Canvas = ({
           nodes={nodes}
           onNodesChange={handleNodesChange}
           onMoveStart={captureArea ? holdFrames : undefined}
+          onMove={captureArea ? zoomFrames : undefined}
           onMoveEnd={captureArea ? releaseFrames : undefined}
           nodeTypes={nodeTypes}
           fitView

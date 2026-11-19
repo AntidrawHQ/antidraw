@@ -57,7 +57,7 @@ it("shows a still of each frame it has one of while the canvas moves, and the li
   const stills = canvasWith(frames);
   const panel = element({ x: 50, y: 600, width: 300, height: 100 });
 
-  await stills.capture(area, [panel], capture);
+  await stills.capture(area, { panels: [panel], labels: [] }, capture);
   stills.hold(0.5);
   const moving = Object.fromEntries(Object.entries(frames).map(([name, f]) => [name, shown(f)]));
 
@@ -88,7 +88,7 @@ it("keeps a frame live when its still no longer fits it", async () => {
     Unchanged: frame({ x: 700, y: 100, width: 200, height: 150 }),
   };
   const stills = canvasWith(frames);
-  await stills.capture(area, [], capture);
+  await stills.capture(area, { panels: [], labels: [] }, capture);
 
   frames.Resized.resize({ width: 400, height: 900 });
   Object.defineProperty(document, "activeElement", { configurable: true, get: () => frames.Focused.iframe });
@@ -106,7 +106,7 @@ it("keeps a frame live when its still was taken from much further out", async ()
   // 20px wide on screen when taken: 40 device pixels of a frame 400 wide.
   const frames = { Tiny: frame({ x: 100, y: 100, width: 20, height: 15 }) };
   const stills = canvasWith(frames);
-  await stills.capture(area, [], capture);
+  await stills.capture(area, { panels: [], labels: [] }, capture);
 
   stills.hold(0.05);
   const farOut = shown(frames.Tiny);
@@ -123,7 +123,44 @@ it("takes no stills while the canvas is moving", async () => {
   const taken = vi.fn(capture);
 
   stills.hold(0.5);
-  await stills.capture(area, [], taken);
+  await stills.capture(area, { panels: [], labels: [] }, taken);
 
   expect(taken).not.toHaveBeenCalled();
+});
+
+it("lets go of a still mid-move once the canvas has zoomed past what it's good for", async () => {
+  // Both 200px wide on screen at 50% zoom, so their stills are 400 pixels wide.
+  const frames = {
+    Clear: frame({ x: 100, y: 100, width: 200, height: 150 }),
+    UnderALabel: frame({ x: 400, y: 100, width: 200, height: 150 }),
+  };
+  const stills = canvasWith(frames);
+  const label = element({ x: 380, y: 90, width: 120, height: 24 });
+  await stills.capture(area, { panels: [], labels: [label] }, capture);
+  const look = () => {
+    vi.advanceTimersByTime(200);
+    return Object.fromEntries(Object.entries(frames).map(([name, f]) => [name, shown(f)]));
+  };
+
+  stills.hold(0.5);
+  const panning = look();
+  // A label keeps its size as frames grow: the one in the still is a ghost.
+  stills.zoomTo(0.6);
+  const zoomedALittle = look();
+  // 800px wide on screen at 2x: 1600 pixels, of which the still has a quarter.
+  stills.zoomTo(2);
+  const zoomedALot = look();
+
+  // A move known from its start to be a zoom.
+  stills.release();
+  vi.runAllTimers();
+  stills.hold(0.5, true);
+  const pinching = look();
+
+  expect({ panning, zoomedALittle, zoomedALot, pinching }).toEqual({
+    panning: { Clear: "still", UnderALabel: "still" },
+    zoomedALittle: { Clear: "still", UnderALabel: "live" },
+    zoomedALot: { Clear: "live", UnderALabel: "live" },
+    pinching: { Clear: "still", UnderALabel: "live" },
+  });
 });
