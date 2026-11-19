@@ -34,15 +34,16 @@ import { trustsCertificateErrorOn, verifyCertificate } from "@/main/lib/certific
 import { saveThumbnail } from "./services/thumbnail.service";
 import { startMcp, stopMcp } from "./mcp";
 
-// Keep the renderer responsive when the window is unfocused or occluded.
-// Without these, Chromium throttles rAF/timers/request scheduling in packaged
-// builds, which surfaces as SSE drops and canvas stutter.
 // A full garbage collection once a renderer's heap has doubled, not
 // quadrupled (V8's choice when memory is allocated fast on a machine with
 // plenty). A canvas's frames animate on their main thread and leave a few
 // dozen megabytes of garbage a second; left to V8, their process sat at
 // 4 to 6 GB, almost all of it garbage, where 2 GB holds everything live.
 app.commandLine.appendSwitch("js-flags", "--heap-growing-percent=100");
+
+// Keep the renderer responsive when the window is unfocused or occluded.
+// Without these, Chromium throttles rAF/timers/request scheduling in packaged
+// builds, which surfaces as SSE drops and canvas stutter.
 app.commandLine.appendSwitch("disable-renderer-backgrounding");
 app.commandLine.appendSwitch("disable-background-timer-throttling");
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");

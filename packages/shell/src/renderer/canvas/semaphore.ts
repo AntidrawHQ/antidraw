@@ -1,36 +1,3 @@
-export class Semaphore {
-  private permits: number;
-  private queue: (() => void)[] = [];
-
-  constructor(permits: number) {
-    this.permits = permits;
-  }
-
-  // Returns a one-time release function (idempotent - safe to call multiple times)
-  acquire(): Promise<() => void> {
-    const createReleaser = () => {
-      let released = false;
-      return () => {
-        if (released) return;
-        released = true;
-
-        const next = this.queue.shift();
-        if (next) next();
-        else this.permits++;
-      };
-    };
-
-    if (this.permits > 0) {
-      this.permits--;
-      return Promise.resolve(createReleaser());
-    }
-
-    return new Promise((resolve) => {
-      this.queue.push(() => resolve(createReleaser()));
-    });
-  }
-}
-
 // A semaphore whose free permits go to the waiter that needs one most: the
 // one whose `priority()` is lowest when a permit comes free. For the canvas's
 // frames, that is the one nearest the middle of the view.

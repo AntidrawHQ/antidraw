@@ -8,7 +8,7 @@ it("lets the nearest waiters in first, as many as there are places, however they
   const places = new PrioritySemaphore(2);
   const order: string[] = [];
   const releases = new Map<string, () => void>();
-  const distance: Record<string, number> = { far: 900, near: 10, middling: 300, nearest: 1 };
+  const distance: Record<string, number> = { far: 900, near: 10, middling: 300, nearest: 1, farthest: 2000 };
 
   for (const name of Object.keys(distance)) {
     void places.acquire(() => distance[name]!).then((release) => {
@@ -25,7 +25,7 @@ it("lets the nearest waiters in first, as many as there are places, however they
   await vi.runAllTimersAsync();
   expect(order).toEqual(["nearest", "near", "far"]);
 
-  // Releasing twice frees one place, not two.
+  // Releasing twice frees one place, not two: the farthest still waits.
   releases.get("near")!();
   releases.get("near")!();
   await vi.runAllTimersAsync();

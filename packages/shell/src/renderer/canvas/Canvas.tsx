@@ -102,8 +102,9 @@ const FrameActionsContext = createContext<FrameActions>({
 // The frames' toolbars share one layer over the canvas. A pan moves the
 // layer: one style write. A zoom writes each toolbar's place (its frame's
 // corner, at the new zoom) straight to its element. Neither renders a
-// toolbar: one renders when its frame moves. React Flow's NodeToolbar
-// renders, and writes its place, for every toolbar on every step of a move.
+// toolbar: one renders with its frame's node, which a pan or zoom doesn't
+// render. React Flow's NodeToolbar renders, and writes its place, for every
+// toolbar on every step of a move.
 const ToolbarLayerContext = createContext<HTMLDivElement | null>(null);
 
 // Above the frame's top left corner (x, y on the canvas), 8px clear of it at
@@ -112,29 +113,39 @@ const ToolbarLayerContext = createContext<HTMLDivElement | null>(null);
 const toolbarTransform = (x: number, y: number, zoom: number) =>
   `translate(${x * zoom}px, ${y * zoom}px) translateY(calc(-100% - 8px))`;
 
-const FrameToolbar = memo(
-  ({ id, x, y, zIndex, children }: { id: string; x: number; y: number; zIndex: number; children: ReactNode }) => {
-    const layer = useContext(ToolbarLayerContext);
-    const store = useStoreApi();
-    if (!layer) return null;
-    return createPortal(
-      <div
-        className="react-flow__node-toolbar canvas-frame-toolbar nodrag nopan"
-        data-id={id}
-        // For the layer, which places it again when the zoom changes.
-        data-x={x}
-        data-y={y}
-        style={{
-          transform: toolbarTransform(x, y, store.getState().transform[2]),
-          zIndex: zIndex + 1,
-        }}
-      >
-        {children}
-      </div>,
-      layer,
-    );
-  },
-);
+const FrameToolbar = ({
+  id,
+  x,
+  y,
+  zIndex,
+  children,
+}: {
+  id: string;
+  x: number;
+  y: number;
+  zIndex: number;
+  children: ReactNode;
+}) => {
+  const layer = useContext(ToolbarLayerContext);
+  const store = useStoreApi();
+  if (!layer) return null;
+  return createPortal(
+    <div
+      className="react-flow__node-toolbar canvas-frame-toolbar nodrag nopan"
+      data-id={id}
+      // For the layer, which places it again when the zoom changes.
+      data-x={x}
+      data-y={y}
+      style={{
+        transform: toolbarTransform(x, y, store.getState().transform[2]),
+        zIndex: zIndex + 1,
+      }}
+    >
+      {children}
+    </div>,
+    layer,
+  );
+};
 
 type IframeNodeProps = {
   componentName: string;
@@ -477,7 +488,6 @@ type CanvasProps = {
   // The frames have the pointer, for a host's tool that picks in them
   // (the shell's inspector): no layer over them takes it.
   framesTakePointer?: boolean;
-  // Takes the pixels of a part of the page, for a host that can (the shell).
   className?: string;
   // Rendered inside React Flow, for hosts that drive the viewport (useReactFlow).
   children?: ReactNode;
