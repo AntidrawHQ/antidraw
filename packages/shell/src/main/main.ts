@@ -30,7 +30,7 @@ import { isRendererEvent, toAnalyticsProperties } from "@/shared/analytics";
 import { listWorkspaces } from "./api/services/workspace.service";
 import { APP_KEY, APP_KEY_ARG } from "@/main/lib/app-key";
 import { injectFrameAgent } from "./frame-agent";
-import { verifyCertificate } from "@/main/lib/certificate-verify";
+import { trustsCertificateErrorOn, verifyCertificate } from "@/main/lib/certificate-verify";
 import { saveThumbnail } from "./services/thumbnail.service";
 import { startMcp, stopMcp } from "./mcp";
 
@@ -178,6 +178,12 @@ app.whenReady().then(async () => {
   // Trust self-signed certs for localhost (enables HTTPS dev servers without
   // warnings); every other host gets Chromium's own verification.
   session.defaultSession.setCertificateVerifyProc(verifyCertificate);
+  // The same trust for a connection that check never saw (certificate-verify.ts).
+  app.on("certificate-error", (event, _contents, url, _error, _certificate, callback) => {
+    if (!trustsCertificateErrorOn(url)) return;
+    event.preventDefault();
+    callback(true);
+  });
 
   protocol.handle("antidraw", (req) => {
     const url = new URL(req.url);
