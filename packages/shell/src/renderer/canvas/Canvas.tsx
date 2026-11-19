@@ -31,7 +31,6 @@ import { cn } from "@/renderer/lib/utils";
 import { useMountEffect } from "@/renderer/hooks/use-mount-effect";
 import { PrioritySemaphore } from "./semaphore";
 import { PillToggleToolbar } from "./PillToggleToolbar";
-import { FrameStills, type CaptureArea } from "./stills";
 
 // The canvas is shared by the shell and the published viewer, so nothing in
 // this folder reaches for the shell's API, stores or Electron: whatever differs
@@ -87,8 +86,6 @@ type FrameActions = {
   frameLayer?: FrameLayer;
   framesTakePointer?: boolean;
   onFrameActivity?: () => void;
-  // The frames' stills, shown while the canvas moves (stills.ts).
-  stills?: FrameStills;
 };
 
 // Drawn over a frame's preview, for a host's own tools (the shell's
@@ -151,25 +148,11 @@ const IframeNode = memo(({ componentName, url, selected, onLoad }: IframeNodePro
   const [interactionMode, setInteractionMode] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [iframe, setIframe] = useState<HTMLIFrameElement | null>(null);
-  const { frameLayer, framesTakePointer, stills } = useContext(FrameActionsContext);
-  const setIframeRef = useCallback(
-    (el: HTMLIFrameElement | null) => {
-      iframeRef.current = el;
-      setIframe(el);
-      stills?.setIframe(componentName, el);
-    },
-    [stills, componentName],
-  );
-
-  // The frame's still, drawn over it while the canvas moves. Registered
-  // before the iframe mounts: the placeholder comes first.
-  const stillRef = useRef<HTMLCanvasElement>(null);
-  useEffect(() => {
-    if (!stills || !stillRef.current) return;
-    const unregister = stills.register(componentName, stillRef.current);
-    stills.setIframe(componentName, iframeRef.current);
-    return unregister;
-  }, [stills, componentName]);
+  const { frameLayer, framesTakePointer } = useContext(FrameActionsContext);
+  const setIframeRef = useCallback((el: HTMLIFrameElement | null) => {
+    iframeRef.current = el;
+    setIframe(el);
+  }, []);
 
   // Exit interaction mode when node is deselected
   useEffect(() => {
@@ -227,11 +210,6 @@ const IframeNode = memo(({ componentName, url, selected, onLoad }: IframeNodePro
             <span className="text-xs text-neutral-500">Loading...</span>
           </div>
         )}
-        <canvas
-          ref={stillRef}
-          className="pointer-events-none absolute inset-0 h-full w-full"
-          style={{ visibility: "hidden" }}
-        />
       </div>
 
       {/* Overlay on top of iframe - blocks events when not in interaction mode */}
@@ -423,19 +401,6 @@ const clampNodeSize = (size: number) => Math.max(size, MIN_NODE_SIZE);
 // A frame's size until its component reports its own.
 const NEW_FRAME_SIZE = { width: 400, height: 300 };
 
-// When the frames' stills are taken (stills.ts). After a frame reports its
-// size: the component has rendered, and its neighbours are likely about to.
-const STILLS_SETTLE_MS = 600;
-// After a move: the frames are back and have drawn.
-const STILLS_AFTER_MOVE_MS = 350;
-// Stills older than this are retaken when the pointer moves over the canvas.
-const STILLS_MAX_AGE_MS = 1500;
-const STILLS_POINTER_MS = 80;
-
-// What's drawn over the canvas at a fixed place: React Flow's panels, and
-// whatever a host marks. A frame under one gets no still (stills.ts).
-const OVER_CANVAS = ".react-flow__panel, [data-over-canvas]";
-
 // The space between frames the canvas places itself.
 const FRAME_GAP = 100;
 
@@ -512,9 +477,6 @@ type CanvasProps = {
   // (the shell's inspector): no layer over them takes it.
   framesTakePointer?: boolean;
   // Takes the pixels of a part of the page, for a host that can (the shell).
-  // With it, frames show stills of themselves while the canvas pans or zooms
-  // (stills.ts); without it they stay live throughout.
-  captureArea?: CaptureArea;
   className?: string;
   // Rendered inside React Flow, for hosts that drive the viewport (useReactFlow).
   children?: ReactNode;
@@ -532,7 +494,6 @@ export const Canvas = ({
   onRefresh,
   frameLayer,
   framesTakePointer,
-  captureArea,
   className,
   children,
 }: CanvasProps) => {
@@ -643,9 +604,6 @@ export const Canvas = ({
   const onFrameActivityRef = useRef(onFrameActivity);
   onFrameActivityRef.current = onFrameActivity;
 
-  // Set below, once the stills are set up.
-  const takeStillsSoonRef = useRef<(delay: number) => void>(() => {});
-
   useMountEffect(() => {
     const handleMessage = (event: MessageEvent) => {
       if (event.data?.type !== "component-size") return;
@@ -674,7 +632,6 @@ export const Canvas = ({
         setNodes((nodes) => lineUp(nodes, settlingRef.current));
       }
       onFrameActivityRef.current?.();
-      takeStillsSoonRef.current(STILLS_SETTLE_MS);
     };
 
     window.addEventListener("message", handleMessage);
@@ -721,73 +678,6 @@ export const Canvas = ({
     }
   }, [soloBoxSelection, store]);
 
-  // The frames' stills (stills.ts): taken while the canvas is at rest, shown
-  // from the start of a pan or zoom to its end.
-  const stills = useMemo(() => new FrameStills(), []);
-  const captureAreaRef = useRef(captureArea);
-  captureAreaRef.current = captureArea;
-  const stillsTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const stillsTakenAt = useRef(0);
-
-  const takeStillsSoon = useCallback(
-    (delay: number) => {
-      if (!captureAreaRef.current) return;
-      clearTimeout(stillsTimer.current);
-      stillsTimer.current = setTimeout(() => {
-        const capture = captureAreaRef.current;
-        const area = store.getState().domNode;
-        if (!capture || !area) return;
-        stillsTakenAt.current = performance.now();
-        void stills.capture(
-          area,
-          {
-            panels: [...area.querySelectorAll(OVER_CANVAS)],
-            labels: [...area.querySelectorAll(".canvas-frame-toolbar")],
-          },
-          capture,
-        );
-      }, delay);
-    },
-    [stills, store],
-  );
-  takeStillsSoonRef.current = takeStillsSoon;
-
-  useEffect(() => () => clearTimeout(stillsTimer.current), []);
-
-  const holdFrames = useCallback(
-    (event: MouseEvent | TouchEvent | null) => {
-      clearTimeout(stillsTimer.current);
-      // A pinch (a wheel event with ctrl held, or two fingers on a touch
-      // screen) and a move the canvas makes itself (fitting the view, focusing
-      // a frame) change the zoom; a scroll or a drag pans.
-      const zooming =
-        !event ||
-        (event.type === "wheel" && (event.ctrlKey || event.metaKey)) ||
-        ("touches" in event && event.touches.length > 1);
-      stills.hold(store.getState().transform[2], zooming);
-    },
-    [stills, store],
-  );
-
-  const zoomFrames = useCallback(
-    (_: unknown, viewport: { zoom: number }) => stills.zoomTo(viewport.zoom),
-    [stills],
-  );
-
-  const releaseFrames = useCallback(() => {
-    stills.release();
-    takeStillsSoon(STILLS_AFTER_MOVE_MS);
-  }, [stills, takeStillsSoon]);
-
-  // The pointer moving over the canvas comes before most moves: a moment to
-  // bring the stills up to date with what the frames show now.
-  const refreshStills = useCallback(() => {
-    if (performance.now() - stillsTakenAt.current < STILLS_MAX_AGE_MS) return;
-    if (stills.moving) return;
-    stillsTakenAt.current = performance.now();
-    takeStillsSoon(STILLS_POINTER_MS);
-  }, [stills, takeStillsSoon]);
-
   // The toolbars' layer (FrameToolbar), kept in step with the viewport.
   const domNode = useStore((s) => s.domNode);
   const toolbarHost = useMemo(() => domNode?.querySelector(".react-flow__renderer") ?? null, [domNode]);
@@ -833,24 +723,17 @@ export const Canvas = ({
       frameLayer,
       framesTakePointer,
       onFrameActivity,
-      stills: captureArea ? stills : undefined,
     }),
-    [onFullscreen, onSeeCode, onRefresh, frameLayer, framesTakePointer, onFrameActivity, captureArea, stills],
+    [onFullscreen, onSeeCode, onRefresh, frameLayer, framesTakePointer, onFrameActivity],
   );
 
   return (
     <FrameActionsContext.Provider value={frameActions}>
      <ToolbarLayerContext.Provider value={toolbarLayer}>
-      <div
-        className={cn("h-full w-full bg-[#282828] relative", className)}
-        onPointerMove={captureArea ? refreshStills : undefined}
-      >
+      <div className={cn("h-full w-full bg-[#282828] relative", className)}>
         <ReactFlow
           nodes={nodes}
           onNodesChange={handleNodesChange}
-          onMoveStart={captureArea ? holdFrames : undefined}
-          onMove={captureArea ? zoomFrames : undefined}
-          onMoveEnd={captureArea ? releaseFrames : undefined}
           nodeTypes={nodeTypes}
           fitView
           maxZoom={8}

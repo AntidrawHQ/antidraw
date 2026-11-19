@@ -28,9 +28,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // The main window's canvas as a workspace's thumbnail (main.ts).
   captureThumbnail: (workspaceId: string, rect: { x: number; y: number; width: number; height: number }) =>
     ipcRenderer.invoke("thumbnail:capture", workspaceId, rect),
-  // The main window's canvas as it is now, as a JPEG (main.ts).
-  captureCanvas: (rect: { x: number; y: number; width: number; height: number }) =>
-    ipcRenderer.invoke("canvas:capture", rect),
   appKey,
   // A content-free analytics event (shared/analytics.ts); main drops any it
   // doesn't know.

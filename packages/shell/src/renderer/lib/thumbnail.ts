@@ -34,10 +34,6 @@ let shown: ShownCanvas | null = null;
 // The layers on screen that can be drawn over the canvas.
 let covers = 0;
 
-// Whether such a layer is on screen: what main takes of the canvas now would
-// have it in.
-export const canvasCovered = () => covers > 0;
-
 // For a layer that can be drawn over the canvas (a menu, a dialog, a side
 // panel, a toast), while `covering`. A capture due meanwhile waits for the
 // last one to go. Counted at the commit that shows it, before it's painted.

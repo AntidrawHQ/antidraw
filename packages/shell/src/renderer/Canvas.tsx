@@ -7,7 +7,6 @@ import { useFrameLayouts } from "./lib/frame-layout-ops";
 import { saveFrameLayouts, type FrameLayoutData } from "./lib/api";
 import { cn } from "./lib/utils";
 import { Canvas, useFocusComponent, type FrameLayer, type FrameLayout } from "./canvas/Canvas";
-import type { CaptureArea } from "./canvas/stills";
 import { CanvasToolbar } from "./components/CanvasToolbar";
 import { OnboardingList } from "./onboarding/OnboardingList";
 import { renderFrameInspector } from "./inspector/FrameInspector";
@@ -19,17 +18,8 @@ import { RightPanel, ShowPanel } from "./design/RightPanel";
 import { EditBar } from "./design/EditBar";
 import { DesignSync } from "./design/use-design";
 import { showCode } from "./design/store";
-import { canvasCovered, useCanvasThumbnail } from "./lib/thumbnail";
+import { useCanvasThumbnail } from "./lib/thumbnail";
 import { track } from "@/renderer/lib/analytics";
-
-// The canvas's pixels, for the stills its frames show while it moves. Not
-// while a layer covers it: main takes the window's pixels, layer included.
-const captureCanvasArea: CaptureArea = async (rect) => {
-  if (canvasCovered()) return null;
-  const jpeg = await window.electronAPI.captureCanvas(rect);
-  if (!jpeg || canvasCovered()) return null;
-  return createImageBitmap(new Blob([jpeg as BlobPart], { type: "image/jpeg" }));
-};
 
 // Over each frame: the tools (the inspector's and the Comment tool's).
 const renderFrameLayers: FrameLayer = (frame) => (
@@ -108,7 +98,6 @@ const WorkspaceCanvas = ({
       onRefresh={trackRefresh}
       frameLayer={renderFrameLayers}
       framesTakePointer={picking}
-      captureArea={captureCanvasArea}
       className={className}
     >
       <FocusRequestedComponent />

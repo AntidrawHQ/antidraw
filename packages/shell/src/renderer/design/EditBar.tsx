@@ -110,7 +110,6 @@ export const EditBar = () => {
     <div
       ref={ref}
       onClick={(e) => e.stopPropagation()}
-      data-over-canvas
       className="pointer-events-none absolute left-1/2 top-3 z-40 flex -translate-x-1/2 flex-col items-center gap-1.5 text-white"
     >
       <AnimatePresence initial={false}>

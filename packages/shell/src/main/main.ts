@@ -332,26 +332,6 @@ app.whenReady().then(async () => {
     await saveThumbnail(workspaceId, thumbnail.toJPEG(80));
   });
 
-  // The main window's canvas as it is now, for the stills the frames show
-  // while it moves (renderer/canvas/stills.ts). `rect` as for the thumbnail.
-  // JPEG: a still is on screen for the length of a pan, and a PNG of a
-  // window's worth of pixels takes several times as long to make.
-  ipcMain.handle("canvas:capture", async (event, rect: unknown) => {
-    if (event.sender !== mainWindow?.webContents) return null;
-    const { x, y, width, height } = (rect ?? {}) as Record<string, unknown>;
-    if (![x, y, width, height].every((n) => typeof n === "number" && Number.isFinite(n))) return null;
-    const zoom = event.sender.getZoomFactor();
-    const dips = {
-      x: Math.round((x as number) * zoom),
-      y: Math.round((y as number) * zoom),
-      width: Math.round((width as number) * zoom),
-      height: Math.round((height as number) * zoom),
-    };
-    if (dips.width <= 0 || dips.height <= 0) return null;
-    const image = await event.sender.capturePage(dips);
-    return image.isEmpty() ? null : image.toJPEG(92);
-  });
-
   // Cleanup any orphaned dev servers from previous crash (non-blocking)
   cleanupOrphanedProcesses().catch((err) => {
     console.error("Failed to cleanup orphaned processes:", err);

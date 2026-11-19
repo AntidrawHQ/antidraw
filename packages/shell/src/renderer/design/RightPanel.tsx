@@ -104,7 +104,6 @@ export const ShowPanel = () => {
         track("panel_toggled", { panel: "right", open: true, via: "click" });
         useDesignStore.getState().setPanelOpen(true);
       }}
-      data-over-canvas
       className="absolute right-4 top-4 z-30 grid size-8 place-items-center rounded-[10px] bg-[#262626] text-white/60 hover:text-white/95"
       style={floatShadow}
     >
