@@ -57,9 +57,20 @@ export const framesInReadingOrder = (file: Snapshot): Frame[] => {
   return [...ordered, ...unplaced];
 };
 
-/** How much a frame is scaled to fit a box's width. Never enlarged. */
-export const fitScale = (frameWidth: number, boxWidth: number) =>
-  frameWidth > 0 && boxWidth > 0 ? Math.min(1, boxWidth / frameWidth) : 1;
+// As far out as a browser zooms a page.
+const MIN_PAGE_SCALE = 0.1;
+
+/**
+ * The viewport a page takes to show a frame wider than the screen whole: as
+ * wide as the frame, at the scale that fits it to the screen. Null for a
+ * frame the screen already has room for. A frame too wide for any scale a
+ * browser allows gets the widest page there is, and scrolls sideways in it.
+ */
+export const pageViewport = (frameWidth: number, screenWidth: number): { width: number; scale: number } | null => {
+  if (!(screenWidth > 0) || !(frameWidth > screenWidth)) return null;
+  const scale = Math.max(screenWidth / frameWidth, MIN_PAGE_SCALE);
+  return { width: Math.round(screenWidth / scale), scale };
+};
 
 // The open component is in the URL (?c=<name>), so the browser's back returns
 // to the list and a link can point at one component. Only the list reads it:

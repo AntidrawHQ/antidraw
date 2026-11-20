@@ -33,17 +33,3 @@ export const ChevronRight = (props: IconProps) => (
     <path d="m9 18 6-6-6-6" />
   </Icon>
 );
-
-export const ZoomIn = (props: IconProps) => (
-  <Icon {...props}>
-    <circle cx="11" cy="11" r="8" />
-    <path d="m21 21-4.35-4.35M11 8v6M8 11h6" />
-  </Icon>
-);
-
-export const ZoomOut = (props: IconProps) => (
-  <Icon {...props}>
-    <circle cx="11" cy="11" r="8" />
-    <path d="m21 21-4.35-4.35M8 11h6" />
-  </Icon>
-);

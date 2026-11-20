@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fitScale, framesInReadingOrder, openFrame, openName, searchWith } from "./frames";
+import { framesInReadingOrder, openFrame, openName, pageViewport, searchWith } from "./frames";
 
 const at = (componentName: string, x: number, y: number, width = 800, height = 600) => ({
   componentName,
@@ -54,18 +54,24 @@ describe("framesInReadingOrder", () => {
   });
 });
 
-describe("fitScale", () => {
-  it("shrinks a frame wider than the box to its width", () => {
-    expect(fitScale(1280, 390)).toBeCloseTo(0.3047, 4);
+describe("pageViewport", () => {
+  it("is as wide as a frame wider than the screen, zoomed out to fit it", () => {
+    const viewport = pageViewport(1280, 390);
+    expect(viewport?.width).toBe(1280);
+    expect(viewport?.scale).toBeCloseTo(0.3047, 4);
   });
 
-  it("never enlarges a frame narrower than the box", () => {
-    expect(fitScale(320, 390)).toBe(1);
+  it("leaves the page alone for a frame the screen has room for", () => {
+    expect(pageViewport(320, 390)).toBeNull();
+    expect(pageViewport(390, 390)).toBeNull();
   });
 
-  it("is 1 before either width is known", () => {
-    expect(fitScale(0, 390)).toBe(1);
-    expect(fitScale(1280, 0)).toBe(1);
+  it("goes no further out than a browser zooms", () => {
+    expect(pageViewport(8000, 390)).toEqual({ width: 3900, scale: 0.1 });
+  });
+
+  it("leaves the page alone before the screen's width is known", () => {
+    expect(pageViewport(1280, 0)).toBeNull();
   });
 });
 
