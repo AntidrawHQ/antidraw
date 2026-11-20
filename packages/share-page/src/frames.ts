@@ -62,12 +62,16 @@ export const fitScale = (frameWidth: number, boxWidth: number) =>
   frameWidth > 0 && boxWidth > 0 ? Math.min(1, boxWidth / frameWidth) : 1;
 
 // The open component is in the URL (?c=<name>), so the browser's back returns
-// to the list and a link can point at one component.
+// to the list and a link can point at one component. Only the list reads it:
+// the canvas opens on all of them whatever the URL says.
 const PARAM = "c";
+
+/** The component a URL's query names, or null when it names none. */
+export const openName = (search: string): string | null => new URLSearchParams(search).get(PARAM);
 
 /** Which frame a URL's query has open, or null for the list. */
 export const openFrame = (search: string, frames: Frame[]): number | null => {
-  const name = new URLSearchParams(search).get(PARAM);
+  const name = openName(search);
   if (name === null) return null;
   const index = frames.findIndex((frame) => frame.name === name);
   return index === -1 ? null : index;

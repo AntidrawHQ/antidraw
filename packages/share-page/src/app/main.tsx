@@ -1,4 +1,4 @@
-import { StrictMode, Suspense, lazy, useMemo } from "react";
+import { Component, StrictMode, Suspense, lazy, useMemo, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import type { CanvasFile } from "@/renderer/canvas/canvas-file";
@@ -26,6 +26,18 @@ const TOUCH = window.matchMedia("(pointer: coarse)").matches;
 
 const CanvasView = lazy(() => import("./CanvasView"));
 
+// The canvas arrives in a second request, which can fail when the first
+// didn't. Without this the page would go blank.
+class CanvasBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  render() {
+    return this.state.failed ? <Message text="This canvas could not be loaded" /> : this.props.children;
+  }
+}
+
 class NotPublished extends Error {}
 
 const SharedCanvas = ({ slug }: { slug: string }) => {
@@ -43,14 +55,19 @@ const SharedCanvas = ({ slug }: { slug: string }) => {
 
   if (isPending) return <Message text="Loading…" />;
   if (error instanceof NotPublished) return <Message text="There's no canvas here" />;
-  if (error) return <Message text="This canvas could not be loaded" />;
+  // Only when there is nothing to show: canvas.json is read again when the
+  // page comes back into view, and a snapshot that has loaded stays up if
+  // that fails.
+  if (!data) return <Message text="This canvas could not be loaded" />;
   if (data.components.length === 0) return <Message text="Nothing here yet" />;
 
   if (TOUCH) return <TouchSnapshot file={data} frameUrl={site.frameUrl} />;
   return (
-    <Suspense fallback={<Message text="Loading…" />}>
-      <CanvasView file={data} frameUrl={site.frameUrl} />
-    </Suspense>
+    <CanvasBoundary>
+      <Suspense fallback={<Message text="Loading…" />}>
+        <CanvasView file={data} frameUrl={site.frameUrl} />
+      </Suspense>
+    </CanvasBoundary>
   );
 };
 

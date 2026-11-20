@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { fitScale, type Frame } from "../../frames";
 import { ZoomIn, ZoomOut } from "./icons";
 
@@ -50,21 +50,31 @@ export const Stage = ({ frame, url }: { frame: Frame; url: string }) => {
     return () => window.removeEventListener("message", onMessage);
   }, [url, frame.name]);
 
-  // At full size the frame opens on its middle, where a page's content is,
-  // not on its left edge.
-  useEffect(() => {
-    const el = box.current;
-    if (el && actual) el.scrollLeft = (el.scrollWidth - el.clientWidth) / 2;
-  }, [actual]);
-
   const fit = fitScale(size.width, boxWidth);
-  const scale = actual ? 1 : fit;
   // A frame a few pixels wider than the screen has nothing to gain from 100%.
   const canZoom = fit < 0.9;
+  // Full size only while the pill that leaves it is there: a screen turned on
+  // its side can be wide enough for the pill to go.
+  const zoomed = actual && canZoom;
+  const scale = zoomed ? 1 : fit;
+
+  // The part of the component at the top of the screen stays there when the
+  // size changes; the pill notes which part that is, in the component's own
+  // pixels. Sideways, full size opens on the frame's middle, where a page's
+  // content is, not on its left edge.
+  const top = useRef(0);
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    el.scrollTop = top.current * (zoomed ? 1 : fit);
+    if (zoomed) el.scrollLeft = (el.scrollWidth - el.clientWidth) / 2;
+    // Only when the size switches; `fit` is read as it is then.
+  }, [zoomed]);
 
   return (
     <div className="relative min-h-0 flex-1 bg-[#1f1f1f]">
-      <div ref={box} className="flex h-full w-full overflow-auto overscroll-contain">
+      {/* The gutter is kept: where a scroll bar takes room, one that comes and goes would change the width the frame is fitted to. */}
+      <div ref={box} className="flex h-full w-full overflow-auto overscroll-contain [scrollbar-gutter:stable]">
         {/* m-auto, not centring on the container: a frame taller than the stage scrolls from its top. */}
         <div
           className="relative m-auto shrink-0 overflow-hidden"
@@ -91,12 +101,15 @@ export const Stage = ({ frame, url }: { frame: Frame; url: string }) => {
       {canZoom && (
         <button
           type="button"
-          onClick={() => setActual((on) => !on)}
-          aria-label={actual ? "Fit to screen" : "Show at full size"}
+          onClick={() => {
+            top.current = (box.current?.scrollTop ?? 0) / scale;
+            setActual(!zoomed);
+          }}
+          aria-label={zoomed ? "Fit to screen" : "Show at full size"}
           className="absolute bottom-3 right-3 flex h-8 items-center gap-1.5 rounded-full bg-black/65 px-3 text-[12px] font-medium tabular-nums text-white ring-1 ring-white/15 backdrop-blur"
         >
-          {actual ? <ZoomOut size={13} /> : <ZoomIn size={13} />}
-          {actual ? "100%" : `${Math.round(fit * 100)}%`}
+          {zoomed ? <ZoomOut size={13} /> : <ZoomIn size={13} />}
+          {zoomed ? "100%" : `${Math.round(fit * 100)}%`}
         </button>
       )}
     </div>

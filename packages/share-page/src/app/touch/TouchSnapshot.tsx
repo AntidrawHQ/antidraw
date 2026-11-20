@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CanvasFile } from "@/renderer/canvas/canvas-file";
 import logoUrl from "@/renderer/assets/antidraw-icon.svg";
-import { framesInReadingOrder, openFrame, searchWith, type Frame } from "../../frames";
+import { framesInReadingOrder, openName, searchWith, type Frame } from "../../frames";
 import { ChevronLeft, ChevronRight } from "./icons";
 import { Stage } from "./Stage";
 
@@ -15,23 +15,51 @@ import { Stage } from "./Stage";
 // it to go back to.
 const FROM_LIST = { fromList: true };
 
+const cameFromList = () => Boolean((window.history.state as typeof FROM_LIST | null)?.fromList);
+
+const urlWith = (name: string | null) =>
+  `${window.location.pathname}${searchWith(window.location.search, name)}${window.location.hash}`;
+
+// How long "All" waits for the browser to go back before it settles the URL
+// itself. Going back takes a few milliseconds when it works.
+const BACK_WAIT_MS = 250;
+
 const useOpenFrame = (frames: Frame[]) => {
-  const [at, setAt] = useState(() => openFrame(window.location.search, frames));
+  // The open component by name, not by its place in the list: canvas.json is
+  // read again when the page comes back into view, and a snapshot published
+  // again in the meantime can have its components in another order.
+  const [name, setName] = useState(() => openName(window.location.search));
+  // Whether the component slides in. One the page loaded on (a link to it, a
+  // reload) is simply there.
+  const [slides, setSlides] = useState(false);
+  const settle = useRef<number | undefined>(undefined);
 
   useEffect(() => {
-    const onPop = () => setAt(openFrame(window.location.search, frames));
+    const onPop = () => {
+      window.clearTimeout(settle.current);
+      setName(openName(window.location.search));
+      setSlides(true);
+    };
     window.addEventListener("popstate", onPop);
-    return () => window.removeEventListener("popstate", onPop);
-  }, [frames]);
+    return () => {
+      window.removeEventListener("popstate", onPop);
+      window.clearTimeout(settle.current);
+    };
+  }, []);
 
-  const urlWith = (name: string | null) =>
-    `${window.location.pathname}${searchWith(window.location.search, name)}${window.location.hash}`;
-
-  /** From the list: a new history entry, so the browser's back is "All". */
+  /**
+   * From the list: a new history entry, so the browser's back is "All". If
+   * the entry is already one the list made, it is reused, so that back from
+   * it is still the list.
+   */
   const open = useCallback(
     (index: number) => {
-      window.history.pushState(FROM_LIST, "", urlWith(frames[index].name));
-      setAt(index);
+      window.clearTimeout(settle.current);
+      const url = urlWith(frames[index].name);
+      if (cameFromList()) window.history.replaceState(FROM_LIST, "", url);
+      else window.history.pushState(FROM_LIST, "", url);
+      setName(frames[index].name);
+      setSlides(true);
     },
     [frames],
   );
@@ -40,18 +68,31 @@ const useOpenFrame = (frames: Frame[]) => {
   const step = useCallback(
     (index: number) => {
       window.history.replaceState(window.history.state, "", urlWith(frames[index].name));
-      setAt(index);
+      setName(frames[index].name);
     },
     [frames],
   );
 
   const close = useCallback(() => {
-    if ((window.history.state as typeof FROM_LIST | null)?.fromList) return window.history.back();
-    window.history.replaceState(null, "", urlWith(null));
-    setAt(null);
+    // The list shows at once, whatever the history does next: a second tap
+    // has no "All" left to land on and go back twice.
+    setName(null);
+    if (!cameFromList()) {
+      window.history.replaceState(null, "", urlWith(null));
+      return;
+    }
+    window.history.back();
+    // Back isn't always the list. A link followed inside the component is a
+    // history entry too, and going back only undoes that one, leaving this
+    // URL as it was. Then the URL is made the list's here.
+    window.clearTimeout(settle.current);
+    settle.current = window.setTimeout(() => {
+      if (openName(window.location.search) !== null) window.history.replaceState(null, "", urlWith(null));
+    }, BACK_WAIT_MS);
   }, []);
 
-  return { at, open, step, close };
+  const found = name === null ? -1 : frames.findIndex((frame) => frame.name === name);
+  return { at: found === -1 ? null : found, slides, open, step, close };
 };
 
 // The frame's proportions, in place of a thumbnail there is no image for.
@@ -90,13 +131,14 @@ const StepButton = ({
 
 export const TouchSnapshot = ({ file, frameUrl }: { file: CanvasFile; frameUrl: (name: string) => string }) => {
   const frames = useMemo(() => framesInReadingOrder(file), [file]);
-  const { at, open, step, close } = useOpenFrame(frames);
+  const { at, slides, open, step, close } = useOpenFrame(frames);
   const frame = at === null ? null : frames[at];
 
   return (
     <div className="relative flex h-dvh flex-col overflow-hidden bg-[#282828] text-[#e0e0e0] antialiased">
-      {/* The list scrolls; the bar under it stays at the foot of the screen. */}
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+      {/* The list scrolls; the bar under it stays at the foot of the screen.
+          Both are out of reach while a component is open over them. */}
+      <div inert={frame !== null} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
         <div className="px-5 pb-3 pt-8">
           <h1 className="m-0 truncate text-[17px] font-semibold tracking-[-0.015em]">{file.name}</h1>
           <div className="text-[12.5px] text-[#9a9a9a]">
@@ -129,7 +171,7 @@ export const TouchSnapshot = ({ file, frameUrl }: { file: CanvasFile; frameUrl: 
           The canvas isn't available on mobile for performance reasons. Open this link on a desktop to see it.
         </p>
       </div>
-      <div className="shrink-0 border-t border-white/[0.07] px-5 pb-5 pt-4">
+      <div inert={frame !== null} className="shrink-0 border-t border-white/[0.07] px-5 pb-5 pt-4">
         <a
           href="https://antidraw.com"
           target="_blank"
@@ -145,7 +187,7 @@ export const TouchSnapshot = ({ file, frameUrl }: { file: CanvasFile; frameUrl: 
 
       {/* One component, over the list */}
       {frame && at !== null && (
-        <div className="snapshot-open absolute inset-0 flex flex-col bg-[#282828]">
+        <div className={`${slides ? "snapshot-open " : ""}absolute inset-0 flex flex-col bg-[#282828]`}>
           <header className="flex h-12 shrink-0 items-center border-b border-white/[0.07] px-2">
             <button
               type="button"

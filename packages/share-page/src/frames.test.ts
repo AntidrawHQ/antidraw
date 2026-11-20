@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fitScale, framesInReadingOrder, openFrame, searchWith } from "./frames";
+import { fitScale, framesInReadingOrder, openFrame, openName, searchWith } from "./frames";
 
 const at = (componentName: string, x: number, y: number, width = 800, height = 600) => ({
   componentName,
@@ -79,6 +79,12 @@ describe("the open component in the URL", () => {
 
   it("is the frame the URL names", () => {
     expect(openFrame("?c=Pricing%20Page", frames)).toBe(1);
+  });
+
+  it("is read by name, whether or not the snapshot has the component", () => {
+    expect(openName("?c=Pricing%20Page")).toBe("Pricing Page");
+    expect(openName("?c=Gone")).toBe("Gone");
+    expect(openName("?utm_source=slack")).toBeNull();
   });
 
   it("is the list when the URL names a component the snapshot doesn't have", () => {
