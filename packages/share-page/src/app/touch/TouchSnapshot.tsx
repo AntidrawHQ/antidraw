@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { CanvasFile } from "@/renderer/canvas/canvas-file";
 import logoUrl from "@/renderer/assets/antidraw-icon.svg";
 import { framesInReadingOrder, openName, searchWith, type Frame } from "../../frames";
@@ -129,6 +129,37 @@ const StepButton = ({
   </button>
 );
 
+/**
+ * A part of the page that stays the size it is on screen while the page is
+ * zoomed out for a wide component (--page-zoom, Stage.tsx): laid out as on a
+ * page that isn't, and enlarged by as much as the page is shrunk. `height` is
+ * its height on such a page, in pixels, or "fill" for what its column leaves.
+ * Enlarged with a transform: Safari on a phone leaves text out of CSS zoom.
+ */
+const OnScreen = ({
+  height,
+  inert,
+  className = "",
+  children,
+}: {
+  height: number | "fill";
+  inert?: boolean;
+  className?: string;
+  children: ReactNode;
+}) => (
+  <div
+    inert={inert}
+    // touch-manipulation: on a page wider than the screen a browser waits
+    // after each tap for a second one, to zoom; these are buttons.
+    className={`touch-manipulation overflow-hidden ${height === "fill" ? "min-h-0 flex-1" : "shrink-0"} ${className}`}
+    style={height === "fill" ? undefined : { height: `calc(${height}px * var(--page-zoom, 1))` }}
+  >
+    <div className="h-[calc(100%/var(--page-zoom,1))] w-[calc(100%/var(--page-zoom,1))] origin-top-left [transform:scale(var(--page-zoom,1))]">
+      {children}
+    </div>
+  </div>
+);
+
 export const TouchSnapshot = ({ file, frameUrl }: { file: CanvasFile; frameUrl: (name: string) => string }) => {
   const frames = useMemo(() => framesInReadingOrder(file), [file]);
   const { at, slides, open, step, close } = useOpenFrame(frames);
@@ -138,78 +169,89 @@ export const TouchSnapshot = ({ file, frameUrl }: { file: CanvasFile; frameUrl: 
     <div className="relative flex h-dvh flex-col overflow-hidden bg-[#282828] text-[#e0e0e0] antialiased">
       {/* The list scrolls; the bar under it stays at the foot of the screen.
           Both are out of reach while a component is open over them. */}
-      <div inert={frame !== null} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-        <div className="px-5 pb-3 pt-8">
-          <h1 className="m-0 truncate text-[17px] font-semibold tracking-[-0.015em]">{file.name}</h1>
-          <div className="text-[12.5px] text-[#9a9a9a]">
-            {frames.length} {frames.length === 1 ? "component" : "components"}
+      <OnScreen height="fill" inert={frame !== null}>
+        <div className="h-full overflow-y-auto overscroll-contain">
+          <div className="px-5 pb-3 pt-8">
+            <h1 className="m-0 truncate text-[17px] font-semibold tracking-[-0.015em]">{file.name}</h1>
+            <div className="text-[12.5px] text-[#9a9a9a]">
+              {frames.length} {frames.length === 1 ? "component" : "components"}
+            </div>
           </div>
+          <ul className="m-0 list-none p-0">
+            {frames.map((item, index) => (
+              <li key={item.name}>
+                <button
+                  type="button"
+                  onClick={() => open(index)}
+                  className="flex w-full items-center gap-3 px-5 py-2.5 text-left transition-colors active:bg-white/[0.06]"
+                >
+                  <Shape frame={item} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[15px] font-medium tracking-[-0.01em]">{item.name}</span>
+                    {item.sized && (
+                      <span className="block text-[12px] tabular-nums text-[#9a9a9a]">
+                        {Math.round(item.width)} × {Math.round(item.height)}
+                      </span>
+                    )}
+                  </span>
+                  <ChevronRight size={16} className="shrink-0 text-[#6b6b6b]" />
+                </button>
+              </li>
+            ))}
+          </ul>
+          <p className="m-0 px-5 pb-8 pt-6 text-[12.5px] leading-[1.5] text-[#8a8a8a]">
+            The canvas isn't available on mobile for performance reasons. Open this link on a desktop to see it.
+          </p>
         </div>
-        <ul className="m-0 list-none p-0">
-          {frames.map((item, index) => (
-            <li key={item.name}>
-              <button
-                type="button"
-                onClick={() => open(index)}
-                className="flex w-full items-center gap-3 px-5 py-2.5 text-left transition-colors active:bg-white/[0.06]"
-              >
-                <Shape frame={item} />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[15px] font-medium tracking-[-0.01em]">{item.name}</span>
-                  {item.sized && (
-                    <span className="block text-[12px] tabular-nums text-[#9a9a9a]">
-                      {Math.round(item.width)} × {Math.round(item.height)}
-                    </span>
-                  )}
-                </span>
-                <ChevronRight size={16} className="shrink-0 text-[#6b6b6b]" />
-              </button>
-            </li>
-          ))}
-        </ul>
-        <p className="m-0 px-5 pb-8 pt-6 text-[12.5px] leading-[1.5] text-[#8a8a8a]">
-          The canvas isn't available on mobile for performance reasons. Open this link on a desktop to see it.
-        </p>
-      </div>
-      <div inert={frame !== null} className="shrink-0 border-t border-white/[0.07] px-5 pb-5 pt-4">
-        <a
-          href="https://antidraw.com"
-          target="_blank"
-          rel="noreferrer"
-          className="flex w-fit items-center gap-2 text-[13px] text-[#9a9a9a] no-underline"
-        >
-          <img src={logoUrl} alt="" width={20} height={20} />
-          <span>
-            Published on <span className="font-medium text-[#d0d0d0]">Antidraw</span>
-          </span>
-        </a>
-      </div>
+      </OnScreen>
+      <OnScreen height={57} inert={frame !== null}>
+        <div className="flex h-full items-center border-t border-white/[0.07] px-5">
+          <a
+            href="https://antidraw.com"
+            target="_blank"
+            rel="noreferrer"
+            className="flex w-fit items-center gap-2 text-[13px] text-[#9a9a9a] no-underline"
+          >
+            <img src={logoUrl} alt="" width={20} height={20} />
+            <span>
+              Published on <span className="font-medium text-[#d0d0d0]">Antidraw</span>
+            </span>
+          </a>
+        </div>
+      </OnScreen>
 
       {/* One component, over the list */}
       {frame && at !== null && (
         <div className={`${slides ? "snapshot-open " : ""}absolute inset-0 flex flex-col bg-[#282828]`}>
-          <header className="flex h-12 shrink-0 items-center border-b border-white/[0.07] px-2">
-            <button
-              type="button"
-              onClick={close}
-              className="flex h-9 w-[64px] items-center rounded-lg text-[14px] text-[#c9c9c9] active:bg-white/[0.06]"
-            >
-              <ChevronLeft size={18} />
-              All
-            </button>
-            <div className="min-w-0 flex-1 truncate text-center text-[14px] font-medium">{frame.name}</div>
-            <div className="w-[64px]" />
-          </header>
+          <OnScreen height={48}>
+            <header className="flex h-full items-center border-b border-white/[0.07] px-2">
+              <button
+                type="button"
+                onClick={close}
+                className="flex h-9 w-[64px] items-center rounded-lg text-[14px] text-[#c9c9c9] active:bg-white/[0.06]"
+              >
+                <ChevronLeft size={18} />
+                All
+              </button>
+              <div className="min-w-0 flex-1 truncate text-center text-[14px] font-medium">{frame.name}</div>
+              <div className="w-[64px]" />
+            </header>
+          </OnScreen>
+
+          {/* Before the stage here, after it on screen: what comes after a
+              frame is drawn on a layer of its own, which Safari draws at the
+              zoomed-out page's resolution and then enlarges, blurred. */}
+          <OnScreen height={69} className="order-last">
+            <footer className="flex h-full items-center border-t border-white/[0.07] px-3">
+              <StepButton side="previous" disabled={at === 0} onClick={() => step(at - 1)} />
+              <div className="flex-1 text-center text-[13px] tabular-nums text-[#9a9a9a]">
+                {at + 1} of {frames.length}
+              </div>
+              <StepButton side="next" disabled={at === frames.length - 1} onClick={() => step(at + 1)} />
+            </footer>
+          </OnScreen>
 
           <Stage key={frame.name} frame={frame} url={frameUrl(frame.name)} />
-
-          <footer className="flex shrink-0 items-center border-t border-white/[0.07] px-3 pb-3 pt-3">
-            <StepButton side="previous" disabled={at === 0} onClick={() => step(at - 1)} />
-            <div className="flex-1 text-center text-[13px] tabular-nums text-[#9a9a9a]">
-              {at + 1} of {frames.length}
-            </div>
-            <StepButton side="next" disabled={at === frames.length - 1} onClick={() => step(at + 1)} />
-          </footer>
         </div>
       )}
     </div>

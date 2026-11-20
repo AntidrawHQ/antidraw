@@ -1,16 +1,42 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { fitScale, type Frame } from "../../frames";
-import { ZoomIn, ZoomOut } from "./icons";
+import { pageViewport, type Frame } from "../../frames";
 
 // Matches Canvas.tsx's clampNodeSize: a frame never collapses to nothing.
 const MIN_SIZE = 10;
 
+// index.html's viewport, which the page has whenever no wide component is open.
+const DEVICE_VIEWPORT = "width=device-width, initial-scale=1.0";
+
+/**
+ * How much the page's own parts (the header, the footer, the list under them)
+ * are enlarged while the page is zoomed out for a wide component, so they
+ * stay the size they were (TouchSnapshot.tsx's OnScreen).
+ */
+const PAGE_ZOOM = "--page-zoom";
+
+/**
+ * The screen's width in CSS pixels, whatever the page's viewport is set to
+ * and however far it is zoomed: what the visual viewport shows, times its
+ * scale, is always the screen.
+ */
+const screenWidth = () => {
+  const view = window.visualViewport;
+  return Math.round(view ? view.width * view.scale : window.innerWidth);
+};
+
 /**
  * The one live component: a single frame on the site's Preview page, the URL
- * the canvas's frames load. It is laid out at its size on the canvas and
- * scaled down to the screen's width, so it looks as it does there; the pill
- * switches to full size, which scrolls both ways. A frame narrower than the
- * screen is shown as is.
+ * the canvas's frames load, as wide as it is on the canvas.
+ *
+ * A frame wider than the screen is not scaled down here. The page's viewport
+ * is made as wide as the frame instead, and the browser shows the page zoomed
+ * out, as it does a desktop site: it draws at the screen's resolution, where
+ * a frame shrunk with a transform is drawn at full size first, many screens'
+ * worth of pixels for each one shown, and a long page ran a phone out of
+ * memory. Pinching zooms in, as on any page.
+ *
+ * The frame is never taller than the stage: a long component scrolls inside
+ * its frame, and sees a screen-sized window, not one as tall as itself.
  *
  * Give it a key per component: another component is another Stage, so the
  * frame before it is dropped, not kept alongside.
@@ -18,19 +44,28 @@ const MIN_SIZE = 10;
 export const Stage = ({ frame, url }: { frame: Frame; url: string }) => {
   const box = useRef<HTMLDivElement>(null);
   const iframe = useRef<HTMLIFrameElement>(null);
-  const [boxWidth, setBoxWidth] = useState(0);
+  const [boxHeight, setBoxHeight] = useState(0);
   const [size, setSize] = useState({ width: frame.width, height: frame.height });
-  const [actual, setActual] = useState(false);
+  const [screen, setScreen] = useState(screenWidth);
   const [loaded, setLoaded] = useState(false);
 
-  useEffect(() => {
+  // Before the first paint, so a long frame is never laid out at its full height.
+  useLayoutEffect(() => {
     const el = box.current;
     if (!el) return;
-    const measure = () => setBoxWidth(el.clientWidth);
+    const measure = () => setBoxHeight(el.clientHeight);
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(el);
     return () => observer.disconnect();
+  }, []);
+
+  // The screen changes width when it is turned. A pinch moves the measure by
+  // a fraction of a pixel, which is not that.
+  useEffect(() => {
+    const measure = () => setScreen((was) => (Math.abs(screenWidth() - was) > 1 ? screenWidth() : was));
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
   }, []);
 
   // The component says how big it is once it has rendered, as it does to the
@@ -50,36 +85,27 @@ export const Stage = ({ frame, url }: { frame: Frame; url: string }) => {
     return () => window.removeEventListener("message", onMessage);
   }, [url, frame.name]);
 
-  const fit = fitScale(size.width, boxWidth);
-  // A frame a few pixels wider than the screen has nothing to gain from 100%.
-  const canZoom = fit < 0.9;
-  // Full size only while the pill that leaves it is there: a screen turned on
-  // its side can be wide enough for the pill to go.
-  const zoomed = actual && canZoom;
-  const scale = zoomed ? 1 : fit;
-
-  // The part of the component at the top of the screen stays there when the
-  // size changes; the pill notes which part that is, in the component's own
-  // pixels. Sideways, full size opens on the frame's middle, where a page's
-  // content is, not on its left edge.
-  const top = useRef(0);
+  // The page as wide as the frame, for as long as this component is open.
   useLayoutEffect(() => {
-    const el = box.current;
-    if (!el) return;
-    el.scrollTop = top.current * (zoomed ? 1 : fit);
-    if (zoomed) el.scrollLeft = (el.scrollWidth - el.clientWidth) / 2;
-    // Only when the size switches; `fit` is read as it is then.
-  }, [zoomed]);
+    const meta = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
+    const viewport = pageViewport(size.width, screen);
+    if (!meta || !viewport) return;
+    meta.content = `width=${viewport.width}, initial-scale=${viewport.scale}, minimum-scale=${viewport.scale}`;
+    document.documentElement.style.setProperty(PAGE_ZOOM, String(1 / viewport.scale));
+    return () => {
+      meta.content = DEVICE_VIEWPORT;
+      document.documentElement.style.removeProperty(PAGE_ZOOM);
+    };
+  }, [size.width, screen]);
+
+  // Until the stage is measured the frame has no height to go by.
+  const height = boxHeight > 0 ? Math.min(size.height, boxHeight) : 0;
 
   return (
     <div className="relative min-h-0 flex-1 bg-[#1f1f1f]">
-      {/* The gutter is kept: where a scroll bar takes room, one that comes and goes would change the width the frame is fitted to. */}
-      <div ref={box} className="flex h-full w-full overflow-auto overscroll-contain [scrollbar-gutter:stable]">
-        {/* m-auto, not centring on the container: a frame taller than the stage scrolls from its top. */}
-        <div
-          className="relative m-auto shrink-0 overflow-hidden"
-          style={{ width: size.width * scale, height: size.height * scale }}
-        >
+      <div ref={box} className="flex h-full w-full overflow-auto overscroll-contain">
+        {/* m-auto: a frame smaller than the stage sits in its middle. */}
+        <div className="relative m-auto shrink-0" style={{ width: size.width, height }}>
           <iframe
             ref={iframe}
             title={frame.name}
@@ -87,31 +113,12 @@ export const Stage = ({ frame, url }: { frame: Frame; url: string }) => {
             // As the canvas's frames (Canvas.tsx).
             sandbox="allow-scripts allow-same-origin"
             onLoad={() => setLoaded(true)}
-            className="block origin-top-left border-0 transition-opacity duration-300"
-            style={{
-              width: size.width,
-              height: size.height,
-              transform: `scale(${scale})`,
-              opacity: loaded ? 1 : 0,
-            }}
+            className="block h-full w-full border-0 transition-opacity duration-300"
+            style={{ opacity: loaded ? 1 : 0 }}
           />
           {!loaded && <div className="absolute inset-0 animate-pulse bg-white/[0.05]" />}
         </div>
       </div>
-      {canZoom && (
-        <button
-          type="button"
-          onClick={() => {
-            top.current = (box.current?.scrollTop ?? 0) / scale;
-            setActual(!zoomed);
-          }}
-          aria-label={zoomed ? "Fit to screen" : "Show at full size"}
-          className="absolute bottom-3 right-3 flex h-8 items-center gap-1.5 rounded-full bg-black/65 px-3 text-[12px] font-medium tabular-nums text-white ring-1 ring-white/15 backdrop-blur"
-        >
-          {zoomed ? <ZoomOut size={13} /> : <ZoomIn size={13} />}
-          {zoomed ? "100%" : `${Math.round(fit * 100)}%`}
-        </button>
-      )}
     </div>
   );
 };
