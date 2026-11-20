@@ -163,16 +163,16 @@ const ConversationView = ({ onShowList }: ConversationViewProps) => {
         <nav className="flex-1 flex items-center gap-1 min-w-0 text-[13px] font-medium">
           <button
             onClick={onShowList}
-            className="flex items-center gap-1 h-6 pl-1.5 pr-2 rounded-md hover:bg-white/[0.06] text-neutral-500 hover:text-neutral-200 cursor-pointer shrink-0"
+            className="flex items-center gap-1 h-6 pl-1.5 pr-2 rounded-md hover:bg-white/[0.06] text-neutral-400 hover:text-neutral-100 cursor-pointer shrink-0"
             title="All conversations"
           >
             <ArrowLeft className="w-4 h-4" />
             Chats
           </button>
-          <span className="text-neutral-600 shrink-0">/</span>
+          <span className="text-neutral-500 shrink-0">/</span>
           {/* pl-2 mirrors the button's pr-2 so the slash sits centered */}
           <span
-            className="pl-2 text-neutral-400 overflow-hidden text-ellipsis whitespace-nowrap"
+            className="pl-2 text-neutral-200 overflow-hidden text-ellipsis whitespace-nowrap"
             title={activeConversation?.title ?? undefined}
           >
             {activeConversation?.title ?? "Untitled Conversation"}
@@ -181,7 +181,7 @@ const ConversationView = ({ onShowList }: ConversationViewProps) => {
         <button
           onClick={handleNewConversation}
           disabled={createConversation.isPending}
-          className="p-1 rounded-md hover:bg-white/[0.06] text-[#71717a] hover:text-neutral-200 disabled:opacity-50 shrink-0"
+          className="p-1 rounded-md hover:bg-white/[0.06] text-neutral-400 hover:text-neutral-100 disabled:opacity-50 shrink-0"
           title="New conversation"
         >
           <Plus className="w-4 h-4" />
