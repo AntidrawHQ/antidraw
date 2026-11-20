@@ -1,34 +1,32 @@
-import { StrictMode, useMemo } from "react";
+import { StrictMode, Suspense, lazy, useMemo } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { ReactFlowProvider } from "@xyflow/react";
-import { Canvas } from "@/renderer/canvas/Canvas";
 import type { CanvasFile } from "@/renderer/canvas/canvas-file";
 import { siteFor, slugFromPath } from "../site";
+import { Message } from "./Message";
+import { TouchSnapshot } from "./touch/TouchSnapshot";
 import "./app.css";
 
-// The share page: the shell's canvas, read-only, over the site published at
-// <slug>.antidraw.app. canvas.json says which components to show and where;
-// each frame loads the site's Preview page. Frames can still be moved and
-// resized, but nothing is saved.
+// The share page, over the site published at <slug>.antidraw.app.
+// canvas.json says which components to show and where. With a mouse or
+// trackpad it is the shell's canvas, read-only (./CanvasView). On a phone or
+// tablet it is the components as a list, one running at a time (./touch):
+// the canvas runs them all at once, which is more memory than a page gets
+// there.
 
 const SITE_URL_PATTERN =
   import.meta.env.VITE_SITE_URL_PATTERN ??
   // The site Worker's `npm run dev` (@antidraw/site-worker).
   (import.meta.env.DEV ? "http://*.localhost:8787" : "https://*.antidraw.app");
 
+// A phone or tablet: its main pointer is a finger. A laptop with a touch
+// screen has a trackpad for that, and keeps the canvas. Read once: a page
+// doesn't change devices.
+const TOUCH = window.matchMedia("(pointer: coarse)").matches;
+
+const CanvasView = lazy(() => import("./CanvasView"));
+
 class NotPublished extends Error {}
-
-const openFullscreen = (url: string) => {
-  window.open(url, "_blank", "noopener");
-};
-
-const Message = ({ text }: { text: string }) => (
-  // The canvas's surface (Canvas.tsx), which has no dots since #132.
-  <div className="flex h-full items-center justify-center bg-[#282828]">
-    <div className="text-sm text-neutral-500">{text}</div>
-  </div>
-);
 
 const SharedCanvas = ({ slug }: { slug: string }) => {
   const site = useMemo(() => siteFor(SITE_URL_PATTERN, slug), [slug]);
@@ -48,20 +46,11 @@ const SharedCanvas = ({ slug }: { slug: string }) => {
   if (error) return <Message text="This canvas could not be loaded" />;
   if (data.components.length === 0) return <Message text="Nothing here yet" />;
 
+  if (TOUCH) return <TouchSnapshot file={data} frameUrl={site.frameUrl} />;
   return (
-    <ReactFlowProvider>
-      <div className="relative h-full">
-        <div className="pointer-events-none absolute left-4 top-3 z-10 text-xs font-medium text-neutral-400">
-          {data.name}
-        </div>
-        <Canvas
-          components={data.components}
-          savedLayouts={data.layouts}
-          frameUrl={site.frameUrl}
-          onFullscreen={openFullscreen}
-        />
-      </div>
-    </ReactFlowProvider>
+    <Suspense fallback={<Message text="Loading…" />}>
+      <CanvasView file={data} frameUrl={site.frameUrl} />
+    </Suspense>
   );
 };
 

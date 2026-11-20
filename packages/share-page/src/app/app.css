@@ -23,3 +23,16 @@ body,
 body {
   @apply bg-neutral-800 font-sans text-neutral-200;
 }
+
+/* A component opening over the list (touch/TouchSnapshot.tsx). */
+@keyframes snapshot-open {
+  from {
+    transform: translateX(100%);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .snapshot-open {
+    animation: snapshot-open 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+}

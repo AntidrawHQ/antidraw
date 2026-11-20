@@ -15,8 +15,6 @@ export default defineConfig({
   build: {
     outDir: "dist/s",
     emptyOutDir: true,
-    // React, React Flow and motion in one chunk.
-    chunkSizeWarningLimit: 1024,
   },
   // SHARE_URL_PATTERN in the server's .dev.vars.example.
   server: { port: 8786, strictPort: true },

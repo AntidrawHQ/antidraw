@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "license": "MIT",
-  "description": "The share page at antidraw.com/s/<slug>: the shell's canvas, read-only, over a site published to <slug>.antidraw.app.",
+  "description": "The share page at antidraw.com/s/<slug>, over a site published to <slug>.antidraw.app: the shell's canvas, read-only, or on a phone or tablet its components as a list.",
   "type": "module",
   "scripts": {
     "dev": "vite",
