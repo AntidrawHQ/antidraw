@@ -12,6 +12,8 @@ export const workspaces = sqliteTable("workspaces", {
   // The cloud site this workspace publishes to (@antidraw/server), once it has.
   siteId: text("site_id"),
   siteUrl: text("site_url"),
+  // When it last went live.
+  publishedAt: integer("published_at", { mode: "timestamp_ms" }),
   createdAt: integer("created_at", { mode: "timestamp_ms" })
     .notNull()
     .default(sql`(unixepoch() * 1000)`),
