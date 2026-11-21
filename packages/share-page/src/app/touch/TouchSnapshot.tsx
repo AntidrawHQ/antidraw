@@ -176,8 +176,11 @@ export const TouchSnapshot = ({ file, frameUrl }: { file: CanvasFile; frameUrl: 
             <div className="text-[12.5px] text-[#9a9a9a]">
               {frames.length} {frames.length === 1 ? "component" : "components"}
             </div>
+            <p className="m-0 pt-3 text-[12.5px] leading-[1.5] text-[#8a8a8a]">
+              The canvas isn't available on mobile for performance reasons. Open this link on a desktop to see it.
+            </p>
           </div>
-          <ul className="m-0 list-none p-0">
+          <ul className="m-0 list-none p-0 pb-6">
             {frames.map((item, index) => (
               <li key={item.name}>
                 <button
@@ -199,9 +202,6 @@ export const TouchSnapshot = ({ file, frameUrl }: { file: CanvasFile; frameUrl: 
               </li>
             ))}
           </ul>
-          <p className="m-0 px-5 pb-8 pt-6 text-[12.5px] leading-[1.5] text-[#8a8a8a]">
-            The canvas isn't available on mobile for performance reasons. Open this link on a desktop to see it.
-          </p>
         </div>
       </OnScreen>
       <OnScreen height={57} inert={frame !== null}>
