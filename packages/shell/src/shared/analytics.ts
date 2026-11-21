@@ -7,6 +7,12 @@
 export const RENDERER_EVENTS = [
   "welcome_viewed",
   "onboarding_started",
+  "onboarding_two_ways_continued",
+  "mcp_setup_viewed",
+  "mcp_manual_steps_opened",
+  "mcp_agent_added",
+  "mcp_install_link_opened",
+  "mcp_setup_copied",
   "workspace_switched",
   "frame_code_viewed",
   "frame_copied",
