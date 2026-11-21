@@ -651,27 +651,38 @@ export const Canvas = ({
     return () => window.removeEventListener("message", handleMessage);
   });
 
-  // Sync new components into nodes when the component list changes
+  // Sync nodes with the component list when it changes: a frame for each new
+  // component, and none for one that's gone (its file deleted). A frame's
+  // selection is on its node and its load slot is freed as it unmounts, so
+  // only settlingRef has to forget it.
   useEffect(() => {
     setNodes((currentNodes) => {
+      const componentNames = new Set(components.map((c) => c.name));
       const existingComponentNames = new Set(
         currentNodes.map((n) => n.data.componentName)
       );
       const newComponents = components.filter(
         (c) => !existingComponentNames.has(c.name)
       );
+      const keptNodes = currentNodes.filter((n) =>
+        componentNames.has(n.data.componentName),
+      );
 
-      if (newComponents.length === 0) return currentNodes;
+      if (newComponents.length === 0 && keptNodes.length === currentNodes.length) {
+        return currentNodes;
+      }
 
-      // A Set, as StrictMode runs this updater twice.
+      // Recomputed from the nodes, not appended to, as StrictMode runs this
+      // updater twice.
+      const keptIds = new Set(keptNodes.map((n) => n.id));
       settlingRef.current = [
         ...new Set([
-          ...settlingRef.current,
+          ...settlingRef.current.filter((id) => keptIds.has(id)),
           ...newComponents.map((component) => frameNodeId(component.name)),
         ]),
       ];
       return lineUp(
-        [...currentNodes, ...newComponents.map((c) => newFrame(c, frameUrl))],
+        [...keptNodes, ...newComponents.map((c) => newFrame(c, frameUrl))],
         settlingRef.current,
       );
     });
