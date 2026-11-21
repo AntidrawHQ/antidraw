@@ -65,13 +65,13 @@ const ConversationList = ({ onClose }: ConversationListProps) => {
     >
       {/* Header, matching the components panel */}
       <div className="p-2 border-b border-[#333] flex items-center justify-between">
-        <span className="text-[13px] font-medium text-neutral-400 px-2.5 py-0.5">
+        <span className="text-[13px] font-medium text-neutral-200 px-2.5 py-0.5">
           Chats
         </span>
         <button
           onClick={handleNewConversation}
           disabled={createConversation.isPending}
-          className="flex items-center gap-1 px-2 py-0.5 rounded-md hover:bg-white/[0.06] text-[12px] text-neutral-500 hover:text-neutral-200 disabled:opacity-50 shrink-0"
+          className="flex items-center gap-1 px-2 py-0.5 rounded-md hover:bg-white/[0.06] text-[12px] text-neutral-400 hover:text-neutral-100 disabled:opacity-50 shrink-0"
           title="New conversation"
         >
           <Plus className="w-3 h-3" />
@@ -83,7 +83,7 @@ const ConversationList = ({ onClose }: ConversationListProps) => {
         <Search
           className={cn(
             "w-3.5 h-3.5 shrink-0 transition-colors",
-            search ? "text-neutral-300" : "text-neutral-600"
+            search ? "text-neutral-200" : "text-neutral-400"
           )}
         />
         <CommandInput
@@ -91,7 +91,7 @@ const ConversationList = ({ onClose }: ConversationListProps) => {
           placeholder="Search..."
           value={search}
           onValueChange={setSearch}
-          className="placeholder:text-neutral-600"
+          className="placeholder:text-neutral-400"
         />
       </div>
 
@@ -105,15 +105,15 @@ const ConversationList = ({ onClose }: ConversationListProps) => {
             className="group w-full flex flex-col items-start gap-0.5 py-2 px-2.5 border-none rounded-md text-left mb-0.5"
           >
             <div className="w-full flex items-center justify-between gap-2">
-              <span className="flex-1 text-[13px] font-medium overflow-hidden text-ellipsis whitespace-nowrap text-neutral-400 group-data-[selected=true]:text-neutral-200">
+              <span className="flex-1 text-[13px] font-medium overflow-hidden text-ellipsis whitespace-nowrap text-neutral-200 group-data-[selected=true]:text-neutral-50">
                 {conv.title ?? "Untitled Conversation"}
               </span>
-              <span className="text-[10px] text-neutral-600 shrink-0">
+              <span className="text-[11px] tabular-nums text-neutral-400 shrink-0">
                 {formatRelativeTime(new Date(conv.updatedAt))}
               </span>
             </div>
             {conv.summary && (
-              <span className="text-[11px] text-[#71717a] overflow-hidden text-ellipsis whitespace-nowrap w-full">
+              <span className="text-[11px] text-neutral-400 overflow-hidden text-ellipsis whitespace-nowrap w-full">
                 {conv.summary}
               </span>
             )}
@@ -163,16 +163,16 @@ const ConversationView = ({ onShowList }: ConversationViewProps) => {
         <nav className="flex-1 flex items-center gap-1 min-w-0 text-[13px] font-medium">
           <button
             onClick={onShowList}
-            className="flex items-center gap-1 h-6 pl-1.5 pr-2 rounded-md hover:bg-white/[0.06] text-neutral-500 hover:text-neutral-200 cursor-pointer shrink-0"
+            className="flex items-center gap-1 h-6 pl-1.5 pr-2 rounded-md hover:bg-white/[0.06] text-neutral-400 hover:text-neutral-100 cursor-pointer shrink-0"
             title="All conversations"
           >
             <ArrowLeft className="w-4 h-4" />
             Chats
           </button>
-          <span className="text-neutral-600 shrink-0">/</span>
+          <span className="text-neutral-500 shrink-0">/</span>
           {/* pl-2 mirrors the button's pr-2 so the slash sits centered */}
           <span
-            className="pl-2 text-neutral-400 overflow-hidden text-ellipsis whitespace-nowrap"
+            className="pl-2 text-neutral-200 overflow-hidden text-ellipsis whitespace-nowrap"
             title={activeConversation?.title ?? undefined}
           >
             {activeConversation?.title ?? "Untitled Conversation"}
@@ -181,7 +181,7 @@ const ConversationView = ({ onShowList }: ConversationViewProps) => {
         <button
           onClick={handleNewConversation}
           disabled={createConversation.isPending}
-          className="p-1 rounded-md hover:bg-white/[0.06] text-[#71717a] hover:text-neutral-200 disabled:opacity-50 shrink-0"
+          className="p-1 rounded-md hover:bg-white/[0.06] text-neutral-400 hover:text-neutral-100 disabled:opacity-50 shrink-0"
           title="New conversation"
         >
           <Plus className="w-4 h-4" />
