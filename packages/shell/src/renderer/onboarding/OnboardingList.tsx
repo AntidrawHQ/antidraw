@@ -1,6 +1,6 @@
 /**
  * ONBOARDING: what a workspace's canvas shows while it has no components. A
- * "Bring your brand" card over one column of prompt cards under three tabs:
+ * welcome, then "Bring your brand" rows over one column of prompt cards under three tabs:
  * Use cases (jobs: a screenshot, a PRD, a decision, a demo), Ideas (things to
  * make) and Libraries (company design systems, component libraries, motion
  * and media).
@@ -8,11 +8,14 @@
  * Picking a card runs its prompt in the chat sidebar: the chat that's open,
  * with its composer's model and effort, or a new one if none is (as the
  * composer's send would). The picked card stays marked.
+ *
+ * A "Welcome to your canvas" header sits on top. No cards or hairlines: rows
+ * are set apart by spacing and a hover fill. Secondary text is at 4.5:1 or
+ * better on every surface, titles a step down.
  */
 import { useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { Check, Package, Plus } from "lucide-react";
-import { cn } from "@/renderer/lib/utils";
 
 // A plain join, as the design has it: no class is merged away.
 const cx = (...c: (string | false | null | undefined)[]) => c.filter(Boolean).join(" ");
@@ -34,6 +37,10 @@ import {
 
 type OnPick = (p: Pick) => void;
 
+// The text greys: secondary text at 4.5:1 or better on every surface, titles
+// a step down.
+const TONES = { "--c-title": "#e5e5e5", "--c-sub": "#999999", "--c-em": "#d4d4d4", "--c-lead": "#999999" };
+
 // While a picked prompt is running, the other cards are locked and dimmed;
 // the picked one keeps its mark.
 const LOCKED = "disabled:cursor-default disabled:opacity-50";
@@ -41,13 +48,15 @@ const LOCKED = "disabled:cursor-default disabled:opacity-50";
 // --- Bring your brand ---
 
 // Real marks for each: a brand's swatches, design systems people bring,
-// a codebase's file types.
+// a codebase's file types. The marks take the thumbnails' 72px slot so every
+// title lines up.
 const MarkStack = ({ children }: { children: ReactNode }) => (
-  <span className="flex w-[58px] shrink-0 items-center justify-center -space-x-1">{children}</span>
+  <span className="flex w-[72px] shrink-0 items-center justify-center -space-x-1">{children}</span>
 );
+const RING = "ring-[var(--mark-ring,#262626)]";
 const Coin = ({ bg, children, className }: { bg: string; children: ReactNode; className?: string }) => (
   <span
-    className={cx("grid size-[22px] place-items-center overflow-hidden rounded-[6px] ring-2 ring-[#2c2c2c] [&_svg]:size-3", className)}
+    className={cx(`grid size-[22px] place-items-center overflow-hidden rounded-[6px] ring-2 [&_svg]:size-3 ${RING}`, className)}
     style={{ background: bg }}
   >
     {children}
@@ -57,7 +66,7 @@ const BrandMarks = ({ kind }: { kind: "site" | "ds" | "code" }) =>
   kind === "site" ? (
     <MarkStack>
       {["#e8613a", "#f5f0e8", "#7fa38a"].map((c) => (
-        <span key={c} className="size-[20px] rounded-full ring-2 ring-[#2c2c2c]" style={{ background: c }} />
+        <span key={c} className={`size-[20px] rounded-full ring-2 ${RING}`} style={{ background: c }} />
       ))}
     </MarkStack>
   ) : kind === "ds" ? (
@@ -80,15 +89,18 @@ const BrandMarks = ({ kind }: { kind: "site" | "ds" | "code" }) =>
     </MarkStack>
   );
 
-// One card, rows split by hairlines; a check replaces the + when picked.
+// Fuller titles here, saying what each does (prompts.ts keeps the short ones).
+const BRAND_TITLES: Record<"site" | "ds" | "code", string> = {
+  site: "Pull your brand from your website",
+  ds: "Use your design system",
+  code: "Pull your brand and components from your codebase",
+};
+
+// Rows set apart by space; a check replaces the + when picked.
 const BrandSection = ({ selected, locked, onPick }: { selected: Pick | null; locked: boolean; onPick: OnPick }) => (
-  <div className="mb-7">
-    <div className="mb-3 px-0.5">
-      <h1 className="text-sm font-medium text-[#b0b0b0] tracking-[-0.02em]">Bring your brand</h1>
-      <p className="text-xs text-[#787878] mt-1 leading-normal">Claude builds in your look from the first prompt.</p>
-    </div>
-    <div className="overflow-hidden rounded-[12px] border border-[#333] bg-white/[0.035]">
-      {BRAND_SOURCES.map(({ st, kind, title, does }, i) => {
+  <div className="mb-8">
+    <div className="-mx-1.5 flex flex-col gap-1" style={{ "--mark-ring": "#282828" } as CSSProperties}>
+      {BRAND_SOURCES.map(({ st, kind, does }) => {
         const on = selected?.id === st.id;
         return (
           <button
@@ -97,20 +109,20 @@ const BrandSection = ({ selected, locked, onPick }: { selected: Pick | null; loc
             disabled={locked && !on}
             className={cx(
               "group flex w-full items-center gap-3 p-1.5 pr-3.5 text-left transition-colors",
-              i > 0 && "border-t border-[#333]",
-              on ? "bg-[#303030]" : "hover:bg-white/[0.03] disabled:hover:bg-transparent",
+              "rounded-[10px]",
+              on ? "bg-[#303030]" : "hover:bg-white/[0.04] disabled:hover:bg-transparent",
               LOCKED,
             )}
           >
             <BrandMarks kind={kind} />
             <span className="min-w-0 flex-1">
-              <span className="block truncate text-[12px] leading-snug font-medium text-neutral-100">{title}</span>
-              <span className="block truncate text-[11px] leading-snug text-neutral-500">{does}</span>
+              <span className="block truncate text-[13px] leading-snug font-medium text-[var(--c-title)]">{BRAND_TITLES[kind]}</span>
+              <span className="block truncate text-[12px] leading-snug text-[var(--c-sub)]">{does}</span>
             </span>
             {on ? (
               <Check className="size-3.5 shrink-0 text-neutral-200" />
             ) : (
-              <Plus className="size-3.5 shrink-0 text-neutral-500 group-hover:text-neutral-300" />
+              <Plus className="size-3.5 shrink-0 text-[var(--c-sub)] group-hover:text-neutral-300" />
             )}
           </button>
         );
@@ -129,10 +141,14 @@ const LIST_TABS: { id: ListTab; label: string; hint: string }[] = [
   { id: "libraries", label: "Libraries", hint: "Pick one and Claude installs it, then builds a first screen with it." },
 ];
 
+// Rows set apart by space, as the brand rows above are.
+const GROUP = "flex flex-col gap-1";
+
 const cardClass = (on: boolean) =>
   cx(
-    "group flex items-center gap-3 rounded-[10px] border p-1.5 pr-3.5 text-left transition-colors",
-    on ? "border-[#737373] bg-[#303030]" : "border-[#333] bg-[#262626] hover:border-[#4a4a4a] disabled:hover:border-[#333]",
+    "group flex w-full items-center gap-3 p-1.5 pr-3.5 text-left transition-colors",
+    "rounded-[10px]",
+    on ? "bg-[#303030]" : "hover:bg-white/[0.04] disabled:hover:bg-transparent",
     LOCKED,
   );
 
@@ -146,8 +162,8 @@ const IdeaCard = ({ st, on, locked, onPick }: { st: Starter; on: boolean; locked
         </span>
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-[12px] leading-snug font-medium text-neutral-100">{st.title}</span>
-        <span className="block truncate text-[11px] leading-snug text-neutral-500">{st.blurb}</span>
+        <span className="block truncate text-[13px] leading-snug font-medium text-[var(--c-title)]">{st.title}</span>
+        <span className="block truncate text-[12px] leading-snug text-[var(--c-sub)]">{st.blurb}</span>
       </span>
     </button>
   );
@@ -162,9 +178,9 @@ const LibraryCard = ({ lib, on, locked, onPick }: { lib: Library; on: boolean; l
       {lib.mark.node}
     </span>
     <span className="min-w-0 flex-1">
-      <span className="block truncate text-[12px] leading-snug font-medium text-neutral-100">{lib.name}</span>
-      <span className="block truncate text-[11px] leading-snug text-neutral-500">
-        {lib.by && <span className="text-neutral-400">{lib.by} · </span>}
+      <span className="block truncate text-[13px] leading-snug font-medium text-[var(--c-title)]">{lib.name}</span>
+      <span className="block truncate text-[12px] leading-snug text-[var(--c-sub)]">
+        {lib.by && <span className="text-[var(--c-em)]">{lib.by} · </span>}
         {lib.blurb}
       </span>
     </span>
@@ -188,7 +204,7 @@ const ListCards = ({
 }) => (
   <div
     key={tab}
-    className="overflow-y-auto"
+    className="overflow-y-auto -mx-1.5 px-0"
     style={{
       height,
       scrollbarWidth: "thin",
@@ -197,17 +213,19 @@ const ListCards = ({
     }}
   >
     {tab !== "libraries" ? (
-      <div className="flex flex-col gap-1.5 pb-6">
-        {(tab === "usecases" ? USE_CASES : IDEAS).map((st) => (
-          <IdeaCard key={st.id} st={st} on={selected?.id === st.id} locked={locked} onPick={onPick} />
-        ))}
+      <div className="pb-6">
+        <div className={GROUP}>
+          {(tab === "usecases" ? USE_CASES : IDEAS).map((st) => (
+            <IdeaCard key={st.id} st={st} on={selected?.id === st.id} locked={locked} onPick={onPick} />
+          ))}
+        </div>
       </div>
     ) : (
       <div className="flex flex-col pb-6">
         {LIBRARY_GROUPS.map((g, i) => (
-          <div key={g.title} className={i > 0 ? "mt-4" : ""}>
-            <div className="mb-1.5 px-0.5 text-[11px] font-medium text-neutral-500">{g.title}</div>
-            <div className="flex flex-col gap-1.5">
+          <div key={g.title} className={i > 0 ? "mt-5" : ""}>
+            <div className="mb-1.5 text-[12px] font-medium text-[var(--c-sub)] px-2">{g.title}</div>
+            <div className={GROUP}>
               {g.items.map((lib) => (
                 <LibraryCard key={lib.id} lib={lib} on={selected?.id === lib.id} locked={locked} onPick={onPick} />
               ))}
@@ -269,25 +287,25 @@ const useRunPrompt = () => {
 export const OnboardingList = ({ className }: { className?: string }) => {
   const { selected, locked, run } = useRunPrompt();
   const [tab, setTab] = useState<ListTab>("usecases");
-  const current = LIST_TABS.find((t) => t.id === tab)!;
   return (
-    <div className={cn("relative w-full max-w-[480px] px-6 py-6", className)}>
+    <div className={cx("relative w-full max-w-[480px] px-6 py-6", className)} style={TONES as CSSProperties}>
+      {/* The welcome, one step up from the section headings */}
+      <header className="mb-8 px-0.5">
+        <h1 className="text-[20px] font-semibold tracking-[-0.02em] text-neutral-100">Welcome to your canvas</h1>
+        <p className="mt-1.5 text-[14px] leading-[1.5] text-pretty text-[var(--c-lead)]">
+          Every frame here is a real React component. Describe what you want in the chat, and Claude builds it.
+        </p>
+      </header>
       <BrandSection selected={selected} locked={locked} onPick={run} />
-      <div className="mb-3 flex items-end justify-between gap-4 px-0.5">
-        <div className="min-w-0">
-          <h1 className="text-sm font-medium text-[#b0b0b0] tracking-[-0.02em]">Try a prompt</h1>
-          <p className="text-xs text-[#787878] mt-1 leading-normal">{current.hint}</p>
-        </div>
-      </div>
-      <div className="mb-3 flex items-center gap-3">
+      <div className="flex items-center gap-3 mb-4">
         <div className="flex w-fit shrink-0 gap-0.5 rounded-lg bg-white/[0.04] p-0.5">
           {LIST_TABS.map((t) => (
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
               className={cx(
-                "h-6 rounded-md px-2.5 text-[12px] font-medium transition-colors",
-                tab === t.id ? "bg-white/[0.1] text-neutral-100" : "text-neutral-500 hover:text-neutral-300",
+                "h-7 rounded-md px-2.5 text-[13px] font-medium transition-colors",
+                tab === t.id ? "bg-white/[0.1] text-neutral-100" : "text-[var(--c-sub)] hover:text-neutral-300",
               )}
             >
               {t.label}
@@ -295,10 +313,10 @@ export const OnboardingList = ({ className }: { className?: string }) => {
           ))}
         </div>
         {/* On every tab: the lists are examples, not the limit. */}
-        <p className="ml-auto flex min-w-0 items-center gap-1.5 text-[11.5px] text-neutral-500">
-          <Package className="size-3.5 shrink-0 text-neutral-500" />
+        <p className="ml-auto flex min-w-0 items-center gap-1.5 text-[12.5px] text-[var(--c-sub)]">
+          <Package className="size-3.5 shrink-0 text-[var(--c-sub)]" />
           <span className="truncate">
-            Or ask for <span className="text-neutral-400">any React library</span> on npm.
+            Or ask for <span className="text-[var(--c-em)]">any React library</span> on npm.
           </span>
         </p>
       </div>
