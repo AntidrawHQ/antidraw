@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import type { CanvasFile } from "@/renderer/canvas/canvas-file";
 import logoUrl from "@/renderer/assets/antidraw-icon.svg";
 import { framesInReadingOrder, openName, searchWith, type Frame } from "../../frames";
-import { ChevronLeft, ChevronRight } from "./icons";
+import { ChevronLeft, ChevronRight, Info } from "./icons";
 import { Stage } from "./Stage";
 
 // A snapshot on a phone or tablet. The canvas runs every component at once,
@@ -176,9 +176,14 @@ export const TouchSnapshot = ({ file, frameUrl }: { file: CanvasFile; frameUrl: 
             <div className="text-[12.5px] text-[#9a9a9a]">
               {frames.length} {frames.length === 1 ? "component" : "components"}
             </div>
-            <p className="m-0 pt-3 text-[12.5px] leading-[1.5] text-[#8a8a8a]">
-              The canvas isn't available on mobile for performance reasons. Open this link on a desktop to see it.
-            </p>
+            {/* Above the list: under a long one it would be a screen or more down. */}
+            <div className="mt-3 flex items-start gap-2.5 rounded-xl bg-white/[0.05] px-3 py-2.5 ring-1 ring-inset ring-white/[0.07]">
+              <Info size={15} className="mt-[2px] shrink-0 text-[#9a9a9a]" />
+              <p className="m-0 text-[12.5px] leading-[1.5] text-[#a3a3a3]">
+                The canvas view isn't available on mobile for performance reasons. Open this link on a desktop to see
+                it.
+              </p>
+            </div>
           </div>
           <ul className="m-0 list-none p-0 pb-6">
             {frames.map((item, index) => (
