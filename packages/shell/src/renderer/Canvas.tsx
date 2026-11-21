@@ -120,8 +120,8 @@ type CanvasPlaceholderProps = {
 const CanvasPlaceholder = ({ subtitle, className }: CanvasPlaceholderProps) => (
   <div className={cn("flex-1 flex items-center justify-center bg-[#282828] relative", className)}>
     <div className="text-center z-10">
-      <div className="text-sm text-[#71717a]">Canvas</div>
-      <div className="text-[11px] text-neutral-600">{subtitle}</div>
+      <div className="text-sm text-neutral-200">Canvas</div>
+      <div className="text-[11px] text-neutral-400">{subtitle}</div>
     </div>
   </div>
 );

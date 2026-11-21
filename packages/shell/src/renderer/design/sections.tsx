@@ -433,7 +433,7 @@ export const Empty = ({ icon: Icon, title, body, children }: { icon: typeof Mous
       </span>
       <div className="flex flex-col gap-1">
         <span className="text-[13px] font-semibold text-white/85">{title}</span>
-        <p className="m-0 text-[12.5px] leading-[18px] text-white/45">{body}</p>
+        <p className="m-0 text-[12.5px] leading-[18px] text-white/55">{body}</p>
       </div>
     </div>
     {children}

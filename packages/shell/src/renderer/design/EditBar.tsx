@@ -37,7 +37,7 @@ const ChangeList = ({ changes, gone, revert }: { changes: ElementChange[]; gone:
       {byEl.map(([edit, cs]) => (
         <div key={edit.id} className="flex flex-col">
           <span className="flex items-center gap-1.5 px-2 py-0.5">
-            <span className={cn(MONO, "min-w-0 truncate text-[11px] text-white/40")} title={`${edit.componentName} · ${edit.name}`}>
+            <span className={cn(MONO, "min-w-0 truncate text-[11px] text-white/55")} title={`${edit.componentName} · ${edit.name}`}>
               {edit.name}
             </span>
             {gone.has(edit.id) && <span className="shrink-0 text-[11px] text-[#fbbf24]/80">Not on the page</span>}
@@ -45,7 +45,7 @@ const ChangeList = ({ changes, gone, revert }: { changes: ElementChange[]; gone:
           {cs.map((c) => (
             <div key={c.group.key} className="group flex h-7 items-center gap-2 rounded-md px-2 hover:bg-white/[0.05]">
               <span className="shrink-0 text-[12.5px] font-medium text-white/75">{c.group.label}</span>
-              <span className={cn(MONO, "min-w-0 flex-1 truncate text-right text-[11.5px] text-white/45")} title={`${c.from} → ${c.to}`}>
+              <span className={cn(MONO, "min-w-0 flex-1 truncate text-right text-[11.5px] text-white/55")} title={`${c.from} → ${c.to}`}>
                 {c.from} → <span className="text-white/85">{c.to}</span>
               </span>
               <button
@@ -121,7 +121,7 @@ export const EditBar = () => {
               <span className="ml-2 whitespace-nowrap text-[13px] font-medium text-white/90">Precise edits</span>
               <span className="ml-1.5 h-4 w-px bg-white/10" />
               {n === 0 ? (
-                <span className="ml-0.5 whitespace-nowrap px-2 text-[13px] text-white/45">No changes yet</span>
+                <span className="ml-0.5 whitespace-nowrap px-2 text-[13px] text-white/55">No changes yet</span>
               ) : (
                 <button
                   type="button"
@@ -135,7 +135,7 @@ export const EditBar = () => {
                 >
                   <span>
                     <span className={cn(MONO, "text-[12.5px]")}>{n}</span> unsaved {n === 1 ? "change" : "changes"}
-                    {elements > 1 && <span className="text-white/45"> on {elements} elements</span>}
+                    {elements > 1 && <span className="text-white/55"> on {elements} elements</span>}
                   </span>
                   <ChevronDown className={cn("size-3.5 text-white/45 transition-transform", open && "rotate-180")} />
                 </button>
@@ -224,7 +224,7 @@ export const EditBar = () => {
               <Spin />
               <span className="whitespace-nowrap">
                 The agent is applying {count} {count === 1 ? "change" : "changes"}
-                {els > 1 && <span className="text-white/45"> on {els} elements</span>}…
+                {els > 1 && <span className="text-white/55"> on {els} elements</span>}…
               </span>
               {/* Not before the API has the set: only its number can let it go. */}
               <button

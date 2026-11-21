@@ -233,25 +233,25 @@ const OpenCard = ({ qs, phase, choices, setChoice, step, setStep, submitError, o
                   onClick={() => moveTo(i)}
                   className={cn(
                     "flex cursor-pointer items-center gap-1 rounded-sm px-1.5 py-px text-[11px] disabled:cursor-default",
-                    i === step ? "bg-white/[0.1] text-neutral-100" : done(x) ? "text-neutral-400 hover:text-neutral-200" : "text-neutral-500 hover:text-neutral-300",
+                    i === step ? "bg-white/[0.1] text-neutral-100" : done(x) ? "text-neutral-400 hover:text-neutral-200" : "text-neutral-400 hover:text-neutral-300",
                   )}
                 >
                   {done(x) && i !== step && <Check className="size-3" />}
                   {x.header || `Question ${i + 1}`}
                 </button>
               ))}
-              <span className="ml-1 text-[11px] text-neutral-600">
+              <span className="ml-1 text-[11px] text-neutral-400">
                 {step + 1} of {qs.length}
               </span>
             </div>
           ) : (
             <>
               {q.header && <span className={CHIP}>{q.header}</span>}
-              <span className="flex-1 text-[12px] text-neutral-500">{status}</span>
+              <span className="flex-1 text-[12px] text-neutral-400">{status}</span>
             </>
           )}
           {OPEN.includes(phase) && (
-            <button type="button" disabled={phase === "busy"} onClick={onSkip} className="cursor-pointer text-[12px] text-neutral-500 hover:text-neutral-200 disabled:cursor-default disabled:opacity-50">
+            <button type="button" disabled={phase === "busy"} onClick={onSkip} className="cursor-pointer text-[12px] text-neutral-400 hover:text-neutral-200 disabled:cursor-default disabled:opacity-50">
               Skip
             </button>
           )}
@@ -259,7 +259,7 @@ const OpenCard = ({ qs, phase, choices, setChoice, step, setStep, submitError, o
         <p className="m-0 text-[13px] text-neutral-100">
           {q.question}
           {phase === "arriving" && q.options.length === 0 && <Caret />}
-          {q.multiSelect && phase !== "arriving" && <span className="ml-1.5 text-[12px] text-neutral-500">Choose any</span>}
+          {q.multiSelect && phase !== "arriving" && <span className="ml-1.5 text-[12px] text-neutral-400">Choose any</span>}
         </p>
       </div>
 
@@ -284,8 +284,8 @@ const OpenCard = ({ qs, phase, choices, setChoice, step, setStep, submitError, o
           >
             {q.multiSelect && <Box on={on} />}
             <span className={cn("shrink-0 text-[13px]", on ? "text-neutral-100" : "text-neutral-300")}>{bare(o.label)}</span>
-            {reco && <span className="shrink-0 self-center rounded-sm bg-white/[0.07] px-1 py-px text-[10.5px] leading-none text-neutral-400">Recommended</span>}
-            <span className="min-w-0 truncate text-[12px] text-neutral-500">
+            {reco && <span className={cn("shrink-0 self-center rounded-sm bg-white/[0.07] px-1 py-px text-[10.5px] leading-none", on ? "text-neutral-300" : "text-neutral-400")}>Recommended</span>}
+            <span className="min-w-0 truncate text-[12px] text-neutral-400">
               {o.description}
               {phase === "arriving" && i === q.options.length - 1 && <Caret />}
             </span>
@@ -308,7 +308,7 @@ const OpenCard = ({ qs, phase, choices, setChoice, step, setStep, submitError, o
             onClick={() => setChoice(q, clickOther(q, c))}
             onChange={(e) => setChoice(q, typeOther(q, c, e.target.value))}
             placeholder={q.multiSelect ? "Add your own…" : "Or type your own answer…"}
-            className="min-w-0 flex-1 bg-transparent text-[13px] text-neutral-100 outline-none placeholder:text-neutral-500 disabled:cursor-default"
+            className="min-w-0 flex-1 bg-transparent text-[13px] text-neutral-100 outline-none placeholder:text-neutral-400 disabled:cursor-default"
           />
           {OPEN.includes(phase) && (
             <button
@@ -325,7 +325,7 @@ const OpenCard = ({ qs, phase, choices, setChoice, step, setStep, submitError, o
       )}
 
       {phase === "waiting" && submitError && (
-        <p className="m-0 px-1.5 pb-1 pt-0.5 text-[12px] text-red-300/70" data-testid="submit-error">
+        <p className="m-0 px-1.5 pb-1 pt-0.5 text-[12px] text-red-300/80" data-testid="submit-error">
           {submitError}
         </p>
       )}
@@ -353,8 +353,8 @@ const STATUS: Partial<Record<Phase, string>> = {
 
 const SettledRow = ({ on, label, description }: { on: boolean; label: string; description?: string }) => (
   <div className={cn("flex items-baseline gap-2 rounded px-1.5 py-1.5", on && "bg-white/[0.06]")}>
-    <span className={cn("shrink-0 text-[13px]", on ? "text-neutral-100" : "text-neutral-500")}>{label}</span>
-    {description && <span className={cn("min-w-0 truncate text-[12px]", on ? "text-neutral-500" : "text-neutral-600")}>{description}</span>}
+    <span className={cn("shrink-0 text-[13px]", on ? "text-neutral-100" : "text-neutral-300")}>{label}</span>
+    {description && <span className="min-w-0 truncate text-[12px] text-neutral-400">{description}</span>}
     {on && <Check className="ml-auto size-3.5 shrink-0 self-center text-neutral-300" />}
   </div>
 );
@@ -381,7 +381,7 @@ const SettledCard = ({
       <div className="flex flex-col gap-1.5 px-1.5 pb-1 pt-1.5">
         <div className="flex min-h-[18px] items-center gap-2">
           {!many && q.header && <span className={CHIP}>{q.header}</span>}
-          <span className="flex-1 text-[12px] text-neutral-500">
+          <span className="flex-1 text-[12px] text-neutral-400">
             {STATUS[phase]}
             {many && ` · ${qs.length} questions`}
           </span>
@@ -395,8 +395,8 @@ const SettledCard = ({
             const a = answers?.[x.question];
             return (
               <div key={x.question} className="flex flex-col gap-0.5 px-1.5 py-1.5">
-                <span className="truncate text-[12px] text-neutral-500">{x.question}</span>
-                <span className={cn("flex items-center gap-1.5 text-[13px]", a ? "text-neutral-100" : "text-neutral-600")}>
+                <span className="truncate text-[12px] text-neutral-400">{x.question}</span>
+                <span className={cn("flex items-center gap-1.5 text-[13px]", a ? "text-neutral-100" : "text-neutral-400")}>
                   {a ? (
                     <>
                       <Check className="size-3.5 shrink-0 text-neutral-400" />
@@ -424,7 +424,7 @@ const SettledCard = ({
             );
           })()}
 
-      {reason && <p className={cn("m-0 px-1.5 pb-1 pt-1 text-[12px]", phase === "skipped" ? "text-neutral-500" : "text-red-300/70")}>{reason}</p>}
+      {reason && <p className={cn("m-0 px-1.5 pb-1 pt-1 text-[12px]", phase === "skipped" ? "text-neutral-400" : "text-red-300/80")}>{reason}</p>}
     </div>
   );
 };

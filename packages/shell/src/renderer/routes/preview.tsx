@@ -17,7 +17,7 @@ const previewSearch = z.object({
 const PreviewError = () => (
   <div className="flex h-screen w-full flex-col bg-[#0a0a0a]">
     <div className="h-[38px] w-full shrink-0 border-b border-[#333] bg-[#2A2A2A] drag-region" />
-    <p className="m-auto text-[13px] text-neutral-500">Nothing to preview here.</p>
+    <p className="m-auto text-[13px] text-neutral-400">Nothing to preview here.</p>
   </div>
 );
 

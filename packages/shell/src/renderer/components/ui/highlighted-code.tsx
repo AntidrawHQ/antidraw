@@ -35,7 +35,7 @@ const Line = memo(
     <div className={cn("flex min-h-[1lh]", className)}>
       {number !== undefined && (
         <span
-          className="shrink-0 select-none pr-3 text-right text-neutral-600"
+          className="shrink-0 select-none pr-3 text-right text-neutral-400"
           style={{ width: `calc(${gutterCh}ch + 0.75rem)` }}
         >
           {number}

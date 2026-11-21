@@ -73,14 +73,14 @@ export default function ModelPicker({
             className
           )}
         >
-          <ClaudeIcon size={14} className="shrink-0 text-[#d97757]" />
+          <ClaudeIcon size={14} className="shrink-0 text-[#e09076]" />
           <span className="flex-1 truncate text-left">
             {selected?.resolvedModel ?? selected?.value ?? "Select model"}
           </span>
           {open ? (
-            <ChevronUp className="h-3 w-3 shrink-0 text-neutral-500" />
+            <ChevronUp className="h-3 w-3 shrink-0 text-neutral-400" />
           ) : (
-            <ChevronDown className="h-3 w-3 shrink-0 text-neutral-500" />
+            <ChevronDown className="h-3 w-3 shrink-0 text-neutral-400" />
           )}
         </button>
       </PopoverTrigger>

@@ -31,7 +31,7 @@ export const T = {
   fieldHover: "#404040",
   text: "#F2F2F2",
   text2: "#A1A1A1",
-  text3: "#787878",
+  text3: "#A3A3A3",
   accent: "#E8E8E8",
   accentSoft: "rgba(232,232,232,0.14)",
   edited: "#D6C7A1",
@@ -302,7 +302,7 @@ export const Num = ({
             put(cur + (e.key === "ArrowUp" ? 1 : -1) * step * (e.shiftKey ? 10 : 1));
           }
         }}
-        className={cn(MONO, "h-full w-full min-w-0 flex-1 bg-transparent outline-none placeholder:text-[#787878]")}
+        className={cn(MONO, "h-full w-full min-w-0 flex-1 bg-transparent outline-none placeholder:text-[#a3a3a3]")}
         style={{ color: T.text }}
       />
       {unit && (

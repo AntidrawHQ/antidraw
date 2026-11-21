@@ -50,7 +50,7 @@ const HalfCircleIcon = ({ active }: { active: boolean }) => (
     height={ICON_SIZE}
     viewBox="0 0 24 24"
     fill="none"
-    stroke={active ? "#e8a040" : "#6b6b6b"}
+    stroke={active ? "#e8a040" : "#a3a3a3"}
     strokeWidth="1.75"
     strokeLinecap="round"
     strokeLinejoin="round"
@@ -85,7 +85,7 @@ const lineTone = (line: string): string =>
     ? "text-[#e08a86]"
     : /attempt \d+ failed/.test(line)
       ? "text-[#c99a62]"
-      : "text-[#7f7f7f]";
+      : "text-neutral-400";
 
 export const CreateWorkspaceProgress = ({
   status,
@@ -136,12 +136,7 @@ export const CreateWorkspaceProgress = ({
 
         return (
           <div key={step.key}>
-            <div
-              className={
-                "flex items-center gap-2.5 py-2.5 transition-opacity duration-300 " +
-                (isDone || isActive || isFailed ? "opacity-100" : "opacity-35")
-              }
-            >
+            <div className="flex items-center gap-2.5 py-2.5">
               <div className="flex shrink-0">
                 {isFailed ? (
                   <XCircleIcon />
@@ -158,7 +153,7 @@ export const CreateWorkspaceProgress = ({
                     ? "font-medium text-[#e0e0e0]"
                     : isDone || isActive
                       ? "text-[#e0e0e0] "
-                      : "text-[#666] ") +
+                      : "text-neutral-400 ") +
                   (isActive ? "font-medium" : "")
                 }
               >

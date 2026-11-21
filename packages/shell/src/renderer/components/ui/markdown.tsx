@@ -104,7 +104,7 @@ const INITIAL_COMPONENTS: Partial<Components> = {
     <blockquote className="!border-[#3a3a3a]" {...props} />
   ),
   li: ({ node, ...props }) => (
-    <li className="marker:!text-[#3a3a3a]" {...props} />
+    <li className="marker:!text-neutral-400" {...props} />
   ),
   table: ({ node, ...props }) => (
     <div className="not-prose my-4 overflow-x-auto rounded-sm border border-[#3a3a3a]">

@@ -12,11 +12,11 @@ export const MessageShimmer = ({ label = "Working…" }: { label?: string }) => 
         .shimmer-text {
           background: linear-gradient(
             90deg,
-            rgba(255,255,255,0.35) 0%,
-            rgba(255,255,255,0.35) 40%,
+            rgba(255,255,255,0.55) 0%,
+            rgba(255,255,255,0.55) 40%,
             rgba(255,255,255,1) 50%,
-            rgba(255,255,255,0.35) 60%,
-            rgba(255,255,255,0.35) 100%
+            rgba(255,255,255,0.55) 60%,
+            rgba(255,255,255,0.55) 100%
           );
           background-size: 200% auto;
           -webkit-background-clip: text;

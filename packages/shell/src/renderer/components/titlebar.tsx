@@ -27,7 +27,7 @@ export const Titlebar = () => {
           a workspace is open, as the group then has the MCP button too. */}
       <span
         className={cn(
-          "pointer-events-none absolute inset-x-0 text-center text-[13px] font-medium text-neutral-400",
+          "pointer-events-none absolute inset-x-0 text-center text-[13px] font-medium text-neutral-200",
           activeWorkspace ? "max-[1050px]:hidden" : "max-[720px]:hidden",
         )}
       >

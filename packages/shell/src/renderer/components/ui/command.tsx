@@ -24,7 +24,7 @@ function CommandInput({
     <CommandPrimitive.Input
       data-slot="command-input"
       className={cn(
-        "flex-1 min-w-0 bg-transparent border-none outline-none text-[13px] text-neutral-200 placeholder:text-neutral-500",
+        "flex-1 min-w-0 bg-transparent border-none outline-none text-[13px] text-neutral-200 placeholder:text-neutral-400",
         className
       )}
       {...props}
@@ -52,7 +52,7 @@ function CommandEmpty({
   return (
     <CommandPrimitive.Empty
       data-slot="command-empty"
-      className={cn("py-6 text-center text-[12px] text-neutral-500", className)}
+      className={cn("py-6 text-center text-[12px] text-neutral-400", className)}
       {...props}
     />
   )

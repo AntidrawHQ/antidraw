@@ -78,7 +78,7 @@ const QueuedRow = ({ row, cancelling, onCancel }: QueuedRowProps) => {
         <div className="relative max-w-full rounded-lg bg-neutral-700 py-1.5 pl-2.5 pr-8 opacity-70 transition-colors duration-200">
           {/* Clamped, and wrapped anywhere: a pasted log stays a short
               preview. The full text shows once the transcript takes it. */}
-          <p className="line-clamp-3 text-[13px] leading-snug text-neutral-400 [overflow-wrap:anywhere]">
+          <p className="line-clamp-3 text-[13px] leading-snug text-neutral-200 [overflow-wrap:anywhere]">
             {promptText(row.message)}
           </p>
           <button
@@ -89,7 +89,7 @@ const QueuedRow = ({ row, cancelling, onCancel }: QueuedRowProps) => {
             // time bound — the row stays until it comes back.
             disabled={cancelling || row.leaving !== undefined}
             onClick={onCancel}
-            className="absolute right-1 top-1 rounded-md p-1 text-neutral-500 transition-colors duration-200 hover:bg-white/[0.06] hover:text-neutral-200 disabled:pointer-events-none disabled:opacity-50"
+            className="absolute right-1 top-1 rounded-md p-1 text-neutral-300 transition-colors duration-200 hover:bg-white/[0.06] hover:text-neutral-200 disabled:pointer-events-none disabled:opacity-50"
           >
             <X className="size-3" />
           </button>
@@ -118,7 +118,7 @@ export const QueuedMessagesDeck = ({
           spanning the panel. */}
       <div className="ml-auto w-fit min-w-[240px] max-w-[85%] border border-[#2d2d2d] p-2 transition-colors duration-200">
         <div className="mb-1 text-center">
-          <span className="text-[13px] font-medium text-neutral-500">
+          <span className="text-[13px] font-medium text-neutral-400">
             Queued Messages
           </span>
         </div>

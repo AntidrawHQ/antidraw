@@ -76,7 +76,7 @@ export const PillToggleToolbar = ({ componentName, nodeId, selected, onRefresh, 
               />
               <motion.span
                 className="text-xs font-medium font-[inherit] whitespace-nowrap"
-                animate={{ color: selected ? "rgba(255,255,255,0.5)" : "rgba(255,255,255,0.3)" }}
+                animate={{ color: selected ? "rgba(255,255,255,0.7)" : "rgba(255,255,255,0.55)" }}
                 transition={springGentle}
               >
                 {componentName}

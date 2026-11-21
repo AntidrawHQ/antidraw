@@ -54,7 +54,7 @@ const Tabs = ({ tab, changes, drafts }: { tab: Tab; changes: number; drafts: num
       const mark =
         t === "design"
           ? changes > 0 && <span className="size-1 rounded-full bg-[#60a5fa]/80" />
-          : t === "comments" && drafts > 0 && <span className={cn(MONO, "text-[11px] text-white/30")}>{drafts}</span>;
+          : t === "comments" && drafts > 0 && <span className={cn(MONO, "text-[11px] text-white/55")}>{drafts}</span>;
       return (
         <button
           key={t}
@@ -66,7 +66,7 @@ const Tabs = ({ tab, changes, drafts }: { tab: Tab; changes: number; drafts: num
           }}
           className={cn(
             "relative flex h-6 cursor-pointer items-center gap-1.5 rounded-md px-2 text-[13px] font-medium",
-            on ? "text-white/85" : "text-white/40 hover:text-white/65",
+            on ? "text-white/85" : "text-white/55 hover:text-white/65",
           )}
         >
           {on && <span className="absolute inset-0 rounded-md bg-white/[0.06]" />}
@@ -182,7 +182,7 @@ export const RightPanel = () => {
                 track("panel_toggled", { panel: "right", open: false, via: "click" });
                 useDesignStore.getState().setPanelOpen(false);
               }}
-              className="text-white/30 hover:text-white/70"
+              className="text-white/55 hover:text-white/70"
             >
               <PanelRightClose className="size-3.5" strokeWidth={1.75} />
             </IconButton>

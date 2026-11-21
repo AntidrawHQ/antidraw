@@ -105,7 +105,7 @@ const ChatLink = ({ n, onOpen }: { n: number; onOpen: () => void }) => (
   </button>
 );
 
-const Hint = ({ children }: { children: ReactNode }) => <p className="m-0 px-3 py-6 text-center text-[12.5px] leading-[18px] text-white/35">{children}</p>;
+const Hint = ({ children }: { children: ReactNode }) => <p className="m-0 px-3 py-6 text-center text-[12.5px] leading-[18px] text-white/55">{children}</p>;
 
 /* ── A comment ─────────────────────────────────────────────────────────── */
 
@@ -125,9 +125,9 @@ const StatusMark = ({ kind, n }: { kind: Kind; n?: number }) =>
       <span className="dk-shimmer">Working</span>
     </span>
   ) : kind === "unmarked" ? (
-    <span className="text-[11.5px] text-white/40">Not marked</span>
+    <span className="text-[11.5px] text-white/55">Not marked</span>
   ) : kind === "dismissed" ? (
-    <span className="text-[11.5px] text-white/40">Dismissed</span>
+    <span className="text-[11.5px] text-white/55">Dismissed</span>
   ) : (
     <span className="text-white/40" title="Resolved">
       <Done />
@@ -150,7 +150,7 @@ const Card = ({ a, c, s, n }: { a: Actions; c: Cmt; s: Send | null; n?: number }
       <div className="min-w-0 flex-1">
         <div className="flex h-[18px] items-center gap-1.5">
           <span className="text-[12.5px] font-medium text-white/85">You</span>
-          <span className="text-[11.5px] text-white/35">{ago(c.at)}</span>
+          <span className="text-[11.5px] text-white/55">{ago(c.at)}</span>
           <span className="flex-1" />
           <span className={cn("flex items-center", remove && "group-hover:hidden")}>
             <StatusMark kind={kind} n={n} />
@@ -170,12 +170,12 @@ const Card = ({ a, c, s, n }: { a: Actions; c: Cmt; s: Send | null; n?: number }
             </IconButton>
           )}
         </div>
-        <p className={cn("m-0 mt-0.5 break-words text-[13px] leading-[19px]", closed(c) ? "text-white/55" : "text-white/85")}>{c.text}</p>
-        <div className="mt-1 flex min-w-0 items-center gap-1.5 whitespace-nowrap text-[11.5px] text-white/35">
+        <p className={cn("m-0 mt-0.5 break-words text-[13px] leading-[19px]", closed(c) ? "text-white/70" : "text-white/85")}>{c.text}</p>
+        <div className="mt-1 flex min-w-0 items-center gap-1.5 whitespace-nowrap text-[11.5px] text-white/55">
           <span className="min-w-0 truncate">{c.frame}</span>
           {c.element && (
             <>
-              <span className="shrink-0 text-white/20">·</span>
+              <span className="shrink-0 text-white/35">·</span>
               <span className="shrink-0">
                 <ElName c={c} />
               </span>
@@ -183,7 +183,7 @@ const Card = ({ a, c, s, n }: { a: Actions; c: Cmt; s: Send | null; n?: number }
           )}
           {s && (
             <>
-              <span className="shrink-0 text-white/20">·</span>
+              <span className="shrink-0 text-white/35">·</span>
               <span className="shrink-0">
                 <ChatLink n={s.n} onOpen={() => a.chat(s.conversationId)} />
               </span>
@@ -191,7 +191,7 @@ const Card = ({ a, c, s, n }: { a: Actions; c: Cmt; s: Send | null; n?: number }
           )}
           {!s && closed(c) && (
             <>
-              <span className="shrink-0 text-white/20">·</span>
+              <span className="shrink-0 text-white/35">·</span>
               <span className="shrink-0">Outside agent</span>
             </>
           )}
@@ -204,7 +204,7 @@ const Card = ({ a, c, s, n }: { a: Actions; c: Cmt; s: Send | null; n?: number }
             <div className="min-w-0 flex-1">
               <div className="flex h-4 items-center gap-1.5">
                 <span className="text-[12px] font-medium text-white/75">Agent</span>
-                {c.doneAt && <span className="text-[11.5px] text-white/35">{ago(c.doneAt)}</span>}
+                {c.doneAt && <span className="text-[11.5px] text-white/55">{ago(c.doneAt)}</span>}
               </div>
               <p className="m-0 mt-0.5 break-words text-[12.5px] leading-[18px] text-white/60">{c.note}</p>
             </div>
@@ -230,11 +230,11 @@ const Filter = ({ value, onChange, open, resolved }: { value: "open" | "resolved
         onClick={() => onChange(v)}
         className={cn(
           "flex h-6 cursor-pointer items-center gap-1.5 rounded-md px-2 text-[12px] font-medium",
-          value === v ? "bg-white/[0.06] text-white/85" : "text-white/40 hover:text-white/65",
+          value === v ? "bg-white/[0.06] text-white/85" : "text-white/55 hover:text-white/65",
         )}
       >
         {label}
-        {count > 0 && <span className="dk-mono text-[11px] text-white/30">{count}</span>}
+        {count > 0 && <span className="dk-mono text-[11px] text-white/55">{count}</span>}
       </button>
     ))}
   </div>
@@ -323,7 +323,7 @@ export const useOutbox = () => {
   const foot = f.draft.length ? (
     <div className="flex shrink-0 flex-col border-t border-white/[0.05]">
       <div className="flex h-8 items-center gap-1.5 px-3.5 pt-1.5">
-        <span className="text-[11.5px] font-medium text-white/35">Not sent yet</span>
+        <span className="text-[11.5px] font-medium text-white/55">Not sent yet</span>
       </div>
       <div className="dk-scroll flex max-h-[45vh] flex-col gap-0.5 overflow-y-auto px-1.5">
         {f.draft.map((c, i) => (
@@ -335,7 +335,7 @@ export const useOutbox = () => {
       </div>
     </div>
   ) : sent.length ? (
-    <p className="m-0 shrink-0 border-t border-white/[0.05] px-3.5 py-3 text-[12px] text-white/35">Click a frame to leave a comment.</p>
+    <p className="m-0 shrink-0 border-t border-white/[0.05] px-3.5 py-3 text-[12px] text-white/55">Click a frame to leave a comment.</p>
   ) : null;
 
   return { body, foot, drafts: f.draft.length };

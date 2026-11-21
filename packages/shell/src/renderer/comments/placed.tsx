@@ -43,11 +43,11 @@ const PinMark = ({ c, i, lit, a }: { c: Cmt; i?: number; lit: boolean; a: Action
       className={cn(
         "pointer-events-auto absolute z-10 grid -translate-y-full cursor-pointer place-items-center rounded-full rounded-bl-none text-[10px] font-semibold leading-none shadow-[0_2px_6px_rgba(0,0,0,.35)] transition-transform",
         open
-          ? "size-5 bg-[#3b82f6] text-white ring-2 ring-white/90"
+          ? "size-5 bg-[#2563eb] text-white ring-2 ring-white/90"
           : draft
             ? "size-5 bg-neutral-100 text-neutral-900"
             : "size-4 bg-[#4a4a4a] text-neutral-300 ring-1 ring-white/15",
-        lit && !open && "scale-125 ring-2 ring-[#3b82f6]",
+        lit && !open && "scale-125 ring-2 ring-[#2563eb]",
       )}
       style={{ left: p.x, top: p.y, transformOrigin: "bottom left" }}
     >
@@ -115,7 +115,7 @@ export const CommentCard = ({ f, id, editing, a, onClose }: { f: Flow; id: numbe
       className={cn("pointer-events-auto absolute z-40 flex flex-col gap-2 p-3 ring-1 ring-white/20", FLOAT)}
       style={{ ...floatShadow, left, top, width: BOX }}
     >
-      {!at && <p className="m-0 text-[12px] text-neutral-500">{c.frame} isn't on the canvas</p>}
+      {!at && <p className="m-0 text-[12px] text-neutral-400">{c.frame} isn't on the canvas</p>}
       {editing ? (
         <textarea
           ref={ref}
@@ -142,7 +142,7 @@ export const CommentCard = ({ f, id, editing, a, onClose }: { f: Flow; id: numbe
         {c.state === "draft" ? (
           editing ? (
             <>
-              <span className="flex-1 text-neutral-500">
+              <span className="flex-1 text-neutral-400">
                 <Kbd>↵</Kbd> save · <Kbd>esc</Kbd>
               </span>
               <TextBtn onClick={cancel}>Cancel</TextBtn>
@@ -171,7 +171,7 @@ export const CommentCard = ({ f, id, editing, a, onClose }: { f: Flow; id: numbe
           <>
             {/* Only Completed is said: a sent one's row says Sent. One an
                 outside agent closed has no chat to open: its note says what it did. */}
-            <span className="flex-1 text-neutral-500">
+            <span className="flex-1 text-neutral-400">
               {c.state === "sent" ? "" : LABEL[c.state]}
               {!s && " by an outside agent"}
             </span>
