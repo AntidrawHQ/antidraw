@@ -15,7 +15,7 @@ export const FLOAT = "rounded-[12px] bg-[#353535]";
 export const floatShadow = { boxShadow: "0 5px 20px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.1), inset 0 1px 0 rgba(255,255,255,.05)" };
 
 export const Kbd = ({ children }: { children: ReactNode }) => (
-  <span className="rounded-sm bg-white/[0.06] px-1 py-px font-mono text-[10.5px] leading-none text-neutral-500">{children}</span>
+  <span className="rounded-sm bg-white/[0.06] px-1 py-px font-mono text-[10.5px] leading-none text-neutral-300">{children}</span>
 );
 
 // Beside the pin, unless that runs off the canvas.
@@ -52,7 +52,7 @@ export const CommentBoxAt = ({ at, add, send, preset = "", onClose }: { at: At; 
   return (
     <div data-comment-ui className="pointer-events-auto" onClick={(e) => e.stopPropagation()}>
       <span
-        className="absolute z-40 size-5 -translate-y-full rounded-full rounded-bl-none bg-[#3b82f6] shadow-[0_2px_6px_rgba(0,0,0,.35)] ring-2 ring-white/90"
+        className="absolute z-40 size-5 -translate-y-full rounded-full rounded-bl-none bg-[#2563eb] shadow-[0_2px_6px_rgba(0,0,0,.35)] ring-2 ring-white/90"
         style={{ left: x, top: y }}
       />
       <div
@@ -67,7 +67,7 @@ export const CommentBoxAt = ({ at, add, send, preset = "", onClose }: { at: At; 
           onChange={(e) => setV(e.target.value)}
           onKeyDown={onKey}
           placeholder="Leave a comment for Claude…"
-          className="min-w-0 flex-1 resize-none bg-transparent py-0.5 text-[13px] leading-[20px] text-neutral-100 outline-none placeholder:text-neutral-500"
+          className="min-w-0 flex-1 resize-none bg-transparent py-0.5 text-[13px] leading-[20px] text-neutral-100 outline-none placeholder:text-neutral-400"
         />
         <Kbd>↵</Kbd>
       </div>

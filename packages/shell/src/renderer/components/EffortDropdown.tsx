@@ -94,9 +94,9 @@ export default function EffortDropdown({
           <Gauge className="h-3.5 w-3.5 shrink-0 text-neutral-400" />
           <span className="truncate">{EFFORT_META[selected].label}</span>
           {open ? (
-            <ChevronUp className="h-3 w-3 shrink-0 text-neutral-500" />
+            <ChevronUp className="h-3 w-3 shrink-0 text-neutral-400" />
           ) : (
-            <ChevronDown className="h-3 w-3 shrink-0 text-neutral-500" />
+            <ChevronDown className="h-3 w-3 shrink-0 text-neutral-400" />
           )}
         </button>
       </PopoverTrigger>

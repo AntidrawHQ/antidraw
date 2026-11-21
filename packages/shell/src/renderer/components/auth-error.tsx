@@ -11,7 +11,7 @@ export const AuthError = ({ onSignIn, onRetry }: AuthErrorProps) => (
     <p className="text-sm font-medium text-neutral-200 leading-normal mb-1">
       You're not signed in to Claude Code.
     </p>
-    <p className="text-sm text-neutral-500 leading-normal mb-3">
+    <p className="text-sm text-neutral-400 leading-normal mb-3">
       Sign in below to open a login window. Once you're done, come back and
       retry your message.
     </p>
@@ -30,7 +30,7 @@ export const AuthError = ({ onSignIn, onRetry }: AuthErrorProps) => (
       </button>
       <button
         onClick={onRetry}
-        className="flex items-center justify-center gap-1.5 py-2 px-3.5 bg-transparent border border-transparent rounded-md cursor-pointer text-sm text-neutral-500 transition-colors w-full box-border hover:text-neutral-400"
+        className="flex items-center justify-center gap-1.5 py-2 px-3.5 bg-transparent border border-transparent rounded-md cursor-pointer text-sm text-neutral-400 transition-colors w-full box-border hover:text-neutral-100"
       >
         <RefreshCw size={13} />
         Retry Message

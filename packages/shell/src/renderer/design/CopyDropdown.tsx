@@ -39,7 +39,7 @@ export const CopyDropdown = ({ code, filePath }: CopyDropdownProps) => {
       key: "prompt",
       icon:
         copied === "prompt" ? (
-          <IconCircleCheckFilled size={18} color="#7c6cd6" />
+          <IconCircleCheckFilled size={18} color="#9183dd" />
         ) : (
           <Bot size={18} strokeWidth={1.5} />
         ),
@@ -51,7 +51,7 @@ export const CopyDropdown = ({ code, filePath }: CopyDropdownProps) => {
       key: "code",
       icon:
         copied === "code" ? (
-          <IconCircleCheckFilled size={18} color="#7c6cd6" />
+          <IconCircleCheckFilled size={18} color="#9183dd" />
         ) : (
           <Code size={18} strokeWidth={1.5} />
         ),
@@ -71,7 +71,7 @@ export const CopyDropdown = ({ code, filePath }: CopyDropdownProps) => {
             className="flex min-w-0 items-center gap-1.5 px-2.5 py-1.5 bg-transparent border-none cursor-pointer hover:bg-white/[0.06] transition-[background] duration-[120ms]"
           >
             {copied ? (
-              <IconCircleCheckFilled size={14} color="#7c6cd6" className="shrink-0" />
+              <IconCircleCheckFilled size={14} color="#9183dd" className="shrink-0" />
             ) : (
               <Bot size={12} className="shrink-0 text-[#a3a3a3]" />
             )}
@@ -83,9 +83,9 @@ export const CopyDropdown = ({ code, filePath }: CopyDropdownProps) => {
           <PopoverTrigger asChild>
             <button className="flex items-center justify-center w-8 self-stretch bg-transparent border-none cursor-pointer hover:bg-white/[0.06] transition-[background] duration-[120ms]">
               {open ? (
-                <ChevronUp size={12} className="text-[#737373]" />
+                <ChevronUp size={12} className="text-neutral-400" />
               ) : (
-                <ChevronDown size={12} className="text-[#737373]" />
+                <ChevronDown size={12} className="text-neutral-400" />
               )}
             </button>
           </PopoverTrigger>
@@ -107,10 +107,10 @@ export const CopyDropdown = ({ code, filePath }: CopyDropdownProps) => {
               {item.icon}
             </div>
             <div className="flex flex-col gap-px min-w-0">
-              <span className="text-[13px] font-medium text-neutral-400">
+              <span className="text-[13px] font-medium text-neutral-200">
                 {item.title}
               </span>
-              <span className="text-[11px] text-[#71717a]">{item.desc}</span>
+              <span className="text-[11px] text-neutral-400">{item.desc}</span>
             </div>
           </button>
         ))}

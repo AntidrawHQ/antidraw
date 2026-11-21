@@ -218,7 +218,7 @@ const IframeNode = memo(({ componentName, url, selected, onLoad }: IframeNodePro
           />
         ) : (
           <div className="flex items-center justify-center h-full bg-neutral-900">
-            <span className="text-xs text-neutral-500">Loading...</span>
+            <span className="text-xs text-neutral-400">Loading...</span>
           </div>
         )}
       </div>
@@ -389,7 +389,7 @@ const nodeTypes: NodeTypes = {
 };
 
 // The minimap's frames: brighter when selected, like their selection outline.
-const miniMapNodeColor = (node: Node) => (node.selected ? "#a3a3a3" : "#525252");
+const miniMapNodeColor = (node: Node) => (node.selected ? "#a3a3a3" : "#737373");
 
 const miniMapStyle = {
   width: 180,

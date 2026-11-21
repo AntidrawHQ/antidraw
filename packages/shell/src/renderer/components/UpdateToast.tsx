@@ -38,7 +38,7 @@ const UpdateToastCard = ({
       <span className="text-[13px] font-medium text-neutral-100">
         Update available
       </span>
-      <span className="text-[12px] leading-snug text-neutral-500">
+      <span className="text-[12px] leading-snug text-neutral-400">
         Version {version} has been downloaded. Restart to apply the update.
       </span>
 
@@ -53,7 +53,7 @@ const UpdateToastCard = ({
         </button>
         <button
           onClick={onDismiss}
-          className="rounded-md px-2 py-1.5 text-[13px] font-medium text-neutral-500 cursor-pointer transition-colors hover:text-neutral-300"
+          className="rounded-md px-2 py-1.5 text-[13px] font-medium text-neutral-400 cursor-pointer transition-colors hover:text-neutral-100"
         >
           Later
         </button>
@@ -63,7 +63,7 @@ const UpdateToastCard = ({
     <button
       onClick={onDismiss}
       aria-label="Dismiss"
-      className="absolute right-2.5 top-2.5 flex h-6 w-6 items-center justify-center rounded-md text-neutral-600 cursor-pointer transition-colors hover:bg-white/[0.06] hover:text-neutral-300"
+      className="absolute right-2.5 top-2.5 flex h-6 w-6 items-center justify-center rounded-md text-neutral-400 cursor-pointer transition-colors hover:bg-white/[0.06] hover:text-neutral-100"
     >
       <X size={14} />
     </button>

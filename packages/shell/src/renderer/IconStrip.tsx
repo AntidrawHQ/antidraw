@@ -51,8 +51,8 @@ export const IconStrip = () => {
                 className={cn(
                   "h-12 flex items-center justify-center border-none cursor-pointer transition-colors",
                   isActive
-                    ? "bg-white/[0.1] text-neutral-200"
-                    : "bg-transparent text-neutral-500 hover:text-neutral-300 hover:bg-white/[0.06]"
+                    ? "bg-white/[0.1] text-neutral-50"
+                    : "bg-transparent text-neutral-400 hover:text-neutral-100 hover:bg-white/[0.06]"
                 )}
               >
                 <tab.icon className="w-[18px] h-[18px]" />

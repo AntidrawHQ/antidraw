@@ -107,7 +107,7 @@ export const Ring = ({ failed }: { failed: boolean }) => (
 
 const Field = ({ name, value }: { name: string; value: unknown }) => (
   <div>
-    <span className="text-neutral-500">{name}:</span> {formatValue(value)}
+    <span className="text-neutral-400">{name}:</span> {formatValue(value)}
   </div>
 );
 
@@ -324,7 +324,7 @@ const ToolOutput = ({ toolPart }: { toolPart: ToolPart }) => {
           // An image's result has no text beside it.
           !(images && value === "") && (
             <div key={key}>
-              <span className="text-neutral-500">{key}:</span>{" "}
+              <span className="text-neutral-400">{key}:</span>{" "}
               {formatValue(value)}
             </div>
           ),
@@ -361,7 +361,7 @@ const ToolBody = ({ toolPart }: { toolPart: ToolPart }) => {
       )}
 
       {state === "output-error" && toolPart.errorText && (
-        <div className="mt-1 text-red-300/70">{toolPart.errorText}</div>
+        <div className="mt-1 text-red-300/80">{toolPart.errorText}</div>
       )}
     </div>
   );
@@ -414,7 +414,7 @@ export const Tool = memo(function Tool({
             {title ?? getToolTitle(toolPart)}
           </span>
           {failed && (
-            <span className="shrink-0 text-[12px] text-red-300/70">Failed</span>
+            <span className="shrink-0 text-[12px] text-red-300/80">Failed</span>
           )}
           <ChevronDown
             className={cn(

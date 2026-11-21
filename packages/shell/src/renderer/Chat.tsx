@@ -285,7 +285,7 @@ const MessageRow = memo(
               key={idx}
               className={cn(
                 "self-end max-w-[85%] bg-neutral-700 text-neutral-200 prose prose-sm prose-invert whitespace-pre-wrap",
-                isFailed && "opacity-60"
+                isFailed && "opacity-70"
               )}
             >
               {edited.edits.flatMap((e) => e.changes).join("\n")}
@@ -300,7 +300,7 @@ const MessageRow = memo(
               key={idx}
               className={cn(
                 "self-end max-w-[85%] bg-neutral-700 text-neutral-200 prose prose-sm prose-invert whitespace-pre-wrap",
-                isFailed && "opacity-60"
+                isFailed && "opacity-70"
               )}
             >
               {commented.comments.map((c) => c.text).join("\n\n")}
@@ -323,7 +323,7 @@ const MessageRow = memo(
                 // Hugs its text up to 85% of the panel, against the right
                 // edge, like the queued deck that hands prompts over.
                 "self-end max-w-[85%] bg-neutral-700 text-neutral-200 prose prose-sm prose-invert",
-                isFailed && "opacity-60"
+                isFailed && "opacity-70"
               )}
             >
               {tagged ? tagged.text : block.text}
@@ -691,7 +691,7 @@ function Composer({
           )}
           <PromptInputTextarea
             placeholder="Ask me anything..."
-            className="bg-transparent dark:bg-transparent min-h-[72px]"
+            className="bg-transparent dark:bg-transparent min-h-[72px] placeholder:text-neutral-300"
             onPaste={handlePaste}
           />
           <PromptInputActions className="justify-between pt-2">

@@ -76,9 +76,9 @@ export const WorkspaceSwitcher = () => {
             {activeWorkspace?.name ?? "Select workspace"}
           </span>
           {isOpen ? (
-            <ChevronUp className="w-3 h-3 text-neutral-500 shrink-0" />
+            <ChevronUp className="w-3 h-3 text-neutral-400 shrink-0" />
           ) : (
-            <ChevronDown className="w-3 h-3 text-neutral-500 shrink-0" />
+            <ChevronDown className="w-3 h-3 text-neutral-400 shrink-0" />
           )}
         </button>
       </PopoverTrigger>
@@ -95,7 +95,7 @@ export const WorkspaceSwitcher = () => {
             <Search
               className={cn(
                 "w-3 h-3 shrink-0 transition-colors",
-                search ? "text-neutral-300" : "text-neutral-600"
+                search ? "text-neutral-200" : "text-neutral-400"
               )}
             />
             <CommandInput
@@ -103,7 +103,7 @@ export const WorkspaceSwitcher = () => {
               placeholder="Search..."
               value={search}
               onValueChange={setSearch}
-              className="text-[13px] placeholder:text-neutral-600"
+              className="text-[13px] placeholder:text-neutral-400"
             />
           </div>
           <CommandList className="max-h-[240px] px-1 pb-1">
@@ -117,11 +117,11 @@ export const WorkspaceSwitcher = () => {
                 className="group w-full flex items-center gap-2 py-1.5 px-2 border-none rounded-md text-left"
               >
                 <AvatarIcon name={ws.name} size={18} />
-                <span className="text-[13px] font-medium truncate flex-1 text-neutral-400 group-data-[selected=true]:text-neutral-200">
+                <span className="text-[13px] font-medium truncate flex-1 text-neutral-200 group-data-[selected=true]:text-neutral-50">
                   {ws.name}
                 </span>
                 {ws.id === activeWorkspaceId && (
-                  <Check className="w-3 h-3 text-neutral-500 shrink-0" />
+                  <Check className="w-3 h-3 text-neutral-400 shrink-0" />
                 )}
               </CommandItem>
             ))}
@@ -132,7 +132,7 @@ export const WorkspaceSwitcher = () => {
         <div className="pt-1">
           <button
             onClick={handleNewWorkspace}
-            className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md border-none bg-transparent hover:bg-white/[0.06] text-[13px] font-medium text-neutral-500 hover:text-neutral-200 cursor-pointer transition-colors duration-[120ms]"
+            className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md border-none bg-transparent hover:bg-white/[0.06] text-[13px] font-medium text-neutral-400 hover:text-neutral-100 cursor-pointer transition-colors duration-[120ms]"
           >
             <Plus className="w-3 h-3" />
             New Workspace
