@@ -177,9 +177,9 @@ export const TouchSnapshot = ({ file, frameUrl }: { file: CanvasFile; frameUrl: 
               {frames.length} {frames.length === 1 ? "component" : "components"}
             </div>
             {/* Above the list: under a long one it would be a screen or more down. */}
-            <div className="mt-3 flex items-start gap-2.5 rounded-xl bg-white/[0.05] px-3 py-2.5 ring-1 ring-inset ring-white/[0.07]">
-              <Info size={15} className="mt-[2px] shrink-0 text-[#9a9a9a]" />
-              <p className="m-0 text-[12.5px] leading-[1.5] text-[#a3a3a3]">
+            <div className="mt-3 flex items-start gap-2.5 rounded-xl bg-[rgba(100,116,139,0.14)] px-3 py-2.5 ring-1 ring-inset ring-[rgba(148,163,184,0.24)]">
+              <Info size={15} className="mt-[2px] shrink-0 text-[#94a3b8]" />
+              <p className="m-0 text-[12.5px] leading-[1.5] text-[#c3ccd8]">
                 The canvas view isn't available on mobile for performance reasons. Open this link on a desktop to see
                 it.
               </p>
