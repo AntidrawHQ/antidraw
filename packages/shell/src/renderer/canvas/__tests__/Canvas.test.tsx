@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act } from "react";
+import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { ReactFlowProvider } from "@xyflow/react";
 import { afterEach, beforeAll, expect, it, vi } from "vitest";
@@ -44,30 +44,37 @@ async function renderCanvas(
   {
     components = [{ name: "Card" }, { name: "Hero Card" }],
     savedLayouts = [{ componentName: "Card", x: 10, y: 20, width: 300, height: 200 }],
-  }: { components?: { name: string }[]; savedLayouts?: FrameLayout[] } = {},
+    strict = false,
+  }: { components?: { name: string }[]; savedLayouts?: FrameLayout[]; strict?: boolean } = {},
 ) {
   const { Canvas } = await import("../Canvas");
   const container = document.body.appendChild(document.createElement("div"));
-  const render = (onChange: typeof onLayoutsChange, more: { name: string }[] = []) =>
+  const Mode = strict ? StrictMode : "div";
+  const render = (onChange: typeof onLayoutsChange, list = components) =>
     root!.render(
-      <ReactFlowProvider>
-        <div style={{ width: 1200, height: 800 }}>
-          <Canvas
-            components={[...components, ...more]}
-            savedLayouts={savedLayouts}
-            frameUrl={frameUrl}
-            onLayoutsChange={onChange}
-            onFullscreen={() => {}}
-            frameLayer={frameLayer}
-          />
-        </div>
-      </ReactFlowProvider>,
+      <Mode>
+        <ReactFlowProvider>
+          <div style={{ width: 1200, height: 800 }}>
+            <Canvas
+              components={list}
+              savedLayouts={savedLayouts}
+              frameUrl={frameUrl}
+              onLayoutsChange={onChange}
+              onFullscreen={() => {}}
+              frameLayer={frameLayer}
+            />
+          </div>
+        </ReactFlowProvider>
+      </Mode>,
     );
   root = createRoot(container);
   await act(async () => render(onLayoutsChange));
   return {
     rerender: (onChange: typeof onLayoutsChange) => act(() => render(onChange)),
-    addComponents: (more: { name: string }[]) => act(() => render(onLayoutsChange, more)),
+    addComponents: (more: { name: string }[]) =>
+      act(() => render(onLayoutsChange, [...components, ...more])),
+    // The host's list now, as after a component's file is added or deleted.
+    setComponents: (list: { name: string }[]) => act(() => render(onLayoutsChange, list)),
   };
 }
 
@@ -253,6 +260,63 @@ it("saves a change with the callback given when it happened", async () => {
         ],
       }
     `);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("takes a deleted component's frame off the canvas, out of the row and out of the save", async () => {
+  vi.useFakeTimers();
+  try {
+    const onLayoutsChange = vi.fn();
+    // StrictMode runs the sync's updater twice.
+    const canvas = await renderCanvas(onLayoutsChange, undefined, {
+      components: [{ name: "Card" }, { name: "Hero Card" }, { name: "Footer" }],
+      strict: true,
+    });
+    const placed = positions();
+    await canvas.setComponents([{ name: "Card" }, { name: "Footer" }]);
+    const deleted = positions();
+    const toolbars = [...document.querySelectorAll<HTMLElement>(".canvas-frame-toolbar")].map(
+      (toolbar) => toolbar.dataset.id,
+    );
+    // Footer is still settling: it grows to its component, and the canvas saves.
+    await postSize(SITE, 500, 300, "Footer");
+    await act(async () => vi.advanceTimersByTime(500));
+    expect({ placed, deleted, toolbars, saved: onLayoutsChange.mock.calls.at(-1)?.[0] })
+      .toMatchInlineSnapshot(`
+        {
+          "deleted": {
+            "Card-1": "translate(10px,20px)",
+            "Footer-1": "translate(410px,20px)",
+          },
+          "placed": {
+            "Card-1": "translate(10px,20px)",
+            "Footer-1": "translate(910px,20px)",
+            "Hero Card-1": "translate(410px,20px)",
+          },
+          "saved": [
+            {
+              "componentName": "Card",
+              "height": 200,
+              "width": 300,
+              "x": 10,
+              "y": 20,
+            },
+            {
+              "componentName": "Footer",
+              "height": 300,
+              "width": 500,
+              "x": 410,
+              "y": 20,
+            },
+          ],
+          "toolbars": [
+            "Card-1",
+            "Footer-1",
+          ],
+        }
+      `);
   } finally {
     vi.useRealTimers();
   }

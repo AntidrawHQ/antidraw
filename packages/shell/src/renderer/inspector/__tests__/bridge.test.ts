@@ -4,6 +4,7 @@ import { AGENT_NS, type ElementContext, type ElementInfo, type FromFrame } from 
 import {
   clearSelection,
   getSelectedElementContext,
+  keepSelectionIn,
   markElement,
   onCommentClick,
   onFrameWheel,
@@ -446,6 +447,20 @@ it("takes a click's selection, deselects in a frame the selection leaves, and dr
 
   unregisterOther();
   other.remove();
+});
+
+it("drops the selection when its frame leaves the canvas, and an answer that comes after", async () => {
+  const selected = () => useInspectorStore.getState().selection?.frame ?? null;
+  frameSays({ type: "selected", info: info() });
+  keepSelectionIn(new Set(["Card", "Pricing"]));
+  expect(selected()).toBe("Card");
+  // A walk still out when Card's file is deleted.
+  const walking = walk("parent");
+  const walkAsk = lastAsked().id;
+  keepSelectionIn(new Set(["Pricing"]));
+  frameSays({ type: "selected", id: walkAsk, info: info({ text: "Card" }) });
+  await walking;
+  expect(selected()).toBe(null);
 });
 
 it("drops tags and the selection when the workspace changes", () => {
