@@ -2,6 +2,9 @@ export const queryKeys = {
   workspaces: {
     all: ["workspaces"] as const,
     detail: (id: string | null) => ["workspace", id] as const,
+    // A capture is a new version, so a new key.
+    thumbnail: (id: string, version: number | null) =>
+      ["workspace-thumbnail", id, version] as const,
   },
   devServer: {
     status: (workspaceId: string | null) => ["devServer", workspaceId] as const,

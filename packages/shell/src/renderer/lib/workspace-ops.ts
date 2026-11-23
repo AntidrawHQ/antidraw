@@ -80,6 +80,8 @@ export const useCreateWorkspace = () => {
   });
 };
 
+// Opens a workspace in the window's one tab, in place of what was there, and
+// shows it.
 export const useSwitchWorkspace = () => {
   const queryClient = useQueryClient();
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
@@ -87,10 +89,15 @@ export const useSwitchWorkspace = () => {
   const setActiveConversationId = useWorkspaceStore(
     (s) => s.setActiveConversationId,
   );
+  const setDashboardShown = useWorkspaceStore((s) => s.setDashboardShown);
   const stopDevServer = useStopDevServer();
 
   return async (nextWorkspaceId: string) => {
-    if (nextWorkspaceId === activeWorkspaceId) return;
+    if (nextWorkspaceId === activeWorkspaceId) {
+      // Already in the tab: back to it from the dashboard.
+      setDashboardShown(false);
+      return;
+    }
 
     // The canvas as it's left, while its dev server still serves its frames.
     await flushThumbnail();
@@ -105,6 +112,7 @@ export const useSwitchWorkspace = () => {
 
     setActiveWorkspaceId(nextWorkspaceId);
     setActiveConversationId(null);
+    setDashboardShown(false);
 
     // usePreference caches with staleTime: Infinity, so keep the cache in sync
     queryClient.setQueryData(
@@ -113,6 +121,45 @@ export const useSwitchWorkspace = () => {
     );
     void setPreference("activeWorkspaceId", nextWorkspaceId);
   };
+};
+
+// The saved activeWorkspaceId of a window whose tab was closed: the next
+// launch opens on the dashboard, not on a workspace.
+const NO_WORKSPACE = "";
+
+// Closes the tab's workspace, which leaves the dashboard.
+export const useCloseWorkspace = () => {
+  const queryClient = useQueryClient();
+  const stopDevServer = useStopDevServer();
+
+  return async () => {
+    const { activeWorkspaceId, setActiveWorkspaceId, setActiveConversationId, setDashboardShown } =
+      useWorkspaceStore.getState();
+    if (!activeWorkspaceId) return;
+
+    // The canvas as it's left, while its dev server still serves its frames.
+    await flushThumbnail();
+
+    setDashboardShown(true);
+    setActiveWorkspaceId(null);
+    setActiveConversationId(null);
+
+    queryClient.setQueryData(queryKeys.preferences.byKey("activeWorkspaceId"), NO_WORKSPACE);
+    void setPreference("activeWorkspaceId", NO_WORKSPACE);
+
+    // Resolves once it has stopped, for a caller about to delete its files.
+    await stopDevServer.mutateAsync(activeWorkspaceId).catch((error) => {
+      console.error("Failed to stop dev server:", error);
+    });
+  };
+};
+
+// To the dashboard from the tab's workspace, which stays open under it. Its
+// thumbnail is taken first, if one is waiting: nothing can be captured while
+// the dashboard covers the canvas.
+export const showDashboard = async () => {
+  await flushThumbnail();
+  useWorkspaceStore.getState().setDashboardShown(true);
 };
 
 export const useDeleteWorkspace = () => {
@@ -191,28 +238,33 @@ export const useDevServerStatus = (workspaceId: string | null) => {
   });
 };
 
+// What the window opens on: the workspace it had open last, or the dashboard
+// if its tab was closed. Without either (the first launch after onboarding),
+// the newest workspace. Once: a tab closed later stays closed.
 export const useAutoSelectWorkspace = () => {
-  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
-  const setActiveWorkspaceId = useWorkspaceStore((s) => s.setActiveWorkspaceId);
   const { data: workspaces } = useWorkspaces();
   const { data: savedId, isPending: isPrefPending } =
     usePreference("activeWorkspaceId");
+  const restored = useRef(false);
 
   useEffect(() => {
-    if (activeWorkspaceId || !workspaces?.length || isPrefPending) return;
+    if (restored.current || !workspaces || isPrefPending) return;
+    restored.current = true;
 
-    const exists = !!savedId && workspaces.some((ws) => ws.id === savedId);
-    const targetId = exists ? savedId! : workspaces[0]!.id;
+    const { activeWorkspaceId, setActiveWorkspaceId, setDashboardShown } =
+      useWorkspaceStore.getState();
+    if (activeWorkspaceId) return;
 
-    setActiveWorkspaceId(targetId);
-    if (!exists) setPreference("activeWorkspaceId", targetId);
-  }, [
-    activeWorkspaceId,
-    workspaces,
-    savedId,
-    isPrefPending,
-    setActiveWorkspaceId,
-  ]);
+    const saved = workspaces.find((ws) => ws.id === savedId);
+    const target = saved ?? (savedId === NO_WORKSPACE ? undefined : workspaces[0]);
+    if (!target) {
+      setDashboardShown(true);
+      return;
+    }
+
+    setActiveWorkspaceId(target.id);
+    if (!saved) setPreference("activeWorkspaceId", target.id);
+  }, [workspaces, savedId, isPrefPending]);
 };
 
 export const useAutoStartDevServer = (workspaceId: string | null) => {

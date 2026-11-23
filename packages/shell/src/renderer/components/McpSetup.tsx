@@ -5,7 +5,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/renderer/components/u
 import { cx } from "@/renderer/onboarding/McpParts";
 import { McpRows } from "@/renderer/onboarding/TwoWaysRows";
 
-// The MCP setup in the titlebar, beside the workspace switcher: a button that
+// The MCP setup in the titlebar, beside the Publish button: a button that
 // opens the onboarding page's MCP card (onboarding/TwoWaysRows) under it, a
 // size down, not a simplified menu. The chat isn't in it: it's already in the
 // sidebar.
@@ -18,7 +18,7 @@ const NO_DRAG = { WebkitAppRegion: "no-drag" } as CSSProperties;
 export const McpSetup = () => {
   const [open, setOpen] = useState(false);
 
-  // The app's popover, as the switcher beside it has: it stays in the window,
+  // The app's popover: it stays in the window,
   // and its Escape and outside click are handled, so the canvas doesn't take
   // them too.
   return (

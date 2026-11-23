@@ -108,10 +108,11 @@ const createWindow = () => {
   const win = new BrowserWindow({
     width: 900,
     height: 670,
-    // The titlebar's workspace switcher and Publish button need the room.
+    // The titlebar's tabs and Publish button need the room.
     minWidth: 480,
     titleBarStyle: "hidden",
-    trafficLightPosition: { x: 12, y: 13 },
+    // Centred in the titlebar's 46px (renderer/components/titlebar.tsx).
+    trafficLightPosition: { x: 12, y: 17 },
     backgroundColor: "#0a0a0a",
     webPreferences: {
       preload: path.join(__dirname, "../preload/preload.cjs"),

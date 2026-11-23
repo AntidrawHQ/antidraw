@@ -5,6 +5,10 @@ export type SidePanel = "chat" | "components";
 type WorkspaceStore = {
   activeWorkspaceId: string | null;
   setActiveWorkspaceId: (id: string | null) => void;
+  // The Dashboard tab is the one showing: the workspaces list, over the open
+  // workspace, which keeps running under it.
+  dashboardShown: boolean;
+  setDashboardShown: (shown: boolean) => void;
   activeConversationId: string | null;
   setActiveConversationId: (id: string | null) => void;
   // Shows a conversation in the chat panel from outside it (a comment set's
@@ -26,6 +30,8 @@ type WorkspaceStore = {
 export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
   activeWorkspaceId: null,
   setActiveWorkspaceId: (id) => set({ activeWorkspaceId: id }),
+  dashboardShown: false,
+  setDashboardShown: (shown) => set({ dashboardShown: shown }),
   activeConversationId: null,
   setActiveConversationId: (id) => set({ activeConversationId: id }),
   showConversation: (id) =>

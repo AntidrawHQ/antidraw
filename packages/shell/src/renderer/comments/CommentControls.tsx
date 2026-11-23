@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { pickCanvasTool, useCommentStore } from "./store";
+import { useWorkspaceStore } from "@/renderer/store/workspace";
 
 // The Comment tool's keys, mounted inside the canvas, as InspectorControls'.
 //   C     start commenting (it stays on: Esc or V stops it)
@@ -13,6 +14,7 @@ const isTyping = (target: EventTarget | null) =>
   (target instanceof HTMLElement && target.isContentEditable);
 
 const isCanvasKey = (e: KeyboardEvent) =>
+  !useWorkspaceStore.getState().dashboardShown &&
   !e.metaKey &&
   !e.ctrlKey &&
   !e.altKey &&

@@ -3,9 +3,8 @@
  * (Framer, Dropbox Dash, Air, Zoom's whiteboard): a card per comment, who
  * and when, the text, where it is; the agent's note threaded under it as its
  * reply; Open · Resolved at the top (Magnific, Obvious). antidraw doesn't
- * know who wrote a comment, so the author is "You", with an avatar from the
- * workspace switcher's set (boring-avatars, its palette; a different
- * variant). At the bottom, by Send, as a composer holds a draft: the
+ * know who wrote a comment, so the author is "You", with a boring-avatars
+ * avatar. At the bottom, by Send, as a composer holds a draft: the
  * comments written and not sent.
  *
  * Each comment gets one status, said once:
@@ -35,7 +34,7 @@ import { elementLabel } from "./use-design";
 
 /* ── Authors ───────────────────────────────────────────────────────────── */
 
-// The workspace switcher's avatar palette (components/AvatarIcon).
+// The avatar's colours.
 const PALETTE = ["#c084a0", "#84a0c0", "#a0c084", "#c0a084", "#84c0a0"];
 
 const You = ({ size = 18 }: { size?: number }) => (

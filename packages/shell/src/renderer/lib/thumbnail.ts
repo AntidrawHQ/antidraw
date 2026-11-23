@@ -62,7 +62,7 @@ export const requestThumbnail = (workspaceId: string) => {
 };
 
 // Before a switch takes the canvas away: the capture it was waiting to take,
-// now, or once what covers the canvas (the switcher closing) is gone. With
+// now, or once what covers the canvas (a dialog closing) is gone. With
 // none waiting there's nothing to do; the last one is current. Past the
 // timeout the switch goes ahead, and the capture is dropped with the canvas.
 export const flushThumbnail = () =>
