@@ -326,6 +326,16 @@ export function clearSelection() {
   store.getState().setSelection(null);
 }
 
+// The frames on the canvas now. A selection in a frame that's gone (its file
+// deleted) goes with it: with no page left, nothing would say it's lost. Not
+// on unregister, as a frame that only remounts gets its selection back.
+export function keepSelectionIn(frames: ReadonlySet<string>) {
+  const selection = store.getState().selection;
+  if (!selection || frames.has(selection.frame)) return;
+  latestSelect = nextId++;
+  store.getState().setSelection(null);
+}
+
 // What an agent is told about each pick (see ElementContext), as its frame
 // sees it now: an edit may have moved it. Null where the frame can't find it
 // or doesn't answer. Only a frame whose agent said it's there is asked: the

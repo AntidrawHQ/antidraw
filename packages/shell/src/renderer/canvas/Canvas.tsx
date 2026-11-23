@@ -652,9 +652,10 @@ export const Canvas = ({
   });
 
   // Sync nodes with the component list when it changes: a frame for each new
-  // component, and none for one that's gone (its file deleted). A frame's
-  // selection is on its node and its load slot is freed as it unmounts, so
-  // only settlingRef has to forget it.
+  // component, and none for one that's gone (its file deleted). React Flow's
+  // selection is a flag on the node and a frame's load slot is freed as it
+  // unmounts, so only settlingRef has to forget it. (The host drops its own
+  // selection in a deleted frame.)
   useEffect(() => {
     setNodes((currentNodes) => {
       const componentNames = new Set(components.map((c) => c.name));

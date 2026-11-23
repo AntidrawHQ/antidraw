@@ -11,6 +11,7 @@ import { CanvasToolbar } from "./components/CanvasToolbar";
 import { OnboardingList } from "./onboarding/OnboardingList";
 import { renderFrameInspector } from "./inspector/FrameInspector";
 import { InspectorControls } from "./inspector/InspectorControls";
+import { keepSelectionIn } from "./inspector/bridge";
 import { CommentFlow, renderFrameComments } from "./comments/CommentFlow";
 import { CommentControls } from "./comments/CommentControls";
 import { useCanvasTool } from "./comments/store";
@@ -78,6 +79,9 @@ const WorkspaceCanvas = ({
       `https://localhost:${port}/preview?componentName=${encodeURIComponent(componentName)}`,
     [port],
   );
+
+  // A deleted component's frame leaves the canvas, and its selection with it.
+  useEffect(() => keepSelectionIn(new Set(userComponents.map((c) => c.name))), [userComponents]);
 
   const saveLayouts = useCallback(
     (layouts: FrameLayout[]) => {
