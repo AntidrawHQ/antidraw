@@ -496,6 +496,19 @@ describe("driving the app", () => {
     expect((await call("open_workspace", { workspaceId: ws })).error).toMatch(/main window is closed/);
   });
 
+  test("open_workspace for the workspace in the tab, under the dashboard: asks the window to show it", async () => {
+    setMirror({ activeWorkspaceId: ws, dashboardShown: true, selection: null, tags: [] });
+    onSend = (channel, id) => {
+      if (channel === "mcp:open-workspace") setTimeout(() => setMirror({ activeWorkspaceId: id, dashboardShown: false, selection: null, tags: [] }), 20);
+    };
+    expect((await call("open_workspace", { workspaceId: ws })).id).toBe(ws);
+    expect(sent).toEqual([["mcp:open-workspace", ws]]);
+
+    // In view already: nothing to ask.
+    expect((await call("open_workspace", { workspaceId: ws })).id).toBe(ws);
+    expect(sent).toHaveLength(1);
+  });
+
   test("open_workspace gives up when the window never switches", async () => {
     view(ws);
     client = await connect(50);

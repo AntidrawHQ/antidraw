@@ -10,6 +10,7 @@ import {
   getWorkspacesPath,
 } from "@/main/api/init";
 import { getThumbnailVersion } from "@/main/services/thumbnail.service";
+import { endConversation } from "@/main/lib/conversation-store/store";
 import {
   npmCreate,
   npmInstall,
@@ -222,6 +223,14 @@ export const deleteWorkspace = async (id: string) => {
         message: "Workspace not found",
       });
     }
+
+    // Its chats' turns end first: a turn left running would write its files
+    // back into the folder as it goes, and its messages to rows that are gone.
+    const chats = await db
+      .select({ id: conversations.id })
+      .from(conversations)
+      .where(eq(conversations.workspaceId, id));
+    for (const chat of chats) endConversation(chat.id);
 
     // Delete from database (cascade will delete conversations/messages)
     await db.delete(workspaces).where(eq(workspaces.id, id));

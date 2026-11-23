@@ -49,17 +49,28 @@ const DeleteWorkspaceDialog = ({
   // The dialog's words outlive `workspace`, which goes as it closes.
   const [shown, setShown] = useState(workspace);
   if (workspace && workspace !== shown) setShown(workspace);
+  // From the click on, not only once the delete is sent: closing its tab
+  // comes first, and a Cancel then wouldn't stop the delete.
+  const [closingTab, setClosingTab] = useState(false);
+  const busy = closingTab || isPending;
 
   const close = () => {
-    if (isPending) return;
+    if (busy) return;
     reset();
     onClose();
   };
 
   const remove = async () => {
-    if (!workspace) return;
+    if (!workspace || busy) return;
     // Its dev server stops before its files go.
-    if (workspace.id === useWorkspaceStore.getState().activeWorkspaceId) await closeWorkspace();
+    if (workspace.id === useWorkspaceStore.getState().activeWorkspaceId) {
+      setClosingTab(true);
+      try {
+        await closeWorkspace();
+      } finally {
+        setClosingTab(false);
+      }
+    }
     mutate(workspace.id, { onSuccess: onClose });
   };
 
@@ -84,7 +95,7 @@ const DeleteWorkspaceDialog = ({
             type="button"
             variant="outline"
             onClick={close}
-            disabled={isPending}
+            disabled={busy}
             className="border-white/[0.12] bg-transparent text-[#ccc] hover:bg-white/[0.06] hover:text-[#e0e0e0]"
           >
             Cancel
@@ -92,10 +103,10 @@ const DeleteWorkspaceDialog = ({
           <Button
             type="button"
             onClick={() => void remove()}
-            disabled={isPending}
+            disabled={busy}
             className="border border-[#f08a8a]/30 bg-[#f08a8a]/15 text-[#f08a8a] hover:bg-[#f08a8a]/25"
           >
-            {isPending ? "Deleting…" : "Delete"}
+            {busy ? "Deleting…" : "Delete"}
           </Button>
         </DialogFooter>
       </DialogContent>

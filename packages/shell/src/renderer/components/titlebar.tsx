@@ -1,4 +1,4 @@
-import type { CSSProperties, ReactNode } from "react";
+import { useState, type CSSProperties, type ReactNode } from "react";
 import { McpSetup } from "@/renderer/components/McpSetup";
 import { PublishButton } from "@/renderer/components/PublishButton";
 import { UpdateReminder } from "@/renderer/components/UpdateReminder";
@@ -49,12 +49,16 @@ const Tab = ({
 // The main window's titlebar: its two tabs, the Dashboard and the one
 // workspace that's open, then what's for that workspace (the MCP setup,
 // Publish).
-export const Titlebar = () => {
+export const Titlebar = ({ tabs = true }: { tabs?: boolean }) => {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const dashboardShown = useWorkspaceStore((s) => s.dashboardShown);
   const setDashboardShown = useWorkspaceStore((s) => s.setDashboardShown);
   const { data: workspaces } = useWorkspaces();
   const activeWorkspace = workspaces?.find((ws) => ws.id === activeWorkspaceId);
+  // The last workspace in the tab, kept after it's closed: a publish of it
+  // under way keeps its button, and shows its result.
+  const [lastWorkspace, setLastWorkspace] = useState(activeWorkspace);
+  if (activeWorkspace && activeWorkspace !== lastWorkspace) setLastWorkspace(activeWorkspace);
   const closeWorkspace = useCloseWorkspace();
   const { pendingVersion, showReminder } = useUpdatePrompt();
   const clearDismissal = useUpdateStore((state) => state.clearDismissal);
@@ -68,47 +72,53 @@ export const Titlebar = () => {
         !dashboardShown && "border-b border-[#333]",
       )}
     >
-      <div role="tablist" className="flex min-w-0 items-center gap-1.5">
-        <Tab on={dashboardShown} onSelect={() => void showDashboard()} className="shrink-0">
-          <Svg size={14}>{ic.grid}</Svg>
-          <span>Dashboard</span>
-        </Tab>
-        {activeWorkspace && (
-          <Tab on={!dashboardShown} onSelect={() => setDashboardShown(false)} className="min-w-0">
-            <WorkspaceThumb workspace={activeWorkspace} className="h-[14px] w-[20px] shrink-0 rounded-[3px]" />
-            <span className="max-w-[180px] truncate">{activeWorkspace.name}</span>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                void closeWorkspace();
-              }}
-              aria-label="Close tab"
-              className={cn(
-                "grid size-4 shrink-0 place-items-center rounded text-[#B2B2B2] hover:text-[#E9E9E9] focus-visible:opacity-100",
-                !dashboardShown ? "" : "opacity-0 group-hover:opacity-100",
-              )}
-            >
-              <Svg size={11} sw={2}>
-                {ic.close}
-              </Svg>
-            </button>
+      {tabs && (
+        // Clipped across, in a window too narrow for them: drawn under the
+        // right-hand controls, the close button would take their clicks.
+        <div role="tablist" className="flex min-w-0 items-center gap-1.5 overflow-x-clip">
+          <Tab on={dashboardShown} onSelect={() => void showDashboard()} className="shrink-0">
+            <Svg size={14}>{ic.grid}</Svg>
+            <span>Dashboard</span>
           </Tab>
-        )}
-      </div>
+          {activeWorkspace && (
+            <Tab on={!dashboardShown} onSelect={() => setDashboardShown(false)} className="min-w-0">
+              {/* Gone in a narrow window, for the close button's room. */}
+              <WorkspaceThumb workspace={activeWorkspace} className="h-[14px] w-[20px] shrink-0 rounded-[3px] max-[640px]:hidden" />
+              <span className="max-w-[180px] truncate">{activeWorkspace.name}</span>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void closeWorkspace();
+                }}
+                aria-label="Close tab"
+                className={cn(
+                  "grid size-4 shrink-0 place-items-center rounded text-[#B2B2B2] hover:text-[#E9E9E9] focus-visible:opacity-100",
+                  !dashboardShown ? "" : "opacity-0 group-hover:opacity-100",
+                )}
+              >
+                <Svg size={11} sw={2}>
+                  {ic.close}
+                </Svg>
+              </button>
+            </Tab>
+          )}
+        </div>
+      )}
       <div className="relative ml-auto flex min-w-0 shrink-0 items-center gap-2">
         {/* Shown once the update toast is dismissed; clicking brings it back. */}
         {showReminder && pendingVersion && (
           <UpdateReminder version={pendingVersion} onClick={clearDismissal} />
         )}
         {/* For the open workspace's canvas, so only while it's the tab
-            showing. Hidden rather than unmounted: a publish under way keeps
-            its place. */}
-        {activeWorkspace && (
-          <div className={cn("flex items-center gap-2", dashboardShown && "hidden")}>
+            showing. Hidden rather than unmounted, also once its tab is
+            closed: a publish under way keeps its place. */}
+        {lastWorkspace && (
+          <div className={cn("flex items-center gap-2", (dashboardShown || !activeWorkspace) && "hidden")}>
             <McpSetup />
             <PublishButton
-              workspaceId={activeWorkspace.id}
-              workspaceName={activeWorkspace.name}
+              workspaceId={lastWorkspace.id}
+              workspaceName={lastWorkspace.name}
+              hidden={dashboardShown || !activeWorkspace}
             />
           </div>
         )}

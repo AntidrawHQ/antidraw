@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ok } from "neverthrow";
-import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 
 // The window's two tabs and the dashboard in jsdom, with main's API faked:
 // what the window opens on, what the list shows, and what opening, closing
@@ -28,6 +28,13 @@ vi.mock("@/renderer/components/PublishButton", () => ({ PublishButton: () => <sp
 vi.mock("@/renderer/hooks/use-update-prompt", () => ({
   useUpdatePrompt: () => ({ pendingVersion: null, showReminder: false }),
 }));
+
+// The list shows when each was made as a date, and how long ago: both are
+// pinned to one day, or the snapshots below would hold only on the day they
+// were written. Date only; timers run as they do.
+vi.useFakeTimers({ toFake: ["Date"] });
+vi.setSystemTime(new Date(2026, 10, 23, 12));
+afterAll(() => vi.useRealTimers());
 
 const DAY = 86_400_000;
 const workspace = (id: string, name: string, madeDaysAgo: number, activeDaysAgo: number) => ({

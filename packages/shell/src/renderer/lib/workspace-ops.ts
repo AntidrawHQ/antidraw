@@ -84,23 +84,26 @@ export const useCreateWorkspace = () => {
 // shows it.
 export const useSwitchWorkspace = () => {
   const queryClient = useQueryClient();
-  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
-  const setActiveWorkspaceId = useWorkspaceStore((s) => s.setActiveWorkspaceId);
-  const setActiveConversationId = useWorkspaceStore(
-    (s) => s.setActiveConversationId,
-  );
-  const setDashboardShown = useWorkspaceStore((s) => s.setDashboardShown);
   const stopDevServer = useStopDevServer();
 
   return async (nextWorkspaceId: string) => {
-    if (nextWorkspaceId === activeWorkspaceId) {
+    const { setDashboardShown } = useWorkspaceStore.getState();
+    if (nextWorkspaceId === useWorkspaceStore.getState().activeWorkspaceId) {
       // Already in the tab: back to it from the dashboard.
       setDashboardShown(false);
       return;
     }
 
-    // The canvas as it's left, while its dev server still serves its frames.
-    await flushThumbnail();
+    await flushLeftCanvas();
+
+    // Read after the wait, not before: another open may have come first, and
+    // it's that one's dev server to stop.
+    const { activeWorkspaceId, setActiveWorkspaceId, setActiveConversationId } =
+      useWorkspaceStore.getState();
+    if (nextWorkspaceId === activeWorkspaceId) {
+      setDashboardShown(false);
+      return;
+    }
 
     if (activeWorkspaceId) {
       stopDevServer.mutate(activeWorkspaceId, {
@@ -123,6 +126,13 @@ export const useSwitchWorkspace = () => {
   };
 };
 
+// The canvas's thumbnail as it's left, while its dev server still serves its
+// frames. Not under the dashboard: what was waiting was taken as it opened,
+// and nothing can be taken while it covers the canvas (a wait would only run
+// out the timeout).
+const flushLeftCanvas = () =>
+  useWorkspaceStore.getState().dashboardShown ? Promise.resolve() : flushThumbnail();
+
 // The saved activeWorkspaceId of a window whose tab was closed: the next
 // launch opens on the dashboard, not on a workspace.
 const NO_WORKSPACE = "";
@@ -133,12 +143,14 @@ export const useCloseWorkspace = () => {
   const stopDevServer = useStopDevServer();
 
   return async () => {
+    if (!useWorkspaceStore.getState().activeWorkspaceId) return;
+
+    await flushLeftCanvas();
+
+    // Read after the wait: the tab may have changed, or been closed, meanwhile.
     const { activeWorkspaceId, setActiveWorkspaceId, setActiveConversationId, setDashboardShown } =
       useWorkspaceStore.getState();
     if (!activeWorkspaceId) return;
-
-    // The canvas as it's left, while its dev server still serves its frames.
-    await flushThumbnail();
 
     setDashboardShown(true);
     setActiveWorkspaceId(null);

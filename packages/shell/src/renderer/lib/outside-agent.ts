@@ -14,7 +14,8 @@ const MIRROR_DEBOUNCE_MS = 100;
 
 const mirror = (): CanvasMirror => {
   const { selection, tags } = useInspectorStore.getState();
-  return { activeWorkspaceId: useWorkspaceStore.getState().activeWorkspaceId, selection, tags };
+  const { activeWorkspaceId, dashboardShown } = useWorkspaceStore.getState();
+  return { activeWorkspaceId, dashboardShown, selection, tags };
 };
 
 // Now, then on every change. Returns the stop.
@@ -29,7 +30,7 @@ const startMirror = () => {
   };
   const stops = [
     useWorkspaceStore.subscribe((s, prev) => {
-      if (s.activeWorkspaceId !== prev.activeWorkspaceId) later();
+      if (s.activeWorkspaceId !== prev.activeWorkspaceId || s.dashboardShown !== prev.dashboardShown) later();
     }),
     useInspectorStore.subscribe((s, prev) => {
       if (s.selection !== prev.selection || s.tags !== prev.tags) later();
@@ -52,7 +53,12 @@ export const useOutsideAgent = () => {
   useEffect(() => {
     const stops = [
       window.electronAPI?.onOpenWorkspace?.((id) => void latest.current(id).catch(console.error)),
-      window.electronAPI?.onFocusComponent?.((name) => useWorkspaceStore.getState().setFocusComponentName(name)),
+      // Shown to the user: off the dashboard, onto the workspace it's in.
+      window.electronAPI?.onFocusComponent?.((name) => {
+        const { setFocusComponentName, setDashboardShown } = useWorkspaceStore.getState();
+        setDashboardShown(false);
+        setFocusComponentName(name);
+      }),
     ];
     return () => stops.forEach((stop) => stop?.());
   }, []);

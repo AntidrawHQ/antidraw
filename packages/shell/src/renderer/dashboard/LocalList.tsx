@@ -165,7 +165,7 @@ const MoreButton = ({ onClick }: { onClick: (e: React.MouseEvent<HTMLButtonEleme
     }}
     onDoubleClick={(e) => e.stopPropagation()}
     aria-label="More"
-    className="grid size-7 place-items-center rounded-[6px] text-[#9B9B9B] opacity-0 group-hover:opacity-100 hover:bg-[#373737] hover:text-[#E9E9E9] focus-visible:opacity-100"
+    className="grid size-7 place-items-center rounded-[6px] text-[#9B9B9B] opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 hover:bg-[#373737] hover:text-[#E9E9E9] focus-visible:opacity-100"
   >
     <Svg size={15}>{ic.more}</Svg>
   </button>
@@ -187,7 +187,8 @@ export const ListRows = ({ items, selected, ...h }: ItemProps) => (
           key={w.id}
           {...rowHandlers(w, h)}
           className={cn(
-            "group -mx-2 grid cursor-default items-center gap-4 rounded-[10px] px-2 py-1.5 outline-none",
+            // focus-visible: a row reached with Tab shows it's the one Enter opens.
+            "group -mx-2 grid cursor-default items-center gap-4 rounded-[10px] px-2 py-1.5 outline-none focus-visible:bg-[#262626] focus-visible:ring-1 focus-visible:ring-[#7F8BE0]/60",
             COLS,
             selected === w.id ? "bg-[#2A2A2A] ring-1 ring-[#7F8BE0]" : "hover:bg-[#262626]",
           )}

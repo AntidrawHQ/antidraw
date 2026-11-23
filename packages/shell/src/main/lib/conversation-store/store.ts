@@ -16,6 +16,9 @@ import { conversationEvents } from "./events";
 
 const handles = new Map<string, CliHandle>();
 const errored = new Set<string>();
+// Conversations whose CLI is being ended (endConversation): one still
+// spawning has its query closed as it attaches.
+const ending = new Set<string>();
 
 export const getHandle = (
   conversationId: string,
@@ -42,11 +45,25 @@ export const openHandle = (
 
 export const attachQuery = (conversationId: string, query: Query): void => {
   const handle = handles.get(conversationId);
-  if (handle) handle.query = query;
+  if (!handle) return;
+  handle.query = query;
+  if (ending.has(conversationId)) query.close();
 };
 
 export const releaseHandle = (conversationId: string): void => {
   handles.delete(conversationId);
+  ending.delete(conversationId);
+};
+
+// Ends the conversation's CLI, its turn and the process with it: for a
+// conversation that's going (its workspace deleted). Unlike interrupt, nothing
+// is left to reach. The turn's loop ends, and releases the handle as it does.
+export const endConversation = (conversationId: string): void => {
+  const handle = handles.get(conversationId);
+  if (!handle) return;
+  ending.add(conversationId);
+  handle.promptStream.end();
+  handle.query?.close();
 };
 
 export const markError = (conversationId: string): void => {

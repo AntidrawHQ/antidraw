@@ -9,6 +9,9 @@ export type MirroredPick = { frame: string; info: ElementInfo; seen?: ElementCon
 
 export type CanvasMirror = {
   activeWorkspaceId: string | null;
+  // The dashboard is drawn over that workspace: it's open, but not in view.
+  // Absent from a renderer older than the dashboard.
+  dashboardShown?: boolean;
   selection: MirroredPick | null;
   tags: MirroredPick[];
 };
