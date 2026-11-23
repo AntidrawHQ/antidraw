@@ -2,7 +2,8 @@ import { useState, type CSSProperties, type ReactNode } from "react";
 import { McpSetup } from "@/renderer/components/McpSetup";
 import { PublishButton } from "@/renderer/components/PublishButton";
 import { UpdateReminder } from "@/renderer/components/UpdateReminder";
-import { Svg, WorkspaceThumb, ic } from "@/renderer/dashboard/kit";
+import { AvatarIcon } from "@/renderer/components/AvatarIcon";
+import { Svg, ic } from "@/renderer/dashboard/kit";
 import { useUpdatePrompt } from "@/renderer/hooks/use-update-prompt";
 import { useUpdateStore } from "@/renderer/store/update";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
@@ -82,8 +83,11 @@ export const Titlebar = ({ tabs = true }: { tabs?: boolean }) => {
           </Tab>
           {activeWorkspace && (
             <Tab on={!dashboardShown} onSelect={() => setDashboardShown(false)} className="min-w-0">
-              {/* Gone in a narrow window, for the close button's room. */}
-              <WorkspaceThumb workspace={activeWorkspace} className="h-[14px] w-[20px] shrink-0 rounded-[3px] max-[640px]:hidden" />
+              {/* Its icon, as the switcher had it; gone in a narrow window,
+                  for the close button's room. */}
+              <span className="max-[640px]:hidden">
+                <AvatarIcon name={activeWorkspace.name} size={16} />
+              </span>
               <span className="max-w-[180px] truncate">{activeWorkspace.name}</span>
               <button
                 onClick={(e) => {

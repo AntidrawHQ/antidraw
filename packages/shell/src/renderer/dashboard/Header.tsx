@@ -1,11 +1,10 @@
-import type { ReactNode } from "react";
 import { cn } from "@/renderer/lib/utils";
 import { SortMenu, type Sort } from "./LocalList";
 import { Btn, Svg, ic } from "./kit";
 
 // The top of the dashboard: the title and New workspace, the sections as
-// tabs on a rule with their counts, then search and sort over the list,
-// which is its children.
+// tabs on a rule with their counts, then search and sort. It stays put; the
+// list under it scrolls.
 
 export type Section = "local" | "published";
 
@@ -20,7 +19,6 @@ type HeaderProps = {
   sort: Sort;
   onSort: (sort: Sort) => void;
   onNew: () => void;
-  children: ReactNode;
 };
 
 const LABEL: Record<Section, string> = { local: "Local", published: "Published" };
@@ -84,7 +82,5 @@ export const Header = (p: HeaderProps) => (
       <div className="flex-1" />
       {p.section === "local" && <SortMenu sort={p.sort} onSort={p.onSort} />}
     </div>
-
-    {p.children}
   </>
 );

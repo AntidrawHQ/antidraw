@@ -12,6 +12,7 @@ import {
   DialogTitle,
 } from "@/renderer/components/ui/dialog";
 import { track } from "@/renderer/lib/analytics";
+import { cn } from "@/renderer/lib/utils";
 import { CoversCanvas } from "@/renderer/lib/thumbnail";
 import {
   useCloseWorkspace,
@@ -36,6 +37,9 @@ export const useDashboardStore = create<{
   sort: "active",
   setSort: (sort) => set({ sort }),
 }));
+
+// The dashboard's one column, centred.
+const COLUMN = "mx-auto max-w-[1040px] px-[clamp(32px,5vw,72px)]";
 
 const DeleteWorkspaceDialog = ({
   workspace,
@@ -136,14 +140,19 @@ export const Dashboard = () => {
     void switchWorkspace(workspace.id);
   };
 
+  // A click on none of the rows (the space around them) leaves none selected.
+  const deselect = (e: React.MouseEvent) => e.target === e.currentTarget && setSelected(null);
+
+  // The header stays put and the list scrolls under it, the scrollbar at the
+  // window's edge; both share one column.
   return (
     <main
-      className="absolute inset-0 overflow-y-auto bg-[#222222] font-sans antialiased"
-      onClick={(e) => e.target === e.currentTarget && setSelected(null)}
+      className="absolute inset-0 flex flex-col bg-[#222222] font-sans antialiased"
+      onClick={deselect}
     >
       {/* No thumbnail is taken of the canvas under it. */}
       <CoversCanvas />
-      <div className="mx-auto max-w-[1040px] px-[clamp(32px,5vw,72px)] pt-12 pb-16">
+      <div className={cn(COLUMN, "w-full shrink-0 pt-12")} onClick={deselect}>
         <Header
           sections={["local"]}
           section="local"
@@ -154,7 +163,10 @@ export const Dashboard = () => {
           sort={sort}
           onSort={setSort}
           onNew={() => setCreating(true)}
-        >
+        />
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto" onClick={deselect}>
+        <div className={cn(COLUMN, "pb-16")} onClick={deselect}>
           {items.length === 0 ? (
             <div className="py-24 text-center text-[14px] text-[#9B9B9B]">
               {q ? `Nothing matches “${query}”.` : "No workspaces yet."}
@@ -168,7 +180,7 @@ export const Dashboard = () => {
               onMenu={(workspace, x, y) => setMenu({ workspace, x, y })}
             />
           )}
-        </Header>
+        </div>
       </div>
 
       {menu && (

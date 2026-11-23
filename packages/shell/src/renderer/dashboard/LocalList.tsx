@@ -175,7 +175,8 @@ const COLS = "grid-cols-[minmax(0,2.4fr)_minmax(0,1fr)_minmax(0,1fr)_40px]";
 
 export const ListRows = ({ items, selected, ...h }: ItemProps) => (
   <div>
-    <div className={cn("grid gap-4 pb-3 text-[13px] text-[#9B9B9B]", COLS)}>
+    {/* Stays on top of the rows as they scroll under it, as wide as they are. */}
+    <div className={cn("sticky top-0 z-10 -mx-2 grid gap-4 bg-[#222222] px-2 pb-3 text-[13px] text-[#9B9B9B]", COLS)}>
       <span>Name</span>
       <span>Last active</span>
       <span>Created</span>
@@ -188,9 +189,11 @@ export const ListRows = ({ items, selected, ...h }: ItemProps) => (
           {...rowHandlers(w, h)}
           className={cn(
             // focus-visible: a row reached with Tab shows it's the one Enter opens.
-            "group -mx-2 grid cursor-default items-center gap-4 rounded-[10px] px-2 py-1.5 outline-none focus-visible:bg-[#262626] focus-visible:ring-1 focus-visible:ring-[#7F8BE0]/60",
+            // Rings inset: drawn outside, the first row's top edge went under
+            // the sticky column headings.
+            "group -mx-2 grid cursor-default items-center gap-4 rounded-[10px] px-2 py-1.5 outline-none focus-visible:bg-[#262626] focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[#7F8BE0]/60",
             COLS,
-            selected === w.id ? "bg-[#2A2A2A] ring-1 ring-[#7F8BE0]" : "hover:bg-[#262626]",
+            selected === w.id ? "bg-[#2A2A2A] ring-1 ring-inset ring-[#7F8BE0]" : "hover:bg-[#262626]",
           )}
         >
           <div className="flex min-w-0 items-center gap-4">
