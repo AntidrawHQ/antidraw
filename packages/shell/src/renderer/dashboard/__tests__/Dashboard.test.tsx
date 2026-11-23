@@ -360,7 +360,8 @@ it("closes the tab onto the dashboard, stopping its dev server", async () => {
   `);
 });
 
-it("deletes a workspace from its menu once confirmed, closing its tab first if it's the one open", async () => {
+// Delete is held back for now (Dashboard.tsx).
+it.skip("deletes a workspace from its menu once confirmed, closing its tab first if it's the one open", async () => {
   const store = await launch("w-videos");
   await click(document.querySelectorAll('[role="tab"]')[0]!);
   const steps: Record<string, unknown> = {};

@@ -57,7 +57,8 @@ export const RowMenu = ({
   x: number;
   y: number;
   onOpen: () => void;
-  onDelete: () => void;
+  // Without it, no Delete.
+  onDelete?: () => void;
   onClose: () => void;
 }) => {
   const ref = useOutside(true, onClose);
@@ -83,8 +84,12 @@ export const RowMenu = ({
       }}
     >
       {item("Open", onOpen)}
-      <div className="my-1 h-px bg-[#373737]" />
-      {item("Delete", onDelete, true)}
+      {onDelete && (
+        <>
+          <div className="my-1 h-px bg-[#373737]" />
+          {item("Delete", onDelete, true)}
+        </>
+      )}
     </div>
   );
 };

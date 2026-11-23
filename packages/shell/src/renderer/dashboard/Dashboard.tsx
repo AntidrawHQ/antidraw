@@ -126,7 +126,8 @@ export const Dashboard = () => {
   const [selected, setSelected] = useState<string | null>(null);
   const [menu, setMenu] = useState<{ workspace: WorkspaceWithThumbnail; x: number; y: number } | null>(null);
   const [creating, setCreating] = useState(false);
-  const [deleting, setDeleting] = useState<WorkspaceWithThumbnail | null>(null);
+  // Delete is held back for now; the dialog below is ready for it.
+  // const [deleting, setDeleting] = useState<WorkspaceWithThumbnail | null>(null);
 
   const q = query.trim().toLowerCase();
   const items = useMemo(
@@ -188,12 +189,12 @@ export const Dashboard = () => {
           x={menu.x}
           y={menu.y}
           onOpen={() => open(menu.workspace)}
-          onDelete={() => setDeleting(menu.workspace)}
+          // onDelete={() => setDeleting(menu.workspace)}
           onClose={() => setMenu(null)}
         />
       )}
       <CreateWorkspaceDialog open={creating} onOpenChange={setCreating} />
-      <DeleteWorkspaceDialog workspace={deleting} onClose={() => setDeleting(null)} />
+      {/* <DeleteWorkspaceDialog workspace={deleting} onClose={() => setDeleting(null)} /> */}
     </main>
   );
 };
