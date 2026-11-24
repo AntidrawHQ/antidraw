@@ -20,6 +20,7 @@ import { EditBar } from "./design/EditBar";
 import { DesignSync } from "./design/use-design";
 import { showCode } from "./design/store";
 import { useCanvasThumbnail } from "./lib/thumbnail";
+import { CanvasEditing } from "./canvas-edit/CanvasEditing";
 import { track } from "@/renderer/lib/analytics";
 
 // Over each frame: the tools (the inspector's and the Comment tool's).
@@ -107,6 +108,13 @@ const WorkspaceCanvas = ({
       className={className}
     >
       <FocusRequestedComponent />
+      <CanvasEditing
+        key={workspaceId}
+        workspaceId={workspaceId}
+        keysOff={dashboardShown}
+        onFullscreen={openFullscreen}
+        onSeeCode={seeCode}
+      />
       <InspectorControls />
       <CommentControls />
       <CommentFlow />

@@ -22,6 +22,8 @@ export type {
   ComponentListItem,
   ComponentSource,
   ComponentStreamEvent,
+  DeletedComponent,
+  NewComponent,
 } from "./services/component.service";
 import { zValidator } from "@hono/zod-validator";
 import { streamSSE } from "hono/streaming";

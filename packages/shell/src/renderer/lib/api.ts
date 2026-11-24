@@ -8,6 +8,8 @@ import type {
   Conversation,
   ConversationWithMessages,
   CreateWorkspaceResponse,
+  DeletedComponent,
+  NewComponent,
   DevServerInfo,
   DevServerState,
   EffortLevel,
@@ -424,6 +426,62 @@ export const getComponentSource = async (
       code: "NETWORK_ERROR",
       message: "Failed to get component source",
     });
+  }
+};
+
+// The canvas's own new frames (a paste, a duplicate, an undone delete): all
+// or none. A taken name is a 409, never overwritten.
+export const createComponents = async (workspaceId: string, components: NewComponent[]) => {
+  try {
+    const response = await apiFetch(`antidraw://app/api/workspaces/${workspaceId}/components`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ components }),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      return err({
+        status: response.status as 400 | 409 | 500,
+        code: (errorBody?.error?.code as string) ?? "FETCH_ERROR",
+        message: (errorBody?.error?.message as string) ?? response.statusText,
+      });
+    }
+
+    const data: { created: string[] } = await response.json();
+    return ok(data.created);
+  } catch (_e) {
+    return err({ status: 500 as const, code: "NETWORK_ERROR", message: "Failed to create components" });
+  }
+};
+
+// Frames deleted on the canvas, to the trash. With `expected`, a file that
+// isn't what the canvas last saw is a 409 and nothing is deleted.
+export const deleteComponents = async (
+  workspaceId: string,
+  names: string[],
+  expected?: Record<string, string>,
+) => {
+  try {
+    const response = await apiFetch(`antidraw://app/api/workspaces/${workspaceId}/components/delete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ names, expected }),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      return err({
+        status: response.status as 400 | 404 | 409 | 500,
+        code: (errorBody?.error?.code as string) ?? "FETCH_ERROR",
+        message: (errorBody?.error?.message as string) ?? response.statusText,
+      });
+    }
+
+    const data: { deleted: DeletedComponent[]; failed: string[] } = await response.json();
+    return ok(data);
+  } catch (_e) {
+    return err({ status: 500 as const, code: "NETWORK_ERROR", message: "Failed to delete components" });
   }
 };
 
