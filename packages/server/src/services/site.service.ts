@@ -1,5 +1,5 @@
 import { SiteUploadError, type CommitResult } from "@antidraw/site-upload/server";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { err, ok, type Result } from "neverthrow";
 import type { Db } from "../db";
 import { publish, site } from "../db/schema";
@@ -11,6 +11,45 @@ import { slugCandidates } from "../lib/slug";
 export type CreatedSite = { id: string; slug: string; url: string };
 
 export const shareUrl = (pattern: string, slug: string) => pattern.replace("*", slug);
+
+// A site with a version live. url is its share page, as CreatedSite's;
+// filesUrl is where its files are served (canvas.json, each component's
+// /preview), for a canvas that shows them itself. version counts the
+// publishes that have gone live, and publishedAt is when the live one did.
+export type PublishedSite = CreatedSite & {
+  title: string;
+  filesUrl: string;
+  version: number;
+  publishedAt: number;
+};
+
+/** The user's sites that have a version live, the latest published first. */
+export const listPublishedSites = async (
+  db: Db,
+  ownerId: string,
+  patterns: { share: string; files: string },
+): Promise<PublishedSite[]> => {
+  const rows = await db
+    .select({
+      id: site.id,
+      slug: site.slug,
+      title: site.title,
+      version: site.seq,
+      committedAt: publish.committedAt,
+      startedAt: publish.createdAt,
+    })
+    .from(site)
+    // Leaves out a site made but never published: it has nothing to show.
+    .innerJoin(publish, eq(publish.id, site.livePublishId))
+    .where(eq(site.ownerId, ownerId))
+    .orderBy(desc(publish.committedAt), site.slug);
+  return rows.map(({ committedAt, startedAt, ...row }) => ({
+    ...row,
+    url: shareUrl(patterns.share, row.slug),
+    filesUrl: patterns.files.replace("*", row.slug),
+    publishedAt: (committedAt ?? startedAt).getTime(),
+  }));
+};
 
 export const createSite = async (
   db: Db,

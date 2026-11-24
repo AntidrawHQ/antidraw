@@ -7,11 +7,12 @@ import { requireFeature } from "../lib/features";
 import { requireBearer, type AuthedEnv } from "../lib/require-session";
 import { respond, respondError } from "../lib/respond";
 import { siteStore } from "../lib/site-store";
-import { commitPublish, createSite, ownsSite, startPublish } from "../services/site.service";
+import { commitPublish, createSite, listPublishedSites, ownsSite, startPublish } from "../services/site.service";
 import { endSourcePush, hasSourceCommit, sourceAccess } from "../services/source.service";
 
 // Publishing a site (see @antidraw/site-upload for the upload protocol):
 //
+//   GET  /api/sites                          -> { sites }  (the user's, with a version live)
 //   POST /api/sites                          { title } -> { id, slug, url }  (url: the share page)
 //   POST /api/sites/:id/source               -> { remote, token, expiresAt }  (pushing the source)
 //   POST /api/sites/:id/publishes            { commit } -> { publishId, uploadUrl }
@@ -35,6 +36,17 @@ import { endSourcePush, hasSourceCommit, sourceAccess } from "../services/source
 export const siteController = new Hono<AuthedEnv>();
 
 siteController.use(requireBearer, requireFeature("publish"));
+
+// What the user has published, for the app's dashboard: each site's share
+// page, where its files are, its version and when that went live.
+siteController.get("/", async (ctx) =>
+  ctx.json({
+    sites: await listPublishedSites(getDb(ctx.env), ctx.get("user").id, {
+      share: ctx.env.SHARE_URL_PATTERN,
+      files: ctx.env.SITE_URL_PATTERN,
+    }),
+  }),
+);
 
 const createBody = z.object({ title: z.string().trim().min(1).max(200) });
 

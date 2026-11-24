@@ -546,6 +546,90 @@ describe("publishing", () => {
   });
 });
 
+describe("GET /api/sites", () => {
+  const list = (user: User | null) =>
+    server.fetch("/api/sites", { headers: { ...(user && { authorization: user.authorization }) } });
+
+  /** Publishes one file to the site, and answers when it went live. */
+  const publishOnce = async (user: User, siteId: string, content: string) => {
+    const { publishId, uploadUrl } = await startPublish(user, siteId);
+    await upload(user, uploadUrl, await siteDir({ "index.html": content }));
+    const row = await server.env.DB.prepare("SELECT committed_at AS at FROM publish WHERE id = ?")
+      .bind(publishId)
+      .first<{ at: number }>();
+    return row!.at;
+  };
+
+  it("lists the user's published sites, the latest published first, with each one's version", async () => {
+    const user = await server.signIn();
+    const first = await createSite(user, "First");
+    const second = await createSite(user, "Second");
+    // Made, never published: nothing to show.
+    await createSite(user, "Draft");
+    await publishOnce(user, first.id, "one");
+    await publishOnce(user, second.id, "one");
+    const firstAt = await publishOnce(user, first.id, "two");
+
+    const listed = await answer(await list(user));
+    expect(listed.body.sites[0].publishedAt).toBe(firstAt);
+    expect(listed.body.sites[0].publishedAt).toBeGreaterThanOrEqual(listed.body.sites[1].publishedAt);
+    for (const site of listed.body.sites) site.publishedAt = "<when>";
+    expect(readable(listed, { [first.id]: "<first>", [second.id]: "<second>" })).toMatchInlineSnapshot(`
+      {
+        "body": {
+          "sites": [
+            {
+              "filesUrl": "https://first.sites.test",
+              "id": "<first>",
+              "publishedAt": "<when>",
+              "slug": "first",
+              "title": "First",
+              "url": "https://share.test/s/first",
+              "version": 2,
+            },
+            {
+              "filesUrl": "https://second.sites.test",
+              "id": "<second>",
+              "publishedAt": "<when>",
+              "slug": "second",
+              "title": "Second",
+              "url": "https://share.test/s/second",
+              "version": 1,
+            },
+          ],
+        },
+        "status": 200,
+      }
+    `);
+  });
+
+  it("lists only the user's own, and nothing to a user who has published nothing", async () => {
+    const owner = await server.signIn();
+    const other = await server.signIn();
+    const site = await createSite(owner, "Mine");
+    await publishOnce(owner, site.id, "one");
+
+    expect({
+      other: await answer(await list(other)),
+      owner: (await answer(await list(owner))).body.sites.map((s: { slug: string }) => s.slug),
+      signedOut: (await list(null)).status,
+    }).toMatchInlineSnapshot(`
+      {
+        "other": {
+          "body": {
+            "sites": [],
+          },
+          "status": 200,
+        },
+        "owner": [
+          "mine",
+        ],
+        "signedOut": 401,
+      }
+    `);
+  });
+});
+
 describe("the site's source", () => {
   /** What the site's row and its publishes say about its source. */
   const sourceOf = async (siteId: string) => ({
@@ -856,6 +940,7 @@ describe("with publishing off", () => {
     const base = `/api/sites/${site.id}/publishes/${publishId}`;
     const content = "<h1>hi</h1>";
     const statuses = {
+      list: (await server.fetch("/api/sites", { headers: { authorization: user.authorization } })).status,
       create: (await post(user, "/api/sites", { title: "x" })).status,
       source: (await post(user, `/api/sites/${site.id}/source`)).status,
       start: (await post(user, `/api/sites/${site.id}/publishes`, { commit: "c".repeat(40) })).status,
@@ -896,6 +981,7 @@ describe("with publishing off", () => {
           "commit": 403,
           "create": 403,
           "file": 403,
+          "list": 403,
           "plan": 403,
           "signedOut": 401,
           "source": 403,

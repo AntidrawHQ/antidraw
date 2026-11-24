@@ -53,7 +53,7 @@ export async function startServer(): Promise<TestServer> {
           GOOGLE_CLIENT_ID: "test-google-client-id",
           GOOGLE_CLIENT_SECRET: "test-google-client-secret",
         },
-        vars: { SHARE_URL_PATTERN: "https://share.test/s/*" },
+        vars: { SHARE_URL_PATTERN: "https://share.test/s/*", SITE_URL_PATTERN: "https://*.sites.test" },
       },
       { configPath: "./src/test/artifacts-stub/wrangler.jsonc" },
       { configPath: "./src/test/flags-stub/wrangler.jsonc" },

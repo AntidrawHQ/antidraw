@@ -51,6 +51,9 @@
     // the site's components, which are served from <slug>.antidraw.app (see
     // @antidraw/site-worker). Overridden in .dev.vars for local development.
     "SHARE_URL_PATTERN": "https://antidraw.com/s/*",
+    // Where a site's files are served, * being its slug (the same value as
+    // @antidraw/share-page's). Overridden in .dev.vars for local development.
+    "SITE_URL_PATTERN": "https://*.antidraw.app",
     // The API's public origin, which makes auth cookies Secure. Overridden in
     // .dev.vars for local development.
     "BETTER_AUTH_URL": "https://api.antidraw.com"
@@ -82,6 +85,8 @@
       "flagship": [{ "binding": "FLAGS", "app_id": "9abbf580-f788-44c2-8676-4544595e70c9" }],
       "vars": {
         "SHARE_URL_PATTERN": "http://localhost:8786/s/*",
+        // The site Worker's `npm run dev`.
+        "SITE_URL_PATTERN": "http://*.localhost:8787",
         "BETTER_AUTH_URL": "http://localhost:8799"
       },
       "routes": []

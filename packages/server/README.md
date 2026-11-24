@@ -158,7 +158,10 @@ served at `<slug>.antidraw.app` by a separate Worker (`@antidraw/site-worker`).
 People visit the site's share page, `antidraw.com/s/<slug>` (the `url`
 `POST /api/sites` returns): the canvas, which reads `canvas.json` from the site
 and shows each component in an iframe of its `/preview`. The site's own `/`
-redirects there. The routes are in `src/controllers/site.controller.ts`, and
+redirects there. `GET /api/sites` lists the user's sites that have a version
+live, with each one's share page, where its files are (`filesUrl`, from
+`SITE_URL_PATTERN`), its version and when that went live: the app's dashboard
+shows them. The routes are in `src/controllers/site.controller.ts`, and
 the upload protocol, storage and serving are `@antidraw/site-upload`'s. R2
 holds what never changes, keyed by the site's permanent id, never its slug:
 files by hash, and each publish's manifest. D1 (`src/models/site.model.ts`)
