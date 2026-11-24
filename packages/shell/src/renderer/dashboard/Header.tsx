@@ -13,6 +13,7 @@ type HeaderProps = {
   sections: Section[];
   section: Section;
   onSection: (section: Section) => void;
+  // A section without one (not known yet) has no badge.
   counts: Partial<Record<Section, number>>;
   query: string;
   onQuery: (query: string) => void;
@@ -64,14 +65,16 @@ export const Header = (p: HeaderProps) => (
             )}
           >
             {LABEL[s]}
-            <span
-              className={cn(
-                "rounded-full px-1.5 text-[12px] leading-[18px]",
-                on ? "bg-[#373737] text-[#EBEBEB]" : "bg-[#2A2A2A] text-[#B2B2B2]",
-              )}
-            >
-              {p.counts[s] ?? 0}
-            </span>
+            {p.counts[s] !== undefined && (
+              <span
+                className={cn(
+                  "rounded-full px-1.5 text-[12px] leading-[18px]",
+                  on ? "bg-[#373737] text-[#EBEBEB]" : "bg-[#2A2A2A] text-[#B2B2B2]",
+                )}
+              >
+                {p.counts[s]}
+              </span>
+            )}
           </button>
         );
       })}

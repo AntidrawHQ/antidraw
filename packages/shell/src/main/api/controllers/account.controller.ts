@@ -3,6 +3,7 @@ import {
   cancelSignIn,
   getAccount,
   getFeatures,
+  getPublishedSites,
   signIn,
   signOut,
 } from "@/main/services/account.service";
@@ -25,6 +26,20 @@ accountController.get("/", async (ctx) => {
 
 // Which cloud features to show; off when the server can't say.
 accountController.get("/features", async (ctx) => ctx.json({ features: await getFeatures() }));
+
+// What the account has published, for the dashboard's Published tab.
+// SIGNED_OUT without an account, PUBLISH_DISABLED for one the server doesn't
+// let publish yet.
+accountController.get("/sites", async (ctx) => {
+  const result = await getPublishedSites();
+
+  if (result.isErr()) {
+    const { status, code, message } = result.error;
+    return ctx.json({ error: { code, message } }, status);
+  }
+
+  return ctx.json({ sites: result.value });
+});
 
 // Opens the system browser and stays open until the user finishes (or the flow
 // is cancelled or times out), then answers with the account.

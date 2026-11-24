@@ -86,6 +86,7 @@ type FrameActions = {
   frameLayer?: FrameLayer;
   framesTakePointer?: boolean;
   onFrameActivity?: () => void;
+  readOnly?: boolean;
 };
 
 // Drawn over a frame's preview, for a host's own tools (the shell's
@@ -159,7 +160,7 @@ const IframeNode = memo(({ componentName, url, selected, onLoad }: IframeNodePro
   const [interactionMode, setInteractionMode] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [iframe, setIframe] = useState<HTMLIFrameElement | null>(null);
-  const { frameLayer, framesTakePointer } = useContext(FrameActionsContext);
+  const { frameLayer, framesTakePointer, readOnly } = useContext(FrameActionsContext);
   const setIframeRef = useCallback((el: HTMLIFrameElement | null) => {
     iframeRef.current = el;
     setIframe(el);
@@ -200,7 +201,7 @@ const IframeNode = memo(({ componentName, url, selected, onLoad }: IframeNodePro
       onKeyDown={handleKeyDown}
     >
       <NodeResizer
-        isVisible={selected}
+        isVisible={selected && !readOnly}
         handleClassName="!w-3 !h-3"
         onResizeStart={handleResizeStart}
         onResizeEnd={handleResizeEnd}
@@ -226,7 +227,7 @@ const IframeNode = memo(({ componentName, url, selected, onLoad }: IframeNodePro
       {/* Overlay on top of iframe - blocks events when not in interaction mode */}
       {!interactionMode && !framesTakePointer && (
         <div
-          className="absolute inset-0 z-10 cursor-grab"
+          className={cn("absolute inset-0 z-10", readOnly ? "cursor-default" : "cursor-grab")}
           onDoubleClick={handleDoubleClick}
         />
       )}
@@ -492,6 +493,10 @@ type CanvasProps = {
   // listens for on the whole document, are off. Backspace would delete the
   // selected frames, and Space would be taken from what's on screen.
   keysOff?: boolean;
+  // To look at, not to arrange (the shell's view of a published site): the
+  // frames can't be moved, resized or deleted. They're still selected, for
+  // their toolbar, and used on a double click.
+  readOnly?: boolean;
   className?: string;
   // Rendered inside React Flow, for hosts that drive the viewport (useReactFlow).
   children?: ReactNode;
@@ -510,6 +515,7 @@ export const Canvas = ({
   frameLayer,
   framesTakePointer,
   keysOff = false,
+  readOnly = false,
   className,
   children,
 }: CanvasProps) => {
@@ -753,8 +759,9 @@ export const Canvas = ({
       frameLayer,
       framesTakePointer,
       onFrameActivity,
+      readOnly,
     }),
-    [onFullscreen, onSeeCode, onRefresh, frameLayer, framesTakePointer, onFrameActivity],
+    [onFullscreen, onSeeCode, onRefresh, frameLayer, framesTakePointer, onFrameActivity, readOnly],
   );
 
   return (
@@ -768,7 +775,7 @@ export const Canvas = ({
           fitView
           maxZoom={8}
           minZoom={0.05}
-          nodesDraggable={true}
+          nodesDraggable={!readOnly}
           nodesConnectable={false}
           elementsSelectable={true}
           selectNodesOnDrag={true}
@@ -781,7 +788,7 @@ export const Canvas = ({
           panOnDrag={touch ? true : [1, 2]}
           panActivationKeyCode={keysOff ? null : "Space"}
           // undefined: React Flow's own default for each.
-          deleteKeyCode={keysOff ? null : undefined}
+          deleteKeyCode={keysOff || readOnly ? null : undefined}
           selectionKeyCode={keysOff ? null : undefined}
           multiSelectionKeyCode={keysOff ? null : undefined}
           zoomActivationKeyCode={keysOff ? null : undefined}

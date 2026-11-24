@@ -61,6 +61,8 @@ const worker = {
   // signed-in account (/api/me).
   publish: { everyone: false, account: true },
   featuresBody: null as string | null,
+  // What /api/sites answers a signed-in account: a status and a body.
+  sites: { status: 200, body: '{"sites":[]}' },
   tokens: 0,
   exchange: { delayMs: 0, status: 200 },
   // /api/me waits for this before answering, when set.
@@ -116,6 +118,9 @@ beforeAll(async () => {
       res.writeHead(200, { "content-type": "application/json" }).end(
         JSON.stringify({ features: { publish: worker.publish.everyone } }),
       );
+    } else if (url.pathname === "/api/sites") {
+      if (!worker.valid.has(bearer(req))) return res.writeHead(401).end();
+      res.writeHead(worker.sites.status, { "content-type": "application/json" }).end(worker.sites.body);
     } else {
       res.writeHead(404).end();
     }
@@ -153,6 +158,7 @@ beforeEach(() => {
     meBody: null,
     publish: { everyone: false, account: true },
     featuresBody: null,
+    sites: { status: 200, body: '{"sites":[]}' },
     tokens: 0,
     exchange: { delayMs: 0, status: 200 },
     me: { hold: null },
@@ -540,4 +546,70 @@ it("shows Publish with ANTIDRAW_SHOW_PUBLISH=1, whatever the server says", async
   } finally {
     delete process.env.ANTIDRAW_SHOW_PUBLISH;
   }
+});
+
+it("lists what the account has published, and says why when it can't", async () => {
+  const { signIn, getPublishedSites } = await service();
+  const site = {
+    id: "site-1",
+    slug: "paper-shaders",
+    title: "Paper Shaders",
+    url: "https://antidraw.com/s/paper-shaders",
+    filesUrl: "https://paper-shaders.antidraw.app",
+    version: 3,
+    publishedAt: 1_700_000_000_000,
+  };
+  const signedOut = outcome(await getPublishedSites());
+  await signIn();
+  worker.sites = { status: 200, body: JSON.stringify({ sites: [site] }) };
+  const listed = outcome(await getPublishedSites());
+  // A page to load frames from must be a web address.
+  worker.sites = { status: 200, body: JSON.stringify({ sites: [{ ...site, filesUrl: "file:///etc" }] }) };
+  const notWeb = outcome(await getPublishedSites());
+  worker.sites = { status: 403, body: '{"error":{"code":"PUBLISH_DISABLED","message":"x"}}' };
+  const off = outcome(await getPublishedSites());
+  // A server from before the route.
+  worker.sites = { status: 404, body: "{}" };
+  const older = outcome(await getPublishedSites());
+  worker.sites = { status: 200, body: "<html>Sign in to the Wi-Fi</html>" };
+  const portal = outcome(await getPublishedSites());
+  // The server forgets the token: signed out, and the token is dropped.
+  worker.valid.clear();
+  const tokenGone = outcome(await getPublishedSites());
+  expect({ signedOut, listed, notWeb, off, older, portal, tokenGone, onDisk: tokenOnDisk() }).toMatchInlineSnapshot(`
+    {
+      "listed": {
+        "ok": [
+          {
+            "filesUrl": "https://paper-shaders.antidraw.app",
+            "id": "site-1",
+            "publishedAt": 1700000000000,
+            "slug": "paper-shaders",
+            "title": "Paper Shaders",
+            "url": "https://antidraw.com/s/paper-shaders",
+            "version": 3,
+          },
+        ],
+      },
+      "notWeb": {
+        "err": "SERVER_ERROR",
+      },
+      "off": {
+        "err": "PUBLISH_DISABLED",
+      },
+      "older": {
+        "err": "SERVER_ERROR",
+      },
+      "onDisk": null,
+      "portal": {
+        "err": "SERVER_ERROR",
+      },
+      "signedOut": {
+        "err": "SIGNED_OUT",
+      },
+      "tokenGone": {
+        "err": "SIGNED_OUT",
+      },
+    }
+  `);
 });

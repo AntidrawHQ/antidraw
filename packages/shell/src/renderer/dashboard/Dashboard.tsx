@@ -11,29 +11,44 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/renderer/components/ui/dialog";
+import {
+  useCancelSignIn,
+  useFeatures,
+  usePublishedSites,
+  useSignIn,
+} from "@/renderer/lib/account-ops";
 import { track } from "@/renderer/lib/analytics";
 import { cn } from "@/renderer/lib/utils";
 import { CoversCanvas } from "@/renderer/lib/thumbnail";
 import {
   useCloseWorkspace,
   useDeleteWorkspace,
+  useOpenPublished,
   useSwitchWorkspace,
   useWorkspaces,
 } from "@/renderer/lib/workspace-ops";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
-import { Header } from "./Header";
+import { Header, type Section } from "./Header";
 import { ListRows, RowMenu, SORTERS, type Sort } from "./LocalList";
+import { PublishedRows } from "./PublishedList";
+import { Btn } from "./kit";
 
-// The Dashboard tab: the workspaces on this Mac. Opening one puts it in the
-// window's other tab, in place of what was there. Drawn over the open
-// workspace, which keeps running under it (see App.tsx).
+// The Dashboard tab: the workspaces on this Mac (Local), and what the account
+// has published (Published, where publishing is on). Opening one puts it in
+// the window's other tab, in place of what was there: a workspace as itself,
+// a published site view-only. Drawn over what that tab holds, which keeps
+// running under it (see App.tsx).
 
-// How the list is sorted, kept while the window is open: the dashboard is
-// unmounted whenever the other tab is the one showing.
+// Which section is up and how Local is sorted, kept while the window is
+// open: the dashboard is unmounted whenever the other tab is the one showing.
 export const useDashboardStore = create<{
+  section: Section;
+  setSection: (section: Section) => void;
   sort: Sort;
   setSort: (sort: Sort) => void;
 }>((set) => ({
+  section: "local",
+  setSection: (section) => set({ section }),
   sort: "active",
   setSort: (sort) => set({ sort }),
 }));
@@ -118,10 +133,83 @@ const DeleteWorkspaceDialog = ({
   );
 };
 
+// A line in place of a list, with what to do about it under it.
+const Notice = ({ children, action }: { children: React.ReactNode; action?: React.ReactNode }) => (
+  <div className="flex flex-col items-center gap-4 py-24 text-center text-[14px] text-[#9B9B9B]">
+    <span>{children}</span>
+    {action}
+  </div>
+);
+
+// The Published section: the account's sites, or why there's no list.
+const Published = ({ query }: { query: string }) => {
+  const { data: sites, error, isPending, refetch, isFetching } = usePublishedSites();
+  const openPublished = useOpenPublished();
+  const signIn = useSignIn();
+  const cancelSignIn = useCancelSignIn();
+
+  const q = query.trim().toLowerCase();
+  const items = useMemo(
+    () => (sites ?? []).filter((site) => !q || site.title.toLowerCase().includes(q)),
+    [sites, q],
+  );
+
+  if (isPending) return <Notice>Loading…</Notice>;
+
+  if (error?.code === "SIGNED_OUT") {
+    return (
+      <Notice
+        action={
+          signIn.isPending ? (
+            // The browser has the sign-in; this ends the wait for it.
+            <Btn kind="outline" onClick={() => cancelSignIn.mutate()}>
+              Cancel
+            </Btn>
+          ) : (
+            <Btn kind="secondary" onClick={() => signIn.mutate()}>
+              Sign in
+            </Btn>
+          )
+        }
+      >
+        {signIn.isPending
+          ? "Finish signing in in your browser."
+          : signIn.error && signIn.error.code !== "CANCELLED"
+            ? signIn.error.message
+            : "Sign in to see what you've published."}
+      </Notice>
+    );
+  }
+  if (error?.code === "PUBLISH_DISABLED") return <Notice>Publishing isn't available yet.</Notice>;
+  // The list it had stays up over a failed refresh.
+  if (error && !sites) {
+    return (
+      <Notice
+        action={
+          <Btn kind="secondary" disabled={isFetching} onClick={() => void refetch()}>
+            Try again
+          </Btn>
+        }
+      >
+        {error.message}
+      </Notice>
+    );
+  }
+
+  if (items.length === 0) return <Notice>{q ? `Nothing matches “${query}”.` : "Nothing published yet."}</Notice>;
+  return <PublishedRows items={items} onOpen={(site) => void openPublished(site)} />;
+};
+
 export const Dashboard = () => {
   const { data: workspaces = [] } = useWorkspaces();
   const switchWorkspace = useSwitchWorkspace();
-  const { sort, setSort } = useDashboardStore();
+  const { sort, setSort, setSection } = useDashboardStore();
+  // Published is there where Publish is: for the accounts the server lets in.
+  const { data: features } = useFeatures();
+  const publishOn = features?.publish === true;
+  const section = useDashboardStore((s) => (publishOn ? s.section : "local"));
+  // Its count, once it's been listed; nothing is asked while it's not shown.
+  const { data: sites } = usePublishedSites(publishOn);
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
   const [menu, setMenu] = useState<{ workspace: WorkspaceWithThumbnail; x: number; y: number } | null>(null);
@@ -155,10 +243,14 @@ export const Dashboard = () => {
       <CoversCanvas />
       <div className={cn(COLUMN, "w-full shrink-0 pt-12")} onClick={deselect}>
         <Header
-          sections={["local"]}
-          section="local"
-          onSection={() => {}}
-          counts={{ local: workspaces.length }}
+          sections={publishOn ? ["local", "published"] : ["local"]}
+          section={section}
+          onSection={(to) => {
+            setSection(to);
+            setQuery("");
+            setSelected(null);
+          }}
+          counts={{ local: workspaces.length, published: sites?.length }}
           query={query}
           onQuery={setQuery}
           sort={sort}
@@ -168,10 +260,10 @@ export const Dashboard = () => {
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto" onClick={deselect}>
         <div className={cn(COLUMN, "pb-16")} onClick={deselect}>
-          {items.length === 0 ? (
-            <div className="py-24 text-center text-[14px] text-[#9B9B9B]">
-              {q ? `Nothing matches “${query}”.` : "No workspaces yet."}
-            </div>
+          {section === "published" ? (
+            <Published query={query} />
+          ) : items.length === 0 ? (
+            <Notice>{q ? `Nothing matches “${query}”.` : "No workspaces yet."}</Notice>
           ) : (
             <ListRows
               items={items}

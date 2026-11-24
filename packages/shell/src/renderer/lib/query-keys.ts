@@ -44,6 +44,12 @@ export const queryKeys = {
   },
   account: ["account"] as const,
   features: ["features"] as const,
+  published: {
+    // What the account has published.
+    sites: ["published-sites"] as const,
+    // A site's canvas.json. A publish is a new version, so a new key.
+    canvas: (siteId: string, version: number) => ["published-canvas", siteId, version] as const,
+  },
   frameLayouts: {
     byWorkspace: (workspaceId: string | null) =>
       ["frameLayouts", workspaceId] as const,

@@ -1,6 +1,7 @@
 import type {
   Account,
   Features,
+  PublishedSite,
   Comment,
   CommentChat,
   ComponentListItem,
@@ -1222,6 +1223,32 @@ export const getFeatures = async () => {
       status: 500 as const,
       code: "NETWORK_ERROR",
       message: "Failed to get features",
+    });
+  }
+};
+
+// What the account has published, the latest first. SIGNED_OUT without an
+// account, PUBLISH_DISABLED for one the server doesn't let publish yet.
+export const getPublishedSites = async () => {
+  try {
+    const response = await apiFetch("antidraw://app/api/account/sites");
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      return err({
+        status: response.status as 500,
+        code: (errorBody?.error?.code as string) ?? "FETCH_ERROR",
+        message: (errorBody?.error?.message as string) ?? response.statusText,
+      });
+    }
+
+    const data: { sites: PublishedSite[] } = await response.json();
+    return ok(data.sites);
+  } catch (_e) {
+    return err({
+      status: 500 as const,
+      code: "NETWORK_ERROR",
+      message: "Failed to load what you've published",
     });
   }
 };

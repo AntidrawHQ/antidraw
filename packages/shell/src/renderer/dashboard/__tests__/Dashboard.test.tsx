@@ -2,12 +2,13 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { ok } from "neverthrow";
+import { err, ok } from "neverthrow";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 
 // The window's two tabs and the dashboard in jsdom, with main's API faked:
-// what the window opens on, what the list shows, and what opening, closing
-// and deleting a workspace do to the tab, its dev server and what's saved.
+// what the window opens on, what the lists show, and what opening, closing
+// and deleting a workspace, or opening a published site, do to the tab, its
+// dev server and what's saved.
 
 const api = vi.hoisted(() => ({
   listWorkspaces: vi.fn(),
@@ -20,6 +21,13 @@ const api = vi.hoisted(() => ({
   getDevServerStatus: vi.fn(),
   getPreference: vi.fn(),
   setPreference: vi.fn(),
+  getAccount: vi.fn(),
+  getFeatures: vi.fn(),
+  getPublishedSites: vi.fn(),
+  signIn: vi.fn(),
+  cancelSignIn: vi.fn(),
+  signOut: vi.fn(),
+  publishWorkspace: vi.fn(),
 }));
 vi.mock("@/renderer/lib/api", () => api);
 // The titlebar's own, each with a test of its own.
@@ -55,6 +63,42 @@ const WORKSPACES = [
   workspace("w-videos", "Twitter Videos", 40, 9),
 ];
 
+const HOUR = 3_600_000;
+// As the server lists them: the latest published first.
+const SITES = [
+  {
+    id: "s-shaders",
+    slug: "paper-shaders",
+    title: "Paper Shaders",
+    url: "https://antidraw.com/s/paper-shaders",
+    filesUrl: "https://paper-shaders.antidraw.app",
+    version: 5,
+    publishedAt: Date.now() - 2 * HOUR,
+  },
+  {
+    id: "s-pricing",
+    slug: "pricing-page",
+    title: "Pricing page",
+    url: "https://antidraw.com/s/pricing-page",
+    filesUrl: "https://pricing-page.antidraw.app",
+    version: 1,
+    publishedAt: Date.now() - 3 * DAY,
+  },
+];
+const ACCOUNT = { id: "u1", name: "Ada Lovelace", email: "ada@example.com", image: null };
+const SIGNED_OUT = { status: 401, code: "SIGNED_OUT", message: "Not signed in" };
+
+// The sites' canvas.json, by URL; a URL without one is a 404.
+const canvasFiles: Record<string, unknown> = {
+  "https://paper-shaders.antidraw.app/canvas.json": {
+    version: 1,
+    name: "Paper Shaders",
+    components: [{ name: "Hero" }, { name: "Price Card" }],
+    layouts: [{ componentName: "Hero", x: 0, y: 0, width: 640, height: 400 }],
+  },
+};
+const fetched: string[] = [];
+
 beforeAll(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   globalThis.ResizeObserver = class {
@@ -62,6 +106,22 @@ beforeAll(() => {
     unobserve() {}
     disconnect() {}
   };
+  // What jsdom lacks and the viewer's canvas (React Flow) reads.
+  window.matchMedia = ((query: string) => ({
+    matches: false,
+    media: query,
+    addEventListener() {},
+    removeEventListener() {},
+  })) as unknown as typeof window.matchMedia;
+  (globalThis as { DOMMatrixReadOnly?: unknown }).DOMMatrixReadOnly = class {
+    m22 = 1;
+  };
+  // The renderer's own fetch: only the viewer's, for a site's canvas.json.
+  vi.stubGlobal("fetch", async (url: string) => {
+    fetched.push(url);
+    const file = canvasFiles[url];
+    return file ? Response.json(file) : new Response(null, { status: 404 });
+  });
 });
 
 let root: Root | undefined;
@@ -76,16 +136,22 @@ beforeEach(() => {
   });
   api.stopDevServer.mockResolvedValue(ok({ stopped: true }));
   api.setPreference.mockResolvedValue(ok(true));
+  // Publishing is off, and nobody is signed in, unless a test says so.
+  api.getFeatures.mockResolvedValue(ok({ publish: false }));
+  api.getAccount.mockResolvedValue(ok(null));
+  api.getPublishedSites.mockResolvedValue(err(SIGNED_OUT));
+  api.cancelSignIn.mockResolvedValue(ok(true));
+  fetched.length = 0;
 });
 afterEach(async () => {
   act(() => root?.unmount());
   root = undefined;
   document.body.innerHTML = "";
   const { useWorkspaceStore } = await import("@/renderer/store/workspace");
-  useWorkspaceStore.setState({ activeWorkspaceId: null, dashboardShown: false });
-  // The list's sort is kept while the window is open.
+  useWorkspaceStore.setState({ activeWorkspaceId: null, publishedSite: null, dashboardShown: false });
+  // The section and the list's sort are kept while the window is open.
   const { useDashboardStore } = await import("../Dashboard");
-  useDashboardStore.setState({ sort: "active" });
+  useDashboardStore.setState({ section: "local", sort: "active" });
 });
 
 const settle = () => act(async () => void (await new Promise((resolve) => setTimeout(resolve, 20))));
@@ -97,13 +163,20 @@ const launch = async (saved: string | null) => {
   const { Dashboard } = await import("../Dashboard");
   const { useAutoSelectWorkspace } = await import("@/renderer/lib/workspace-ops");
   const { useWorkspaceStore } = await import("@/renderer/store/workspace");
+  const { PublishedViewer } = await import("@/renderer/published/PublishedViewer");
   // App.tsx's part in it, without the workspace view.
   const Window = () => {
     useAutoSelectWorkspace();
     const dashboardShown = useWorkspaceStore((s) => s.dashboardShown);
+    const publishedSite = useWorkspaceStore((s) => s.publishedSite);
     return (
       <>
         <Titlebar />
+        {publishedSite && (
+          <div id="viewer" style={{ width: 1200, height: 800 }}>
+            <PublishedViewer site={publishedSite} />
+          </div>
+        )}
         {dashboardShown && <Dashboard />}
       </>
     );
@@ -446,6 +519,271 @@ it.skip("deletes a workspace from its menu once confirmed, closing its tab first
           "● Dashboard",
         ],
       },
+    }
+  `);
+});
+
+/* ── Published ────────────────────────────────────────────────────────── */
+
+const sections = () => [...document.querySelectorAll("main button[aria-pressed]")].map((b) => `${b.getAttribute("aria-pressed") === "true" ? "●" : "○"} ${text(b)}`);
+const section = (name: RegExp) => [...document.querySelectorAll("main button[aria-pressed]")].find((b) => name.test(text(b) ?? ""))!;
+const publishedRows = () => rows().map((r) => [...r.children].map((cell) => text(cell)).filter(Boolean).join(" | "));
+/** The line in place of a list, and the buttons under it. */
+const notice = () => {
+  const el = document.querySelector("main .py-24");
+  return el ? [text(el.querySelector("span")), ...[...el.querySelectorAll("button")].map((b) => `[${text(b)}]`)].join(" ") : null;
+};
+const viewer = () => {
+  const el = document.querySelector("#viewer");
+  if (!el) return null;
+  return {
+    bar: text(el.querySelector(".h-\\[48px\\]")),
+    frames: [...el.querySelectorAll("iframe")].map((frame) => frame.getAttribute("src")),
+    controls: [...el.querySelectorAll("button")].map((b) => text(b) || b.getAttribute("aria-label") || b.getAttribute("title")),
+  };
+};
+
+it("has no Published section where publishing is off, and lists the account's sites where it's on", async () => {
+  await launch("");
+  const off = { sections: sections(), asked: api.getPublishedSites.mock.calls.length };
+  act(() => root?.unmount());
+
+  api.getFeatures.mockResolvedValue(ok({ publish: true }));
+  api.getAccount.mockResolvedValue(ok(ACCOUNT));
+  api.getPublishedSites.mockResolvedValue(ok(SITES));
+  await launch("");
+  const local = { sections: sections(), names: names() };
+  await click(section(/^Published/));
+  const published = { sections: sections(), rows: publishedRows(), search: document.querySelector("main input")?.getAttribute("placeholder") };
+  await type("pric");
+  const searched = publishedRows();
+  await type("zzz");
+  const nothing = notice();
+  // Back on Local, the search starts over.
+  await click(section(/^Local/));
+  expect({ off, local, published, searched, nothing, backOnLocal: names() }).toMatchInlineSnapshot(`
+    {
+      "backOnLocal": [
+        "Antidraw Website",
+        "Paper Shaders",
+        "Twitter Videos",
+      ],
+      "local": {
+        "names": [
+          "Antidraw Website",
+          "Paper Shaders",
+          "Twitter Videos",
+        ],
+        "sections": [
+          "● Local3",
+          "○ Published2",
+        ],
+      },
+      "nothing": "Nothing matches “zzz”.",
+      "off": {
+        "asked": 0,
+        "sections": [
+          "● Local3",
+        ],
+      },
+      "published": {
+        "rows": [
+          "Paper Shaders | v5 · 2 hours ago",
+          "Pricing page | v1 · 3 days ago",
+        ],
+        "search": "Search published",
+        "sections": [
+          "○ Local3",
+          "● Published2",
+        ],
+      },
+      "searched": [
+        "Pricing page | v1 · 3 days ago",
+      ],
+    }
+  `);
+});
+
+it("opens a published site view-only in the one tab, in place of the workspace there, and a workspace in place of it", async () => {
+  api.getFeatures.mockResolvedValue(ok({ publish: true }));
+  api.getAccount.mockResolvedValue(ok(ACCOUNT));
+  api.getPublishedSites.mockResolvedValue(ok(SITES));
+  const store = await launch("w-videos");
+  const steps: Record<string, unknown> = {};
+
+  await click(document.querySelectorAll('[role="tab"]')[0]!);
+  await click(section(/^Published/));
+  await click(rows()[0]!);
+  steps["a click opens it"] = {
+    ...screen(),
+    workspace: store.getState().activeWorkspaceId,
+    stopped: api.stopDevServer.mock.calls.flat(),
+    saved: saved(),
+    viewer: viewer(),
+    fetched: [...fetched],
+  };
+
+  await click(button(/Copy link/));
+  steps["Copy link"] = text(document.querySelector('#viewer [role="status"]'));
+
+  // The dashboard comes back on Published, with the site still in its tab.
+  await click(document.querySelectorAll('[role="tab"]')[0]!);
+  steps["Dashboard tab"] = { ...screen(), sections: sections(), viewerKept: !!viewer() };
+
+  // A site whose canvas.json can't be had.
+  await click(rows()[1]!);
+  steps["one that can't be loaded"] = { tabs: tabs(), viewer: text(document.querySelector("#viewer .absolute.place-items-center")) };
+
+  await click(document.querySelectorAll('[role="tab"]')[0]!);
+  await click(section(/^Local/));
+  await fire(row("Paper Shaders"), "dblclick");
+  steps["a workspace in its place"] = {
+    ...screen(),
+    workspace: store.getState().activeWorkspaceId,
+    viewer: viewer(),
+    saved: saved(),
+  };
+
+  await click(document.querySelectorAll('[role="tab"]')[0]!);
+  await click(section(/^Published/));
+  await click(rows()[0]!);
+  await click(button(/^Close tab$/));
+  steps["closed"] = { ...screen(), viewer: viewer(), workspace: store.getState().activeWorkspaceId };
+
+  expect(steps).toMatchInlineSnapshot(`
+    {
+      "Copy link": "Copied antidraw.com/s/paper-shaders",
+      "Dashboard tab": {
+        "dashboard": true,
+        "sections": [
+          "○ Local3",
+          "● Published2",
+        ],
+        "tabs": [
+          "● Dashboard",
+          "○ Paper Shaders",
+        ],
+        "viewerKept": true,
+        "workspaceControls": false,
+      },
+      "a click opens it": {
+        "dashboard": false,
+        "fetched": [
+          "https://paper-shaders.antidraw.app/canvas.json",
+        ],
+        "saved": [
+          "activeWorkspaceId=""",
+        ],
+        "stopped": [
+          "w-videos",
+        ],
+        "tabs": [
+          "○ Dashboard",
+          "● Paper Shaders",
+        ],
+        "viewer": {
+          "bar": "Paper ShadersView onlyALPublished by Ada Lovelace · v5 · 2 hours ago Copy link",
+          "controls": [
+            "Copy link",
+          ],
+          "frames": [
+            "https://paper-shaders.antidraw.app/preview?componentName=Hero",
+            "https://paper-shaders.antidraw.app/preview?componentName=Price%20Card",
+          ],
+        },
+        "workspace": null,
+        "workspaceControls": false,
+      },
+      "a workspace in its place": {
+        "dashboard": false,
+        "saved": [
+          "activeWorkspaceId=""",
+          "activeWorkspaceId="w-shaders"",
+        ],
+        "tabs": [
+          "○ Dashboard",
+          "● Paper Shaders",
+        ],
+        "viewer": null,
+        "workspace": "w-shaders",
+        "workspaceControls": true,
+      },
+      "closed": {
+        "dashboard": true,
+        "tabs": [
+          "● Dashboard",
+        ],
+        "viewer": null,
+        "workspace": null,
+        "workspaceControls": false,
+      },
+      "one that can't be loaded": {
+        "tabs": [
+          "○ Dashboard",
+          "● Pricing page",
+        ],
+        "viewer": "This canvas could not be loaded.Try again",
+      },
+    }
+  `);
+});
+
+it("says why there's no list: signed out, with a way in; an account not let in; a server that can't say, with another try", async () => {
+  api.getFeatures.mockResolvedValue(ok({ publish: true }));
+  await launch("");
+  const steps: Record<string, unknown> = {};
+  await click(section(/^Published/));
+  steps["signed out"] = { sections: sections(), notice: notice() };
+
+  // The browser has it until the user is done there.
+  let finish!: (value: unknown) => void;
+  api.signIn.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+  await click(button(/^Sign in$/));
+  steps["signing in"] = notice();
+  api.getAccount.mockResolvedValue(ok(ACCOUNT));
+  api.getPublishedSites.mockResolvedValue(ok([]));
+  await act(async () => finish(ok(ACCOUNT)));
+  await settle();
+  steps["signed in, nothing published"] = { sections: sections(), notice: notice() };
+  act(() => root?.unmount());
+
+  api.getPublishedSites.mockResolvedValue(err({ status: 403, code: "PUBLISH_DISABLED", message: "Publishing isn't available yet." }));
+  await launch("");
+  await click(section(/^Published/));
+  steps["not let in"] = notice();
+  act(() => root?.unmount());
+
+  api.getPublishedSites.mockResolvedValue(err({ status: 502, code: "SERVER_UNREACHABLE", message: "Couldn't reach the Antidraw server" }));
+  await launch("");
+  await click(section(/^Published/));
+  steps["unreachable"] = notice();
+  api.getPublishedSites.mockResolvedValue(ok(SITES));
+  await click(button(/^Try again$/));
+  steps["tried again"] = publishedRows();
+
+  expect(steps).toMatchInlineSnapshot(`
+    {
+      "not let in": "Publishing isn't available yet.",
+      "signed in, nothing published": {
+        "notice": "Nothing published yet.",
+        "sections": [
+          "○ Local3",
+          "● Published0",
+        ],
+      },
+      "signed out": {
+        "notice": "Sign in to see what you've published. [Sign in]",
+        "sections": [
+          "○ Local3",
+          "● Published",
+        ],
+      },
+      "signing in": "Finish signing in in your browser. [Cancel]",
+      "tried again": [
+        "Paper Shaders | v5 · 2 hours ago",
+        "Pricing page | v1 · 3 days ago",
+      ],
+      "unreachable": "Couldn't reach the Antidraw server [Try again]",
     }
   `);
 });

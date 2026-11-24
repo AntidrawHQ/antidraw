@@ -6,8 +6,9 @@ import { getWorkspaceThumbnail } from "@/renderer/lib/api";
 import { queryKeys } from "@/renderer/lib/query-keys";
 import { cn } from "@/renderer/lib/utils";
 
-// The dashboard's small parts, and the titlebar tabs': its own icons, button
-// and thumbnail, in the greys of its design rather than the workspace view's.
+// The dashboard's small parts, the titlebar tabs' and the published viewer's:
+// its own icons, button, chip and thumbnail, in the greys of its design
+// rather than the workspace view's.
 
 export const Svg = ({
   children,
@@ -55,6 +56,13 @@ export const ic = {
   check: <path d="m5 12.5 4.5 4.5L19 7.5" />,
   close: <path d="M6 6l12 12M18 6 6 18" />,
   more: <path d="M5 12h.01M12 12h.01M19 12h.01" strokeWidth={3} />,
+  eye: (
+    <>
+      <path d="M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12s-3.5 6.5-9.5 6.5S2.5 12 2.5 12z" />
+      <circle cx="12" cy="12" r="2.8" />
+    </>
+  ),
+  link: <path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1-1" />,
 };
 
 type BtnKind = "primary" | "secondary" | "ghost" | "outline";
@@ -80,6 +88,17 @@ export const Btn = ({
       className,
     )}
   />
+);
+
+export const Chip = ({ children, className = "" }: { children: ReactNode; className?: string }) => (
+  <span
+    className={cn(
+      "inline-flex h-[22px] shrink-0 items-center gap-1 rounded-full bg-[#313131] px-2 text-[12px] whitespace-nowrap text-[#B2B2B2]",
+      className,
+    )}
+  >
+    {children}
+  </span>
 );
 
 // The workspace's canvas as last captured (lib/thumbnail.ts), on the canvas's
