@@ -7,6 +7,7 @@ import { CANVAS_GRID, snapToCanvasGrid } from "@/renderer/canvas/grid";
 // spaces a spaced name has, Hero Card → Hero Card Copy → Hero Card Copy 2.
 // A copy of a copy counts on from it. `taken` is lower case (macOS's file
 // system ignores case) and gets the name, so a batch's names differ too.
+// For a name that's taken: a free one can come back as it is (CardCopy).
 export const copyName = (name: string, taken: Set<string>) => {
   const spaced = /\s/.test(name);
   const base = (spaced ? name.replace(/\sCopy(\s\d+)?$/, "") : name.replace(/Copy\d*$/, "")) || name;

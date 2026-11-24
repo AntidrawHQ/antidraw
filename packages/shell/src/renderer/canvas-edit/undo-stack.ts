@@ -10,8 +10,6 @@ export type UndoEntry = {
   redo: () => Promise<void> | void;
 };
 
-const LIMIT = 100;
-
 export class UndoStack {
   private done: UndoEntry[] = [];
   private undone: UndoEntry[] = [];
@@ -19,51 +17,59 @@ export class UndoStack {
 
   // An entry that failed (its frame changed since, or the write did) is
   // dropped, and onError told: there's no going past it any other way.
-  constructor(private readonly onError: (error: unknown) => void) {}
+  constructor(
+    private readonly onError: (error: unknown) => void,
+    private readonly limit = 100,
+  ) {}
 
   // The user's change, made: what it undoes is the user's to redo no more.
+  // In turn too: a move made while an undo is still running comes after it,
+  // so the undo can't hand back a redo the move has ended.
   push(entry: UndoEntry) {
-    this.done.push(entry);
-    if (this.done.length > LIMIT) this.done.shift();
-    this.undone = [];
+    return this.run(async () => this.record(entry));
   }
 
   // A change to make, in turn, and the entry for it (none: nothing changed).
   perform(change: () => Promise<UndoEntry | null>) {
     return this.run(async () => {
       const entry = await change();
-      if (entry) this.push(entry);
+      if (entry) this.record(entry);
     });
   }
 
+  // Each resolves to whether there was one to undo (or redo).
   undo() {
     return this.run(async () => {
       const entry = this.done.pop();
-      if (!entry) return;
+      if (!entry) return false;
       await entry.undo();
       this.undone.push(entry);
+      return true;
     });
   }
 
   redo() {
     return this.run(async () => {
       const entry = this.undone.pop();
-      if (!entry) return;
+      if (!entry) return false;
       await entry.redo();
       this.done.push(entry);
+      return true;
     });
   }
 
-  get canUndo() {
-    return this.done.length > 0;
+  private record(entry: UndoEntry) {
+    this.done.push(entry);
+    if (this.done.length > this.limit) this.done.shift();
+    this.undone = [];
   }
 
-  get canRedo() {
-    return this.undone.length > 0;
-  }
-
-  private run(step: () => Promise<void>) {
-    const next = this.queue.then(step).catch(this.onError);
+  // A step that throws resolves to undefined, after onError.
+  private run<T>(step: () => Promise<T>): Promise<T | undefined> {
+    const next = this.queue.then(step).catch((error) => {
+      this.onError(error);
+      return undefined;
+    });
     this.queue = next;
     return next;
   }

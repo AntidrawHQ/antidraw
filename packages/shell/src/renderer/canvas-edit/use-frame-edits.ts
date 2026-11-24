@@ -303,21 +303,17 @@ export const useFrameEdits = (workspaceId: string) => {
         });
       },
 
-      recordMoves: (moves: FrameMove[]) => stack.push(moved(moves)),
+      recordMoves: (moves: FrameMove[]) => void stack.push(moved(moves)),
 
       undo(via: Via) {
         // A run of arrow keys still settling is a move to undo first.
         controls.flushMoves();
-        if (!stack.canUndo) return;
-        edited("undo", 1, via);
-        void stack.undo();
+        void stack.undo().then((did) => did && edited("undo", 1, via));
       },
 
       redo(via: Via) {
         controls.flushMoves();
-        if (!stack.canRedo) return;
-        edited("redo", 1, via);
-        void stack.redo();
+        void stack.redo().then((did) => did && edited("redo", 1, via));
       },
 
       selectAll: () => store.getState().addSelectedNodes(nodes().map((n) => n.id)),
