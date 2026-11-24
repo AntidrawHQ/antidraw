@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { err, ok, type Result } from "neverthrow";
+import { z } from "zod";
 import { SIGN_IN_PAGE_HEADERS, signInPage, type SignInOutcome } from "./sign-in-page";
 
 // Sign-in to the Antidraw cloud (@antidraw/server) for publish/sync. The
@@ -210,6 +211,60 @@ export const getFeatures = async (): Promise<Features> => {
   } catch {
     // Unreachable, or a body that isn't the server's (a captive portal's page).
     return OFF;
+  }
+};
+
+// What the signed-in account has published (@antidraw/server's GET
+// /api/sites), the latest published first, for the dashboard's Published tab.
+const webUrl = z.string().refine((value) => {
+  try {
+    return /^https?:$/.test(new URL(value).protocol);
+  } catch {
+    return false;
+  }
+});
+
+const publishedSite = z.object({
+  id: z.string().min(1),
+  slug: z.string().min(1),
+  title: z.string(),
+  // Its share page: the link to give out.
+  url: webUrl,
+  // Where its files are served: canvas.json, and each component's /preview.
+  filesUrl: webUrl,
+  // How many of its publishes have gone live.
+  version: z.number().int(),
+  // When the live one did, in ms.
+  publishedAt: z.number(),
+});
+
+export type PublishedSite = z.infer<typeof publishedSite>;
+
+export type PublishedSitesError =
+  | AccountError
+  | { status: 403; code: "PUBLISH_DISABLED"; message: string };
+
+const SITES_FAILED = accountError(502, "SERVER_ERROR", "Couldn't load what you've published");
+
+export const getPublishedSites = async (): Promise<Result<PublishedSite[], PublishedSitesError>> => {
+  const result = await cloudFetch("/api/sites", { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+  if (result.isErr()) return err(result.error);
+  // The `publish` flag doesn't let this account in.
+  if (result.value.status === 403) {
+    return err({ status: 403, code: "PUBLISH_DISABLED", message: "Publishing isn't available yet." });
+  }
+  // Also a server from before the route: its 404.
+  if (!result.value.ok) return err(SITES_FAILED);
+  try {
+    const body = z.object({ sites: z.array(publishedSite) }).safeParse(await result.value.json());
+    return body.success ? ok(body.data.sites) : err(SITES_FAILED);
+  } catch (error) {
+    // As getAccount: a captive portal's page, or a body that outlasted the timeout.
+    return err(
+      error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")
+        ? UNREACHABLE
+        : SITES_FAILED,
+    );
   }
 };
 

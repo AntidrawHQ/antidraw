@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Account } from "@/main/api";
+import type { Account, PublishedSite } from "@/main/api";
 import { queryKeys } from "./query-keys";
 import {
   cancelSignIn,
   getAccount,
   getFeatures,
+  getPublishedSites,
   publishWorkspace,
   signIn,
   signOut,
@@ -57,6 +58,28 @@ export const useFeatures = () => {
   });
 };
 
+// What the account has published, for the dashboard's Published tab. Asked
+// each time the tab is shown; what it had stays up meanwhile. An error's code
+// says why there's no list: SIGNED_OUT, PUBLISH_DISABLED, or the server's.
+export const usePublishedSites = (enabled = true) => {
+  const queryClient = useQueryClient();
+
+  return useQuery<PublishedSite[], AccountRequestError>({
+    queryKey: queryKeys.published.sites,
+    queryFn: async () => {
+      const result = await getPublishedSites();
+      if (result.isErr()) {
+        // The stored token died; main already dropped it.
+        if (result.error.code === "SIGNED_OUT") queryClient.setQueryData(queryKeys.account, null);
+        throw new AccountRequestError(result.error.code, result.error.message);
+      }
+      return result.value;
+    },
+    enabled,
+    retry: false,
+  });
+};
+
 // Pending for as long as the user is in the browser.
 export const useSignIn = () => {
   const queryClient = useQueryClient();
@@ -72,6 +95,8 @@ export const useSignIn = () => {
     onSuccess: (account) => {
       queryClient.setQueryData(queryKeys.account, account);
       void queryClient.invalidateQueries({ queryKey: queryKeys.features });
+      // This account's, not the last one's or a signed-out error.
+      void queryClient.resetQueries({ queryKey: queryKeys.published.sites });
     },
   });
 };
@@ -88,6 +113,7 @@ export const useSignOut = () => {
     onSuccess: () => {
       queryClient.setQueryData(queryKeys.account, null);
       void queryClient.invalidateQueries({ queryKey: queryKeys.features });
+      void queryClient.resetQueries({ queryKey: queryKeys.published.sites });
     },
   });
 };
@@ -103,6 +129,8 @@ export const usePublishWorkspace = () => {
       }
       return result.value;
     },
+    // A new version of one of the account's sites, or a new site.
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: queryKeys.published.sites }),
     onError: (error) => {
       // The stored token died; main already dropped it.
       if (error.code === "SIGNED_OUT") {

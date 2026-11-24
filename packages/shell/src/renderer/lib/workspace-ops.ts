@@ -4,6 +4,7 @@ import type {
   CreateWorkspaceResponse,
   DevServerState,
   DevServerInfo,
+  PublishedSite,
 } from "@/main/api";
 import { useMutation, useQuery, useQueryClient, skipToken } from "@tanstack/react-query";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
@@ -115,6 +116,8 @@ export const useSwitchWorkspace = () => {
 
     setActiveWorkspaceId(nextWorkspaceId);
     setActiveConversationId(null);
+    // In place of a published site, too.
+    useWorkspaceStore.getState().setPublishedSite(null);
     setDashboardShown(false);
 
     // usePreference caches with staleTime: Infinity, so keep the cache in sync
@@ -164,6 +167,42 @@ export const useCloseWorkspace = () => {
       console.error("Failed to stop dev server:", error);
     });
   };
+};
+
+// Opens a published site in the window's one tab, view-only, in place of
+// what was there. A workspace it replaces is closed as its tab's close button
+// closes it: its dev server stops, and the next launch opens on the dashboard.
+export const useOpenPublished = () => {
+  const queryClient = useQueryClient();
+  const stopDevServer = useStopDevServer();
+
+  return async (site: PublishedSite) => {
+    await flushLeftCanvas();
+
+    const { activeWorkspaceId, setActiveWorkspaceId, setActiveConversationId, setPublishedSite, setDashboardShown } =
+      useWorkspaceStore.getState();
+    if (activeWorkspaceId) {
+      stopDevServer.mutate(activeWorkspaceId, {
+        onError: (error) => {
+          console.error("Failed to stop dev server:", error);
+        },
+      });
+      setActiveWorkspaceId(null);
+      setActiveConversationId(null);
+      queryClient.setQueryData(queryKeys.preferences.byKey("activeWorkspaceId"), NO_WORKSPACE);
+      void setPreference("activeWorkspaceId", NO_WORKSPACE);
+    }
+
+    setPublishedSite(site);
+    setDashboardShown(false);
+  };
+};
+
+// Closes the tab's published site, which leaves the dashboard.
+export const closePublished = () => {
+  const { setPublishedSite, setDashboardShown } = useWorkspaceStore.getState();
+  setDashboardShown(true);
+  setPublishedSite(null);
 };
 
 // To the dashboard from the tab's workspace, which stays open under it. Its

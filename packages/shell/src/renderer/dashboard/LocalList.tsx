@@ -18,7 +18,7 @@ export const SORTERS: Record<Sort, (a: WorkspaceWithThumbnail, b: WorkspaceWithT
   name: (a, b) => a.name.localeCompare(b.name),
 };
 
-const ago = (t: number) => {
+export const ago = (t: number) => {
   const s = (Date.now() - t) / 1000;
   if (s < 60) return "Just now";
   const steps: [number, string][] = [

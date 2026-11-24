@@ -1,12 +1,18 @@
 import { create } from "zustand";
+import type { PublishedSite } from "@/main/api";
 
 export type SidePanel = "chat" | "components";
 
 type WorkspaceStore = {
   activeWorkspaceId: string | null;
   setActiveWorkspaceId: (id: string | null) => void;
-  // The Dashboard tab is the one showing: the workspaces list, over the open
-  // workspace, which keeps running under it.
+  // What the window's other tab holds when it isn't a workspace: a published
+  // site, view-only (renderer/published). Never both: opening one closes the
+  // other (lib/workspace-ops.ts).
+  publishedSite: PublishedSite | null;
+  setPublishedSite: (site: PublishedSite | null) => void;
+  // The Dashboard tab is the one showing: the workspaces list, over what the
+  // other tab holds, which keeps running under it.
   dashboardShown: boolean;
   setDashboardShown: (shown: boolean) => void;
   activeConversationId: string | null;
@@ -30,6 +36,8 @@ type WorkspaceStore = {
 export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
   activeWorkspaceId: null,
   setActiveWorkspaceId: (id) => set({ activeWorkspaceId: id }),
+  publishedSite: null,
+  setPublishedSite: (site) => set({ publishedSite: site }),
   dashboardShown: false,
   setDashboardShown: (shown) => set({ dashboardShown: shown }),
   activeConversationId: null,

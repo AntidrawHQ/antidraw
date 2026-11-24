@@ -7,7 +7,7 @@ import { Svg, ic } from "@/renderer/dashboard/kit";
 import { useUpdatePrompt } from "@/renderer/hooks/use-update-prompt";
 import { useUpdateStore } from "@/renderer/store/update";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
-import { showDashboard, useCloseWorkspace, useWorkspaces } from "@/renderer/lib/workspace-ops";
+import { closePublished, showDashboard, useCloseWorkspace, useWorkspaces } from "@/renderer/lib/workspace-ops";
 import { cn } from "@/renderer/lib/utils";
 
 // main.ts centres the traffic lights in it (trafficLightPosition).
@@ -47,12 +47,32 @@ const Tab = ({
   </div>
 );
 
+// A tab's close button: always there on the tab showing, on hover otherwise.
+const CloseTab = ({ shown, onClose }: { shown: boolean; onClose: () => void }) => (
+  <button
+    onClick={(e) => {
+      e.stopPropagation();
+      onClose();
+    }}
+    aria-label="Close tab"
+    className={cn(
+      "grid size-4 shrink-0 place-items-center rounded text-[#B2B2B2] hover:text-[#E9E9E9] focus-visible:opacity-100",
+      shown ? "" : "opacity-0 group-hover:opacity-100",
+    )}
+  >
+    <Svg size={11} sw={2}>
+      {ic.close}
+    </Svg>
+  </button>
+);
+
 // The main window's titlebar: its two tabs, the Dashboard and the one
-// workspace that's open, then what's for that workspace (the MCP setup,
-// Publish).
+// workspace, or published site, that's open, then what's for a workspace
+// (the MCP setup, Publish).
 export const Titlebar = ({ tabs = true }: { tabs?: boolean }) => {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const dashboardShown = useWorkspaceStore((s) => s.dashboardShown);
+  const publishedSite = useWorkspaceStore((s) => s.publishedSite);
   const setDashboardShown = useWorkspaceStore((s) => s.setDashboardShown);
   const { data: workspaces } = useWorkspaces();
   const activeWorkspace = workspaces?.find((ws) => ws.id === activeWorkspaceId);
@@ -89,21 +109,17 @@ export const Titlebar = ({ tabs = true }: { tabs?: boolean }) => {
                 <AvatarIcon name={activeWorkspace.name} size={16} />
               </span>
               <span className="max-w-[180px] truncate">{activeWorkspace.name}</span>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void closeWorkspace();
-                }}
-                aria-label="Close tab"
-                className={cn(
-                  "grid size-4 shrink-0 place-items-center rounded text-[#B2B2B2] hover:text-[#E9E9E9] focus-visible:opacity-100",
-                  !dashboardShown ? "" : "opacity-0 group-hover:opacity-100",
-                )}
-              >
-                <Svg size={11} sw={2}>
-                  {ic.close}
-                </Svg>
-              </button>
+              <CloseTab shown={!dashboardShown} onClose={() => void closeWorkspace()} />
+            </Tab>
+          )}
+          {/* In the workspace's place, never beside it. */}
+          {publishedSite && !activeWorkspace && (
+            <Tab on={!dashboardShown} onSelect={() => setDashboardShown(false)} className="min-w-0">
+              <Svg size={14} className="shrink-0 max-[640px]:hidden">
+                {ic.eye}
+              </Svg>
+              <span className="max-w-[180px] truncate">{publishedSite.title}</span>
+              <CloseTab shown={!dashboardShown} onClose={closePublished} />
             </Tab>
           )}
         </div>
