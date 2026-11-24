@@ -1,8 +1,9 @@
 // Imported FIRST: relocates ~/.antidraw to a fresh tmp dir — see e2e-env.ts.
 import "./e2e-env";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import fs from "node:fs/promises";
 import path from "node:path";
-import { beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { workspaceController } from "@/main/api/controllers/workspace.controller";
 import { setTrashItemForTests } from "@/main/api/services/component.service";
 
@@ -18,7 +19,10 @@ const file = (name: string) => path.join(componentsDir, `${name}.tsx`);
 
 let trashed: string[] = [];
 let trashFails = new Set<string>();
+// What else happens as a file goes to the trash: the agent, still at work.
+let whileTrashing: (file: string) => void = () => {};
 setTrashItemForTests(async (filePath) => {
+  whileTrashing(path.basename(filePath));
   if (trashFails.has(path.basename(filePath))) throw new Error("trash refused");
   trashed.push(path.basename(filePath));
   rmSync(filePath);
@@ -31,7 +35,9 @@ beforeEach(() => {
   writeFileSync(path.join(componentsDir, "..", "secret.tsx"), "// outside\n");
   trashed = [];
   trashFails = new Set();
+  whileTrashing = () => {};
 });
+afterEach(() => vi.restoreAllMocks());
 
 const post = (route: string, body: unknown) =>
   workspaceController.request(`/${workspaceId}${route}`, {
@@ -41,7 +47,10 @@ const post = (route: string, body: unknown) =>
   });
 const create = (components: { name: string; source: string }[]) => post("/components", { components });
 const del = (names: string[], expected?: Record<string, string>) =>
-  post("/components/delete", { names, expected });
+  post("/components/delete", {
+    names,
+    expected: expected && Object.entries(expected).map(([name, source]) => ({ name, source })),
+  });
 
 describe("POST /:workspaceId/components", () => {
   test("writes each new component's file", async () => {
@@ -76,6 +85,23 @@ describe("POST /:workspaceId/components", () => {
     expect(existsSync(file("Twin"))).toBe(false);
   });
 
+  test("a write that fails part way leaves none of the batch, the file it failed on too", async () => {
+    // The disk fills: the file is made, and the write into it fails.
+    const writeFile = fs.writeFile.bind(fs);
+    vi.spyOn(fs, "writeFile").mockImplementation(async (target, ...rest) => {
+      if (String(target) !== file("Second")) return writeFile(target, ...rest);
+      writeFileSync(file("Second"), "");
+      throw Object.assign(new Error("no space left"), { code: "ENOSPC" });
+    });
+    const res = await create([
+      { name: "First", source: "// one\n" },
+      { name: "Second", source: "// two\n" },
+      { name: "Third", source: "// three\n" },
+    ]);
+    expect(res.status).toBe(500);
+    expect(["First", "Second", "Third"].filter((name) => existsSync(file(name)))).toEqual([]);
+  });
+
   test("a name that would leave the directory is refused", async () => {
     for (const name of ["../secret", "a/b", ".."]) {
       const res = await create([{ name, source: "// escaped\n" }]);
@@ -106,6 +132,29 @@ describe("POST /:workspaceId/components/delete", () => {
     expect(res.status).toBe(409);
     expect(trashed).toEqual([]);
     expect(existsSync(file("Card"))).toBe(true);
+  });
+
+  test("a file edited while the ones before it go is left, when the canvas said what it saw", async () => {
+    writeFileSync(file("Hero"), "// Hero\n");
+    whileTrashing = (name) => name === "Card.tsx" && writeFileSync(file("Hero"), "// Hero, edited\n");
+    const res = await del(["Card", "Hero"], { Card: "// Card\n", Hero: "// Hero\n" });
+    expect(await res.json()).toEqual({ deleted: [{ name: "Card", source: "// Card\n" }], failed: ["Hero"] });
+    expect(readFileSync(file("Hero"), "utf-8")).toBe("// Hero, edited\n");
+  });
+
+  test("and goes as edited when it didn't: the source an undo writes back", async () => {
+    writeFileSync(file("Hero"), "// Hero\n");
+    whileTrashing = (name) => name === "Card.tsx" && writeFileSync(file("Hero"), "// Hero, edited\n");
+    const res = await del(["Card", "Hero"]);
+    expect((await res.json()).deleted[1]).toEqual({ name: "Hero", source: "// Hero, edited\n" });
+  });
+
+  test("checks a frame named for something every object has", async () => {
+    for (const name of ["__proto__", "constructor", "toString"]) {
+      writeFileSync(file(name), "// as written\n");
+      expect((await del([name], { [name]: "// as it was\n" })).status, name).toBe(409);
+      expect((await del([name], { [name]: "// as written\n" })).status, name).toBe(200);
+    }
   });
 
   test("a file the trash refuses is listed, and the others still go", async () => {

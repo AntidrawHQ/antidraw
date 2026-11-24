@@ -1,6 +1,5 @@
 import fc from "fast-check";
 import { expect, test } from "vitest";
-import { CANVAS_GRID } from "@/renderer/canvas/grid";
 import { isComponentName } from "@/shared/utils/component-name";
 import { boundsOf, centredOn, copyName, offsetBy, PASTE_OFFSET } from "../frames";
 
@@ -49,37 +48,36 @@ const layout = fc.record({
 });
 const layouts = fc.array(layout, { minLength: 1, maxLength: 6 });
 
-const onGrid = (n: number) => n % CANVAS_GRID === 0;
+const whole = (n: number) => Number.isInteger(n);
 // Each frame's place relative to the first's, and its size.
 const shape = (ls: { x: number; y: number; width: number; height: number }[]) =>
   ls.map((l) => ({ dx: l.x - ls[0]!.x, dy: l.y - ls[0]!.y, width: l.width, height: l.height }));
 
-test("centred on a point, frames keep their shape, their corner on the grid, their middle at the point", () => {
+test("centred on a point, frames keep their shape, their corner on a whole pixel, their middle at the point", () => {
   fc.assert(
     fc.property(layouts, fc.integer({ min: -100_000, max: 100_000 }), fc.integer({ min: -100_000, max: 100_000 }), (ls, x, y) => {
       const placed = centredOn(ls, { x, y });
       const bounds = boundsOf(placed);
       expect(shape(placed)).toEqual(shape(ls));
       expect(placed.map((l) => l.componentName)).toEqual(ls.map((l) => l.componentName));
-      expect(onGrid(bounds.x) && onGrid(bounds.y)).toBe(true);
-      // Snapping the corner moves the middle by at most half a step.
-      expect(Math.abs(bounds.x + bounds.width / 2 - x)).toBeLessThanOrEqual(CANVAS_GRID / 2 + 1e-6);
-      expect(Math.abs(bounds.y + bounds.height / 2 - y)).toBeLessThanOrEqual(CANVAS_GRID / 2 + 1e-6);
+      expect(whole(bounds.x) && whole(bounds.y)).toBe(true);
+      // Rounding the corner moves the middle by at most half a pixel.
+      expect(Math.abs(bounds.x + bounds.width / 2 - x)).toBeLessThanOrEqual(0.5 + 1e-6);
+      expect(Math.abs(bounds.y + bounds.height / 2 - y)).toBeLessThanOrEqual(0.5 + 1e-6);
     }),
     { numRuns: 500 },
   );
 });
 
-test("offset, frames keep their shape and land each step further on, on the grid", () => {
+test("offset, frames keep their shape and land each step further on", () => {
   fc.assert(
     fc.property(layouts, fc.integer({ min: 1, max: 20 }), (ls, steps) => {
       const placed = offsetBy(ls, steps);
       const was = boundsOf(ls);
       const now = boundsOf(placed);
       expect(shape(placed)).toEqual(shape(ls));
-      expect(onGrid(now.x) && onGrid(now.y)).toBe(true);
-      expect(Math.abs(now.x - (was.x + PASTE_OFFSET * steps))).toBeLessThanOrEqual(CANVAS_GRID / 2);
-      expect(Math.abs(now.y - (was.y + PASTE_OFFSET * steps))).toBeLessThanOrEqual(CANVAS_GRID / 2);
+      expect(now.x).toBe(was.x + PASTE_OFFSET * steps);
+      expect(now.y).toBe(was.y + PASTE_OFFSET * steps);
     }),
     { numRuns: 500 },
   );

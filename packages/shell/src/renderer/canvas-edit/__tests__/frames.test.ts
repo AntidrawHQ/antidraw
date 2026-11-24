@@ -35,17 +35,17 @@ describe("placing frames", () => {
     { componentName: "B", x: 413, y: 61, width: 100, height: 100 },
   ];
 
-  test("centred on a point, apart as they were, their corner on the grid", () => {
+  test("centred on a point, apart as they were", () => {
     expect(centredOn(layouts, { x: 1000, y: 1000 })).toEqual([
-      { componentName: "A", x: 752, y: 904, width: 300, height: 200 },
-      { componentName: "B", x: 1152, y: 944, width: 100, height: 100 },
+      { componentName: "A", x: 750, y: 900, width: 300, height: 200 },
+      { componentName: "B", x: 1150, y: 940, width: 100, height: 100 },
     ]);
   });
 
   test("offset from where they were", () => {
     expect(offsetBy(layouts, 2).map(({ x, y }) => ({ x, y }))).toEqual([
-      { x: 96, y: 104 },
-      { x: 496, y: 144 },
+      { x: 93, y: 101 },
+      { x: 493, y: 141 },
     ]);
   });
 });

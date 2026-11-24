@@ -1,6 +1,6 @@
 import fc from "fast-check";
 import { expect, test } from "vitest";
-import { UndoStack, type UndoEntry } from "../undo-stack";
+import { UndoStack } from "../undo-stack";
 
 // The undo stack against a model of it: two lists (done, undone) and the
 // changes in effect. Every step is pressed at once, without waiting for the
@@ -46,20 +46,22 @@ test("ends as the model does, however its changes interleave", async () => {
       // What's in effect, as the entries' own undo and redo leave it.
       const world = new Set<number>();
       let errors = 0;
-      const stack = new UndoStack(() => errors++, LIMIT);
-      const entry = (spec: Spec): UndoEntry & { spec: Spec } => ({
-        spec,
-        undo: async () => {
+      const stack = new UndoStack<{ spec: Spec }>(() => errors++, LIMIT);
+      const entry = (spec: Spec) => ({ spec });
+      // An entry is what it was: undoing it is whoever asks.
+      const apply = async (e: { spec: Spec }, direction: "undo" | "redo") => {
+        const { spec } = e;
+        if (direction === "undo") {
           await pause(spec.undoTurns);
           if (spec.failUndo) throw new Error(`undo ${spec.id}`);
           world.delete(spec.id);
-        },
-        redo: async () => {
+        } else {
           await pause(spec.redoTurns);
           if (spec.failRedo) throw new Error(`redo ${spec.id}`);
           world.add(spec.id);
-        },
-      });
+        }
+        return e;
+      };
 
       // The model, one step after another.
       const model = { done: [] as Spec[], undone: [] as Spec[], world: new Set<number>(), errors: 0 };
@@ -95,7 +97,7 @@ test("ends as the model does, however its changes interleave", async () => {
             record(spec);
           }
         } else if (s.kind === "undo") {
-          pressed.push(stack.undo());
+          pressed.push(stack.undo(apply));
           const spec = model.done.pop();
           if (spec?.failUndo) model.errors++;
           else if (spec) {
@@ -103,7 +105,7 @@ test("ends as the model does, however its changes interleave", async () => {
             model.undone.push(spec);
           }
         } else {
-          pressed.push(stack.redo());
+          pressed.push(stack.redo(apply));
           const spec = model.undone.pop();
           if (spec?.failRedo) model.errors++;
           else if (spec) {

@@ -1,18 +1,19 @@
-// What the user did to the canvas's frames (a move, a paste, a delete), each
-// with its undo and its redo. One workspace's, in memory: it's gone with the
-// app, though a deleted frame is still in the trash.
+// What the user did to the canvas's frames (a move, a paste, a delete), as
+// entries: what each was, not how to undo it. Whoever asks for an undo says
+// how (`apply`), so an entry made on one canvas undoes on the one that's up
+// now. One workspace's, in memory: it's gone with the app, though a deleted
+// frame is still in the trash.
 //
 // Every change runs in turn: an undo pressed while a paste is still writing
 // its files waits for it, and so undoes the paste.
 
-export type UndoEntry = {
-  undo: () => Promise<void> | void;
-  redo: () => Promise<void> | void;
-};
+// Undoes (or redoes) an entry, and gives it back as it is now: what a redo
+// (or the next undo) starts from.
+export type Apply<Entry> = (entry: Entry, direction: "undo" | "redo") => Promise<Entry> | Entry;
 
-export class UndoStack {
-  private done: UndoEntry[] = [];
-  private undone: UndoEntry[] = [];
+export class UndoStack<Entry> {
+  private done: Entry[] = [];
+  private undone: Entry[] = [];
   private queue: Promise<unknown> = Promise.resolve();
 
   // An entry that failed (its frame changed since, or the write did) is
@@ -25,12 +26,12 @@ export class UndoStack {
   // The user's change, made: what it undoes is the user's to redo no more.
   // In turn too: a move made while an undo is still running comes after it,
   // so the undo can't hand back a redo the move has ended.
-  push(entry: UndoEntry) {
+  push(entry: Entry) {
     return this.run(async () => this.record(entry));
   }
 
   // A change to make, in turn, and the entry for it (none: nothing changed).
-  perform(change: () => Promise<UndoEntry | null>) {
+  perform(change: () => Promise<Entry | null>) {
     return this.run(async () => {
       const entry = await change();
       if (entry) this.record(entry);
@@ -38,27 +39,25 @@ export class UndoStack {
   }
 
   // Each resolves to whether there was one to undo (or redo).
-  undo() {
+  undo(apply: Apply<Entry>) {
     return this.run(async () => {
       const entry = this.done.pop();
-      if (!entry) return false;
-      await entry.undo();
-      this.undone.push(entry);
+      if (entry === undefined) return false;
+      this.undone.push(await apply(entry, "undo"));
       return true;
     });
   }
 
-  redo() {
+  redo(apply: Apply<Entry>) {
     return this.run(async () => {
       const entry = this.undone.pop();
-      if (!entry) return false;
-      await entry.redo();
-      this.done.push(entry);
+      if (entry === undefined) return false;
+      this.done.push(await apply(entry, "redo"));
       return true;
     });
   }
 
-  private record(entry: UndoEntry) {
+  private record(entry: Entry) {
     this.done.push(entry);
     if (this.done.length > this.limit) this.done.shift();
     this.undone = [];
@@ -74,15 +73,3 @@ export class UndoStack {
     return next;
   }
 }
-
-const stacks = new Map<string, UndoStack>();
-
-// A workspace's, kept across switches to the others.
-export const undoStackFor = (workspaceId: string, onError: (error: unknown) => void) => {
-  let stack = stacks.get(workspaceId);
-  if (!stack) {
-    stack = new UndoStack(onError);
-    stacks.set(workspaceId, stack);
-  }
-  return stack;
-};

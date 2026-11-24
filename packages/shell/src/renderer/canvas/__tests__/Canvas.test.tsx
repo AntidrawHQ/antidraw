@@ -56,14 +56,14 @@ async function renderCanvas(
   const { Canvas } = await import("../Canvas");
   const container = document.body.appendChild(document.createElement("div"));
   const Mode = strict ? StrictMode : "div";
-  const render = (onChange: typeof onLayoutsChange, list = components) =>
+  const render = (onChange: typeof onLayoutsChange, list = components, layouts = savedLayouts) =>
     root!.render(
       <Mode>
         <ReactFlowProvider>
           <div style={{ width: 1200, height: 800 }}>
             <Canvas
               components={list}
-              savedLayouts={savedLayouts}
+              savedLayouts={layouts}
               frameUrl={frameUrl}
               onLayoutsChange={onChange}
               onFullscreen={() => {}}
@@ -82,7 +82,9 @@ async function renderCanvas(
     addComponents: (more: { name: string }[]) =>
       act(() => render(onLayoutsChange, [...components, ...more])),
     // The host's list now, as after a component's file is added or deleted.
-    setComponents: (list: { name: string }[]) => act(() => render(onLayoutsChange, list)),
+    // And where its frames are saved to go, when the host has more to say.
+    setComponents: (list: { name: string }[], layouts?: FrameLayout[]) =>
+      act(() => render(onLayoutsChange, list, layouts)),
   };
 }
 
@@ -371,14 +373,20 @@ const pressOn = (id: string, key: string) =>
     node.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
   });
 
-it("puts a frame the host placed where it said, once, and lines the rest up, leaving the others be", async () => {
-  const { canvas, controls } = await withControls();
-  controls.placeFrames([{ componentName: "CardCopy", x: 48, y: 640, width: 300, height: 200 }]);
-  await canvas.addComponents([{ name: "CardCopy" }, { name: "Footer" }]);
+const CARD = { componentName: "Card", x: 10, y: 20, width: 300, height: 200 };
+const CARD_COPY = { componentName: "CardCopy", x: 48, y: 640, width: 300, height: 200 };
+
+it("puts a frame that arrives where it's saved to go, and lines the rest up, leaving the others be", async () => {
+  const canvas = await renderCanvas();
+  const first = [{ name: "Card" }, { name: "Hero Card" }];
+  // A host's paste: the frame's place, then its component.
+  await canvas.setComponents(first, [CARD, CARD_COPY]);
+  await canvas.setComponents([...first, { name: "CardCopy" }, { name: "Footer" }], [CARD, CARD_COPY]);
   const placed = { positions: positions(), sizes: frames().map((f) => `${f.node}: ${f.size}`) };
-  // Gone and back (the agent wrote it again): lined up like any new frame.
-  await canvas.setComponents([{ name: "Card" }, { name: "Hero Card" }, { name: "Footer" }]);
-  await canvas.setComponents([{ name: "Card" }, { name: "Hero Card" }, { name: "Footer" }, { name: "CardCopy" }]);
+  // Gone, its place forgotten, and back (the agent wrote it again): lined up
+  // like any new frame.
+  await canvas.setComponents([...first, { name: "Footer" }], [CARD]);
+  await canvas.setComponents([...first, { name: "Footer" }, { name: "CardCopy" }], [CARD]);
   expect({ placed, again: positions()["CardCopy-1"] }).toMatchInlineSnapshot(`
     {
       "again": "translate(1410px,20px)",
@@ -400,12 +408,28 @@ it("puts a frame the host placed where it said, once, and lines the rest up, lea
   `);
 });
 
-it("forgets a placement the host cancelled", async () => {
-  const { canvas, controls } = await withControls();
-  const cancel = controls.placeFrames([{ componentName: "CardCopy", x: 48, y: 640, width: 300, height: 200 }]);
-  cancel();
-  await canvas.addComponents([{ name: "CardCopy" }]);
-  expect(positions()["CardCopy-1"]).toBe("translate(910px,20px)");
+it("opens with no frames, and takes its first where they'd start", async () => {
+  const canvas = await renderCanvas(undefined, undefined, { components: [], savedLayouts: [] });
+  const empty = positions();
+  await canvas.setComponents([{ name: "Card" }, { name: "Hero" }], []);
+  expect({ empty, first: positions() }).toEqual({
+    empty: {},
+    first: { "Card-1": "translate(100px,100px)", "Hero-1": "translate(600px,100px)" },
+  });
+});
+
+it("saves a frame put where it's saved to go, though its component never sizes it", async () => {
+  vi.useFakeTimers();
+  try {
+    const onLayoutsChange = vi.fn();
+    // StrictMode runs the sync's updater twice.
+    const canvas = await renderCanvas(onLayoutsChange, undefined, { strict: true });
+    await canvas.setComponents([{ name: "Card" }, { name: "Hero Card" }, { name: "CardCopy" }], [CARD, CARD_COPY]);
+    await act(async () => vi.advanceTimersByTime(500));
+    expect(onLayoutsChange.mock.calls.at(-1)?.[0].at(-1)).toEqual(CARD_COPY);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("tells the host of each move the user makes once it ends, from where it began", async () => {
@@ -431,19 +455,82 @@ it("tells the host of each move the user makes once it ends, from where it began
                   "y": 20,
                 },
                 "to": {
-                  "x": 432,
-                  "y": 24,
+                  "x": 425,
+                  "y": 20,
                 },
               },
             ],
           ],
         ],
-        "now": "translate(432px,24px)",
+        "now": "translate(425px,20px)",
       }
     `);
   } finally {
     vi.useRealTimers();
   }
+});
+
+// A drag of a frame by the mouse, from its corner, dropped where it's let go.
+const drag = async (id: string, by: { x: number; y: number }) => {
+  const node = document.querySelector<HTMLElement>(`.react-flow__node[data-id="${id}"]`)!;
+  const mouse = (type: string, x: number, y: number, target: EventTarget) =>
+    act(async () => {
+      const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y });
+      // d3-drag listens on the event's window; jsdom won't take vitest's as one.
+      Object.defineProperty(event, "view", { value: window });
+      target.dispatchEvent(event);
+    });
+  await mouse("mousedown", 0, 0, node);
+  await mouse("mousemove", by.x / 2, by.y / 2, window);
+  await mouse("mousemove", by.x, by.y, window);
+  await mouse("mouseup", by.x, by.y, window);
+};
+
+it("tells the host of a drag as it's dropped, and of the next drag as its own", async () => {
+  const { controls } = await withControls();
+  const moves = vi.fn();
+  controls.onFramesMoved(moves);
+  await drag("Card-1", { x: 80, y: 40 });
+  const afterFirst = moves.mock.calls.length;
+  // At once: no waiting for the first to settle.
+  await drag("Hero Card-1", { x: 160, y: 0 });
+  expect({ afterFirst, moves: moves.mock.calls.map(([m]) => m), now: positions() }).toMatchInlineSnapshot(`
+    {
+      "afterFirst": 1,
+      "moves": [
+        [
+          {
+            "componentName": "Card",
+            "from": {
+              "x": 10,
+              "y": 20,
+            },
+            "to": {
+              "x": 50,
+              "y": 40,
+            },
+          },
+        ],
+        [
+          {
+            "componentName": "Hero Card",
+            "from": {
+              "x": 410,
+              "y": 20,
+            },
+            "to": {
+              "x": 490,
+              "y": 20,
+            },
+          },
+        ],
+      ],
+      "now": {
+        "Card-1": "translate(50px,40px)",
+        "Hero Card-1": "translate(490px,20px)",
+      },
+    }
+  `);
 });
 
 it("moves frames for the host, and saves it, without calling it the user's move", async () => {

@@ -54,6 +54,10 @@
   z-index: 2;
   pointer-events: none;
   will-change: transform;
+  /* A drag across the canvas (a box selection) must not select the frames'
+     names as text: a copy would then be of that text, not of the frames. */
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .canvas-frame-toolbar {

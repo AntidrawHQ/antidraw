@@ -1,5 +1,4 @@
 import type { FrameLayout } from "@/renderer/canvas/Canvas";
-import { CANVAS_GRID, snapToCanvasGrid } from "@/renderer/canvas/grid";
 
 // The names and places of the frames a paste or a duplicate makes.
 
@@ -32,16 +31,17 @@ export const boundsOf = (layouts: FrameLayout[]): Box => {
   return { x: left, y: top, width: right - left, height: bottom - top };
 };
 
-// The frames moved together, apart as they were, their corner on the grid.
+// The frames moved together, apart as they were, their corner on a whole
+// pixel (the pointer's place on the canvas rarely is).
 const moveTo = (layouts: FrameLayout[], corner: { x: number; y: number }) => {
   const bounds = boundsOf(layouts);
-  const dx = snapToCanvasGrid(corner.x) - bounds.x;
-  const dy = snapToCanvasGrid(corner.y) - bounds.y;
+  const dx = Math.round(corner.x) - bounds.x;
+  const dy = Math.round(corner.y) - bounds.y;
   return layouts.map((l) => ({ ...l, x: l.x + dx, y: l.y + dy }));
 };
 
 // How far each paste of the same frames, or a duplicate, lands from the last.
-export const PASTE_OFFSET = CANVAS_GRID * 5;
+export const PASTE_OFFSET = 40;
 
 // Centred on a point: the pointer's, on the canvas.
 export const centredOn = (layouts: FrameLayout[], point: { x: number; y: number }) => {

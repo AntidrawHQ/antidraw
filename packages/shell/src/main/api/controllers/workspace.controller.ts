@@ -337,7 +337,7 @@ workspaceController.post(
 
 const deleteComponentsSchema = z.object({
   names: z.array(componentName).min(1),
-  expected: z.record(z.string(), z.string()).optional(),
+  expected: z.array(z.object({ name: componentName, source: z.string() })).optional(),
 });
 
 // Frames deleted on the canvas, to the trash, with their sources for its undo.

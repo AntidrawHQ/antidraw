@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useMemo } from "react";
 import { useReactFlow, useStoreApi } from "@xyflow/react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -10,20 +10,40 @@ import {
   type FrameMove,
   type FrameNode,
 } from "@/renderer/canvas/Canvas";
-import { createComponents, deleteComponents, getComponentSource } from "@/renderer/lib/api";
+import {
+  createComponents,
+  deleteComponents,
+  getComponentSource,
+  type FrameLayoutData,
+} from "@/renderer/lib/api";
 import { queryKeys } from "@/renderer/lib/query-keys";
 import { track } from "@/renderer/lib/analytics";
 import { centredOn, copyName, offsetBy } from "./frames";
-import { undoStackFor, type UndoEntry } from "./undo-stack";
+import { UndoStack } from "./undo-stack";
 
 // The canvas's own changes to its frames: copy, cut, paste, duplicate and
 // delete, each undoable, and the selection. A frame is a file, so a paste
-// writes one (where it lands is placed on the canvas first) and a delete
-// moves one to the trash; the watcher brings the canvas the change, as it
-// does the agent's.
+// writes one and a delete moves one to the trash.
+//
+// The canvas shows what the app knows of the files: the list of components
+// and where each frame is saved to go. So a change here is told to both as
+// it's made (a new frame's place first, then its file, then its name on the
+// list), and the canvas draws it from there, as it does a frame the agent
+// made. The watcher says the same of the files a moment later.
 
 // A frame as copied: its source then, and where it was.
 export type ClipFrame = { name: string; source: string; layout: FrameLayout };
+
+// What the user did, to undo: what it was, not how to undo it (`apply`, of
+// the canvas that's up when it's undone).
+type Entry =
+  | { type: "moved"; moves: FrameMove[] }
+  // Frames made (a paste, a duplicate): undone, they go, unless one has
+  // changed since (the agent's edit is kept); redone, they're back where
+  // they were when undone.
+  | { type: "created"; frames: ClipFrame[] }
+  // Frames deleted: undone, they're back where they were.
+  | { type: "deleted"; frames: ClipFrame[] };
 
 // What the clipboard holds, when it's frames. The system clipboard gets its
 // id (and its names, as text): a paste is of these frames only if the
@@ -53,6 +73,21 @@ const report = (error: unknown) => {
   toast(error instanceof Error ? error.message : "Couldn't change the canvas");
 };
 
+// A workspace's undo stack, kept across switches to the others.
+const stacks = new Map<string, UndoStack<Entry>>();
+const undoStackFor = (workspaceId: string) => {
+  let stack = stacks.get(workspaceId);
+  if (!stack) {
+    stack = new UndoStack<Entry>(report);
+    stacks.set(workspaceId, stack);
+  }
+  return stack;
+};
+
+// How long a change waits for the canvas to show it before going on. It
+// shows within a frame or two; a canvas that's down never does.
+const SHOWN_MS = 1000;
+
 // Its frames in reading order: rows, top to bottom, then left to right.
 const ROW = 200;
 const readingOrder = (a: FrameNode, b: FrameNode) =>
@@ -64,32 +99,56 @@ export const useFrameEdits = (workspaceId: string) => {
   const controls = useCanvasControls();
   const queryClient = useQueryClient();
 
-  // Frames to select once they're on the canvas (a paste's, an undone
-  // delete's): the watcher brings them a moment after the write.
-  const toSelect = useRef<{ ids: string[]; until: number } | null>(null);
-  const trySelect = useCallback(() => {
-    const want = toSelect.current;
-    if (!want) return;
-    if (Date.now() > want.until) {
-      toSelect.current = null;
-      return;
-    }
-    const { nodeLookup, addSelectedNodes } = store.getState();
-    if (!want.ids.every((id) => nodeLookup.has(id))) return;
-    toSelect.current = null;
-    addSelectedNodes(want.ids);
-  }, [store]);
-  useEffect(() => store.subscribe(trySelect), [store, trySelect]);
-
   return useMemo(() => {
-    const stack = undoStackFor(workspaceId, report);
+    const stack = undoStackFor(workspaceId);
     const nodes = () => reactFlow.getNodes();
     const selected = () => nodes().filter((n) => n.selected);
 
+    const listKey = queryKeys.userComponents.byWorkspace(workspaceId);
+    const layoutsKey = queryKeys.frameLayouts.byWorkspace(workspaceId);
+
+    // The list of components, as the files are after a change made here. A
+    // fetch of it begun before the change would bring the list back as it was.
+    const setListed = async (change: (list: { name: string }[]) => { name: string }[]) => {
+      await queryClient.cancelQueries({ queryKey: listKey });
+      queryClient.setQueryData<{ name: string }[]>(listKey, (list) => list && change(list));
+    };
+    // Where frames are saved to go, less the ones named, plus these.
+    const setPlaces = (names: string[], layouts: FrameLayout[] = []) => {
+      const gone = new Set(names);
+      queryClient.setQueryData<FrameLayoutData[]>(layoutsKey, (saved = []) => [
+        ...saved.filter((l) => !gone.has(l.componentName)),
+        ...layouts.map((l) => ({ ...l, workspaceId })),
+      ]);
+    };
+
+    // Once the frames are on the canvas (or off it): the next change, an
+    // undo's or a second paste's, finds the canvas as this one left it.
+    const shown = (names: string[], present: boolean) =>
+      new Promise<void>((resolve) => {
+        const ids = names.map(frameNodeId);
+        const there = () => ids.every((id) => store.getState().nodeLookup.has(id) === present);
+        if (there()) return resolve();
+        const done = () => {
+          clearTimeout(timer);
+          stop();
+          resolve();
+        };
+        const stop = store.subscribe(() => there() && done());
+        const timer = setTimeout(done, SHOWN_MS);
+      });
+
+    // These frames selected, and no others. Not addSelectedNodes: with Cmd
+    // still down (as it is after Cmd+D or Cmd+Z) that adds to the selection.
     const select = (names: string[]) => {
-      toSelect.current = { ids: names.map(frameNodeId), until: Date.now() + 5000 };
-      // Already there (an undone move's): now.
-      trySelect();
+      const { nodeLookup, triggerNodeChanges } = store.getState();
+      const ids = new Set(names.map(frameNodeId).filter((id) => nodeLookup.has(id)));
+      if (ids.size === 0) return;
+      triggerNodeChanges(
+        [...nodeLookup.values()].flatMap((n) =>
+          !!n.selected === ids.has(n.id) ? [] : [{ id: n.id, type: "select" as const, selected: ids.has(n.id) }],
+        ),
+      );
     };
 
     const layoutsOf = (names: string[]) => {
@@ -98,9 +157,9 @@ export const useFrameEdits = (workspaceId: string) => {
     };
 
     // Every name a new frame can't have, lower case: the canvas's, and the
-    // files' (one the watcher hasn't brought yet).
+    // files' (one the canvas hasn't drawn yet).
     const takenNames = () => {
-      const files = queryClient.getQueryData<{ name: string }[]>(queryKeys.userComponents.byWorkspace(workspaceId)) ?? [];
+      const files = queryClient.getQueryData<{ name: string }[]>(listKey) ?? [];
       return new Set([...nodes().map((n) => n.data.componentName), ...files.map((f) => f.name)].map((n) => n.toLowerCase()));
     };
 
@@ -113,70 +172,74 @@ export const useFrameEdits = (workspaceId: string) => {
         }),
       );
 
-    // Writes the frames' files, placed first where each goes.
+    // Writes the frames' files, each with its place, and selects them once
+    // they're on the canvas.
     const create = async (frames: ClipFrame[]) => {
-      const cancel = controls.placeFrames(frames.map((f) => ({ ...f.layout, componentName: f.name })));
+      const names = frames.map((f) => f.name);
+      setPlaces(names, frames.map((f) => ({ ...f.layout, componentName: f.name })));
       const result = await createComponents(
         workspaceId,
         frames.map(({ name, source }) => ({ name, source })),
       );
       if (result.isErr()) {
-        cancel();
+        setPlaces(names);
         throw new Error(result.error.message);
       }
-      select(frames.map((f) => f.name));
+      await setListed((list) => {
+        const listed = new Set(list.map((c) => c.name));
+        return [...list, ...names.filter((name) => !listed.has(name)).map((name) => ({ name }))];
+      });
+      await shown(names, true);
+      select(names);
     };
 
-    // Trashes the frames' files, if each is still `expected` (when given),
-    // and gives back what they were.
-    const remove = async (names: string[], expected?: Record<string, string>) => {
+    // Trashes the frames' files and gives back what they were, and where.
+    // With `known` (the frames as the canvas last wrote or read them), one
+    // that has changed since is refused. Throws if none went.
+    const remove = async (names: string[], known?: ClipFrame[]) => {
       const layouts = layoutsOf(names);
-      const result = await deleteComponents(workspaceId, names, expected);
+      const was = new Map((known ?? []).map((f) => [f.name, f.layout]));
+      const result = await deleteComponents(
+        workspaceId,
+        names,
+        known?.map(({ name, source }) => ({ name, source })),
+      );
       if (result.isErr()) throw new Error(result.error.message);
       const { deleted, failed: refused } = result.value;
+      if (deleted.length === 0) throw new Error(`Couldn't move ${refused.join(", ")} to the trash`);
       if (refused.length > 0) toast(`Couldn't move ${refused.join(", ")} to the trash`);
+      const gone = deleted.map((d) => d.name);
+      setPlaces(gone);
+      await setListed((list) => list.filter((c) => !gone.includes(c.name)));
+      await shown(gone, false);
       return deleted.map(
         (d): ClipFrame => ({
           ...d,
-          layout: layouts.get(d.name) ?? { componentName: d.name, x: 0, y: 0, width: 400, height: 300 },
+          layout: layouts.get(d.name) ?? was.get(d.name) ?? { componentName: d.name, x: 0, y: 0, width: 400, height: 300 },
         }),
       );
     };
 
-    const sourcesByName = (frames: ClipFrame[]) => Object.fromEntries(frames.map((f) => [f.name, f.source]));
-
-    // Frames made (a paste, a duplicate): undone, they go, unless one has
-    // changed since (the agent's edit is kept); redone, they're back where
-    // they were when undone.
-    const created = (frames: ClipFrame[]): UndoEntry => {
-      let now = frames;
-      return {
-        undo: async () => {
-          const layouts = layoutsOf(now.map((f) => f.name));
-          now = now.map((f) => ({ ...f, layout: layouts.get(f.name) ?? f.layout }));
-          await remove(now.map((f) => f.name), sourcesByName(now)).catch(failed("Can't undo: "));
-        },
-        redo: () => create(now).catch(failed("Can't redo: ")),
-      };
-    };
-
-    // Frames deleted: undone, they're back where they were.
-    const deleted = (frames: ClipFrame[]): UndoEntry => {
-      let now = frames;
-      return {
-        undo: () => create(now).catch(failed("Can't undo: ")),
-        redo: async () => {
-          now = await remove(now.map((f) => f.name), sourcesByName(now)).catch(failed("Can't redo: "));
-        },
-      };
-    };
-
-    const moved = (moves: FrameMove[]): UndoEntry => {
-      const to = (side: "from" | "to") => () => {
-        controls.moveFrames(moves.map((m) => ({ componentName: m.componentName, ...m[side] })));
-        select(moves.map((m) => m.componentName));
-      };
-      return { undo: to("from"), redo: to("to") };
+    // An entry undone or redone, on this canvas, and the entry as it is after.
+    const apply = async (entry: Entry, direction: "undo" | "redo"): Promise<Entry> => {
+      if (entry.type === "moved") {
+        const side = direction === "undo" ? "from" : "to";
+        controls.moveFrames(entry.moves.map((m) => ({ componentName: m.componentName, ...m[side] })));
+        select(entry.moves.map((m) => m.componentName));
+        return entry;
+      }
+      const prefix = direction === "undo" ? "Can't undo: " : "Can't redo: ";
+      // Frames made, undone, go; frames deleted, undone, are back. Redone,
+      // the other way.
+      const going = (entry.type === "created") === (direction === "undo");
+      if (!going) {
+        await create(entry.frames).catch(failed(prefix));
+        return entry;
+      }
+      // The ones that went, where they were as they went: one the trash
+      // refused is still a file, and no longer this entry's.
+      const gone = await remove(entry.frames.map((f) => f.name), entry.frames).catch(failed(prefix));
+      return { ...entry, frames: gone };
     };
 
     const edited = (action: string, count: number, via: Via) =>
@@ -213,23 +276,27 @@ export const useFrameEdits = (workspaceId: string) => {
       cut(via: Via) {
         const frames = selected();
         if (frames.length === 0) return null;
+        controls.flushMoves();
         const names = frames.map((n) => n.data.componentName);
         let settle!: { resolve: (f: ClipFrame[]) => void; reject: (e: unknown) => void };
         const cutFrames = new Promise<ClipFrame[]>((resolve, reject) => (settle = { resolve, reject }));
         cutFrames.catch(() => {});
-        clip = { id: crypto.randomUUID(), workspaceId, text: names.join("\n"), frames: cutFrames, pastes: 0 };
+        const cutting: Clip = { id: crypto.randomUUID(), workspaceId, text: names.join("\n"), frames: cutFrames, pastes: 0 };
+        clip = cutting;
         void stack.perform(async () => {
           try {
             const gone = await remove(names);
             settle.resolve(gone);
-            return deleted(gone);
+            return { type: "deleted", frames: gone };
           } catch (e) {
+            // Nothing was cut: nothing to paste.
             settle.reject(e);
+            if (clip === cutting) clip = null;
             throw e;
           }
         });
         edited("cut", frames.length, via);
-        return clip;
+        return cutting;
       },
 
       // Whether the system clipboard's frames are the ones copied here last.
@@ -254,6 +321,7 @@ export const useFrameEdits = (workspaceId: string) => {
           return;
         }
         const steps = ++pasting.pastes;
+        controls.flushMoves();
         void stack.perform(async () => {
           const frames = await pasting.frames.catch(failed("Can't paste: "));
           const taken = takenNames();
@@ -271,7 +339,7 @@ export const useFrameEdits = (workspaceId: string) => {
           const made = frames.map((f, i) => ({ ...f, name: names[i]!, layout: { ...layouts[i]!, componentName: names[i]! } }));
           await create(made);
           edited("paste", made.length, via);
-          return created(made);
+          return { type: "created", frames: made };
         });
       },
 
@@ -279,6 +347,7 @@ export const useFrameEdits = (workspaceId: string) => {
       duplicate(via: Via) {
         const frames = selected();
         if (frames.length === 0) return;
+        controls.flushMoves();
         void stack.perform(async () => {
           const copies = await sourcesOf(frames);
           const taken = takenNames();
@@ -289,31 +358,33 @@ export const useFrameEdits = (workspaceId: string) => {
           });
           await create(made);
           edited("duplicate", made.length, via);
-          return created(made);
+          return { type: "created", frames: made };
         });
       },
 
       deleteSelected(via: Via) {
         const names = selected().map((n) => n.data.componentName);
         if (names.length === 0) return;
+        controls.flushMoves();
         void stack.perform(async () => {
           const gone = await remove(names);
           edited("delete", gone.length, via);
-          return gone.length > 0 ? deleted(gone) : null;
+          return { type: "deleted", frames: gone };
         });
       },
 
-      recordMoves: (moves: FrameMove[]) => void stack.push(moved(moves)),
+      recordMoves: (moves: FrameMove[]) => void stack.push({ type: "moved", moves }),
 
+      // Before each change, flushMoves: a run of arrow keys still settling is
+      // a move made before it, to undo after it.
       undo(via: Via) {
-        // A run of arrow keys still settling is a move to undo first.
         controls.flushMoves();
-        void stack.undo().then((did) => did && edited("undo", 1, via));
+        void stack.undo(apply).then((did) => did && edited("undo", 1, via));
       },
 
       redo(via: Via) {
         controls.flushMoves();
-        void stack.redo().then((did) => did && edited("redo", 1, via));
+        void stack.redo(apply).then((did) => did && edited("redo", 1, via));
       },
 
       selectAll: () => store.getState().addSelectedNodes(nodes().map((n) => n.id)),
@@ -355,7 +426,7 @@ export const useFrameEdits = (workspaceId: string) => {
       const bottomRight = reactFlow.flowToScreenPosition({ x: l.x + l.width, y: l.y + l.height });
       return topLeft.x >= rect.left && topLeft.y >= rect.top && bottomRight.x <= rect.right && bottomRight.y <= rect.bottom;
     }
-  }, [workspaceId, reactFlow, store, controls, queryClient, trySelect]);
+  }, [workspaceId, reactFlow, store, controls, queryClient]);
 };
 
 export type FrameEdits = ReturnType<typeof useFrameEdits>;

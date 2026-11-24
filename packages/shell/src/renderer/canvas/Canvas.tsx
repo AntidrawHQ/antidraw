@@ -31,7 +31,6 @@ import { cn } from "@/renderer/lib/utils";
 import { useMountEffect } from "@/renderer/hooks/use-mount-effect";
 import { PrioritySemaphore } from "./semaphore";
 import { PillToggleToolbar } from "./PillToggleToolbar";
-import { CANVAS_GRID } from "./grid";
 
 // The canvas is shared by the shell and the published viewer, so nothing in
 // this folder reaches for the shell's API, stores or Electron: whatever differs
@@ -61,11 +60,6 @@ export type CanvasControls = {
   // Puts frames where they're told and saves it, without telling the move
   // listeners: an undo's own move isn't one to undo.
   moveFrames: (positions: { componentName: string; x: number; y: number }[]) => void;
-  // Where frames the host is about to create go, once their components
-  // arrive, in place of the row the canvas lines new ones up in. Set before
-  // the file is written: the component list can change before the write
-  // returns. Gives back a cancel, for a write that failed.
-  placeFrames: (layouts: FrameLayout[]) => () => void;
   // Tells the move listeners of a move still being made (a run of arrow keys)
   // now, before an undo, which comes after it.
   flushMoves: () => void;
@@ -462,8 +456,6 @@ const NEW_FRAME_SIZE = { width: 400, height: 300 };
 // The space between frames the canvas places itself.
 const FRAME_GAP = 100;
 
-const SNAP_GRID: [number, number] = [CANVAS_GRID, CANVAS_GRID];
-
 // A resize (by hand, or a component-size message) sets width and height;
 // style keeps the size the frame was created with.
 const frameWidth = (n: IframeReactFlowNode) =>
@@ -545,7 +537,9 @@ const lineUp = (nodes: IframeReactFlowNode[], settling: string[]) => {
 
 type CanvasProps = {
   components: CanvasComponent[];
-  // Where each frame was last placed; components without one are appended.
+  // Where each frame goes: as the canvas opens, and a component that arrives
+  // later (a host's paste gives its place here before its file is written).
+  // One without a place is lined up after the rest.
   savedLayouts: FrameLayout[] | undefined;
   // The URL a frame loads to preview the component.
   frameUrl: (componentName: string) => string;
@@ -649,23 +643,27 @@ export const Canvas = ({
   // The user's moves (a drag, or the arrow keys on a focused frame), each
   // told to the host once, when it ends, from where its frames were before it.
   // A drag ends as it's dropped; a run of arrow keys a moment after the last.
+  // Where each frame is now comes from the changes themselves: the nodes
+  // aren't rendered with a change until after it's told.
   const moveStartRef = useRef(new Map<string, { x: number; y: number }>());
+  const moveEndRef = useRef(new Map<string, { x: number; y: number }>());
+  const draggingRef = useRef(false);
   const moveTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const moveListenersRef = useRef(new Set<(moves: FrameMove[]) => void>());
-
-  // Where the frames the host is about to create go (placeFrames).
-  const placementsRef = useRef(new Map<string, FrameLayout>());
 
   const flushMoves = useCallback(() => {
     clearTimeout(moveTimerRef.current);
     const started = moveStartRef.current;
+    const ended = moveEndRef.current;
     if (started.size === 0) return;
     moveStartRef.current = new Map();
+    moveEndRef.current = new Map();
     const moves: FrameMove[] = [];
     for (const [id, from] of started) {
       const node = nodesRef.current.find((n) => n.id === id);
-      if (!node || (node.position.x === from.x && node.position.y === from.y)) continue;
-      moves.push({ componentName: node.data.componentName, from, to: { ...node.position } });
+      const to = ended.get(id);
+      if (!node || !to || (to.x === from.x && to.y === from.y)) continue;
+      moves.push({ componentName: node.data.componentName, from, to });
     }
     if (moves.length > 0) for (const listener of moveListenersRef.current) listener(moves);
   }, []);
@@ -682,21 +680,29 @@ export const Canvas = ({
     (changes: NodeChange<IframeReactFlowNode>[]) => {
       // A resize from the top or left edge moves its frame too: that's a resize.
       if (changes.some((c) => c.type === "dimensions" && c.resizing)) return;
-      let moved = false;
-      let dragging = false;
-      for (const c of changes) {
-        if (c.type !== "position" || !c.position) continue;
-        moved = true;
-        if (c.dragging) dragging = true;
+      const moves = changes.flatMap((c) => (c.type === "position" && c.position ? [{ ...c, position: c.position }] : []));
+      if (moves.length === 0) return;
+      const dragging = moves.some((c) => c.dragging);
+      // A drag begun while the move before it is still settling: that one
+      // ends first, as its own.
+      if (dragging && !draggingRef.current) flushMoves();
+      for (const c of moves) {
         if (!moveStartRef.current.has(c.id)) {
           // The nodes as last rendered: before this change.
           const node = nodesRef.current.find((n) => n.id === c.id);
           if (node) moveStartRef.current.set(c.id, { ...node.position });
         }
+        moveEndRef.current.set(c.id, { ...c.position });
       }
-      if (!moved) return;
       clearTimeout(moveTimerRef.current);
-      if (!dragging) moveTimerRef.current = setTimeout(flushMoves, MOVE_SETTLE_MS);
+      if (dragging) {
+        draggingRef.current = true;
+      } else if (draggingRef.current) {
+        draggingRef.current = false;
+        flushMoves();
+      } else {
+        moveTimerRef.current = setTimeout(flushMoves, MOVE_SETTLE_MS);
+      }
     },
     [flushMoves],
   );
@@ -734,18 +740,6 @@ export const Canvas = ({
         settlingRef.current = [];
         onNodesChange(changes);
         scheduleSave();
-      },
-      placeFrames: (layouts) => {
-        // A paste is the user's, like picking a frame: the rest stay put.
-        settlingRef.current = [];
-        for (const layout of layouts) placementsRef.current.set(layout.componentName, layout);
-        return () => {
-          for (const layout of layouts) {
-            if (placementsRef.current.get(layout.componentName) === layout) {
-              placementsRef.current.delete(layout.componentName);
-            }
-          }
-        };
       },
       flushMoves,
       onFramesMoved: (listener) => {
@@ -798,25 +792,22 @@ export const Canvas = ({
     return () => window.removeEventListener("message", handleMessage);
   });
 
+  const savedLayoutsRef = useRef(savedLayouts);
+  savedLayoutsRef.current = savedLayouts;
+
+  const reactFlow = useReactFlow();
+
   // Sync nodes with the component list when it changes: a frame for each new
-  // component, where the host placed it (placeFrames) or else lined up after
-  // the rest, and none for one that's gone (its file deleted). React Flow's
-  // selection is a flag on the node and a frame's load slot is freed as it
-  // unmounts, so only settlingRef has to forget it. (The host drops its own
-  // selection in a deleted frame.)
-  const addedRef = useRef(0);
+  // component, where it's saved to go (savedLayouts, as they are now) or else
+  // lined up after the rest, and none for one that's gone (its file deleted).
+  // React Flow's selection is a flag on the node and a frame's load slot is
+  // freed as it unmounts, so only settlingRef has to forget it. (The host
+  // drops its own selection in a deleted frame.)
   useEffect(() => {
-    if (addedRef.current === 0) return;
-    addedRef.current = 0;
-    // Each placement is used once: a later file of the same name lines up.
-    const present = new Set(nodes.map((n) => n.data.componentName));
-    for (const name of placementsRef.current.keys()) {
-      if (present.has(name)) placementsRef.current.delete(name);
-    }
-    // A placed frame's layout is saved even if its component never sizes it.
-    scheduleSave();
-  });
-  useEffect(() => {
+    const layoutMap = new Map((savedLayoutsRef.current ?? []).map((l) => [l.componentName, l]));
+    const shown = new Set(nodesRef.current.map((n) => n.data.componentName));
+    const arriving = components.filter((c) => !shown.has(c.name));
+
     setNodes((currentNodes) => {
       const componentNames = new Set(components.map((c) => c.name));
       const existingComponentNames = new Set(
@@ -833,18 +824,16 @@ export const Canvas = ({
         return currentNodes;
       }
 
-      // Not taken from the map here: StrictMode runs this updater twice.
-      const layoutMap = placementsRef.current;
       const placed = newComponents.filter((c) => layoutMap.has(c.name));
       const unplaced = newComponents.filter((c) => !layoutMap.has(c.name));
-      addedRef.current = placed.length;
 
       // Recomputed from the nodes, not appended to, as StrictMode runs this
-      // updater twice.
+      // updater twice. A frame given its place is the user's doing (a paste),
+      // like picking a frame: the rest stay put.
       const keptIds = new Set(keptNodes.map((n) => n.id));
       settlingRef.current = [
         ...new Set([
-          ...settlingRef.current.filter((id) => keptIds.has(id)),
+          ...(placed.length > 0 ? [] : settlingRef.current.filter((id) => keptIds.has(id))),
           ...unplaced.map((component) => frameNodeId(component.name)),
         ]),
       ];
@@ -857,7 +846,13 @@ export const Canvas = ({
         settlingRef.current,
       );
     });
-  }, [components, frameUrl, setNodes]);
+
+    // A placed frame's layout is saved even if its component never sizes it.
+    if (arriving.some((c) => layoutMap.has(c.name))) scheduleSave();
+    // The first frames of an empty canvas: brought into view, as the frames
+    // the canvas opens with are.
+    if (shown.size === 0 && arriving.length > 0) void reactFlow.fitView();
+  }, [components, frameUrl, setNodes, scheduleSave, reactFlow]);
 
   // After a box selection xyflow keeps a selection rect on top of the selected
   // nodes, and it swallows the double click that enters interaction mode. Around
@@ -902,7 +897,6 @@ export const Canvas = ({
 
   const touch = useCoarsePointer();
 
-  const reactFlow = useReactFlow();
   const focusMiniMapNode = useCallback(
     (_: React.MouseEvent, node: IframeReactFlowNode) => {
       reactFlow.fitView({ nodes: [{ id: node.id }], duration: 300, padding: 0.3 });
@@ -945,9 +939,6 @@ export const Canvas = ({
           // which feels heavy next to a scrolling page.
           panOnScrollSpeed={1.2}
           panOnDrag={touch ? true : [1, 2]}
-          // Dragged frames land on the grid.
-          snapToGrid
-          snapGrid={SNAP_GRID}
           panActivationKeyCode={keysOff ? null : "Space"}
           // A frame is a file: React Flow's Backspace would only hide it, until
           // the canvas next opened. A host that deletes frames binds its own.

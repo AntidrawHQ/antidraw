@@ -460,7 +460,7 @@ export const createComponents = async (workspaceId: string, components: NewCompo
 export const deleteComponents = async (
   workspaceId: string,
   names: string[],
-  expected?: Record<string, string>,
+  expected?: { name: string; source: string }[],
 ) => {
   try {
     const response = await apiFetch(`antidraw://app/api/workspaces/${workspaceId}/components/delete`, {

@@ -139,8 +139,12 @@ export const createComponents = async (workspaceId: string, components: NewCompo
         await fs.writeFile(paths[i]!, component.source, { encoding: "utf-8", flag: "wx" });
         written.push(paths[i]!);
       }
-    } catch (e) {
-      await Promise.all(written.map((p) => fs.rm(p, { force: true })));
+    } catch (e: any) {
+      // The one that failed may be there too, part written: wx makes the file
+      // before it writes it. Not when it was there already (EEXIST): that
+      // one isn't ours.
+      const partial = e?.code === "EEXIST" ? [] : [paths[written.length]!];
+      await Promise.all([...written, ...partial].map((p) => fs.rm(p, { force: true })));
       throw e;
     }
     return ok(components.map((c) => c.name));
@@ -168,12 +172,14 @@ export type DeletedComponent = { name: string; source: string };
 // moved to the trash. `expected` is each one's source as the canvas last
 // wrote or read it: one that differs (the agent edited it since) is refused,
 // and nothing is deleted. A file the trash refuses is left, and listed in
-// `failed`; the rest are still deleted.
+// `failed`; the rest are still deleted. (A list, not an object by name: a
+// frame can be named __proto__.)
 export const deleteComponents = async (
   workspaceId: string,
   names: string[],
-  expected?: Record<string, string>,
+  expected?: { name: string; source: string }[],
 ) => {
+  const want = new Map((expected ?? []).map((e) => [e.name, e.source]));
   const paths = names.map((name) => componentPath(workspaceId, name));
   if (paths.some((p) => p === null)) {
     return err({ status: 400 as const, code: "INVALID_NAME", message: "Invalid component name" });
@@ -189,8 +195,7 @@ export const deleteComponents = async (
       }
       return err({ status: 500 as const, code: "FS_ERROR", message: "Failed to read components" });
     }
-    const want = expected?.[name];
-    if (want !== undefined && want !== sources[i]) {
+    if (want.has(name) && want.get(name) !== sources[i]) {
       return err({ status: 409 as const, code: "CHANGED", message: `${name} has changed since` });
     }
   }
@@ -199,8 +204,16 @@ export const deleteComponents = async (
   const failed: string[] = [];
   for (const [i, name] of names.entries()) {
     try {
+      // Read again, as it goes: trashing the ones before it took a while, and
+      // an edit made meanwhile is the source an undo brings back, or, with
+      // `expected`, a file to leave.
+      const source = await fs.readFile(paths[i]!, "utf-8");
+      if (want.has(name) && want.get(name) !== source) {
+        failed.push(name);
+        continue;
+      }
       await trashItem(paths[i]!);
-      deleted.push({ name, source: sources[i]! });
+      deleted.push({ name, source });
     } catch (e) {
       console.error(`[deleteComponents] couldn't trash ${name}`, e);
       failed.push(name);

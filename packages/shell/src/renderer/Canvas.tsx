@@ -1,10 +1,12 @@
 import { ReactFlowProvider } from "@xyflow/react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect } from "react";
 import { useUserComponents, useUserComponentsWatcher } from "./store/userComponents";
 import { useWorkspaceStore } from "./store/workspace";
 import { useDevServerStatus, useAutoStartDevServer } from "./lib/workspace-ops";
 import { useFrameLayouts } from "./lib/frame-layout-ops";
 import { saveFrameLayouts, type FrameLayoutData } from "./lib/api";
+import { queryKeys } from "./lib/query-keys";
 import { cn } from "./lib/utils";
 import { Canvas, useFocusComponent, type FrameLayer, type FrameLayout } from "./canvas/Canvas";
 import { CanvasToolbar } from "./components/CanvasToolbar";
@@ -85,12 +87,22 @@ const WorkspaceCanvas = ({
   // A deleted component's frame leaves the canvas, and its selection with it.
   useEffect(() => keepSelectionIn(new Set(userComponents.map((c) => c.name))), [userComponents]);
 
+  // Where the frames are, saved, and kept for the canvas when it's next up
+  // (and with the places of frames still to arrive: a paste's).
+  const queryClient = useQueryClient();
   const saveLayouts = useCallback(
     (layouts: FrameLayout[]) => {
+      const there = new Set(layouts.map((l) => l.componentName));
+      queryClient.setQueryData<FrameLayoutData[]>(queryKeys.frameLayouts.byWorkspace(workspaceId), (saved) => [
+        ...layouts.map((l) => ({ ...l, workspaceId })),
+        ...(saved ?? []).filter((l) => !there.has(l.componentName)),
+      ]);
       saveFrameLayouts(workspaceId, layouts); // fire-and-forget
     },
-    [workspaceId],
+    [workspaceId, queryClient],
   );
+
+  const empty = userComponents.length === 0;
 
   return (
     <Canvas
@@ -115,13 +127,24 @@ const WorkspaceCanvas = ({
         onFullscreen={openFullscreen}
         onSeeCode={seeCode}
       />
-      <InspectorControls />
-      <CommentControls />
-      <CommentFlow />
-      <DesignSync />
-      <EditBar />
-      <ShowPanel />
-      <CanvasToolbar />
+      {empty ? (
+        // No frames (a new workspace, or its last one deleted): the
+        // onboarding's prompts, each run in the chat. Over the canvas, not in
+        // its place, so frames just deleted can still be undone or pasted back.
+        <div className="nodrag nopan nowheel absolute inset-0 z-10 flex overflow-auto bg-[#282828]">
+          <OnboardingList className="m-auto" />
+        </div>
+      ) : (
+        <>
+          <InspectorControls />
+          <CommentControls />
+          <CommentFlow />
+          <DesignSync />
+          <EditBar />
+          <ShowPanel />
+          <CanvasToolbar />
+        </>
+      )}
     </Canvas>
   );
 };
@@ -184,15 +207,6 @@ export const AppCanvas = ({ className }: AppCanvasProps) => {
     return <CanvasPlaceholder subtitle="Error loading components" className={className} />;
   }
 
-  // A new workspace: the onboarding's prompts, each run in the chat.
-  if (userComponents.length === 0) {
-    return (
-      <div className={cn("flex-1 flex bg-[#282828] relative overflow-auto", className)}>
-        <OnboardingList className="m-auto" />
-      </div>
-    );
-  }
-
   // The right panel (Design, Comments) beside the frames.
   return (
     <ReactFlowProvider>
@@ -204,7 +218,7 @@ export const AppCanvas = ({ className }: AppCanvasProps) => {
           savedLayouts={frameLayouts}
           className="min-w-0 flex-1"
         />
-        <RightPanel />
+        {userComponents.length > 0 && <RightPanel />}
       </div>
     </ReactFlowProvider>
   );

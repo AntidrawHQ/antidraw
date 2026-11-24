@@ -6,6 +6,8 @@ import { useCanvasControls, type FrameNode } from "@/renderer/canvas/Canvas";
 import { CoversCanvas } from "@/renderer/lib/thumbnail";
 import { cn } from "@/renderer/lib/utils";
 import { MENU, menuItem } from "@/renderer/dashboard/kit";
+import { useInspectorStore } from "@/renderer/inspector/store";
+import { useCommentStore } from "@/renderer/comments/store";
 import { CLIP_TYPE, useFrameEdits, type FrameEdits } from "./use-frame-edits";
 
 // The canvas's editing: its shortcuts, the clipboard, and its right-click
@@ -35,7 +37,18 @@ const textSelected = () => {
 // The menu's own, outside the canvas, but a press there is still the canvas's.
 const MENU_ATTR = "data-canvas-menu";
 
-type Menu = { x: number; y: number; onFrame: boolean };
+// The menu as it opened: where, on which frames (null: on the canvas around
+// them), and whether there were frames to paste. Kept from the click, as the
+// selection it makes isn't the canvas's until after the menu is drawn.
+type Menu = {
+  x: number;
+  y: number;
+  frames: { componentName: string; url: string }[] | null;
+  canPaste: boolean;
+};
+
+// Inspect or Comment is on: Escape is the tool's (its pick, then the tool).
+const toolOn = () => useInspectorStore.getState().active || useCommentStore.getState().active;
 
 export const CanvasEditing = ({
   workspaceId,
@@ -62,6 +75,10 @@ export const CanvasEditing = ({
   // Each move the user makes, to undo.
   useEffect(() => controls.onFramesMoved(edits.recordMoves), [controls, edits]);
 
+  const [menu, setMenu] = useState<Menu | null>(null);
+  const menuOpenRef = useRef(false);
+  menuOpenRef.current = menu !== null;
+
   // Whether the canvas is the part of the window in use, and where the
   // pointer is on it, for a paste.
   const pointerRef = useRef<{ x: number; y: number } | null>(null);
@@ -70,6 +87,9 @@ export const CanvasEditing = ({
     const inCanvas = (target: EventTarget | null) =>
       target instanceof Node && (domNode.contains(target) || !!(target as Element).closest?.(`[${MENU_ATTR}]`));
     const onPress = (e: PointerEvent) => {
+      // A press that only closes the canvas's menu (it takes every press
+      // while it's open) leaves the canvas in use.
+      if (menuOpenRef.current) return;
       activeRef.current = inCanvas(e.target);
     };
     const onFocus = (e: FocusEvent) => {
@@ -131,6 +151,8 @@ export const CanvasEditing = ({
   // Frame to frame, from the canvas: a button's Tab is the button's.
   const step = (direction: 1 | -1) => () => {
     if (document.activeElement?.closest("button, a, [role=button], [role=menuitem]")) return false;
+    // No frames to step to: the page's own Tab (the onboarding's).
+    if (store.getState().nodes.length === 0) return false;
     edits.step(direction);
   };
 
@@ -144,7 +166,8 @@ export const CanvasEditing = ({
       ...(isMac ? [] : [{ hotkey: "Mod+Y" as const, callback: when(() => edits.redo("shortcut")) }]),
       { hotkey: "Mod+A", callback: when(() => store.getState().nodes.length > 0 && (edits.selectAll(), true)) },
       // After a frame's own Escape (leaving its interactive mode), the next.
-      { hotkey: "Escape", callback: when(() => edits.clearSelection()), options: { ignoreDefaultPrevented: true } },
+      // And after a tool's: this runs before the tools' own Escape does.
+      { hotkey: "Escape", callback: when(() => !toolOn() && edits.clearSelection()), options: { ignoreDefaultPrevented: true } },
       { hotkey: "Tab", callback: when(step(1)) },
       { hotkey: "Shift+Tab", callback: when(step(-1)) },
     ],
@@ -160,7 +183,6 @@ export const CanvasEditing = ({
 
   // The right-click menu, on a frame (selecting it, if it wasn't) or on the
   // canvas around them.
-  const [menu, setMenu] = useState<Menu | null>(null);
   useEffect(() => {
     if (!domNode) return;
     const onContextMenu = (e: MouseEvent) => {
@@ -172,8 +194,16 @@ export const CanvasEditing = ({
       activeRef.current = true;
       const id = target.closest<HTMLElement>(".react-flow__node")?.dataset.id;
       const onSelection = !!target.closest(".react-flow__nodesselection");
-      if (id && !store.getState().nodeLookup.get(id)?.selected) store.getState().addSelectedNodes([id]);
-      setMenu({ x: e.clientX, y: e.clientY, onFrame: !!id || onSelection });
+      const frame = id ? store.getState().nodeLookup.get(id) : undefined;
+      // A frame that wasn't selected is, alone; one that was keeps the rest.
+      const picked = frame && !frame.selected ? [frame] : editsRef.current.selectedFrames();
+      if (frame && !frame.selected) store.getState().addSelectedNodes([frame.id]);
+      setMenu({
+        x: e.clientX,
+        y: e.clientY,
+        frames: frame || onSelection ? picked.map((n) => ({ componentName: n.data.componentName, url: n.data.url })) : null,
+        canPaste: editsRef.current.hasClip(),
+      });
     };
     domNode.addEventListener("contextmenu", onContextMenu);
     return () => domNode.removeEventListener("contextmenu", onContextMenu);
@@ -200,7 +230,7 @@ const CanvasMenu = ({
   onSeeCode: (componentName: string) => void;
 }) => {
   const format = useFormatForDisplay();
-  const frames = menu?.onFrame ? edits.selectedFrames() : [];
+  const frames = menu?.frames ?? [];
   const one = frames.length === 1 ? frames[0]! : null;
 
   return (
@@ -219,7 +249,7 @@ const CanvasMenu = ({
           onCloseAutoFocus={(e) => e.preventDefault()}
           className={cn("z-50 w-56", MENU)}
         >
-          {menu?.onFrame ? (
+          {menu?.frames ? (
             <>
               <Item
                 label="Copy"
@@ -237,13 +267,13 @@ const CanvasMenu = ({
                   if (clip) writeText(clip.text);
                 }}
               />
-              <Item label="Paste" shortcut={format("Mod+V")} disabled={!edits.hasClip()} onSelect={() => edits.paste(null, "menu")} />
+              <Item label="Paste" shortcut={format("Mod+V")} disabled={!menu.canPaste} onSelect={() => edits.paste(null, "menu")} />
               <Item label="Duplicate" shortcut={format("Mod+D")} onSelect={() => edits.duplicate("menu")} />
               {one && (
                 <>
                   <Separator />
-                  <Item label="Open in window" onSelect={() => onFullscreen(one.data.url)} />
-                  <Item label="See code" onSelect={() => onSeeCode(one.data.componentName)} />
+                  <Item label="Open in window" onSelect={() => onFullscreen(one.url)} />
+                  <Item label="See code" onSelect={() => onSeeCode(one.componentName)} />
                 </>
               )}
               <Separator />
@@ -259,7 +289,7 @@ const CanvasMenu = ({
               <Item
                 label="Paste here"
                 shortcut={format("Mod+V")}
-                disabled={!edits.hasClip()}
+                disabled={!menu?.canPaste}
                 onSelect={() => menu && edits.paste({ x: menu.x, y: menu.y }, "menu")}
               />
               <Item label="Select all" shortcut={format("Mod+A")} onSelect={() => edits.selectAll()} />

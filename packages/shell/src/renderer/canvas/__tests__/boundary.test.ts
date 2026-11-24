@@ -23,7 +23,6 @@ it("imports only what the share page can run", () => {
       "./Canvas",
       "./PillToggleToolbar",
       "./canvas.css",
-      "./grid",
       "./semaphore",
       "@/renderer/hooks/use-mount-effect",
       "@/renderer/lib/utils",
