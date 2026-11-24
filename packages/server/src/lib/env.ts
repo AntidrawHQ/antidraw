@@ -1,7 +1,7 @@
 // Worker bindings + secrets. D1Database comes from @cloudflare/workers-types.
 //
-// Secrets (everything but the bindings and SHARE_URL_PATTERN, a plain var in
-// wrangler.jsonc) are set with `wrangler secret put <NAME>` for production
+// Secrets (everything but the bindings and the two URL patterns, plain vars
+// in wrangler.jsonc) are set with `wrangler secret put <NAME>` for production
 // and via `.dev.vars` locally (see .dev.vars.example).
 export type Bindings = {
   DB: D1Database;
@@ -13,6 +13,9 @@ export type Bindings = {
   FLAGS: Flagship;
   // A published site's share page, with * for its slug: https://antidraw.com/s/*
   SHARE_URL_PATTERN: string;
+  // Where a published site's files are served (@antidraw/site-worker), with *
+  // for its slug: https://*.antidraw.app
+  SITE_URL_PATTERN: string;
   BETTER_AUTH_SECRET: string;
   BETTER_AUTH_URL: string;
   GOOGLE_CLIENT_ID: string;

@@ -11,3 +11,5 @@ GOOGLE_CLIENT_SECRET=""
 
 # A published site's share page: the web canvas's dev server.
 SHARE_URL_PATTERN="http://localhost:8786/s/*"
+# Where a published site's files are served: the site Worker's `npm run dev`.
+SITE_URL_PATTERN="http://*.localhost:8787"

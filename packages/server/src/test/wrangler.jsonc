@@ -23,6 +23,7 @@
   ],
   "vars": {
     "SHARE_URL_PATTERN": "https://antidraw.com/s/*",
+    "SITE_URL_PATTERN": "https://*.antidraw.app",
     "BETTER_AUTH_URL": "https://api.antidraw.com"
   }
 }

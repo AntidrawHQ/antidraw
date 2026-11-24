@@ -19,6 +19,7 @@ export const env: Bindings = {
   ARTIFACTS: unavailable<Bindings["ARTIFACTS"]>("Artifacts"),
   FLAGS: unavailable<Flagship>("Flagship"),
   SHARE_URL_PATTERN: "http://localhost:8786/s/*",
+  SITE_URL_PATTERN: "http://*.localhost:8787",
   BETTER_AUTH_SECRET: "test-secret-with-enough-entropy-0123456789abcdef",
   BETTER_AUTH_URL: "http://localhost:8799",
   GOOGLE_CLIENT_ID: "test-google-client-id",
