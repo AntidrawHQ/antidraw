@@ -564,6 +564,30 @@ it("moves frames for the host, and saves it, without calling it the user's move"
   }
 });
 
+it("leaves an interactive frame selected on the Escape that ends its interaction", async () => {
+  await renderCanvas();
+  await pressOn("Card-1", "Enter");
+  const node = document.querySelector<HTMLElement>('.react-flow__node[data-id="Card-1"]')!;
+  const isSelected = () => node.classList.contains("selected");
+  const escape = () =>
+    act(async () => {
+      node.querySelector(".iframe-node-container")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    });
+  // Into the frame: its cover goes.
+  await act(async () => {
+    node.querySelector(".cursor-grab")!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+  });
+  const interactive = node.querySelector(".cursor-grab") === null;
+  await escape();
+  const afterFirst = { selected: isSelected(), interactive: node.querySelector(".cursor-grab") === null };
+  await escape();
+  expect({ interactive, afterFirst, afterSecond: isSelected() }).toEqual({
+    interactive: true,
+    afterFirst: { selected: true, interactive: false },
+    afterSecond: false,
+  });
+});
+
 it("leaves a selected frame on the canvas on Backspace: deleting one is the host's", async () => {
   await renderCanvas();
   await pressOn("Card-1", "Enter");

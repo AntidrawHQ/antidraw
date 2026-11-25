@@ -171,8 +171,9 @@ export type DeletedComponent = { name: string; source: string };
 // Frames deleted from the canvas: each file read (for the canvas's undo) and
 // moved to the trash. `expected` is each one's source as the canvas last
 // wrote or read it: one that differs (the agent edited it since) is refused,
-// and nothing is deleted. A file the trash refuses is left, and listed in
-// `failed`; the rest are still deleted. (A list, not an object by name: a
+// and nothing is deleted. A file the trash refuses (or one edited while the
+// ones before it went, when `expected` says what it was) is left, and listed
+// in `failed`; the rest are still deleted. (A list, not an object by name: a
 // frame can be named __proto__.)
 export const deleteComponents = async (
   workspaceId: string,
@@ -185,24 +186,32 @@ export const deleteComponents = async (
     return err({ status: 400 as const, code: "INVALID_NAME", message: "Invalid component name" });
   }
 
-  const sources: string[] = [];
+  // A file that's gone already (the agent's doing) is `missing`, and the rest
+  // still go: only with none of them there is there nothing to delete.
+  const sources = new Map<string, string>();
+  const missing: string[] = [];
   for (const [i, name] of names.entries()) {
     try {
-      sources.push(await fs.readFile(paths[i]!, "utf-8"));
+      sources.set(name, await fs.readFile(paths[i]!, "utf-8"));
     } catch (e: any) {
-      if (e?.code === "ENOENT") {
-        return err({ status: 404 as const, code: "NOT_FOUND", message: `${name} isn't on the canvas` });
+      if (e?.code !== "ENOENT") {
+        return err({ status: 500 as const, code: "FS_ERROR", message: "Failed to read components" });
       }
-      return err({ status: 500 as const, code: "FS_ERROR", message: "Failed to read components" });
+      missing.push(name);
+      continue;
     }
-    if (want.has(name) && want.get(name) !== sources[i]) {
+    if (want.has(name) && want.get(name) !== sources.get(name)) {
       return err({ status: 409 as const, code: "CHANGED", message: `${name} has changed since` });
     }
+  }
+  if (sources.size === 0) {
+    return err({ status: 404 as const, code: "NOT_FOUND", message: `${names.join(", ")} isn't on the canvas` });
   }
 
   const deleted: DeletedComponent[] = [];
   const failed: string[] = [];
   for (const [i, name] of names.entries()) {
+    if (!sources.has(name)) continue;
     try {
       // Read again, as it goes: trashing the ones before it took a while, and
       // an edit made meanwhile is the source an undo brings back, or, with
@@ -214,12 +223,16 @@ export const deleteComponents = async (
       }
       await trashItem(paths[i]!);
       deleted.push({ name, source });
-    } catch (e) {
+    } catch (e: any) {
+      if (e?.code === "ENOENT") {
+        missing.push(name);
+        continue;
+      }
       console.error(`[deleteComponents] couldn't trash ${name}`, e);
       failed.push(name);
     }
   }
-  return ok({ deleted, failed });
+  return ok({ deleted, failed, missing });
 };
 
 export const startComponentWatcher = async (workspaceId: string) => {

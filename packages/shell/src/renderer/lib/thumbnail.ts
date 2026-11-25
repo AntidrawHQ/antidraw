@@ -94,8 +94,10 @@ export const useCanvasThumbnail = (workspaceId: string) => {
       return;
     }
     held.current = false;
-    const canvas = store.getState().domNode;
-    if (canvas) {
+    // With no frames the onboarding is over the canvas: no picture of the
+    // workspace, so the last one stays.
+    const { domNode: canvas, nodes } = store.getState();
+    if (canvas && nodes.length > 0) {
       const { x, y, width, height } = canvas.getBoundingClientRect();
       try {
         await window.electronAPI.captureThumbnail(workspaceId, { x, y, width, height });

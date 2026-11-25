@@ -102,6 +102,22 @@ describe("POST /:workspaceId/components", () => {
     expect(["First", "Second", "Third"].filter((name) => existsSync(file(name)))).toEqual([]);
   });
 
+  test("a file that turns up as the batch is written is left as it is, and the batch isn't", async () => {
+    // Between the check of the names and the write: the agent's, not ours.
+    const writeFile = fs.writeFile.bind(fs);
+    vi.spyOn(fs, "writeFile").mockImplementation(async (target, ...rest) => {
+      if (String(target) === file("Second")) writeFileSync(file("Second"), "// the agent's\n");
+      return writeFile(target, ...rest);
+    });
+    const res = await create([
+      { name: "First", source: "// one\n" },
+      { name: "Second", source: "// two\n" },
+    ]);
+    expect(res.status).toBe(409);
+    expect(existsSync(file("First"))).toBe(false);
+    expect(readFileSync(file("Second"), "utf-8")).toBe("// the agent's\n");
+  });
+
   test("a name that would leave the directory is refused", async () => {
     for (const name of ["../secret", "a/b", ".."]) {
       const res = await create([{ name, source: "// escaped\n" }]);
@@ -122,6 +138,7 @@ describe("POST /:workspaceId/components/delete", () => {
         { name: "Hero", source: "// Hero\n" },
       ],
       failed: [],
+      missing: [],
     });
     expect(trashed).toEqual(["Card.tsx", "Hero.tsx"]);
   });
@@ -138,7 +155,7 @@ describe("POST /:workspaceId/components/delete", () => {
     writeFileSync(file("Hero"), "// Hero\n");
     whileTrashing = (name) => name === "Card.tsx" && writeFileSync(file("Hero"), "// Hero, edited\n");
     const res = await del(["Card", "Hero"], { Card: "// Card\n", Hero: "// Hero\n" });
-    expect(await res.json()).toEqual({ deleted: [{ name: "Card", source: "// Card\n" }], failed: ["Hero"] });
+    expect(await res.json()).toEqual({ deleted: [{ name: "Card", source: "// Card\n" }], failed: ["Hero"], missing: [] });
     expect(readFileSync(file("Hero"), "utf-8")).toBe("// Hero, edited\n");
   });
 
@@ -164,12 +181,25 @@ describe("POST /:workspaceId/components/delete", () => {
     expect(await res.json()).toEqual({
       deleted: [{ name: "Hero", source: "// Hero\n" }],
       failed: ["Card"],
+      missing: [],
     });
     expect(existsSync(file("Card"))).toBe(true);
   });
 
-  test("a missing component is a 404, and nothing is deleted", async () => {
-    const res = await del(["Card", "Nope"]);
+  test("a file that's gone already is listed, and the rest still go", async () => {
+    // With what the canvas saw of each, as an undone paste has: one the
+    // agent has deleted since doesn't keep the others.
+    const res = await del(["Card", "Nope"], { Card: "// Card\n", Nope: "// Nope\n" });
+    expect(await res.json()).toEqual({ deleted: [{ name: "Card", source: "// Card\n" }], failed: [], missing: ["Nope"] });
+    // And one that goes while the ones before it do.
+    writeFileSync(file("Card"), "// Card\n");
+    writeFileSync(file("Hero"), "// Hero\n");
+    whileTrashing = (name) => name === "Card.tsx" && rmSync(file("Hero"));
+    expect((await (await del(["Card", "Hero"])).json()).missing).toEqual(["Hero"]);
+  });
+
+  test("with none of them there, a 404", async () => {
+    const res = await del(["Nope", "Gone"]);
     expect(res.status).toBe(404);
     expect(trashed).toEqual([]);
   });

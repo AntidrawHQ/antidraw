@@ -1,14 +1,12 @@
 import { ReactFlowProvider } from "@xyflow/react";
-import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect } from "react";
 import { useUserComponents, useUserComponentsWatcher } from "./store/userComponents";
 import { useWorkspaceStore } from "./store/workspace";
 import { useDevServerStatus, useAutoStartDevServer } from "./lib/workspace-ops";
-import { useFrameLayouts } from "./lib/frame-layout-ops";
-import { saveFrameLayouts, type FrameLayoutData } from "./lib/api";
-import { queryKeys } from "./lib/query-keys";
+import { useFrameLayouts, useSaveFrameLayouts } from "./lib/frame-layout-ops";
+import type { FrameLayoutData } from "./lib/api";
 import { cn } from "./lib/utils";
-import { Canvas, useFocusComponent, type FrameLayer, type FrameLayout } from "./canvas/Canvas";
+import { Canvas, useFocusComponent, type FrameLayer } from "./canvas/Canvas";
 import { CanvasToolbar } from "./components/CanvasToolbar";
 import { OnboardingList } from "./onboarding/OnboardingList";
 import { renderFrameInspector } from "./inspector/FrameInspector";
@@ -87,20 +85,7 @@ const WorkspaceCanvas = ({
   // A deleted component's frame leaves the canvas, and its selection with it.
   useEffect(() => keepSelectionIn(new Set(userComponents.map((c) => c.name))), [userComponents]);
 
-  // Where the frames are, saved, and kept for the canvas when it's next up
-  // (and with the places of frames still to arrive: a paste's).
-  const queryClient = useQueryClient();
-  const saveLayouts = useCallback(
-    (layouts: FrameLayout[]) => {
-      const there = new Set(layouts.map((l) => l.componentName));
-      queryClient.setQueryData<FrameLayoutData[]>(queryKeys.frameLayouts.byWorkspace(workspaceId), (saved) => [
-        ...layouts.map((l) => ({ ...l, workspaceId })),
-        ...(saved ?? []).filter((l) => !there.has(l.componentName)),
-      ]);
-      saveFrameLayouts(workspaceId, layouts); // fire-and-forget
-    },
-    [workspaceId, queryClient],
-  );
+  const saveLayouts = useSaveFrameLayouts(workspaceId);
 
   const empty = userComponents.length === 0;
 

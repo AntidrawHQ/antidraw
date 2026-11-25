@@ -17,6 +17,7 @@ const api = vi.hoisted(() => ({
   createComponents: vi.fn(),
   deleteComponents: vi.fn(),
   getComponentSource: vi.fn(),
+  saveFrameLayouts: vi.fn(),
 }));
 vi.mock("@/renderer/lib/api", async (original) => ({ ...(await original<object>()), ...api }));
 
@@ -46,7 +47,10 @@ beforeEach(() => {
   api.getComponentSource.mockImplementation(async (_ws: string, name: string) =>
     files.has(name) ? ok({ name, source: files.get(name)! }) : err({ status: 404, code: "NOT_FOUND", message: "gone" }),
   );
+  api.saveFrameLayouts.mockImplementation(async () => ok(undefined));
   api.createComponents.mockImplementation(async (_ws: string, components: { name: string; source: string }[]) => {
+    const taken = components.find((c) => files.has(c.name));
+    if (taken) return err({ status: 409, code: "EXISTS", message: `${taken.name} is already on the canvas` });
     for (const c of components) files.set(c.name, c.source);
     return ok(components.map((c) => c.name));
   });
@@ -75,9 +79,10 @@ const savedLayouts: FrameLayout[] = [
 // the app knows of the files (its queries). `sync` is the watcher: the list
 // read again from the files.
 const hosts = { onSeeCode: vi.fn(), onFullscreen: vi.fn() };
-async function renderEditing() {
+async function renderEditing({ keysOff = false }: { keysOff?: boolean } = {}) {
   const { Canvas } = await import("@/renderer/canvas/Canvas");
   const { CanvasEditing } = await import("../CanvasEditing");
+  const { useSaveFrameLayouts } = await import("@/renderer/lib/frame-layout-ops");
   // Each test its own workspace: the undo stacks are the app's.
   const workspaceId = `ws-${++workspace}`;
   const queryClient = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity } } });
@@ -95,14 +100,17 @@ async function renderEditing() {
   const Host = () => {
     const { data: components = [] } = useQuery({ queryKey: listKey, queryFn: async () => listed() });
     const { data: layouts } = useQuery<FrameLayout[]>({ queryKey: layoutsKey, queryFn: async () => [] });
+    // As the shell saves them: a move is still made when the canvas is next up.
+    const saveLayouts = useSaveFrameLayouts(workspaceId);
     return (
       <Canvas
         components={components}
         savedLayouts={layouts}
         frameUrl={(name) => `https://site.test/preview?componentName=${name}`}
+        onLayoutsChange={saveLayouts}
         onFullscreen={() => {}}
       >
-        <CanvasEditing workspaceId={workspaceId} keysOff={false} onFullscreen={hosts.onFullscreen} onSeeCode={hosts.onSeeCode} />
+        <CanvasEditing workspaceId={workspaceId} keysOff={keysOff} onFullscreen={hosts.onFullscreen} onSeeCode={hosts.onSeeCode} />
         <CatchStore />
       </Canvas>
     );
@@ -134,6 +142,11 @@ async function renderEditing() {
     },
     outside,
     flow,
+    // Where the app has each frame saved to go.
+    places: () =>
+      Object.fromEntries((queryClient.getQueryData<FrameLayout[]>(layoutsKey) ?? []).map((l) => [l.componentName, `${l.x},${l.y}`])),
+    place: (layout: FrameLayout) =>
+      queryClient.setQueryData<FrameLayout[]>(layoutsKey, (saved = []) => [...saved, { ...layout, workspaceId } as FrameLayout]),
   };
 }
 
@@ -171,18 +184,19 @@ const clipboard = () => {
     },
   };
 };
-const clipboardEvent = (type: "copy" | "cut" | "paste", clipboardData: ReturnType<typeof clipboard>) =>
-  act(async () => {
+// A change made, and drawn: its file written, and the canvas showing it.
+// Each turn its own act: what one draws, the next goes on from.
+const settle = async () => {
+  for (let i = 0; i < 6; i++) await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+};
+const clipboardEvent = async (type: "copy" | "cut" | "paste", clipboardData: ReturnType<typeof clipboard>) => {
+  await act(async () => {
     const event = new Event(type, { bubbles: true, cancelable: true });
     Object.defineProperty(event, "clipboardData", { value: clipboardData });
     document.dispatchEvent(event);
-    for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0));
   });
-// A change made, and drawn: its file written, and the canvas showing it.
-const settle = () =>
-  act(async () => {
-    for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0));
-  });
+  await settle();
+};
 
 it("copies the selected frame and pastes it beside it, as a new file, selected", async () => {
   const canvas = await renderEditing();
@@ -452,10 +466,13 @@ it("gives each of two duplicates pressed one after the other its own name", asyn
   await settle();
   expect({
     created: api.createComponents.mock.calls.map(([, c]) => c.map((x: { name: string }) => x.name)),
-    frames: Object.keys(positions()).sort(),
+    // The second is of the first's copy, selected by then: further on, not under it.
+    at: [positions()["CardCopy-1"], positions()["CardCopy2-1"]],
+    selected: selected(),
   }).toEqual({
     created: [["CardCopy"], ["CardCopy2"]],
-    frames: ["Card-1", "CardCopy-1", "CardCopy2-1", "Hero-1"],
+    at: ["translate(50px,60px)", "translate(90px,100px)"],
+    selected: ["CardCopy2-1"],
   });
 });
 
@@ -488,17 +505,21 @@ it("undoes on the canvas that's up now what was done on one since taken down", a
   const canvas = await renderEditing();
   await pick("Hero");
   await press("ArrowRight");
+  // Saved, as the shell saves a move a moment after it.
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 600)));
   await pick("Card");
   await press("Backspace");
   await settle();
   await canvas.remount();
+  const remounted = positions();
   await pick("Hero");
   await press("z", { ctrlKey: true });
   await settle();
   const restored = positions()["Card-1"];
   await press("z", { ctrlKey: true });
   await settle();
-  expect({ restored, moved: positions()["Hero-1"] }).toEqual({
+  expect({ remounted, restored, moved: positions()["Hero-1"] }).toEqual({
+    remounted: { "Hero-1": "translate(605px,20px)" },
     restored: "translate(10px,20px)",
     moved: "translate(600px,20px)",
   });
@@ -613,4 +634,179 @@ it("selects a duplicate alone, though the key that made it is still down", async
   await press("d", { ctrlKey: true });
   await settle();
   expect(selected()).toEqual(["CardCopy-1"]);
+});
+
+const keys = (key: string, init: KeyboardEventInit, times: number, target: EventTarget = document.body) =>
+  act(async () => {
+    for (let i = 0; i < times; i++) {
+      target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init }));
+    }
+  });
+
+it("deletes a frame once, though Backspace is pressed again before it's gone", async () => {
+  await renderEditing();
+  await pick("Card");
+  await keys("Backspace", {}, 2, document.activeElement!);
+  await settle();
+  expect(api.deleteComponents.mock.calls.map(([, names]) => names)).toEqual([["Card"]]);
+});
+
+it("keeps a cut's frames to paste, though it's cut again before it's gone", async () => {
+  await renderEditing();
+  await pick("Card");
+  const first = clipboard();
+  const second = clipboard();
+  await act(async () => {
+    for (const data of [first, second]) {
+      const event = new Event("cut", { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "clipboardData", { value: data });
+      document.dispatchEvent(event);
+    }
+  });
+  await settle();
+  await clipboardEvent("paste", first);
+  expect({
+    // The second cut was of nothing: the page's own.
+    second: second.types,
+    deleted: api.deleteComponents.mock.calls.map(([, names]) => names),
+    pasted: api.createComponents.mock.calls.map(([, c]) => c.map((x: { name: string }) => x.name)),
+  }).toEqual({ second: [], deleted: [["Card"]], pasted: [["Card"]] });
+});
+
+it("leaves a frame its place when an undo that would write over it is refused", async () => {
+  const canvas = await renderEditing();
+  await pick("Card");
+  await press("Backspace");
+  await settle();
+  // The agent writes a Card of its own, and it's put somewhere.
+  files.set("Card", "// the agent's\n");
+  canvas.place({ componentName: "Card", x: 900, y: 500, width: 300, height: 200 });
+  await canvas.sync();
+  await press("z", { ctrlKey: true }, document.body);
+  await settle();
+  expect({ source: files.get("Card"), place: canvas.places().Card }).toEqual({ source: "// the agent's\n", place: "900,500" });
+});
+
+it("copies the frame, not text left selected elsewhere in the window", async () => {
+  await renderEditing();
+  await pick("Card");
+  // A chat message's text, selected, and still selected at the press on the
+  // frame: Chromium keeps it through one. (jsdom drops it on focus, so the
+  // press here is only the press.)
+  const message = document.body.appendChild(document.createElement("p"));
+  message.textContent = "a chat message";
+  const range = document.createRange();
+  range.selectNodeContents(message);
+  document.getSelection()!.removeAllRanges();
+  document.getSelection()!.addRange(range);
+  const before = document.getSelection()!.toString();
+  await act(async () => {
+    node("Card").dispatchEvent(new Event("pointerdown", { bubbles: true }));
+  });
+  const data = clipboard();
+  await clipboardEvent("copy", data);
+  expect({ before, after: document.getSelection()!.toString(), copied: data.getData("text/plain") }).toEqual({
+    before: "a chat message",
+    after: "",
+    copied: "Card",
+  });
+});
+
+it("leaves a right press on the canvas to React Flow, which knows a click from a pan", async () => {
+  await renderEditing();
+  const pane = document.querySelector(".react-flow__pane")!;
+  const rightPress = (init: MouseEventInit) =>
+    act(async () => {
+      pane.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 300, clientY: 300, ...init }));
+    });
+  // The press that may begin a pan: no menu yet.
+  await rightPress({ button: 2 });
+  const onPress = menuItems().length;
+  // Ctrl+click pans nothing: its menu, at once.
+  await rightPress({ button: 0, ctrlKey: true });
+  const onCtrlClick = menuItems().map((i) => i.textContent);
+  await press("Escape", {}, document.activeElement ?? document.body);
+  await settle();
+  // And a right press let go where it was: React Flow's word that it was a click.
+  const mouse = (type: string, target: EventTarget, at = 300) =>
+    act(async () => {
+      const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 2, buttons: 2, clientX: at, clientY: at });
+      // d3-zoom listens on the event's window; jsdom won't take vitest's as one.
+      Object.defineProperty(event, "view", { value: window });
+      target.dispatchEvent(event);
+    });
+  // Dragged first (a pan): still no menu.
+  await mouse("mousedown", pane);
+  await mouse("mousemove", window, 340);
+  await mouse("mousemove", window, 380);
+  await mouse("mouseup", window, 380);
+  await settle();
+  const onPan = menuItems().length;
+  await mouse("mousedown", pane);
+  await mouse("mouseup", window);
+  await settle();
+  expect({ onPress, onPan, onCtrlClick, onClick: menuItems().map((i) => i.textContent) }).toEqual({
+    onPress: 0,
+    onPan: 0,
+    onCtrlClick: ["Paste hereCtrl+V", "Select allCtrl+A"],
+    onClick: ["Paste hereCtrl+V", "Select allCtrl+A"],
+  });
+});
+
+it("does nothing while its keys are off (the dashboard is over the canvas)", async () => {
+  await renderEditing({ keysOff: true });
+  await pick("Card");
+  await press("Backspace");
+  await press("d", { ctrlKey: true });
+  const data = clipboard();
+  await clipboardEvent("copy", data);
+  await rightClick(node("Card"));
+  expect({
+    deleted: api.deleteComponents.mock.calls.length,
+    created: api.createComponents.mock.calls.length,
+    copied: data.types,
+    menu: menuItems().length,
+  }).toEqual({ deleted: 0, created: 0, copied: [], menu: 0 });
+});
+
+it("pastes again under a pointer that hasn't moved further on, not on top", async () => {
+  await renderEditing();
+  await pick("Card");
+  const data = clipboard();
+  await clipboardEvent("copy", data);
+  await act(async () => {
+    const move = new Event("pointermove", { bubbles: true });
+    Object.assign(move, { clientX: 400, clientY: 300 });
+    document.querySelector(".react-flow")!.dispatchEvent(move);
+  });
+  await clipboardEvent("paste", data);
+  await clipboardEvent("paste", data);
+  const at = (name: string) => positions()[`${name}-1`]!.match(/-?\d+/g)!.map(Number);
+  const [first, second] = [at("CardCopy"), at("CardCopy2")];
+  expect([second[0]! - first[0]!, second[1]! - first[1]!]).toEqual([40, 40]);
+});
+
+it("undoes a paste one of whose files is gone already, and redoes the rest", async () => {
+  const canvas = await renderEditing();
+  await pick("Card");
+  await press("a", { ctrlKey: true });
+  const data = clipboard();
+  await clipboardEvent("copy", data);
+  await clipboardEvent("paste", data);
+  // The agent has deleted HeroCopy since; the canvas hasn't heard.
+  api.deleteComponents.mockImplementationOnce(async () => {
+    files.delete("CardCopy");
+    files.delete("HeroCopy");
+    return ok({ deleted: [{ name: "CardCopy", source: "// Card\n" }], failed: [], missing: ["HeroCopy"] });
+  });
+  await press("z", { ctrlKey: true });
+  await settle();
+  const undone = Object.keys(positions()).sort();
+  await press("z", { ctrlKey: true, shiftKey: true }, document.body);
+  await settle();
+  await canvas.sync();
+  expect({ undone, redone: Object.keys(positions()).sort() }).toEqual({
+    undone: ["Card-1", "Hero-1"],
+    redone: ["Card-1", "CardCopy-1", "Hero-1"],
+  });
 });

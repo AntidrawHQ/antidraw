@@ -478,7 +478,7 @@ export const deleteComponents = async (
       });
     }
 
-    const data: { deleted: DeletedComponent[]; failed: string[] } = await response.json();
+    const data: { deleted: DeletedComponent[]; failed: string[]; missing?: string[] } = await response.json();
     return ok(data);
   } catch (_e) {
     return err({ status: 500 as const, code: "NETWORK_ERROR", message: "Failed to delete components" });

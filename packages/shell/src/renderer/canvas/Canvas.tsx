@@ -65,6 +65,9 @@ export type CanvasControls = {
   flushMoves: () => void;
   // Each move the user makes, once it ends. Gives back an unsubscribe.
   onFramesMoved: (listener: (moves: FrameMove[]) => void) => () => void;
+  // A right-click on the canvas around the frames, at a point on screen: one
+  // that didn't pan it (a right-drag does). Gives back an unsubscribe.
+  onPaneContextMenu: (listener: (at: { x: number; y: number }) => void) => () => void;
 };
 
 const CanvasControlsContext = createContext<CanvasControls | null>(null);
@@ -211,9 +214,10 @@ const IframeNode = memo(({ componentName, url, selected, onLoad }: IframeNodePro
     (e: React.KeyboardEvent) => {
       if (e.key === "Escape" && interactionMode) {
         setInteractionMode(false);
-        // Handled: a host's own Escape (the shell's, clearing the selection)
-        // waits for the next.
+        // Handled: React Flow's own Escape on a frame (deselecting it) and a
+        // host's (the shell's, clearing the selection) wait for the next.
         e.preventDefault();
+        e.stopPropagation();
       }
     },
     [interactionMode],
@@ -650,6 +654,12 @@ export const Canvas = ({
   const draggingRef = useRef(false);
   const moveTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const moveListenersRef = useRef(new Set<(moves: FrameMove[]) => void>());
+  const paneMenuListenersRef = useRef(new Set<(at: { x: number; y: number }) => void>());
+  // React Flow tells a right-click from a right-drag's press: only with this
+  // given does it hold the menu until the button's up, and unmoved.
+  const handlePaneContextMenu = useCallback((event: MouseEvent | React.MouseEvent) => {
+    for (const listener of paneMenuListenersRef.current) listener({ x: event.clientX, y: event.clientY });
+  }, []);
 
   const flushMoves = useCallback(() => {
     clearTimeout(moveTimerRef.current);
@@ -745,6 +755,10 @@ export const Canvas = ({
       onFramesMoved: (listener) => {
         moveListenersRef.current.add(listener);
         return () => moveListenersRef.current.delete(listener);
+      },
+      onPaneContextMenu: (listener) => {
+        paneMenuListenersRef.current.add(listener);
+        return () => paneMenuListenersRef.current.delete(listener);
       },
     }),
     [flushMoves, onNodesChange, scheduleSave],
@@ -924,6 +938,7 @@ export const Canvas = ({
         <ReactFlow
           nodes={nodes}
           onNodesChange={handleNodesChange}
+          onPaneContextMenu={handlePaneContextMenu}
           nodeTypes={nodeTypes}
           fitView
           maxZoom={8}

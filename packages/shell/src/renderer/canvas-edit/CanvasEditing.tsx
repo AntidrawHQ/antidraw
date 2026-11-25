@@ -91,6 +91,12 @@ export const CanvasEditing = ({
       // while it's open) leaves the canvas in use.
       if (menuOpenRef.current) return;
       activeRef.current = inCanvas(e.target);
+      // Text selected elsewhere in the window (a chat message) stays selected
+      // through a press on a frame, and a copy would be of it, not the frame.
+      const selection = document.getSelection();
+      if (domNode.contains(e.target as Node) && selection && !selection.isCollapsed && !domNode.contains(selection.anchorNode)) {
+        selection.removeAllRanges();
+      }
     };
     const onFocus = (e: FocusEvent) => {
       if (e.target !== document.body) activeRef.current = inCanvas(e.target);
@@ -185,15 +191,26 @@ export const CanvasEditing = ({
   // canvas around them.
   useEffect(() => {
     if (!domNode) return;
+    const open = (at: { x: number; y: number }) => {
+      if (keysOffRef.current) return;
+      activeRef.current = true;
+      setMenu({ ...at, frames: null, canPaste: editsRef.current.hasClip() });
+    };
+    // On the canvas around the frames a right press may begin a pan: React
+    // Flow says once it's known to be a click (the canvas's controls).
+    const offPane = controls.onPaneContextMenu(open);
     const onContextMenu = (e: MouseEvent) => {
       const target = e.target as Element;
       // The minimap's and the toolbars' own.
       if (target.closest(".react-flow__minimap, .canvas-frame-toolbar, .react-flow__panel")) return;
       if (keysOffRef.current) return;
-      e.preventDefault();
-      activeRef.current = true;
       const id = target.closest<HTMLElement>(".react-flow__node")?.dataset.id;
       const onSelection = !!target.closest(".react-flow__nodesselection");
+      // The right button on the canvas itself: React Flow's to tell. (Not
+      // Ctrl+click or the menu key, which pan nothing and it never reports.)
+      if (!id && !onSelection && e.button === 2 && target.closest(".react-flow__pane")) return;
+      e.preventDefault();
+      activeRef.current = true;
       const frame = id ? store.getState().nodeLookup.get(id) : undefined;
       // A frame that wasn't selected is, alone; one that was keeps the rest.
       const picked = frame && !frame.selected ? [frame] : editsRef.current.selectedFrames();
@@ -206,8 +223,11 @@ export const CanvasEditing = ({
       });
     };
     domNode.addEventListener("contextmenu", onContextMenu);
-    return () => domNode.removeEventListener("contextmenu", onContextMenu);
-  }, [domNode, store]);
+    return () => {
+      offPane();
+      domNode.removeEventListener("contextmenu", onContextMenu);
+    };
+  }, [domNode, store, controls]);
 
   return <CanvasMenu menu={menu} onClose={() => setMenu(null)} edits={edits} onFullscreen={onFullscreen} onSeeCode={onSeeCode} />;
 };
