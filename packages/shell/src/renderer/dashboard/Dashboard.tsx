@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Tabs } from "radix-ui";
 import { create } from "zustand";
 import type { WorkspaceWithThumbnail } from "@/main/api";
 import { CreateWorkspaceDialog } from "@/renderer/components/CreateWorkspaceDialog";
@@ -28,9 +29,9 @@ import {
   useWorkspaces,
 } from "@/renderer/lib/workspace-ops";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
-import { Header, type Section } from "./Header";
-import { ListRows, RowMenu, SORTERS, type Sort } from "./LocalList";
-import { PublishedRows } from "./PublishedList";
+import { Header, type Section, type View } from "./Header";
+import { GridCards, ListRows, SORTERS, type Sort } from "./LocalList";
+import { PublishedCards, PublishedRows } from "./PublishedList";
 import { Btn } from "./kit";
 
 // The Dashboard tab: the workspaces on this Mac (Local), and what the account
@@ -39,18 +40,23 @@ import { Btn } from "./kit";
 // a published site view-only. Drawn over what that tab holds, which keeps
 // running under it (see App.tsx).
 
-// Which section is up and how Local is sorted, kept while the window is
-// open: the dashboard is unmounted whenever the other tab is the one showing.
+// Which section is up, how Local is sorted, and whether the lists are rows or
+// cards, kept while the window is open: the dashboard is unmounted whenever
+// the other tab is the one showing.
 export const useDashboardStore = create<{
   section: Section;
   setSection: (section: Section) => void;
   sort: Sort;
   setSort: (sort: Sort) => void;
+  view: View;
+  setView: (view: View) => void;
 }>((set) => ({
   section: "local",
   setSection: (section) => set({ section }),
   sort: "active",
   setSort: (sort) => set({ sort }),
+  view: "list",
+  setView: (view) => set({ view }),
 }));
 
 // The dashboard's one column, centred.
@@ -145,6 +151,7 @@ const Notice = ({ children, action }: { children: React.ReactNode; action?: Reac
 const Published = ({ query }: { query: string }) => {
   const { data: sites, error, isPending, refetch, isFetching } = usePublishedSites();
   const openPublished = useOpenPublished();
+  const view = useDashboardStore((s) => s.view);
   const signIn = useSignIn();
   const cancelSignIn = useCancelSignIn();
 
@@ -197,13 +204,14 @@ const Published = ({ query }: { query: string }) => {
   }
 
   if (items.length === 0) return <Notice>{q ? `Nothing matches “${query}”.` : "Nothing published yet."}</Notice>;
-  return <PublishedRows items={items} onOpen={(site) => void openPublished(site)} />;
+  const List = view === "grid" ? PublishedCards : PublishedRows;
+  return <List items={items} onOpen={(site) => void openPublished(site)} />;
 };
 
 export const Dashboard = () => {
   const { data: workspaces = [] } = useWorkspaces();
   const switchWorkspace = useSwitchWorkspace();
-  const { sort, setSort, setSection } = useDashboardStore();
+  const { sort, setSort, setSection, view, setView } = useDashboardStore();
   // Published is there where Publish is: for the accounts the server lets in.
   const { data: features } = useFeatures();
   const publishOn = features?.publish === true;
@@ -212,7 +220,6 @@ export const Dashboard = () => {
   const { data: sites } = usePublishedSites(publishOn);
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
-  const [menu, setMenu] = useState<{ workspace: WorkspaceWithThumbnail; x: number; y: number } | null>(null);
   const [creating, setCreating] = useState(false);
   // Delete is held back for now; the dialog below is ready for it.
   // const [deleting, setDeleting] = useState<WorkspaceWithThumbnail | null>(null);
@@ -233,60 +240,69 @@ export const Dashboard = () => {
   const deselect = (e: React.MouseEvent) => e.target === e.currentTarget && setSelected(null);
 
   // The header stays put and the list scrolls under it, the scrollbar at the
-  // window's edge; both share one column.
+  // window's edge; both share one column. The sections are tabs (Radix's): the
+  // header has them, and the list is the panel of the one that's picked.
   return (
-    <main
-      className="absolute inset-0 flex flex-col bg-[#222222] font-sans antialiased"
-      onClick={deselect}
+    <Tabs.Root
+      asChild
+      value={section}
+      onValueChange={(to) => {
+        setSection(to as Section);
+        setQuery("");
+        setSelected(null);
+      }}
     >
-      {/* No thumbnail is taken of the canvas under it. */}
-      <CoversCanvas />
-      <div className={cn(COLUMN, "w-full shrink-0 pt-12")} onClick={deselect}>
-        <Header
-          sections={publishOn ? ["local", "published"] : ["local"]}
-          section={section}
-          onSection={(to) => {
-            setSection(to);
-            setQuery("");
-            setSelected(null);
-          }}
-          counts={{ local: workspaces.length, published: sites?.length }}
-          query={query}
-          onQuery={setQuery}
-          sort={sort}
-          onSort={setSort}
-          onNew={() => setCreating(true)}
-        />
-      </div>
-      <div className="min-h-0 flex-1 overflow-y-auto" onClick={deselect}>
-        <div className={cn(COLUMN, "pb-16")} onClick={deselect}>
-          {section === "published" ? (
-            <Published query={query} />
-          ) : items.length === 0 ? (
-            <Notice>{q ? `Nothing matches “${query}”.` : "No workspaces yet."}</Notice>
-          ) : (
-            <ListRows
-              items={items}
-              selected={selected}
-              onSelect={setSelected}
-              onOpen={open}
-              onMenu={(workspace, x, y) => setMenu({ workspace, x, y })}
-            />
-          )}
+      <main
+        // The grey of the titlebar and the chat, not a darker one of its own.
+        className="absolute inset-0 flex flex-col bg-[#2A2A2A] font-sans antialiased"
+        onClick={deselect}
+      >
+        {/* No thumbnail is taken of the canvas under it. */}
+        <CoversCanvas />
+        <div className={cn(COLUMN, "w-full shrink-0 pt-12")} onClick={deselect}>
+          <Header
+            sections={publishOn ? ["local", "published"] : ["local"]}
+            section={section}
+            counts={{ local: workspaces.length, published: sites?.length }}
+            query={query}
+            onQuery={setQuery}
+            sort={sort}
+            onSort={setSort}
+            view={view}
+            onView={setView}
+            onNew={() => setCreating(true)}
+          />
         </div>
-      </div>
+        <div className="min-h-0 flex-1 overflow-y-auto" onClick={deselect}>
+          {/* Not a stop for Tab itself: its rows are. */}
+          <Tabs.Content value={section} tabIndex={-1} className={cn(COLUMN, "pb-16 outline-none")} onClick={deselect}>
+            {section === "published" ? (
+              <Published query={query} />
+            ) : items.length === 0 ? (
+              <Notice>{q ? `Nothing matches “${query}”.` : "No workspaces yet."}</Notice>
+            ) : view === "grid" ? (
+              <GridCards
+                items={items}
+                selected={selected}
+                onSelect={setSelected}
+                onOpen={open}
+                // onDelete={setDeleting}
+              />
+            ) : (
+              <ListRows
+                items={items}
+                selected={selected}
+                onSelect={setSelected}
+                onOpen={open}
+                // onDelete={setDeleting}
+              />
+            )}
+          </Tabs.Content>
+        </div>
 
-      {menu && (
-        <RowMenu
-          x={menu.x}
-          y={menu.y}
-          onOpen={() => open(menu.workspace)}
-          // onDelete={() => setDeleting(menu.workspace)}
-          onClose={() => setMenu(null)}
-        />
-      )}
-      <CreateWorkspaceDialog open={creating} onOpenChange={setCreating} />
-      {/* <DeleteWorkspaceDialog workspace={deleting} onClose={() => setDeleting(null)} /> */}
-    </main>
+        <CreateWorkspaceDialog open={creating} onOpenChange={setCreating} />
+        {/* <DeleteWorkspaceDialog workspace={deleting} onClose={() => setDeleting(null)} /> */}
+      </main>
+    </Tabs.Root>
   );
 };

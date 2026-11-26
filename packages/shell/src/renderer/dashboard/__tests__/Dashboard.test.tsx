@@ -151,7 +151,7 @@ afterEach(async () => {
   useWorkspaceStore.setState({ activeWorkspaceId: null, publishedSite: null, dashboardShown: false });
   // The section and the list's sort are kept while the window is open.
   const { useDashboardStore } = await import("../Dashboard");
-  useDashboardStore.setState({ section: "local", sort: "active" });
+  useDashboardStore.setState({ section: "local", sort: "active", view: "list" });
 });
 
 const settle = () => act(async () => void (await new Promise((resolve) => setTimeout(resolve, 20))));
@@ -194,17 +194,28 @@ const launch = async (saved: string | null) => {
 };
 
 const text = (el: Element | null | undefined) => el?.textContent?.replace(/\s+/g, " ").trim() ?? null;
+// The window's tabs: the titlebar's, not the dashboard's sections under it.
 const tabs = () =>
-  [...document.querySelectorAll('[role="tab"]')].map(
+  [...document.querySelector('[role="tablist"]')!.querySelectorAll('[role="tab"]')].map(
     (tab) => `${tab.getAttribute("aria-selected") === "true" ? "●" : "○"} ${text(tab)}`,
   );
-const rows = () => [...document.querySelectorAll('main [role="button"]')];
+// The lists' rows, without their headings' row.
+const rows = () => [...document.querySelectorAll('main [role="row"][tabindex]')];
 const names = () => rows().map((row) => text(row.querySelector(".truncate")));
 const row = (name: string) => rows().find((r) => text(r.querySelector(".truncate")) === name)!;
+// A button, or a menu's item, by what it says.
 const button = (name: RegExp) =>
-  [...document.querySelectorAll("button")].find((b) => name.test(text(b) ?? "") || name.test(b.getAttribute("aria-label") ?? ""))!;
+  [...document.querySelectorAll('button, [role="menuitem"], [role="menuitemradio"]')].find(
+    (b) => name.test(text(b) ?? "") || name.test(b.getAttribute("aria-label") ?? ""),
+  )!;
+// A whole press, not only its click: Radix opens a menu as the pointer goes
+// down on its button, and picks a tab as the mouse does.
 const click = async (el: Element) => {
-  await act(async () => (el as HTMLElement).click());
+  await act(async () => {
+    for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup"])
+      el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0 }));
+    (el as HTMLElement).click();
+  });
   await settle();
 };
 const fire = async (el: Element, type: string) => {
@@ -300,7 +311,7 @@ it("lists the workspaces by last active, and by search, name and date made", asy
   const searched = names();
   await type("nope");
   const none = text(document.querySelector("main .py-24"));
-  expect({ header: text(document.querySelector('main [aria-pressed="true"]')), byActive, byName, byCreated, searched, none })
+  expect({ header: text(document.querySelector('main [role="tab"][aria-selected="true"]')), byActive, byName, byCreated, searched, none })
     .toMatchInlineSnapshot(`
       {
         "byActive": [
@@ -402,6 +413,268 @@ it("opens a workspace in the one tab on a double click, in place of the one ther
           "● Paper Shaders",
         ],
         "workspaceControls": true,
+      },
+    }
+  `);
+});
+
+// A key, to whatever has the focus.
+const key = async (name: string, init: KeyboardEventInit = {}) => {
+  await act(
+    async () =>
+      void document.activeElement!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true, ...init }),
+      ),
+  );
+  await settle();
+};
+// What has the focus: a row by its name, anything else by its role and what it says.
+const focused = () => {
+  const el = document.activeElement;
+  if (!el || el === document.body) return null;
+  if (el.getAttribute("role") === "row") return `row: ${text(el.querySelector(".truncate"))}`;
+  const says = text(el) || el.getAttribute("aria-label") || el.getAttribute("placeholder");
+  return `${el.getAttribute("role") ?? el.tagName.toLowerCase()}: ${says}`;
+};
+const selectedRows = () => rows().filter((r) => r.getAttribute("aria-selected") === "true").map((r) => text(r.querySelector(".truncate")));
+const menu = () =>
+  [...document.querySelectorAll('[role="menuitem"], [role="menuitemradio"]')].map(
+    (item) => `${item.getAttribute("aria-checked") === "true" ? "✓ " : ""}${text(item)}`,
+  );
+
+it("is worked from the keyboard: ⌘F and ↓ into the list, the arrows through it and Enter to open; the sections, the sort and a row's menu with the keys alone", async () => {
+  api.getFeatures.mockResolvedValue(ok({ publish: true }));
+  api.getAccount.mockResolvedValue(ok(ACCOUNT));
+  api.getPublishedSites.mockResolvedValue(ok(SITES));
+  const store = await launch("");
+  const steps: Record<string, unknown> = {};
+
+  // Tab stops at one row of the list and at its ⋯, not at each of them.
+  steps["the list's stops for Tab"] = [...document.querySelectorAll('main [role="grid"] [tabindex="0"]')].map(
+    (el) => (el.getAttribute("role") === "row" ? `row: ${text(el.querySelector(".truncate"))}` : el.getAttribute("aria-label")),
+  );
+
+  await act(async () => void window.dispatchEvent(new KeyboardEvent("keydown", { key: "f", metaKey: true })));
+  steps["⌘F"] = focused();
+  await key("ArrowDown");
+  steps["↓ from the search"] = { focused: focused(), selected: selectedRows() };
+  await key("ArrowDown");
+  steps["↓"] = { focused: focused(), selected: selectedRows() };
+  await key("End");
+  await key("ArrowDown");
+  steps["End, and ↓ at the last"] = focused();
+  await key("Home");
+  steps["Home"] = focused();
+
+  // The sort: Enter opens its menu on what it's set to; ↓ and Enter pick another.
+  (button(/^Last active$/) as HTMLElement).focus();
+  await key("Enter");
+  steps["Enter on the sort"] = { menu: menu(), focused: focused() };
+  await key("ArrowDown");
+  await key("ArrowDown");
+  await key("Enter");
+  steps["↓ ↓ Enter"] = { names: names(), focused: focused(), menu: menu() };
+
+  // The sections: → goes to the next and shows it, ← comes back.
+  (section(/^Local/) as HTMLElement).focus();
+  await key("ArrowRight");
+  steps["→ on Local"] = { sections: sections(), focused: focused(), rows: rows().length };
+  await key("ArrowLeft");
+  steps["←"] = sections();
+
+  // A row's menu, from its ⋯: Enter opens it, Esc closes it back onto the ⋯.
+  (row("Paper Shaders").querySelector('[aria-label="More"]') as HTMLElement).focus();
+  await key("Enter");
+  steps["Enter on a row's ⋯"] = { menu: menu(), focused: focused() };
+  await key("Escape");
+  steps["Esc"] = { menu: menu(), focused: focused(), open: store.getState().activeWorkspaceId };
+  await key("Enter");
+  await key("Enter");
+  steps["Enter, Enter"] = { ...screen(), open: store.getState().activeWorkspaceId };
+
+  // And a row itself: Enter opens it.
+  await click(document.querySelectorAll('[role="tab"]')[0]!);
+  (row("Twitter Videos") as HTMLElement).focus();
+  await key("Enter");
+  steps["Enter on a row"] = { ...screen(), open: store.getState().activeWorkspaceId };
+
+  expect(steps).toMatchInlineSnapshot(`
+    {
+      "End, and ↓ at the last": "row: Twitter Videos",
+      "Enter on a row": {
+        "dashboard": false,
+        "open": "w-videos",
+        "tabs": [
+          "○ Dashboard",
+          "● Twitter Videos",
+        ],
+        "workspaceControls": true,
+      },
+      "Enter on a row's ⋯": {
+        "focused": "menuitem: Open",
+        "menu": [
+          "Open",
+        ],
+      },
+      "Enter on the sort": {
+        "focused": "menuitemradio: Last active",
+        "menu": [
+          "✓ Last active",
+          "Date created",
+          "Name",
+        ],
+      },
+      "Enter, Enter": {
+        "dashboard": false,
+        "open": "w-shaders",
+        "tabs": [
+          "○ Dashboard",
+          "● Paper Shaders",
+        ],
+        "workspaceControls": true,
+      },
+      "Esc": {
+        "focused": "button: More",
+        "menu": [],
+        "open": null,
+      },
+      "Home": "row: Antidraw Website",
+      "the list's stops for Tab": [
+        "row: Antidraw Website",
+        "More",
+      ],
+      "←": [
+        "● Local3",
+        "○ Published2",
+      ],
+      "→ on Local": {
+        "focused": "tab: Published2",
+        "rows": 2,
+        "sections": [
+          "○ Local3",
+          "● Published2",
+        ],
+      },
+      "↓": {
+        "focused": "row: Paper Shaders",
+        "selected": [
+          "Paper Shaders",
+        ],
+      },
+      "↓ from the search": {
+        "focused": "row: Antidraw Website",
+        "selected": [
+          "Antidraw Website",
+        ],
+      },
+      "↓ ↓ Enter": {
+        "focused": "button: Name",
+        "menu": [],
+        "names": [
+          "Antidraw Website",
+          "Paper Shaders",
+          "Twitter Videos",
+        ],
+      },
+      "⌘F": "input: Search workspaces",
+    }
+  `);
+});
+
+it("shows the workspaces, and what's published, as cards from the switch at the end of the header's row, and keeps to them", async () => {
+  api.getFeatures.mockResolvedValue(ok({ publish: true }));
+  api.getAccount.mockResolvedValue(ok(ACCOUNT));
+  api.getPublishedSites.mockResolvedValue(ok(SITES));
+  const store = await launch("");
+  const view = () =>
+    [...document.querySelectorAll('main [aria-label="View"] [role="radio"]')].map(
+      (item) => `${item.getAttribute("aria-checked") === "true" ? "●" : "○"} ${item.getAttribute("aria-label")}`,
+    );
+  // Rows have their columns' headings; cards have none.
+  const shown = () => ({ view: view(), headings: !!document.querySelector('main [role="columnheader"]'), items: rows().map((r) => text(r)) });
+  const steps: Record<string, unknown> = { "as it opens": shown() };
+
+  await click(button(/^Cards$/));
+  steps["Cards"] = shown();
+  // The keys, as in the list, and to the one beside.
+  (rows()[0] as HTMLElement).focus();
+  await key("ArrowRight");
+  steps["→"] = { focused: focused(), selected: selectedRows() };
+  await key("End");
+  await key("ArrowLeft");
+  steps["End, ←"] = focused();
+  await click(section(/^Published/));
+  steps["Published"] = shown();
+
+  // Still cards after the dashboard has been away: a card opens a workspace, and the Dashboard tab comes back to them.
+  await click(section(/^Local/));
+  await fire(row("Twitter Videos"), "dblclick");
+  steps["a double click on a card"] = store.getState().activeWorkspaceId;
+  await click(document.querySelectorAll('[role="tab"]')[0]!);
+  steps["back on the dashboard"] = view();
+  await click(button(/^List$/));
+  steps["List"] = shown();
+
+  expect(steps).toMatchInlineSnapshot(`
+    {
+      "Cards": {
+        "headings": false,
+        "items": [
+          "Antidraw Website2 hours ago",
+          "Paper Shaders1 day ago",
+          "Twitter Videos9 days ago",
+        ],
+        "view": [
+          "● Cards",
+          "○ List",
+        ],
+      },
+      "End, ←": "row: Paper Shaders",
+      "List": {
+        "headings": true,
+        "items": [
+          "Antidraw Website2 hours agoNov 3",
+          "Paper Shaders1 day agoNov 22",
+          "Twitter Videos9 days agoOct 14",
+        ],
+        "view": [
+          "○ Cards",
+          "● List",
+        ],
+      },
+      "Published": {
+        "headings": false,
+        "items": [
+          "Paper Shadersv5 · 2 hours ago",
+          "Pricing pagev1 · 3 days ago",
+        ],
+        "view": [
+          "● Cards",
+          "○ List",
+        ],
+      },
+      "a double click on a card": "w-videos",
+      "as it opens": {
+        "headings": true,
+        "items": [
+          "Antidraw Website2 hours agoNov 3",
+          "Paper Shaders1 day agoNov 22",
+          "Twitter Videos9 days agoOct 14",
+        ],
+        "view": [
+          "○ Cards",
+          "● List",
+        ],
+      },
+      "back on the dashboard": [
+        "● Cards",
+        "○ List",
+      ],
+      "→": {
+        "focused": "row: Paper Shaders",
+        "selected": [
+          "Paper Shaders",
+        ],
       },
     }
   `);
@@ -525,8 +798,8 @@ it.skip("deletes a workspace from its menu once confirmed, closing its tab first
 
 /* ── Published ────────────────────────────────────────────────────────── */
 
-const sections = () => [...document.querySelectorAll("main button[aria-pressed]")].map((b) => `${b.getAttribute("aria-pressed") === "true" ? "●" : "○"} ${text(b)}`);
-const section = (name: RegExp) => [...document.querySelectorAll("main button[aria-pressed]")].find((b) => name.test(text(b) ?? ""))!;
+const sections = () => [...document.querySelectorAll('main [role="tab"]')].map((b) => `${b.getAttribute("aria-selected") === "true" ? "●" : "○"} ${text(b)}`);
+const section = (name: RegExp) => [...document.querySelectorAll('main [role="tab"]')].find((b) => name.test(text(b) ?? ""))!;
 const publishedRows = () => rows().map((r) => [...r.children].map((cell) => text(cell)).filter(Boolean).join(" | "));
 /** The line in place of a list, and the buttons under it. */
 const notice = () => {
