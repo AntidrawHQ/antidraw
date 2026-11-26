@@ -1060,3 +1060,25 @@ it("says why there's no list: signed out, with a way in; an account not let in; 
     }
   `);
 });
+
+it("shows each published site's picture in its tile, and the plain tile for one without", async () => {
+  api.getFeatures.mockResolvedValue(ok({ publish: true }));
+  api.getAccount.mockResolvedValue(ok(ACCOUNT));
+  api.getPublishedSites.mockResolvedValue(ok(SITES));
+  await launch("");
+  await click(section(/^Published/));
+  const pictures = () => rows().map((row) => `${text(row.querySelector(".truncate"))}: ${row.querySelector("img")?.getAttribute("src") ?? "none"}`);
+  // Each version's picture has its own address, served with the site's files.
+  expect(pictures()).toEqual([
+    "Paper Shaders: https://paper-shaders.antidraw.app/og.jpg?v=5",
+    "Pricing page: https://pricing-page.antidraw.app/og.jpg?v=1",
+  ]);
+
+  // A site published before pictures were taken has none: its tile stays the canvas's grey.
+  await act(async () => void rows()[1]!.querySelector("img")!.dispatchEvent(new Event("error")));
+  expect(pictures()).toEqual(["Paper Shaders: https://paper-shaders.antidraw.app/og.jpg?v=5", "Pricing page: none"]);
+
+  // As cards too.
+  await click(button(/^Cards$/));
+  expect(pictures()[0]).toBe("Paper Shaders: https://paper-shaders.antidraw.app/og.jpg?v=5");
+});
