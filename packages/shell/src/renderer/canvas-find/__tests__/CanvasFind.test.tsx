@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 // ⌘F (Ctrl+F here: jsdom isn't a Mac) opens the find. Typing and ↓ / ↑ only
 // move the highlight; ↵ (or a click) goes to it, as a jump, not a flight.
-// Esc closes it and the query is kept.
+// Esc, or a click outside it, closes it and the query is kept.
 
 const focus = vi.fn();
 vi.mock("@/renderer/canvas/Canvas", () => ({ useFocusComponent: () => focus }));
@@ -83,4 +83,42 @@ it("closes on Escape and opens again with the last query", () => {
   key(window, { code: "KeyF", key: "f", ctrlKey: true });
   expect(input()!.value).toBe("chf");
   expect(rows()).toEqual(["CheckoutForm"]);
+});
+
+it("closes on a click outside it, not inside, and keeps the query", () => {
+  const outside = document.body.appendChild(document.createElement("div"));
+  const down = (target: Element) =>
+    act(() => {
+      target.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    });
+  key(window, { code: "KeyF", key: "f", ctrlKey: true });
+  type("card");
+
+  down(input()!);
+  down(host.querySelector("button[data-i]")!);
+  expect(input()).not.toBeNull();
+
+  down(outside);
+  expect(input()).toBeNull();
+
+  key(window, { code: "KeyF", key: "f", ctrlKey: true });
+  expect(input()!.value).toBe("card");
+});
+
+it("closes on a click into a frame, which only shows as the window's blur", () => {
+  const frame = document.body.appendChild(document.createElement("iframe"));
+  key(window, { code: "KeyF", key: "f", ctrlKey: true });
+
+  act(() => {
+    window.dispatchEvent(new Event("blur"));
+    vi.runAllTimers();
+  });
+  expect(input()).not.toBeNull(); // the window left for another app: stays
+
+  act(() => {
+    frame.focus();
+    window.dispatchEvent(new Event("blur"));
+    vi.runAllTimers();
+  });
+  expect(input()).toBeNull();
 });

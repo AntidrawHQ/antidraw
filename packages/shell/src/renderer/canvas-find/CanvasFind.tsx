@@ -7,8 +7,8 @@ import { ComponentSearch } from "./ComponentSearch";
 // ⌘F (Ctrl+F off macOS) finds a component on the canvas and goes to it, as a
 // Components tab row does, but at once: no flight. Rendered inside the Canvas.
 //
-// Open, it stays open (like a browser's find) until Esc or ×; ⌘F again puts
-// the focus back in it with its text selected. Closed and reopened, it has
+// Open, it stays open (like a browser's find) until Esc, × or a click outside
+// it; ⌘F again puts the focus back in it with its text selected. Closed and reopened, it has
 // the last query.
 
 const isMac = navigator.userAgent.includes("Mac");
@@ -37,12 +37,33 @@ export const CanvasFind = ({ components }: { components: { name: string }[] }) =
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  if (!open) return null;
-
   const close = () => {
     lastQuery.current = card.current?.querySelector("input")?.value ?? "";
     setOpen(false);
   };
+  const closeRef = useRef(close);
+  closeRef.current = close;
+
+  // A click outside it closes it: anywhere in the window, or into a frame
+  // (a frame is its own document, so that click only shows as the window's blur).
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => {
+      if (!card.current?.contains(e.target as Node)) closeRef.current();
+    };
+    const onBlur = () =>
+      setTimeout(() => {
+        if (document.activeElement instanceof HTMLIFrameElement) closeRef.current();
+      });
+    document.addEventListener("pointerdown", onDown, true);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      document.removeEventListener("pointerdown", onDown, true);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, [open]);
+
+  if (!open) return null;
 
   return (
     <div
