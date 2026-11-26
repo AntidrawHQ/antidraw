@@ -343,3 +343,25 @@ it("draws a host's layer over each frame, handing it the frame's iframe", async 
     ]
   `);
 });
+
+it("takes the focus back from a frame that took it by itself, but leaves it with a frame in use", async () => {
+  await renderCanvas();
+  await act(async () => {});
+  const [card, hero] = [...document.querySelectorAll<HTMLIFrameElement>(".react-flow__node iframe")];
+  // jsdom can't take the focus off an iframe: what's told is the blur.
+  const cardBlur = vi.spyOn(card!, "blur");
+  const heroBlur = vi.spyOn(hero!, "blur");
+  const settle = () => act(async () => void (await new Promise((r) => setTimeout(r, 0))));
+  // A page that focuses an input as it loads: the window's keys would be its.
+  card!.focus();
+  window.dispatchEvent(new Event("blur"));
+  await settle();
+  // Double-clicked into, a frame is in use: its focus is the user's.
+  act(() => {
+    hero!.closest(".react-flow__node")!.querySelector(".z-10")!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+  });
+  hero!.focus();
+  window.dispatchEvent(new Event("blur"));
+  await settle();
+  expect({ card: cardBlur.mock.calls.length, hero: heroBlur.mock.calls.length }).toEqual({ card: 1, hero: 0 });
+});

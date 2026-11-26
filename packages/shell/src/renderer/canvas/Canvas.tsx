@@ -172,6 +172,41 @@ const IframeNode = memo(({ componentName, url, selected, onLoad }: IframeNodePro
     }
   }, [selected]);
 
+  // A frame's page can take the focus by itself (an input that autofocuses as
+  // it loads), and the keys would go to it: none of the window's shortcuts
+  // would work until a click took the focus back. Only a frame in use (in
+  // interaction mode, or under the inspector) keeps it; any other gives it
+  // back to the window.
+  const inUse = interactionMode || !!framesTakePointer;
+  const inUseRef = useRef(inUse);
+  inUseRef.current = inUse;
+  useEffect(() => {
+    if (!iframe) return;
+    const giveBack = () => {
+      if (inUseRef.current || document.activeElement !== iframe) return;
+      iframe.blur();
+      window.focus();
+    };
+    // The window's blur is the focus going into a frame (or to another app,
+    // when nothing here has it): after it, it's settled where it went.
+    const onBlur = () => setTimeout(giveBack);
+    const onLoad = () => setTimeout(giveBack);
+    window.addEventListener("blur", onBlur);
+    iframe.addEventListener("load", onLoad);
+    giveBack();
+    return () => {
+      window.removeEventListener("blur", onBlur);
+      iframe.removeEventListener("load", onLoad);
+    };
+  }, [iframe]);
+  // Leaving interaction mode, the frame gives the focus back too.
+  useEffect(() => {
+    if (!inUse && iframe && document.activeElement === iframe) {
+      iframe.blur();
+      window.focus();
+    }
+  }, [inUse, iframe]);
+
   const handleDoubleClick = useCallback(() => {
     setInteractionMode(true);
   }, []);
