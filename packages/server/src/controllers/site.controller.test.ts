@@ -67,11 +67,18 @@ const upload = (user: User, uploadUrl: string, dir: string) =>
     maxAttempts: 1,
   });
 
-/** Every key stored for the site, relative to its root, files and plans by kind. */
+/**
+ * Every key stored for the site, relative to its root, files and plans by
+ * kind. Without its preview images, which arrive on their own time.
+ */
 const stored = async (siteId: string) => {
   const prefix = `sites/${siteId}/`;
   const { objects } = await server.env.SITES.list({ prefix });
-  return objects.map((object) => object.key.slice(prefix.length).replace(/^(f|m)\/.*/, "$1/…")).sort();
+  return objects
+    .map((object) => object.key.slice(prefix.length))
+    .filter((key) => !key.startsWith("p/"))
+    .map((key) => key.replace(/^(f|m)\/.*/, "$1/…"))
+    .sort();
 };
 
 const sha256 = (content: string) => createHash("sha256").update(content).digest("hex");
@@ -980,5 +987,72 @@ describe("which features are on", () => {
         },
       }
     `);
+  });
+});
+
+describe("preview images", () => {
+  /** The picture stored for a publish, once it's there. */
+  const preview = async (siteId: string, publishId: string) => {
+    const key = `sites/${siteId}/p/${publishId}.jpg`;
+    for (let waited = 0; waited < 10_000; waited += 50) {
+      const object = await server.env.SITES.get(key);
+      if (object) return { text: await object.text(), type: object.httpMetadata?.contentType };
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error(`No preview of ${publishId} was stored`);
+  };
+
+  /** A site with one publish live, from one file. */
+  const publishOne = async (user: User, title: string) => {
+    const site = await createSite(user, title);
+    const { publishId } = await startPublish(user, site.id);
+    await prepare(user, site.id, publishId, `<h1>${title}</h1>`);
+    expect((await commit(user, site.id, publishId)).status).toBe(200);
+    return { ...site, publishId };
+  };
+
+  /** The screenshots asked for of one site's page since the last call. */
+  const shotsOf = async (slug: string) =>
+    (await server.browser.takeShots()).filter((shot) => shot.url?.includes(`/s/${slug}?`));
+
+  it("takes a picture of a publish that goes live, of its share page's picture view", async () => {
+    const user = await server.signIn();
+    const site = await publishOne(user, "Photographed");
+    expect(await preview(site.id, site.publishId)).toEqual({
+      text: `a picture of https://share.test/s/${site.slug}?shot=1`,
+      type: "image/jpeg",
+    });
+    const shots = await shotsOf(site.slug);
+    expect(shots).toHaveLength(1);
+    expect(shots[0]).toMatchObject({
+      viewport: { width: 1200, height: 630, deviceScaleFactor: 2 },
+      waitForSelector: { selector: "[data-frames-ready]" },
+      screenshotOptions: { type: "jpeg" },
+    });
+  });
+
+  it("tries again when the picture can't be taken, and takes one publish's only once", async () => {
+    const user = await server.signIn();
+    await server.browser.setFailing(1);
+    const site = await publishOne(user, "Second try");
+    await preview(site.id, site.publishId);
+    expect(await shotsOf(site.slug)).toHaveLength(2);
+
+    // The app retries a commit whose answer it lost: asked for again, not taken again.
+    expect((await commit(user, site.id, site.publishId)).body.alreadyCommitted).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    expect(await shotsOf(site.slug)).toHaveLength(0);
+  });
+
+  it("gives each version its own picture", async () => {
+    const user = await server.signIn();
+    const site = await publishOne(user, "Versions");
+    await preview(site.id, site.publishId);
+    const { publishId } = await startPublish(user, site.id);
+    await prepare(user, site.id, publishId, "<h1>Second</h1>");
+    await commit(user, site.id, publishId);
+    await preview(site.id, publishId);
+    const { objects } = await server.env.SITES.list({ prefix: `sites/${site.id}/p/` });
+    expect(objects).toHaveLength(2);
   });
 });

@@ -2,6 +2,7 @@ import { Component, StrictMode, Suspense, lazy, useMemo, type ReactNode } from "
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import type { CanvasFile } from "@/renderer/canvas/canvas-file";
+import { isShot } from "../shot";
 import { siteFor, slugFromPath } from "../site";
 import { Message } from "./Message";
 import { TouchSnapshot } from "./touch/TouchSnapshot";
@@ -23,6 +24,11 @@ const SITE_URL_PATTERN =
 // screen has a trackpad for that, and keeps the canvas. Read once: a page
 // doesn't change devices.
 const TOUCH = window.matchMedia("(pointer: coarse)").matches;
+
+// The page as its preview image is taken of it (../shot.ts): always the
+// canvas, with nothing of the page's own over it. Said on <html> for app.css.
+const SHOT = isShot(location.search);
+if (SHOT) document.documentElement.dataset.shot = "";
 
 const CanvasView = lazy(() => import("./CanvasView"));
 
@@ -61,11 +67,11 @@ const SharedCanvas = ({ slug }: { slug: string }) => {
   if (!data) return <Message text="This canvas could not be loaded" />;
   if (data.components.length === 0) return <Message text="Nothing here yet" />;
 
-  if (TOUCH) return <TouchSnapshot file={data} frameUrl={site.frameUrl} />;
+  if (TOUCH && !SHOT) return <TouchSnapshot file={data} frameUrl={site.frameUrl} />;
   return (
     <CanvasBoundary>
       <Suspense fallback={<Message text="Loading…" />}>
-        <CanvasView file={data} frameUrl={site.frameUrl} />
+        <CanvasView file={data} frameUrl={site.frameUrl} shot={SHOT} />
       </Suspense>
     </CanvasBoundary>
   );

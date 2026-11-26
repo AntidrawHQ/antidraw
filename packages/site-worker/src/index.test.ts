@@ -90,6 +90,72 @@ async function get(url: string) {
   return { status: res.status, headers, body: await res.text() };
 }
 
+describe("preview image", () => {
+  const jpeg = (text: string) => new TextEncoder().encode(text);
+  const image = async (slug: string, headers: Record<string, string> = {}) => {
+    const res = await harness.getWorker().fetch(`https://${slug}.sites.test/og.jpg`, { headers });
+    return {
+      status: res.status,
+      type: res.headers.get("content-type"),
+      cache: res.headers.get("cache-control"),
+      etag: res.headers.get("etag"),
+      body: await res.text(),
+    };
+  };
+
+  it("serves the live version's picture, and the last one's until that's taken", async () => {
+    const siteId = await publish("pictured", { "preview.html": "v1" });
+    expect(await image("pictured")).toMatchInlineSnapshot(`
+      {
+        "body": "No preview yet",
+        "cache": "no-store",
+        "etag": null,
+        "status": 404,
+        "type": "text/plain; charset=utf-8",
+      }
+    `);
+
+    await store.putPreview(siteId, "p1", jpeg("picture of v1"));
+    expect(await image("pictured")).toMatchInlineSnapshot(`
+      {
+        "body": "picture of v1",
+        "cache": "public, max-age=300",
+        "etag": ""p1"",
+        "status": 200,
+        "type": "image/jpeg",
+      }
+    `);
+    expect((await image("pictured", { "if-none-match": '"p1"' })).status).toBe(304);
+
+    // A new version is live, and its picture hasn't been taken yet.
+    await republish(siteId, "p2", { "preview.html": "v2" });
+    expect(await image("pictured")).toMatchInlineSnapshot(`
+      {
+        "body": "picture of v1",
+        "cache": "public, max-age=0, must-revalidate",
+        "etag": ""p1"",
+        "status": 200,
+        "type": "image/jpeg",
+      }
+    `);
+
+    await store.putPreview(siteId, "p2", jpeg("picture of v2"));
+    expect(await image("pictured")).toMatchInlineSnapshot(`
+      {
+        "body": "picture of v2",
+        "cache": "public, max-age=300",
+        "etag": ""p2"",
+        "status": 200,
+        "type": "image/jpeg",
+      }
+    `);
+  });
+
+  it("has none for a slug that names no site", async () => {
+    expect((await image("nobody-home")).status).toBe(404);
+  });
+});
+
 describe("site worker", () => {
   it("serves a published site at its slug's subdomain", async () => {
     await publish("my-canvas", { "preview.html": "<h1>hi</h1>", "assets/app.js": "console.log(1)" });

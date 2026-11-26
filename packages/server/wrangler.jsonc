@@ -46,6 +46,18 @@
     // runs read wrangler's local flag store (see the README, Feature flags).
     { "binding": "FLAGS", "app_id": "9abbf580-f788-44c2-8676-4544595e70c9" }
   ],
+  // Sites' preview images (src/services/preview.service.ts): a publish that
+  // goes live is put on the queue, and this Worker, its consumer too, takes
+  // the picture with Browser Run. One at a time: a picture is seconds of a
+  // browser, and none is urgent. The queue is made once, by hand (see the
+  // README, Deploy).
+  "queues": {
+    "producers": [{ "binding": "PREVIEWS", "queue": "antidraw-site-previews" }],
+    "consumers": [
+      { "queue": "antidraw-site-previews", "max_batch_size": 1, "max_batch_timeout": 0, "max_retries": 3, "max_concurrency": 2 }
+    ]
+  },
+  "browser": { "binding": "BROWSER" },
   "vars": {
     // A published site's share page, * being its slug: the canvas that shows
     // the site's components, which are served from <slug>.antidraw.app (see
@@ -53,7 +65,10 @@
     "SHARE_URL_PATTERN": "https://antidraw.com/s/*",
     // The API's public origin, which makes auth cookies Secure. Overridden in
     // .dev.vars for local development.
-    "BETTER_AUTH_URL": "https://api.antidraw.com"
+    "BETTER_AUTH_URL": "https://api.antidraw.com",
+    // How long after a publish goes live its preview image is taken: the site
+    // Worker takes up to 5 s to serve the new version.
+    "PREVIEW_DELAY_SECONDS": "10"
   },
   "routes": [
     // Its own subdomain, not antidraw.com/api: the landing page and the share
@@ -80,9 +95,19 @@
       "r2_buckets": [{ "binding": "SITES", "bucket_name": "antidraw-sites" }],
       "artifacts": [{ "binding": "ARTIFACTS", "namespace": "sites-dev", "remote": true }],
       "flagship": [{ "binding": "FLAGS", "app_id": "9abbf580-f788-44c2-8676-4544595e70c9" }],
+      // Both local: the queue in wrangler's state, the browser a Chrome on
+      // this machine, which can reach the share page's dev server.
+      "queues": {
+        "producers": [{ "binding": "PREVIEWS", "queue": "antidraw-site-previews" }],
+        "consumers": [
+          { "queue": "antidraw-site-previews", "max_batch_size": 1, "max_batch_timeout": 0, "max_retries": 3, "max_concurrency": 2 }
+        ]
+      },
+      "browser": { "binding": "BROWSER" },
       "vars": {
         "SHARE_URL_PATTERN": "http://localhost:8786/s/*",
-        "BETTER_AUTH_URL": "http://localhost:8799"
+        "BETTER_AUTH_URL": "http://localhost:8799",
+        "PREVIEW_DELAY_SECONDS": "10"
       },
       "routes": []
     }

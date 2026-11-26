@@ -31,9 +31,11 @@ The package ships TypeScript source; consumers bundle it (wrangler, Vite).
 ```
 <prefix>/<site>/f/<sha256>          file bytes, shared by every version of the site
 <prefix>/<site>/m/<publishId>.json  one publish's manifest, written when it plans
+<prefix>/<site>/p/<publishId>.jpg   a picture of that publish, if the caller took one
 ```
 
-Nothing here changes once written. A version of the site is a manifest;
+Nothing here changes once written, but a picture (`putPreview`, `getPreview`):
+one taken again replaces the last, and `cleanup` deletes it with its publish. A version of the site is a manifest;
 which one is live is the caller's to record, usually a database row with the
 live and previous publish ids.
 

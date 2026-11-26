@@ -8,8 +8,10 @@ import { createTestHarness } from "wrangler";
 // its static assets, via Wrangler's test harness. Published sites are a local
 // server standing in for <slug>.antidraw.app: http://127.0.0.1:<port>/sites/<slug>/.
 
-const sites: Record<string, { status: number; body: string }> = {
+// `preview`: the version its preview image is of (the site Worker's etag for /og.jpg).
+const sites: Record<string, { status: number; body: string; preview?: string }> = {
   "paper-shaders": { status: 200, body: JSON.stringify({ version: 1, name: "Paper Shaders", components: [], layouts: [] }) },
+  "pictured": { status: 200, body: JSON.stringify({ version: 1, name: "Pictured", components: [], layouts: [] }), preview: "publish-2" },
   "tricky-name": { status: 200, body: JSON.stringify({ version: 1, name: `<script>alert("hi")</script> & co`, components: [], layouts: [] }) },
   "no-name": { status: 200, body: JSON.stringify({ version: 1, components: [], layouts: [] }) },
   "site-down": { status: 503, body: "" },
@@ -22,6 +24,12 @@ let harness: ReturnType<typeof createTestHarness>;
 let origin: string;
 beforeAll(async () => {
   siteServer = createServer((req, res) => {
+    const pictured = /^\/sites\/([^/]+)\/og\.jpg$/.exec(req.url ?? "")?.[1];
+    if (pictured) {
+      const version = sites[pictured]?.preview;
+      res.writeHead(version ? 200 : 404, version ? { "content-type": "image/jpeg", etag: `"${version}"` } : {}).end();
+      return;
+    }
     const slug = /^\/sites\/([^/]+)\/canvas\.json$/.exec(req.url ?? "")?.[1];
     const site = slug ? sites[slug] : undefined;
     res.writeHead(site?.status ?? 404, { "content-type": "application/json" }).end(site?.body ?? "");
@@ -82,6 +90,24 @@ describe("share page", () => {
         },
         "status": 200,
       }
+    `);
+  });
+
+  it("adds the canvas's picture to the <head> once it has one", async () => {
+    const { head } = await get("/s/pictured");
+    expect(
+      head
+        ?.replace(/http:\/\/127\.0\.0\.1:\d+\/sites\/pictured/g, "https://pictured.site")
+        .split("\n")
+        .filter((line: string) => /image|twitter/.test(line)),
+    ).toMatchInlineSnapshot(`
+      [
+        "    <meta property="og:image" content="https://pictured.site/og.jpg?v=publish-2" />",
+        "    <meta property="og:image:width" content="2400" />",
+        "    <meta property="og:image:height" content="1260" />",
+        "    <meta name="twitter:card" content="summary_large_image" />",
+        "    <meta name="twitter:image" content="https://pictured.site/og.jpg?v=publish-2" />",
+      ]
     `);
   });
 

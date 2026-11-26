@@ -5,8 +5,9 @@ import type { Bindings } from "../lib/env";
 
 // Runs this package's real Worker (test/wrangler.jsonc) in workerd with local D1 and
 // R2, through Wrangler's integration-test harness, for tests that need storage.
-// Only Artifacts and Flagship are stubbed (artifacts-stub/, flags-stub/):
-// requests go through better-auth, drizzle and R2.
+// Only Artifacts, Flagship and Browser Run are stubbed (artifacts-stub/,
+// flags-stub/, browser-stub/): requests go through better-auth, drizzle, R2
+// and the preview queue.
 
 const SECRET = "test-secret-with-enough-entropy-0123456789abcdef";
 
@@ -27,6 +28,12 @@ export type FlagsStub = {
   setFailing(value: boolean): Promise<void>;
 };
 
+/** The Browser Run stand-in (browser-stub/index.ts), driven from Node. */
+export type BrowserStub = {
+  takeShots(): Promise<{ url?: string; viewport?: unknown; waitForSelector?: unknown; screenshotOptions?: unknown }[]>;
+  setFailing(times: number): Promise<void>;
+};
+
 export type TestServer = {
   url: URL;
   /** The Worker's bindings, driven from Node: seed and inspect D1 and R2. */
@@ -34,6 +41,7 @@ export type TestServer = {
   artifacts: ArtifactsStub;
   /** Starts with `publish` on; a test that changes a flag puts it back. */
   flags: FlagsStub;
+  browser: BrowserStub;
   fetch(path: string, init?: RequestInit): Promise<Response>;
   /** A new user with a session; returns its Authorization header value. */
   signIn(name?: string): Promise<{ userId: string; authorization: string }>;
@@ -45,7 +53,7 @@ export async function startServer(): Promise<TestServer> {
     root: fileURLToPath(new URL("../..", import.meta.url)),
     workers: [
       {
-        // The package's wrangler.jsonc with ARTIFACTS and FLAGS bound to the stubs below.
+        // The package's wrangler.jsonc with ARTIFACTS, FLAGS and BROWSER bound to the stubs below.
         configPath: "./src/test/wrangler.jsonc",
         secrets: {
           BETTER_AUTH_SECRET: SECRET,
@@ -57,6 +65,7 @@ export async function startServer(): Promise<TestServer> {
       },
       { configPath: "./src/test/artifacts-stub/wrangler.jsonc" },
       { configPath: "./src/test/flags-stub/wrangler.jsonc" },
+      { configPath: "./src/test/browser-stub/wrangler.jsonc" },
     ],
   });
   const { url } = await harness.listen();
@@ -65,6 +74,7 @@ export async function startServer(): Promise<TestServer> {
   const env = await worker.getEnv();
   const artifacts = (await harness.getWorker("artifacts-stub").getExport()) as unknown as ArtifactsStub;
   const flags = (await harness.getWorker("flags-stub").getExport()) as unknown as FlagsStub;
+  const browser = (await harness.getWorker("browser-stub").getExport()) as unknown as BrowserStub;
   // A test default, so the tests of what publishing does (here and in the
   // shell) run with it on. In production the flag starts off, and so does an
   // unset flag here (features.ts falls back to off).
@@ -76,6 +86,7 @@ export async function startServer(): Promise<TestServer> {
     env,
     artifacts,
     flags,
+    browser,
     fetch: (path, init) => fetch(new URL(path, url), init),
     async signIn(name = `user${++users}`) {
       // What better-auth writes when Google sign-in succeeds, and the signed

@@ -1,3 +1,5 @@
+import type { PreviewMessage } from "../services/preview.service";
+
 // Worker bindings + secrets. D1Database comes from @cloudflare/workers-types.
 //
 // Secrets (everything but the bindings and SHARE_URL_PATTERN, a plain var in
@@ -11,6 +13,12 @@ export type Bindings = {
   ARTIFACTS: Artifacts;
   // Feature flags (Flagship); read them through lib/features.ts.
   FLAGS: Flagship;
+  // Sites' preview images (services/preview.service.ts): the queue a publish
+  // that goes live is put on, and the browser its picture is taken with.
+  PREVIEWS: Queue<PreviewMessage>;
+  BROWSER: BrowserRun;
+  // Seconds between a publish going live and its picture being taken.
+  PREVIEW_DELAY_SECONDS: string;
   // A published site's share page, with * for its slug: https://antidraw.com/s/*
   SHARE_URL_PATTERN: string;
   BETTER_AUTH_SECRET: string;
