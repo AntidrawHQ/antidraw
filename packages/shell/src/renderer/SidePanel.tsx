@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ComponentType } from "react";
 import { ArrowLeft, Plus, Search } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
@@ -11,6 +11,7 @@ import {
 import { formatRelativeTime } from "./lib/time-utils";
 import { AppChat } from "./Chat";
 import { ComponentPanel } from "./ComponentPanel";
+import { SortMenu, type Sort } from "./dashboard/LocalList";
 import {
   Command,
   CommandInput,
@@ -19,7 +20,17 @@ import {
 } from "./components/ui/command";
 import { ResizablePanel } from "./components/ui/resizable-panel";
 
-// --- Conversation List (search + filtered list + new button) ---
+// --- Conversation List (search + sort + filtered list + new button) ---
+
+type Conversations = NonNullable<ReturnType<typeof useWorkspaceConversations>["data"]>;
+
+// The dashboard's three orders, for chats: when one last had a message, when
+// it was started, and its title.
+const SORTERS: Record<Sort, (a: Conversations[number], b: Conversations[number]) => number> = {
+  active: (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+  created: (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+  name: (a, b) => (a.title ?? "Untitled Conversation").localeCompare(b.title ?? "Untitled Conversation"),
+};
 
 type ConversationListProps = {
   onClose: () => void;
@@ -36,11 +47,17 @@ const ConversationList = ({ onClose }: ConversationListProps) => {
   const createConversation = useCreateConversation();
 
   const [search, setSearch] = useState("");
+  // By last active to begin with: it's the time each row shows.
+  const [sort, setSort] = useState<Sort>("active");
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
+
+  // While there's a search, cmdk puts the best matches first; this is the
+  // order among equals, and the whole order without one.
+  const sorted = useMemo(() => [...conversations].sort(SORTERS[sort]), [conversations, sort]);
 
   const handleSelect = (convId: string) => {
     const conv = conversations.find((c) => c.id === convId);
@@ -93,10 +110,24 @@ const ConversationList = ({ onClose }: ConversationListProps) => {
           onValueChange={setSearch}
           className="placeholder:text-neutral-400"
         />
+        {/* Its keys are its own: the list around it takes Enter for the chat that's lit, and Esc to close. */}
+        <div className="flex shrink-0" onKeyDown={(e) => e.stopPropagation()}>
+          <SortMenu
+            sort={sort}
+            onSort={setSort}
+            // -my-1.5: the row stays the height the search alone gives it.
+            className="-my-1.5"
+            // Back to the search, where the arrows move through the list.
+            onCloseAutoFocus={(e) => {
+              e.preventDefault();
+              inputRef.current?.focus();
+            }}
+          />
+        </div>
       </div>
 
       <CommandList className="flex-1 px-2 pb-2">
-        {conversations.map((conv) => (
+        {sorted.map((conv) => (
           <CommandItem
             key={conv.id}
             value={conv.id}
@@ -169,7 +200,7 @@ const ConversationView = ({ onShowList }: ConversationViewProps) => {
             <ArrowLeft className="w-4 h-4" />
             Chats
           </button>
-          <span className="text-neutral-500 shrink-0">/</span>
+          <span className="text-neutral-400 shrink-0">/</span>
           {/* pl-2 mirrors the button's pr-2 so the slash sits centered */}
           <span
             className="pl-2 text-neutral-200 overflow-hidden text-ellipsis whitespace-nowrap"
