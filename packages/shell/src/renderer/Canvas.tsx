@@ -38,7 +38,7 @@ const FocusRequestedComponent = () => {
 
   useEffect(() => {
     if (focusComponentName) {
-      focusComponent(focusComponentName);
+      focusComponent(focusComponentName, { jump: useWorkspaceStore.getState().focusJump });
       setFocusComponentName(null);
     }
   }, [focusComponentName, focusComponent, setFocusComponentName]);
