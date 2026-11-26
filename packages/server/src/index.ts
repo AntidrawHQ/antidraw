@@ -6,6 +6,8 @@ import { healthController } from "./controllers/health.controller";
 import { authController, meController } from "./controllers/auth.controller";
 import { featureController } from "./controllers/feature.controller";
 import { siteController } from "./controllers/site.controller";
+import { getDb } from "./db";
+import { retryDelaySeconds, takePreview, type PreviewMessage } from "./services/preview.service";
 
 // Built by a factory so tests can mount extra routes on a real app (with the
 // real fallbacks below) instead of asserting against a copy of them.
@@ -45,4 +47,22 @@ export const createApp = () => {
 const app = createApp();
 
 // Cloudflare Workers entrypoint.
-export default { fetch: app.fetch } satisfies ExportedHandler<Bindings>;
+export default {
+  fetch: app.fetch,
+  // Sites' preview images, asked for as publishes go live
+  // (services/preview.service.ts). One message a batch (wrangler.jsonc).
+  async queue(batch, env) {
+    for (const message of batch.messages) {
+      try {
+        const outcome = await takePreview(env, getDb(env), message.body);
+        console.log(`Preview of ${message.body.siteId}/${message.body.publishId}: ${outcome}`);
+        message.ack();
+      } catch (error) {
+        // Tried again up to max_retries, then dropped: the site keeps the
+        // picture it had, or none.
+        console.error(`Couldn't take a preview of ${message.body.siteId}/${message.body.publishId}:`, error);
+        message.retry({ delaySeconds: retryDelaySeconds(env, message.attempts) });
+      }
+    }
+  },
+} satisfies ExportedHandler<Bindings, PreviewMessage>;

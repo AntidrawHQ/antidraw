@@ -1,0 +1,7 @@
+{
+  "$schema": "../../../../../node_modules/wrangler/config-schema.json",
+  // The Browser Run binding for tests: see index.ts.
+  "name": "browser-stub",
+  "main": "index.ts",
+  "compatibility_date": "2026-06-27"
+}

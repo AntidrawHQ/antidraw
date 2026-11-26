@@ -44,6 +44,8 @@ const internal = (message: string) => new SiteUploadError("INTERNAL", message);
  *
  *   <prefix>/<site>/f/<sha256>          file bytes, shared by every version of the site
  *   <prefix>/<site>/m/<publishId>.json  one publish's manifest, written when it plans
+ *   <prefix>/<site>/p/<publishId>.jpg   a picture of that publish, if the caller took one
+ *                                       (putPreview): the one object that may be rewritten
  *
  * A published version is one of those manifests. Which one is live is the
  * caller's to record (a database row): commit by checking the plan is
@@ -196,8 +198,8 @@ export class SiteStore {
 
   /**
    * Deletes the plans of every publish not in `keep` (pass the live and
-   * previous ones, and any you may roll back to), and the files only they
-   * needed. Plans and files younger than the grace period are kept, in case a
+   * previous ones, and any you may roll back to), their pictures, and the
+   * files only they needed. Plans and files younger than the grace period are kept, in case a
    * publish is under way. Any failed read aborts it rather than risk deleting
    * a needed file.
    *
@@ -229,9 +231,28 @@ export class SiteStore {
       if (object.uploaded.getTime() + this.graceMs <= now) staleFiles.push(object.key);
     }
 
-    await deleteAll(this.bucket, [...staleFiles, ...stalePlans]);
+    const stalePreviews = stalePlans.map((key) =>
+      this.previewKey(site, key.slice(planPrefix.length).replace(/\.json$/, "")),
+    );
+    await deleteAll(this.bucket, [...staleFiles, ...stalePlans, ...stalePreviews]);
     for (const key of stalePlans) this.forgetPlan(key);
     return { deletedFiles: staleFiles.length, deletedPlans: stalePlans.length };
+  }
+
+  /**
+   * Stores a picture of a publish (a JPEG), for the caller to show in its
+   * place: a preview image. Taken again, it replaces the last.
+   */
+  async putPreview(site: string, publishId: string, image: ArrayBuffer | ArrayBufferView): Promise<void> {
+    this.assertIds(site, publishId);
+    await this.bucket.put(this.previewKey(site, publishId), image, { httpMetadata: { contentType: "image/jpeg" } });
+  }
+
+  /** The picture stored for a publish, or null when none was. */
+  async getPreview(site: string, publishId: string): Promise<BucketObjectBody | null> {
+    this.assertIds(site, publishId);
+    const object = await this.bucket.get(this.previewKey(site, publishId));
+    return hasBody(object) ? object : null;
   }
 
   /** Deletes everything stored for a site. */
@@ -298,6 +319,7 @@ export class SiteStore {
   private siteRoot = (site: string) => `${this.prefix}/${site}/`;
   private planKey = (site: string, publishId: string) => `${this.siteRoot(site)}m/${publishId}.json`;
   private fileKey = (site: string, hash: string) => `${this.siteRoot(site)}f/${hash}`;
+  private previewKey = (site: string, publishId: string) => `${this.siteRoot(site)}p/${publishId}.jpg`;
 }
 
 // A plan listed without its createdAt (not written by this store) falls back

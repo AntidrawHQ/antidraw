@@ -7,6 +7,7 @@ import { requireFeature } from "../lib/features";
 import { requireBearer, type AuthedEnv } from "../lib/require-session";
 import { respond, respondError } from "../lib/respond";
 import { siteStore } from "../lib/site-store";
+import { requestPreview } from "../services/preview.service";
 import { commitPublish, createSite, ownsSite, startPublish } from "../services/site.service";
 import { endSourcePush, hasSourceCommit, sourceAccess } from "../services/source.service";
 
@@ -94,6 +95,13 @@ siteController.on(["POST", "PUT"], "/:siteId/publishes/:publishId/:path{.+}", (c
   const { siteId, publishId, path } = ctx.req.param();
   const db = getDb(ctx.env);
   return handleUpload(siteStore(ctx.env), ctx.req.raw, { site: siteId, publishId, path }, {
-    commit: () => commitPublish(db, siteId, publishId, Date.now()),
+    commit: async () => {
+      const result = await commitPublish(db, siteId, publishId, Date.now());
+      // It's live: a picture of it is taken for its preview image. Asked for
+      // again when the commit is a retry, in case the first ask was lost;
+      // a publish that has its picture isn't photographed twice.
+      await requestPreview(ctx.env, { siteId, publishId });
+      return result;
+    },
   });
 });

@@ -399,6 +399,42 @@ describe("readManifest", () => {
   });
 });
 
+describe("previews", () => {
+  const jpeg = (text: string) => new TextEncoder().encode(text);
+  const preview = async (publishId: string) => (await store.getPreview(site, publishId))?.text() ?? null;
+
+  it("keeps a picture per publish, the last one taken", async () => {
+    await publish("p1", { "index.html": "v1" });
+    expect(await preview("p1")).toBeNull();
+    await store.putPreview(site, "p1", jpeg("first"));
+    await store.putPreview(site, "p1", jpeg("again"));
+    expect({ p1: await preview("p1"), p2: await preview("p2") }).toEqual({ p1: "again", p2: null });
+    expect(await thrown(store.putPreview(site, "../p1", jpeg("x")))).toMatchInlineSnapshot(`
+      {
+        "code": "INVALID_REQUEST",
+        "error": "SiteUploadError",
+        "message": "Invalid publishId: use 1-128 letters, digits, _ or -",
+      }
+    `);
+  });
+
+  it("goes with its publish when that's cleaned up", async () => {
+    await publish("p1", { "index.html": "v1" });
+    await publish("p2", { "index.html": "v2" });
+    await store.putPreview(site, "p1", jpeg("one"));
+    await store.putPreview(site, "p2", jpeg("two"));
+    clock += 2 * HOUR;
+    await store.cleanup(site, { keep: ["p2"] });
+    expect(await stored()).toMatchInlineSnapshot(`
+      [
+        "f/sha(v2)",
+        "m/p2.json",
+        "p/p2.jpg",
+      ]
+    `);
+  });
+});
+
 describe("cleanup", () => {
   it("keeps the publishes asked for and their files, deletes the rest", async () => {
     await publish("p1", { "index.html": "v1", "assets/app-1.js": "js1", "logo.png": "logo" }, ["assets/app-1.js"]);

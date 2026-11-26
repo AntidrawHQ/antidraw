@@ -45,9 +45,10 @@ src/
   lib/                   # env (bindings), errors, respond helper, auth wiring, feature flags
 ```
 
-Worker binding types are hand-maintained in `src/lib/env.ts` — with four
-bindings (D1, R2, Artifacts, Flagship) and a few vars and secrets, that is the
-single source of truth, so there is no `wrangler types` step to keep in sync.
+Worker binding types are hand-maintained in `src/lib/env.ts` — with six
+bindings (D1, R2, Artifacts, Flagship, a queue, Browser Run) and a few vars
+and secrets, that is the single source of truth, so there is no
+`wrangler types` step to keep in sync.
 
 ## Develop
 
@@ -66,7 +67,10 @@ directly. Artifacts has no local mode, so tests run
 own, `sites-dev` (wrangler.jsonc's `dev` environment; a `wrangler login` is
 needed), so a local server never reaches production's repos. `FLAGS` is bound
 to another stub (`src/test/flags-stub`), so a test sets each flag
-(`TestServer.flags`); the harness starts with `publish` on.
+(`TestServer.flags`); the harness starts with `publish` on. `BROWSER` is bound
+to a third (`src/test/browser-stub`), so no test runs a browser: its
+screenshot is a few bytes that name the page asked for
+(`TestServer.browser`). The preview queue is real, in workerd.
 
 `GET /api/health` → `{ "status": "ok", "service": "antidraw-server" }`.
 
@@ -186,6 +190,50 @@ it was ever sent. To reclaim space, run `SiteStore.cleanup(siteId, { keep })`
 by hand while nothing publishes to that site, keeping at least its live and
 previous publishes.
 
+### Preview images
+
+Each version that goes live gets a picture of its canvas, for links to its
+share page (`og:image`) and the app's dashboard
+(`src/services/preview.service.ts`). The commit puts `{ siteId, publishId }` on
+a queue (`antidraw-site-previews`); this Worker is its consumer too, and
+`PREVIEW_DELAY_SECONDS` later it has [Browser Run](https://developers.cloudflare.com/browser-run/)
+take a screenshot of the share page's picture view,
+`antidraw.com/s/<slug>?shot=1`: the canvas alone, on the part of it worth
+showing, which marks itself `[data-frames-ready]` once its frames have
+rendered (`@antidraw/share-page`'s `src/shot.ts`). The picture, 1200×630 at
+2x, is stored with the publish (`SiteStore.putPreview`), and the site Worker
+serves the live version's at `<slug>.antidraw.app/og.jpg`.
+
+Nothing outside reaches the capture: there is no route for it, and the
+address photographed is built from the site's slug. A publish that is no
+longer live, or already has its picture, is skipped. A picture that can't be
+taken is tried again three times, further apart each time, and then given
+up: the site keeps the last version's picture, or none, until its next
+publish.
+
+The share page must know `?shot` before this Worker asks for it: deployed the
+other way round, every picture times out waiting for the mark. So the share
+page ships first (Deploy, step 6), then the site Worker, then this one.
+
+Locally the queue is in wrangler's state and the browser is a Chrome on this
+machine (wrangler 4.168 or later; it downloads one the first time), so a publish to a local
+server is photographed from the share page's dev server
+(`npm run dev -w @antidraw/share-page`); without that running, the picture
+fails and is given up.
+
+A site published before this has no picture until it's published again. To
+give it one without that, send its message by hand, from the dashboard
+(Queues → `antidraw-site-previews` → Send message) or over HTTP with a token
+that has `Queues Edit`:
+
+```sh
+# The sites with a version live, and that version.
+npx wrangler d1 execute antidraw --remote --command "select id, slug, live_publish_id from site where live_publish_id is not null"
+curl -XPOST -H "Authorization: Bearer <token>" \
+  "https://api.cloudflare.com/client/v4/accounts/<account id>/queues/<queue id>/messages" \
+  --data '{ "body": { "siteId": "<id>", "publishId": "<live_publish_id>" } }'
+```
+
 ## Feature flags
 
 Features that aren't ready for everyone launch behind
@@ -260,6 +308,11 @@ npx wrangler login
 #    appears with its first repo.
 npx wrangler d1 create antidraw
 npx wrangler r2 bucket create antidraw-sites
+
+# 1b. The queue preview images are asked for on (Publishing → Preview
+#     images). The deploy refuses a Worker whose queue doesn't exist. Browser
+#     Run needs nothing made.
+npx wrangler queues create antidraw-site-previews
 
 # 2. Apply migrations to the remote database (from packages/server).
 npm run db:migrate

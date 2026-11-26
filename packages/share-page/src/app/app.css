@@ -24,6 +24,13 @@ body {
   @apply bg-neutral-800 font-sans text-neutral-200;
 }
 
+/* The page as its preview image is taken (../shot.ts): the frames alone,
+   without the canvas's minimap or the frames' names and buttons. */
+html[data-shot] .react-flow__minimap,
+html[data-shot] .canvas-toolbar-layer {
+  display: none;
+}
+
 /* A component opening over the list (touch/TouchSnapshot.tsx). */
 @keyframes snapshot-open {
   from {

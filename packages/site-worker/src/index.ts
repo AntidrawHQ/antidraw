@@ -7,7 +7,8 @@
 // its canvas.json, not a page to visit: the canvas that shows them is the
 // share page (SHARE_URL_PATTERN, on antidraw.com), which loads canvas.json
 // from here and each component in an iframe of /preview. So / sends visitors
-// to the share page, and canvas.json may be read from any origin.
+// to the share page, and canvas.json may be read from any origin. /og.jpg is
+// a picture of that canvas, the site's preview image (see PREVIEW_PATH).
 //
 // Each site gets its own subdomain, so its own origin: one site's code cannot
 // read another's storage, and none of it runs on the product's domain
@@ -117,8 +118,43 @@ const isServing = async (flags: Flagship, slug: string) => {
   }
 };
 
-// One server per isolate, so its caches last across requests.
+// One store and one server per isolate, so their caches last across requests.
+let store: SiteStore | undefined;
 let server: SiteServer | undefined;
+
+// The site's preview image: a picture of its canvas, for links to its share
+// page (og:image) and the app's dashboard. @antidraw/server takes one of each
+// publish soon after it goes live (its services/preview.service.ts), so the
+// live version's may not be there yet: until it is, the last version's is
+// served. The path is the Worker's own, like /: a file a site publishes
+// under this name is not reachable.
+const PREVIEW_PATH = "/og.jpg";
+
+const preview = async (request: Request, env: Env, siteId: string, pathname: string) => {
+  try {
+    const { live, previous } = await currentOf(env.DB, siteId);
+    store ??= new SiteStore({ bucket: env.SITES });
+    for (const publishId of [live, previous]) {
+      if (!publishId) continue;
+      const image = await store.getPreview(siteId, publishId);
+      if (!image) continue;
+      const headers = {
+        "content-type": "image/jpeg",
+        // A version's picture doesn't change, but which version is live
+        // does, so it's kept for minutes, not for good. The last version's,
+        // standing in, is asked about every time: the new one is on its way.
+        "cache-control": publishId === live ? "public, max-age=300" : "public, max-age=0, must-revalidate",
+        etag: `"${publishId}"`,
+      };
+      if (request.headers.get("if-none-match") === headers.etag) return new Response(null, { status: 304, headers });
+      return new Response(request.method === "HEAD" ? null : image.body, { headers });
+    }
+    return plain(pathname, 404, "No preview yet");
+  } catch (error) {
+    console.error(error);
+    return plain(pathname, 503, "Temporarily unavailable", { "retry-after": "1" });
+  }
+};
 
 const serve = async (request: Request, env: Env, ctx: ExecutionContext, slug: string, pathname: string) => {
   if (!SLUG_RE.test(slug)) return notFound(pathname);
@@ -141,8 +177,13 @@ const serve = async (request: Request, env: Env, ctx: ExecutionContext, slug: st
     });
   }
 
+  if (pathname === PREVIEW_PATH && (request.method === "GET" || request.method === "HEAD")) {
+    return preview(request, env, siteId, pathname);
+  }
+
+  store ??= new SiteStore({ bucket: env.SITES });
   server ??= new SiteServer({
-    store: new SiteStore({ bucket: env.SITES }),
+    store,
     current: (id) => currentOf(env.DB, id),
     cache: (caches as unknown as { default: FileCache }).default,
   });

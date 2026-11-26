@@ -11,6 +11,9 @@ export const siteFor = (pattern: string, slug: string) => {
   const base = new URL(`${pattern.replace("*", slug)}/`);
   return {
     canvasFile: new URL("canvas.json", base).href,
+    // A picture of the canvas, once @antidraw/server has taken one of a
+    // version that went live (@antidraw/site-worker's /og.jpg).
+    previewImage: new URL("og.jpg", base).href,
     // The Preview page of the workspace's build (@antidrawapp/runtime).
     frameUrl: (componentName: string) =>
       new URL(`preview?componentName=${encodeURIComponent(componentName)}`, base).href,
