@@ -911,6 +911,8 @@ export type FrameLayoutData = {
   y: number;
   width: number;
   height: number;
+  sized: boolean;
+  autoHeight: boolean;
 };
 
 export const getFrameLayouts = async (workspaceId: string) => {
@@ -947,6 +949,8 @@ export const saveFrameLayouts = async (
     y: number;
     width: number;
     height: number;
+    sized?: boolean;
+    autoHeight?: boolean;
   }[],
 ) => {
   try {

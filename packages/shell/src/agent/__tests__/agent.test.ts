@@ -97,6 +97,40 @@ test("says it's ready to any parent, and whether the dev server tagged it", () =
   expect(ask({ type: "hello", id: 7 })).toMatchObject({ msg: { type: "ready", id: 7 }, origin: CANVAS })
 })
 
+test("tells the canvas the component's height, once it knows where the canvas is and as it changes", () => {
+  stop()
+  // jsdom has no ResizeObserver or layout: both are the test's.
+  let resized = () => {}
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      constructor(on: () => void) {
+        resized = on
+      }
+      observe() {}
+      disconnect() {}
+    },
+  )
+  let height = 640
+  Object.defineProperty(container, "scrollHeight", { configurable: true, get: () => height })
+  stop = startInspector(container, "Card")
+  const heights = () =>
+    sent.filter(({ msg }) => (msg as { type: string }).type === "component-content-size")
+
+  // Not before the canvas has said hello: the height goes only to it.
+  resized()
+  expect(heights()).toEqual([])
+  ask({ type: "hello", id: 1 })
+  expect(heights()).toEqual([
+    { msg: { type: "component-content-size", componentName: "Card", height: 640 }, origin: CANVAS },
+  ])
+  // Once per change.
+  resized()
+  height = 900
+  resized()
+  expect(heights().map(({ msg }) => (msg as unknown as { height: number }).height)).toEqual([640, 900])
+})
+
 test("names the element clicked by its source location, and where the component used it", () => {
   tool("inspect")
   const { msg, origin } = click($(".btn"))

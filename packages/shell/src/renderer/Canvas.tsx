@@ -99,6 +99,7 @@ const WorkspaceCanvas = ({
       onFrameActivity={onFrameActivity}
       onFullscreen={openFullscreen}
       onSeeCode={seeCode}
+      sizeMenu
       onRefresh={trackRefresh}
       frameLayer={renderFrameLayers}
       framesTakePointer={picking}

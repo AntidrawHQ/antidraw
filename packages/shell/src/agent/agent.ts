@@ -586,12 +586,27 @@ export function startInspector(container: HTMLElement, componentName: string, pr
       origin,
     )
 
+  // The component's height, to the canvas, as it changes: a frame whose
+  // height is Auto (its toolbar's size menu) follows it. The canvas's own
+  // message, not the agent's: the canvas reads it whoever sends it.
+  // Not where there's no ResizeObserver to follow it with (jsdom).
+  let sentHeight = NaN
+  const heights = typeof ResizeObserver === "function" ? new ResizeObserver(() => sendHeight()) : null
+  const sendHeight = (force = false) => {
+    const height = container.scrollHeight
+    if (!heights || !canvasOrigin || (height === sentHeight && !force)) return
+    sentHeight = height
+    window.parent.postMessage({ type: "component-content-size", componentName, height }, canvasOrigin)
+  }
+  heights?.observe(container)
+
   const onMessage = (event: MessageEvent) => {
     if (event.source !== window.parent || event.data?.ns !== AGENT_NS) return
     canvasOrigin = event.origin
     const msg = event.data as ToFrame
     switch (msg.type) {
       case "hello":
+        sendHeight(true)
         return ready(msg.id)
       case "tool":
         return setTool(msg.tool, msg.wheel, msg.zoom)
@@ -640,6 +655,7 @@ export function startInspector(container: HTMLElement, componentName: string, pr
     window.removeEventListener("message", onMessage)
     window.removeEventListener("resize", schedule)
     mutations.disconnect()
+    heights?.disconnect()
     cancelAnimationFrame(frame)
     cancelAnimationFrame(watching)
     cancelAnimationFrame(trackWatch)

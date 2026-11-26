@@ -25,6 +25,8 @@ beforeAll(() => {
   (globalThis as { DOMMatrixReadOnly?: unknown }).DOMMatrixReadOnly = class {
     m22 = 1;
   };
+  // The size menu's (@ui-sdk) waits for its animations.
+  Element.prototype.getAnimations = () => [];
 });
 
 let root: Root | undefined;
@@ -45,7 +47,8 @@ async function renderCanvas(
     components = [{ name: "Card" }, { name: "Hero Card" }],
     savedLayouts = [{ componentName: "Card", x: 10, y: 20, width: 300, height: 200 }],
     strict = false,
-  }: { components?: { name: string }[]; savedLayouts?: FrameLayout[]; strict?: boolean } = {},
+    sizeMenu = false,
+  }: { components?: { name: string }[]; savedLayouts?: FrameLayout[]; strict?: boolean; sizeMenu?: boolean } = {},
 ) {
   const { Canvas } = await import("../Canvas");
   const container = document.body.appendChild(document.createElement("div"));
@@ -62,6 +65,7 @@ async function renderCanvas(
               onLayoutsChange={onChange}
               onFullscreen={() => {}}
               frameLayer={frameLayer}
+              sizeMenu={sizeMenu}
             />
           </div>
         </ReactFlowProvider>
@@ -130,6 +134,114 @@ it("lets only the frames' origin size them", async () => {
     {
       "fromElsewhere": "300px × 200px",
       "fromTheSite": "640px × 480px",
+    }
+  `);
+});
+
+const postContentHeight = (height: number, componentName = "Card", origin = SITE) =>
+  act(() => {
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        origin,
+        data: { type: "component-content-size", componentName, height },
+      }),
+    );
+  });
+
+it("sizes a frame no bigger than 3840 a side from what its component reports, but keeps a bigger size the user set", async () => {
+  await renderCanvas(undefined, undefined, {
+    components: [{ name: "Card" }, { name: "Hero Card" }, { name: "Footer" }],
+    savedLayouts: [
+      { componentName: "Card", x: 0, y: 0, width: 300, height: 200 },
+      { componentName: "Hero Card", x: 900, y: 0, width: 390, height: 600, sized: true, autoHeight: true },
+      { componentName: "Footer", x: 2000, y: 0, width: 5000, height: 9000, sized: true },
+    ],
+  });
+  await postSize(SITE, 6000, 25000);
+  await postContentHeight(30000, "Hero Card");
+  await postSize(SITE, 6000, 25000, "Footer");
+  expect(frames().map((f) => `${f.node}: ${f.size}`)).toMatchInlineSnapshot(`
+    [
+      "Card-1: 3840px × 3840px",
+      "Hero Card-1: 390px × 3840px",
+      "Footer-1: 5000px × 9000px",
+    ]
+  `);
+});
+
+it("keeps a size set in the size menu, and has an Auto height follow its content", async () => {
+  await renderCanvas(undefined, undefined, {
+    components: [{ name: "Card" }, { name: "Hero Card" }],
+    savedLayouts: [
+      { componentName: "Card", x: 0, y: 0, width: 768, height: 1024, sized: true },
+      { componentName: "Hero Card", x: 900, y: 0, width: 390, height: 600, sized: true, autoHeight: true },
+    ],
+  });
+  const sizes = () => frames().map((f) => f.size);
+  // The component's own size: a set size keeps it; Auto takes its height.
+  await postSize(SITE, 500, 300);
+  await postSize(SITE, 500, 700, "Hero Card");
+  const afterComponentSize = sizes();
+  // Its content's height, as it changes: only Auto follows it, and only from
+  // the frames' origin.
+  await postContentHeight(1500);
+  await postContentHeight(950, "Hero Card");
+  await postContentHeight(2000, "Hero Card", "https://elsewhere.test");
+  expect({ afterComponentSize, afterContentHeight: sizes() }).toMatchInlineSnapshot(`
+    {
+      "afterComponentSize": [
+        "768px × 1024px",
+        "390px × 700px",
+      ],
+      "afterContentHeight": [
+        "768px × 1024px",
+        "390px × 950px",
+      ],
+    }
+  `);
+});
+
+it("sizes a frame from its toolbar's size menu, and saves the size as set", async () => {
+  vi.useFakeTimers();
+  const saved = vi.fn();
+  await renderCanvas(saved, undefined, { sizeMenu: true });
+  const node = () => document.querySelector<HTMLElement>('.react-flow__node[data-id="Card-1"]')!;
+  await act(async () => {
+    node().dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  const trigger = () => document.querySelector<HTMLButtonElement>('button[aria-label^="Frame size"]');
+  const label = trigger()?.getAttribute("aria-label");
+  await act(async () => trigger()!.click());
+  const tablet = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((o) =>
+    o.textContent?.includes("Tablet"),
+  )!;
+  // Arrows in the menu move its highlight, not the frame.
+  const at = positions()["Card-1"];
+  await act(async () => {
+    tablet.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+  });
+  expect(positions()["Card-1"]).toBe(at);
+  await act(async () => tablet.click());
+  await act(async () => vi.advanceTimersByTime(600));
+  vi.useRealTimers();
+  expect({
+    before: label,
+    after: trigger()?.getAttribute("aria-label"),
+    size: frames()[0]!.size,
+    saved: saved.mock.calls.at(-1)?.[0][0],
+  }).toMatchInlineSnapshot(`
+    {
+      "after": "Frame size: Tablet, 768 × 1024",
+      "before": "Frame size: Custom, 300 × 200",
+      "saved": {
+        "componentName": "Card",
+        "height": 1024,
+        "sized": true,
+        "width": 768,
+        "x": 10,
+        "y": 20,
+      },
+      "size": "768px × 1024px",
     }
   `);
 });
