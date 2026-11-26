@@ -334,22 +334,32 @@ it("undoes and redoes a move made with the arrow keys", async () => {
   }
 });
 
-it("leaves the keys to a text field being typed in, and to the rest of the window", async () => {
+it("leaves the keys to a text field being typed in", async () => {
   const canvas = await renderEditing();
   await pick("Card");
-  // Typing: the field's own.
   canvas.outside.focus();
   await press("Backspace", {}, canvas.outside);
   await press("a", { ctrlKey: true }, canvas.outside);
-  // A press outside the canvas: the window's other parts have the keys.
-  await act(async () => {
-    canvas.outside.blur();
-    document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
-  });
-  await press("Backspace", {}, document.body);
-  await press("d", { ctrlKey: true }, document.body);
+  await press("d", { ctrlKey: true }, canvas.outside);
   expect({ deleted: api.deleteComponents.mock.calls.length, created: api.createComponents.mock.calls.length, selected: selected() })
     .toEqual({ deleted: 0, created: 0, selected: ["Card-1"] });
+});
+
+it("acts on the canvas from anywhere else in the window, not only after a press on it", async () => {
+  await renderEditing();
+  await pick("Card");
+  // A press outside the canvas (the chat, the titlebar): the keys still act.
+  await act(async () => {
+    document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+  });
+  await press("d", { ctrlKey: true }, document.body);
+  expect(api.createComponents.mock.calls.length).toBe(1);
+});
+
+it("has its keys from the start, before any press", async () => {
+  await renderEditing();
+  await press("a", { ctrlKey: true }, document.body);
+  expect(selected()).toEqual(["Card-1", "Hero-1"]);
 });
 
 it("selects all, clears the selection, and steps from frame to frame", async () => {

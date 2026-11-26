@@ -69,37 +69,26 @@ export const CanvasEditing = ({
 
   const keysOffRef = useRef(keysOff);
   keysOffRef.current = keysOff;
-  const activeRef = useRef(false);
-  const live = () => !keysOffRef.current && activeRef.current;
+  // The canvas's shortcuts work wherever the focus is, from the start; only
+  // not while the dashboard covers the canvas. Typing (in the chat, a field)
+  // keeps its own keys: see ignoreInputs, typing() and textSelected().
+  const live = () => !keysOffRef.current;
 
   // Each move the user makes, to undo.
   useEffect(() => controls.onFramesMoved(edits.recordMoves), [controls, edits]);
 
   const [menu, setMenu] = useState<Menu | null>(null);
-  const menuOpenRef = useRef(false);
-  menuOpenRef.current = menu !== null;
-
-  // Whether the canvas is the part of the window in use, and where the
-  // pointer is on it, for a paste.
+  // Where the pointer is on the canvas, for a paste.
   const pointerRef = useRef<{ x: number; y: number } | null>(null);
   useEffect(() => {
     if (!domNode) return;
-    const inCanvas = (target: EventTarget | null) =>
-      target instanceof Node && (domNode.contains(target) || !!(target as Element).closest?.(`[${MENU_ATTR}]`));
     const onPress = (e: PointerEvent) => {
-      // A press that only closes the canvas's menu (it takes every press
-      // while it's open) leaves the canvas in use.
-      if (menuOpenRef.current) return;
-      activeRef.current = inCanvas(e.target);
       // Text selected elsewhere in the window (a chat message) stays selected
       // through a press on a frame, and a copy would be of it, not the frame.
       const selection = document.getSelection();
       if (domNode.contains(e.target as Node) && selection && !selection.isCollapsed && !domNode.contains(selection.anchorNode)) {
         selection.removeAllRanges();
       }
-    };
-    const onFocus = (e: FocusEvent) => {
-      if (e.target !== document.body) activeRef.current = inCanvas(e.target);
     };
     const onMove = (e: PointerEvent) => {
       pointerRef.current = { x: e.clientX, y: e.clientY };
@@ -108,12 +97,10 @@ export const CanvasEditing = ({
       pointerRef.current = null;
     };
     document.addEventListener("pointerdown", onPress, true);
-    document.addEventListener("focusin", onFocus, true);
     domNode.addEventListener("pointermove", onMove);
     domNode.addEventListener("pointerleave", onLeave);
     return () => {
       document.removeEventListener("pointerdown", onPress, true);
-      document.removeEventListener("focusin", onFocus, true);
       domNode.removeEventListener("pointermove", onMove);
       domNode.removeEventListener("pointerleave", onLeave);
     };
@@ -193,7 +180,6 @@ export const CanvasEditing = ({
     if (!domNode) return;
     const open = (at: { x: number; y: number }) => {
       if (keysOffRef.current) return;
-      activeRef.current = true;
       setMenu({ ...at, frames: null, canPaste: editsRef.current.hasClip() });
     };
     // On the canvas around the frames a right press may begin a pan: React
@@ -210,7 +196,6 @@ export const CanvasEditing = ({
       // Ctrl+click or the menu key, which pan nothing and it never reports.)
       if (!id && !onSelection && e.button === 2 && target.closest(".react-flow__pane")) return;
       e.preventDefault();
-      activeRef.current = true;
       const frame = id ? store.getState().nodeLookup.get(id) : undefined;
       // A frame that wasn't selected is, alone; one that was keeps the rest.
       const picked = frame && !frame.selected ? [frame] : editsRef.current.selectedFrames();
