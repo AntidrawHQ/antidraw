@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, net, protocol, session, shell } from "electron";
+import { app, BrowserWindow, ipcMain, net, protocol, screen, session, shell } from "electron";
 import electronUpdater from "electron-updater";
 
 const { autoUpdater } = electronUpdater;
@@ -105,9 +105,15 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const previewWindows = new Set<Electron.WebContents>();
 
 const createWindow = () => {
+  // As big as the screen it opens on, less the menu bar and the Dock (not
+  // macOS full screen, its own Space): the chat, the canvas and the panel
+  // beside it all need the room.
+  const { x, y, width, height } = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
   const win = new BrowserWindow({
-    width: 900,
-    height: 670,
+    x,
+    y,
+    width,
+    height,
     // The titlebar's workspace switcher and Publish button need the room.
     minWidth: 480,
     titleBarStyle: "hidden",
