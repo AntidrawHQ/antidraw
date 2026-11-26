@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { PublishedSite } from "@/main/api";
 import { cn } from "@/renderer/lib/utils";
-import { CARD, CARDS, CARD_META, CARD_THUMB, HEADINGS, META, NAME, THUMB, ago, cardKeys, rowKeys } from "./LocalList";
+import { CARD, CARDS, CARD_META, CARD_THUMB, HEADINGS, META, NAME, THUMB, ago, cardKeys, rowKeys, useFirstRows } from "./LocalList";
 
 // What the account has published, as rows, the latest published first. A
 // click, or Enter, opens one view-only in the window's other tab. One stop for
@@ -17,6 +17,7 @@ export const PublishedRows = ({
   items: PublishedSite[];
   onOpen: (site: PublishedSite) => void;
 }) => {
+  const shown = useFirstRows(items);
   // Tab stops at the row the keys were last on, or at the first.
   const [last, setLast] = useState<string>();
   const stop = items.some((site) => site.id === last) ? last : items[0]?.id;
@@ -29,7 +30,7 @@ export const PublishedRows = ({
         <span role="columnheader" aria-label="Actions" />
       </div>
       <div role="rowgroup" className="space-y-1">
-        {items.map((site) => (
+        {shown.map((site) => (
           <div
             key={site.id}
             role="row"
@@ -66,12 +67,13 @@ export const PublishedCards = ({
   items: PublishedSite[];
   onOpen: (site: PublishedSite) => void;
 }) => {
+  const shown = useFirstRows(items);
   // Tab stops at the card the keys were last on, or at the first.
   const [last, setLast] = useState<string>();
   const stop = items.some((site) => site.id === last) ? last : items[0]?.id;
   return (
     <div role="grid" aria-label="Published" onKeyDown={cardKeys} className={CARDS}>
-      {items.map((site) => (
+      {shown.map((site) => (
         <div
           key={site.id}
           role="row"

@@ -95,7 +95,7 @@ export const Titlebar = ({ tabs = true }: { tabs?: boolean }) => {
         // Clipped across, in a window too narrow for them: drawn under the
         // right-hand controls, the close button would take their clicks.
         <div role="tablist" className="flex min-w-0 items-center gap-1.5 overflow-x-clip">
-          <Tab on={dashboardShown} onSelect={() => void showDashboard()} className="shrink-0">
+          <Tab on={dashboardShown} onSelect={showDashboard} className="shrink-0">
             {/* sw 2: at 14px the default 1.6 draws under a pixel, fainter
                 than the label beside it. */}
             <Svg size={14} sw={2}>

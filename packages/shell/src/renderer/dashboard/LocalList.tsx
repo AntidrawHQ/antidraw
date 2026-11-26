@@ -1,4 +1,4 @@
-import type { KeyboardEvent, ReactNode } from "react";
+import { startTransition, useEffect, useMemo, useState, type KeyboardEvent, type ReactNode } from "react";
 import { ContextMenu, DropdownMenu } from "radix-ui";
 import type { WorkspaceWithThumbnail } from "@/main/api";
 import { cn } from "@/renderer/lib/utils";
@@ -277,7 +277,17 @@ const Row = (p: OneProps) => {
   );
 };
 
+// The first screenful as a list mounts, the rest once that's on screen: every row at once (about 1ms each) is what
+// a switch to the dashboard's tab waited on. All of them are in the list a moment later, for the keys and for search.
+const FIRST = 20;
+export const useFirstRows = <T,>(items: T[]): T[] => {
+  const [all, setAll] = useState(false);
+  useEffect(() => startTransition(() => setAll(true)), []);
+  return useMemo(() => (all ? items : items.slice(0, FIRST)), [all, items]);
+};
+
 export const ListRows = ({ items, selected, ...h }: ItemProps) => {
+  const shown = useFirstRows(items);
   // Tab stops at the selected row, or at the first while none is.
   const stop = items.some((w) => w.id === selected) ? selected : items[0]?.id;
   return (
@@ -290,7 +300,7 @@ export const ListRows = ({ items, selected, ...h }: ItemProps) => {
         <span role="columnheader" aria-label="Actions" />
       </div>
       <div role="rowgroup" className="space-y-1">
-        {items.map((w) => (
+        {shown.map((w) => (
           <Row key={w.id} w={w} selected={selected === w.id} stop={stop === w.id} {...h} />
         ))}
       </div>
@@ -348,10 +358,11 @@ const Card = (p: OneProps) => {
 };
 
 export const GridCards = ({ items, selected, ...h }: ItemProps) => {
+  const shown = useFirstRows(items);
   const stop = items.some((w) => w.id === selected) ? selected : items[0]?.id;
   return (
     <div role="grid" aria-label="Workspaces" onKeyDown={cardKeys} className={CARDS}>
-      {items.map((w) => (
+      {shown.map((w) => (
         <Card key={w.id} w={w} selected={selected === w.id} stop={stop === w.id} {...h} />
       ))}
     </div>
