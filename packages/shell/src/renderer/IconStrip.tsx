@@ -20,16 +20,26 @@ export const IconStrip = () => {
   const activeSidePanel = useWorkspaceStore((s) => s.activeSidePanel);
   const setActiveSidePanel = useWorkspaceStore((s) => s.setActiveSidePanel);
   const open = useWorkspaceStore((s) => s.sidePanelOpen);
+  const uiHidden = useWorkspaceStore((s) => s.uiHidden);
 
   // Mod+B folds the side panel, as in VS Code: Cmd on macOS, Ctrl elsewhere.
-  // Typing too, since nothing here takes it for bold.
+  // Typing too, since nothing here takes it for bold. Mod+\ hides all the
+  // chrome around the canvas and shows it again, as in Figma.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+      // By the key, not the character: on some layouts \ is typed with AltGr.
+      if (e.code === "Backslash" && mod && !e.shiftKey && !e.altKey) {
+        const s = useWorkspaceStore.getState();
+        e.preventDefault();
+        track("panel_toggled", { panel: "all", open: s.uiHidden, via: "shortcut" });
+        s.setUiHidden(!s.uiHidden);
+        return;
+      }
       if (e.key !== "b" || !mod || e.shiftKey || e.altKey) return;
       e.preventDefault();
       const s = useWorkspaceStore.getState();
-      track("panel_toggled", { panel: "side", open: !s.sidePanelOpen, via: "shortcut" });
+      track("panel_toggled", { panel: "side", open: s.uiHidden || !s.sidePanelOpen, via: "shortcut" });
       s.toggleSidePanel();
     };
     window.addEventListener("keydown", onKey);
@@ -37,7 +47,7 @@ export const IconStrip = () => {
   }, []);
 
   return (
-    <div className="w-12 shrink-0 bg-[#2A2A2A] flex flex-col items-stretch border-r border-[#333]">
+    <div className={cn("w-12 shrink-0 bg-[#2A2A2A] flex flex-col items-stretch border-r border-[#333]", uiHidden && "hidden")}>
       {tabs.map((tab) => {
         const isActive = open && activeSidePanel === tab.id;
         return (

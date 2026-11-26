@@ -235,7 +235,7 @@ type SidePanelProps = {
 
 export const SidePanel = ({ className }: SidePanelProps) => {
   const activeSidePanel = useWorkspaceStore((s) => s.activeSidePanel);
-  const open = useWorkspaceStore((s) => s.sidePanelOpen);
+  const open = useWorkspaceStore((s) => s.sidePanelOpen && !s.uiHidden);
   const ActivePanel = panelMap[activeSidePanel];
 
   // Hidden, not unmounted: the panel keeps its width and the composer its draft.

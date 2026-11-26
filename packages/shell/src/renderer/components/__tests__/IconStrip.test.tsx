@@ -28,7 +28,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   act(() => root.unmount());
-  useWorkspaceStore.setState({ activeSidePanel: "chat", sidePanelOpen: true });
+  useWorkspaceStore.setState({ activeSidePanel: "chat", sidePanelOpen: true, uiHidden: false });
 });
 
 const state = () => {
@@ -65,6 +65,47 @@ it("folds and unfolds the side panel", () => {
       "Cmd+b: folded",
       "Ctrl+Shift+B: folded",
       "pick tab 1: components open",
+    ]
+  `);
+});
+
+const chrome = () => {
+  const s = useWorkspaceStore.getState();
+  const strip = host.firstElementChild!.classList.contains("hidden") ? "strip hidden" : "strip shown";
+  return `${s.uiHidden ? "UI hidden" : "UI shown"}, ${strip}, side ${s.sidePanelOpen ? "open" : "folded"}`;
+};
+
+const key = (init: KeyboardEventInit, target: Element = document.body) => {
+  act(() => void target.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init })));
+  const keys = [init.ctrlKey && "Ctrl", init.altKey && "Alt", init.shiftKey && "Shift", init.code].filter(Boolean).join("+");
+  return `${keys}${target === document.body ? "" : " in a text box"}: ${chrome()}`;
+};
+
+it("hides all the chrome with Mod+\\ and shows it again as it was, and Mod+B brings it back", () => {
+  const backslash = { key: "\\", code: "Backslash", ctrlKey: true };
+  const b = { key: "b", code: "KeyB", ctrlKey: true };
+  expect([
+    key(backslash),
+    key(backslash),
+    // A panel folded before stays folded under it, and after.
+    key(b),
+    key(backslash),
+    key(backslash),
+    // Typing too.
+    key(backslash, document.querySelector("textarea")!),
+    // Mod+B, with it hidden: back, with the side panel open.
+    key(b),
+    key({ ...backslash, shiftKey: true }),
+  ]).toMatchInlineSnapshot(`
+    [
+      "Ctrl+Backslash: UI hidden, strip hidden, side open",
+      "Ctrl+Backslash: UI shown, strip shown, side open",
+      "Ctrl+KeyB: UI shown, strip shown, side folded",
+      "Ctrl+Backslash: UI hidden, strip hidden, side folded",
+      "Ctrl+Backslash: UI shown, strip shown, side folded",
+      "Ctrl+Backslash in a text box: UI hidden, strip hidden, side folded",
+      "Ctrl+KeyB: UI shown, strip shown, side open",
+      "Ctrl+Shift+Backslash: UI shown, strip shown, side open",
     ]
   `);
 });
