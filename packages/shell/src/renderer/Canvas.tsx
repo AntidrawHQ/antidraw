@@ -8,6 +8,7 @@ import type { FrameLayoutData } from "./lib/api";
 import { cn } from "./lib/utils";
 import { Canvas, useFocusComponent, type FrameLayer } from "./canvas/Canvas";
 import { CanvasToolbar } from "./components/CanvasToolbar";
+import { CanvasFind } from "./canvas-find/CanvasFind";
 import { OnboardingList } from "./onboarding/OnboardingList";
 import { renderFrameInspector } from "./inspector/FrameInspector";
 import { InspectorControls } from "./inspector/InspectorControls";
@@ -128,6 +129,7 @@ const WorkspaceCanvas = ({
           <EditBar />
           <ShowPanel />
           <CanvasToolbar />
+          <CanvasFind key={workspaceId} components={userComponents} />
         </>
       )}
     </Canvas>
