@@ -12,6 +12,7 @@ import type {
   DevServerInfo,
   DevServerState,
   EffortLevel,
+  ForkSiteResponse,
   ModelInfo,
   StreamEvent,
   WorkspaceWithThumbnail,
@@ -149,24 +150,23 @@ export const triggerClaudeLogin = async () => {
 // Workspace API
 // ============================================================================
 
-export async function* createWorkspace(
-  name: string,
-): AsyncGenerator<CreateWorkspaceResponse> {
+// A POST whose answer is a stream of events (SSE), as they arrive.
+async function* postEvents<Event>(url: string, body: unknown): AsyncGenerator<Event> {
   const abort = new AbortController();
-  const stream = new ReadableStream<CreateWorkspaceResponse>({
+  const stream = new ReadableStream<Event>({
     start(controller) {
-      fetchEventSource("antidraw://app/api/workspaces", {
+      fetchEventSource(url, {
         method: "POST",
         headers: {
           ...appKeyHeader(),
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ name }),
+        body: JSON.stringify(body),
         signal: abort.signal,
         openWhenHidden: true,
 
         onmessage: (ev) => {
-          const event = JSON.parse(ev.data) as CreateWorkspaceResponse;
+          const event = JSON.parse(ev.data) as Event;
           controller.enqueue(event);
         },
         onerror: (error) => {
@@ -186,6 +186,13 @@ export async function* createWorkspace(
 
   yield* stream;
 }
+
+export const createWorkspace = (name: string) =>
+  postEvents<CreateWorkspaceResponse>("antidraw://app/api/workspaces", { name });
+
+// A new workspace forked from one of the account's published sites.
+export const forkSite = (siteId: string) =>
+  postEvents<ForkSiteResponse>("antidraw://app/api/workspaces/fork", { siteId });
 
 export const listWorkspaces = async () => {
   try {

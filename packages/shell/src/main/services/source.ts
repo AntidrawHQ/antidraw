@@ -6,7 +6,7 @@ import git, { Errors, type HttpClient, type TreeEntry } from "isomorphic-git";
 
 // A workspace's source as a commit in its site's git repo (Artifacts, see
 // @antidraw/server's source.service.ts): what a publish is built from, and
-// what a remix clones. The commits are made in a bare repo beside the
+// what a fork clones (fork.ts). The commits are made in a bare repo beside the
 // workspace (gitDir), so a git repo the user keeps in it is never touched.
 // No Electron here; publish.ts drives it.
 
@@ -344,7 +344,7 @@ const NO_COMMIT = "0".repeat(40);
 // isomorphic-git's HTTP over the given fetch, so git goes the way the app's
 // other requests do (net.fetch: the system's proxy and certificates). The body
 // is sent whole: isomorphic-git has made the whole pack by then anyway.
-const gitHttp = (fetch: typeof globalThis.fetch): HttpClient => ({
+export const gitHttp = (fetch: typeof globalThis.fetch): HttpClient => ({
   async request({ url, method = "GET", headers = {}, body, signal }) {
     const chunks: Uint8Array[] = [];
     if (body) for await (const chunk of body) chunks.push(chunk);
@@ -359,6 +359,10 @@ const gitHttp = (fetch: typeof globalThis.fetch): HttpClient => ({
     };
   },
 });
+
+/** A repo token as git's password: the token without its `?expires=` suffix. */
+export const gitAuthorization = (token: string) =>
+  `Basic ${Buffer.from(`x:${token.split("?expires=")[0]}`).toString("base64")}`;
 
 // The repo refusing to move main because it isn't where the push said it
 // was: another push got there between ours reading main and updating it.
@@ -384,10 +388,10 @@ export const artifactsRemote = ({
   token: string;
   fetch: typeof globalThis.fetch;
 }): SourceRemote => {
-  // The token without its `?expires=` suffix is git's password, sent from the
-  // first request: isomorphic-git asks onAuth only once refused, which would
-  // make each request twice. A new object each time, as it adds to them.
-  const authorization = `Basic ${Buffer.from(`x:${token.split("?expires=")[0]}`).toString("base64")}`;
+  // Sent from the first request: isomorphic-git asks onAuth only once
+  // refused, which would make each request twice. A new object each time, as
+  // it adds to them.
+  const authorization = gitAuthorization(token);
   const headers = () => ({ Authorization: authorization });
   const http = gitHttp(fetch);
   const repo = { fs: nodeFs, http, gitdir: gitDir, url };

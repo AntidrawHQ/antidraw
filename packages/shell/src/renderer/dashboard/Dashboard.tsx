@@ -28,6 +28,7 @@ import {
   useSwitchWorkspace,
   useWorkspaces,
 } from "@/renderer/lib/workspace-ops";
+import { useFork } from "@/renderer/published/Fork";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
 import { Header, type Section, type View } from "./Header";
 import { GridCards, ListRows, SORTERS, type Sort } from "./LocalList";
@@ -151,6 +152,7 @@ const Notice = ({ children, action }: { children: React.ReactNode; action?: Reac
 const Published = ({ query }: { query: string }) => {
   const { data: sites, error, isPending, refetch, isFetching } = usePublishedSites();
   const openPublished = useOpenPublished();
+  const { fork, dialog } = useFork();
   const view = useDashboardStore((s) => s.view);
   const signIn = useSignIn();
   const cancelSignIn = useCancelSignIn();
@@ -205,7 +207,12 @@ const Published = ({ query }: { query: string }) => {
 
   if (items.length === 0) return <Notice>{q ? `Nothing matches “${query}”.` : "Nothing published yet."}</Notice>;
   const List = view === "grid" ? PublishedCards : PublishedRows;
-  return <List items={items} onOpen={(site) => void openPublished(site)} />;
+  return (
+    <>
+      <List items={items} onOpen={(site) => void openPublished(site)} onFork={fork} />
+      {dialog}
+    </>
+  );
 };
 
 export const Dashboard = () => {

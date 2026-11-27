@@ -10,11 +10,13 @@ import { ago } from "@/renderer/dashboard/LocalList";
 import { useAccount } from "@/renderer/lib/account-ops";
 import { queryKeys } from "@/renderer/lib/query-keys";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
+import { ForkButton, useFork } from "./Fork";
 
 // A published site in the window's tab: its canvas and nothing to change it
 // with. No chat, no panels and no tools; the frames load the site's own
 // pages, as its share page shows them (@antidraw/share-page), and can be
-// looked at, panned, zoomed and used, not moved.
+// looked at, panned, zoomed and used, not moved. To change it, it's forked
+// (./Fork.tsx): the tab becomes the fork.
 
 // The parts of canvas.json the canvas reads. The file is the site's, so it's
 // checked: the canvas takes it as it comes.
@@ -113,6 +115,7 @@ export const PublishedViewer = ({ site }: { site: PublishedSite }) => {
   // The list is the account's own, so the account is who published it.
   const { data: account } = useAccount();
   const [copied, setCopied] = useState(false);
+  const { fork, dialog } = useFork();
 
   useEffect(() => {
     if (!copied) return;
@@ -149,6 +152,7 @@ export const PublishedViewer = ({ site }: { site: PublishedSite }) => {
         <Btn kind="ghost" small onClick={copyLink}>
           <Svg size={13}>{ic.link}</Svg> Copy link
         </Btn>
+        <ForkButton primary site={site} onFork={fork} />
       </div>
       <div className="relative min-h-0 flex-1">
         {/* A new canvas for another site, or another version of this one. */}
@@ -156,7 +160,9 @@ export const PublishedViewer = ({ site }: { site: PublishedSite }) => {
         {/* Not under the Copied line, which is in its place. */}
         {!copied && (
           <div className="pointer-events-none absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-full bg-[#2A2A2A] px-3.5 py-1.5 text-[12.5px] whitespace-nowrap text-[#B2B2B2] ring-1 ring-[#3D3D3D]">
-            A published snapshot: look, pan and zoom.
+            {site.forkable
+              ? "A published snapshot: look, pan and zoom. Fork it to get the source and change it."
+              : "A published snapshot: look, pan and zoom."}
           </div>
         )}
         {copied && (
@@ -168,6 +174,7 @@ export const PublishedViewer = ({ site }: { site: PublishedSite }) => {
           </div>
         )}
       </div>
+      {dialog}
     </div>
   );
 };

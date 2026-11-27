@@ -236,6 +236,9 @@ const publishedSite = z.object({
   version: z.number().int(),
   // When the live one did, in ms.
   publishedAt: z.number(),
+  // Whether it can be forked: its live version's source was kept. Off for a
+  // server from before it said.
+  forkable: z.boolean().default(false),
 });
 
 export type PublishedSite = z.infer<typeof publishedSite>;

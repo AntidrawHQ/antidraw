@@ -7,13 +7,14 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vite
 
 // The window's two tabs and the dashboard in jsdom, with main's API faked:
 // what the window opens on, what the lists show, and what opening, closing
-// and deleting a workspace, or opening a published site, do to the tab, its
-// dev server and what's saved.
+// and deleting a workspace, or opening or forking a published site, do to the
+// tab, its dev server and what's saved.
 
 const api = vi.hoisted(() => ({
   listWorkspaces: vi.fn(),
   getWorkspace: vi.fn(),
   createWorkspace: vi.fn(),
+  forkSite: vi.fn(),
   deleteWorkspace: vi.fn(),
   getWorkspaceThumbnail: vi.fn(),
   startDevServer: vi.fn(),
@@ -74,6 +75,7 @@ const SITES = [
     filesUrl: "https://paper-shaders.antidraw.app",
     version: 5,
     publishedAt: Date.now() - 2 * HOUR,
+    forkable: true,
   },
   {
     id: "s-pricing",
@@ -83,6 +85,8 @@ const SITES = [
     filesUrl: "https://pricing-page.antidraw.app",
     version: 1,
     publishedAt: Date.now() - 3 * DAY,
+    // Published before a version's source was kept.
+    forkable: false,
   },
 ];
 const ACCOUNT = { id: "u1", name: "Ada Lovelace", email: "ada@example.com", image: null };
@@ -645,8 +649,8 @@ it("shows the workspaces, and what's published, as cards from the switch at the 
       "Published": {
         "headings": false,
         "items": [
-          "Paper Shadersv5 · 2 hours ago",
-          "Pricing pagev1 · 3 days ago",
+          "Paper Shadersv5 · 2 hours ago Fork",
+          "Pricing pagev1 · 3 days ago Fork",
         ],
         "view": [
           "● Cards",
@@ -861,8 +865,8 @@ it("has no Published section where publishing is off, and lists the account's si
       },
       "published": {
         "rows": [
-          "Paper Shaders | v5 · 2 hours ago",
-          "Pricing page | v1 · 3 days ago",
+          "Paper Shaders | v5 · 2 hours ago | Fork",
+          "Pricing page | v1 · 3 days ago | Fork",
         ],
         "search": "Search published",
         "sections": [
@@ -871,7 +875,7 @@ it("has no Published section where publishing is off, and lists the account's si
         ],
       },
       "searched": [
-        "Pricing page | v1 · 3 days ago",
+        "Pricing page | v1 · 3 days ago | Fork",
       ],
     }
   `);
@@ -955,9 +959,10 @@ it("opens a published site view-only in the one tab, in place of the workspace t
           "● Paper Shaders",
         ],
         "viewer": {
-          "bar": "Paper ShadersView onlyALPublished by Ada Lovelace · v5 · 2 hours ago Copy link",
+          "bar": "Paper ShadersView onlyALPublished by Ada Lovelace · v5 · 2 hours ago Copy link Fork",
           "controls": [
             "Copy link",
+            "Fork",
           ],
           "frames": [
             "https://paper-shaders.antidraw.app/preview?componentName=Hero",
@@ -1053,8 +1058,8 @@ it("says why there's no list: signed out, with a way in; an account not let in; 
       },
       "signing in": "Finish signing in in your browser. [Cancel]",
       "tried again": [
-        "Paper Shaders | v5 · 2 hours ago",
-        "Pricing page | v1 · 3 days ago",
+        "Paper Shaders | v5 · 2 hours ago | Fork",
+        "Pricing page | v1 · 3 days ago | Fork",
       ],
       "unreachable": "Couldn't reach the Antidraw server [Try again]",
     }
@@ -1081,4 +1086,180 @@ it("shows each published site's picture in its tile, and the plain tile for one 
   // As cards too.
   await click(button(/^Cards$/));
   expect(pictures()[0]).toBe("Paper Shaders: https://paper-shaders.antidraw.app/og.jpg?v=5");
+});
+
+it("forks a published site from its row or from the viewer, showing how it goes, and the tab becomes the fork", async () => {
+  api.getFeatures.mockResolvedValue(ok({ publish: true }));
+  api.getAccount.mockResolvedValue(ok(ACCOUNT));
+  api.getPublishedSites.mockResolvedValue(ok(SITES));
+  const forked = workspace("w-fork", "Paper Shaders (fork)", 0, 0);
+  // Main's side of a fork: each step when the test lets it go on.
+  let go: Record<string, () => void> = {};
+  const until = (step: string) => new Promise<void>((resolve) => (go[step] = resolve));
+  let fails = false;
+  api.forkSite.mockImplementation(async function* () {
+    yield { type: "status", status: "FETCHING_SOURCE" };
+    await until("fetched");
+    if (fails) {
+      yield { type: "error", error: { code: "SOURCE_FAILED", message: "Couldn't fetch the site's source (503). Try again." } };
+      return;
+    }
+    yield { type: "status", status: "INSTALLING_DEPENDENCIES" };
+    yield { type: "npm", output: { type: "stdout", data: "npm http fetch GET 200 react\n" } };
+    await until("installed");
+    yield { type: "status", status: "SAVING_WORKSPACE" };
+    listed = [forked, ...WORKSPACES];
+    yield { type: "done", workspace: forked };
+  });
+  const next = async (step: string) => {
+    await act(async () => go[step]!());
+    await settle();
+  };
+  const dialog = () => document.querySelector('[role="dialog"]');
+  // What the dialog says of the fork: the step it's on, what went wrong, and npm's lines.
+  const progress = () => ({
+    title: text(dialog()?.querySelector("h2")),
+    said: text(dialog()?.querySelector('[role="status"]')),
+    failed: text(dialog()?.querySelector('[role="alert"]')),
+    log: [...(dialog()?.querySelectorAll(".font-mono") ?? [])].map(text),
+  });
+  const store = await launch("");
+  const steps: Record<string, unknown> = {};
+
+  await click(section(/^Published/));
+  const forkOf = (name: string) => button(new RegExp(`^Fork ${name}$`)) as HTMLButtonElement;
+  steps["which can be forked"] = SITES.map(({ title }) => `${title}: ${forkOf(title).disabled ? forkOf(title).title : "Fork"}`);
+  // One that can't: nothing happens, and its row doesn't open either.
+  await click(forkOf("Pricing page"));
+  steps["one that can't"] = { forks: api.forkSite.mock.calls.length, dialog: !!dialog(), tabs: tabs() };
+
+  // From its row. The click is the button's: the site isn't opened.
+  fails = true;
+  await click(forkOf("Paper Shaders"));
+  steps["Fork, from the row"] = { asked: api.forkSite.mock.calls.flat(), ...progress(), tabs: tabs() };
+  await next("fetched");
+  steps["it fails"] = progress();
+  fails = false;
+  await click(button(/^Try again$/));
+  await next("fetched");
+  steps["tried again, installing"] = progress();
+  await next("installed");
+  steps["done"] = progress();
+  // It closes a moment after, onto the new workspace.
+  await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 700))));
+  await settle();
+  steps["the tab is the fork"] = {
+    ...screen(),
+    dialog: !!dialog(),
+    workspace: store.getState().activeWorkspaceId,
+    saved: saved(),
+  };
+
+  // From the viewer: the fork takes the site's place in the tab.
+  await click(document.querySelectorAll('[role="tab"]')[0]!);
+  await click(section(/^Published/));
+  await click(rows()[0]!);
+  steps["in the viewer"] = {
+    tabs: tabs(),
+    note: text(document.querySelector("#viewer .bottom-3")),
+    stopped: api.stopDevServer.mock.calls.flat(),
+  };
+  go = {};
+  await click(forkOf("Paper Shaders"));
+  await next("fetched");
+  await next("installed");
+  await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 700))));
+  await settle();
+  steps["forked from the viewer"] = {
+    ...screen(),
+    viewer: !!document.querySelector("#viewer"),
+    workspace: store.getState().activeWorkspaceId,
+    forks: api.forkSite.mock.calls.flat(),
+  };
+
+  expect(steps).toMatchInlineSnapshot(`
+    {
+      "Fork, from the row": {
+        "asked": [
+          "s-shaders",
+        ],
+        "failed": null,
+        "log": [],
+        "said": "Pulling the source of v5…",
+        "tabs": [
+          "● Dashboard",
+        ],
+        "title": "Forking Paper Shaders",
+      },
+      "done": {
+        "failed": null,
+        "log": [],
+        "said": "Workspace forked",
+        "title": "Forking Paper Shaders",
+      },
+      "forked from the viewer": {
+        "dashboard": false,
+        "forks": [
+          "s-shaders",
+          "s-shaders",
+          "s-shaders",
+        ],
+        "tabs": [
+          "○ Dashboard",
+          "● Paper Shaders (fork)",
+        ],
+        "viewer": false,
+        "workspace": "w-fork",
+        "workspaceControls": true,
+      },
+      "in the viewer": {
+        "note": "A published snapshot: look, pan and zoom. Fork it to get the source and change it.",
+        "stopped": [
+          "w-fork",
+        ],
+        "tabs": [
+          "○ Dashboard",
+          "● Paper Shaders",
+        ],
+      },
+      "it fails": {
+        "failed": "Couldn't fetch the site's source (503). Try again.",
+        "log": [],
+        "said": "Pulling the source of v5 failed",
+        "title": "Forking Paper Shaders",
+      },
+      "one that can't": {
+        "dialog": false,
+        "forks": 0,
+        "tabs": [
+          "● Dashboard",
+        ],
+      },
+      "the tab is the fork": {
+        "dashboard": false,
+        "dialog": false,
+        "saved": [
+          "activeWorkspaceId="w-fork"",
+        ],
+        "tabs": [
+          "○ Dashboard",
+          "● Paper Shaders (fork)",
+        ],
+        "workspace": "w-fork",
+        "workspaceControls": true,
+      },
+      "tried again, installing": {
+        "failed": null,
+        "log": [
+          "npm http fetch GET 200 react",
+        ],
+        "said": "Installing packages…",
+        "title": "Forking Paper Shaders",
+      },
+      "which can be forked": [
+        "Paper Shaders: Fork",
+        "Pricing page: Publish this site again to fork it",
+      ],
+    }
+  `);
 });

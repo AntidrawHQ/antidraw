@@ -1,35 +1,48 @@
 import { useRef, useState } from "react";
-import type { Workspace, CreateWorkspaceStatusCode } from "@/main/api";
-import { useCreateWorkspace } from "@/renderer/lib/workspace-ops";
+import type { CreateWorkspaceStatusCode, ForkStatus, Workspace } from "@/main/api";
+import { useCreateWorkspace, useForkSite } from "@/renderer/lib/workspace-ops";
 
-export type CreateWorkspaceStatus =
-  | "idle"
-  | CreateWorkspaceStatusCode
-  | "done"
-  | "error";
+// A workspace being made, step by step, for a progress list to show
+// (CreateWorkspaceProgress): creating one from the template, or forking one
+// from a published site.
 
-type CreateWorkspaceFlowOptions = {
+export type WorkspaceFlowStatus<Step extends string> = "idle" | Step | "done" | "error";
+
+export type CreateWorkspaceStatus = WorkspaceFlowStatus<CreateWorkspaceStatusCode>;
+
+type FlowEvent<Step extends string> =
+  | { type: "status"; status: Step }
+  | { type: "npm"; output: { type: "stdout" | "stderr"; data: string } | { type: "exit"; code: number | null } }
+  | { type: "done" }
+  | { type: "error"; error: { message: string } };
+
+type WorkspaceFlowOptions = {
   onSuccess?: (workspace: Workspace) => void;
   onError?: (error: Error) => void;
 };
 
 const MAX_NPM_LINES = 200;
 
-export const useCreateWorkspaceFlow = (
-  options?: CreateWorkspaceFlowOptions,
+const useWorkspaceFlow = <Step extends string>(
+  // Starts it, as a mutation's mutate does.
+  run: (
+    input: string,
+    onProgress: (event: FlowEvent<Step>) => void,
+    callbacks: { onSuccess: (workspace: Workspace) => void; onError: (error: Error) => void },
+  ) => void,
+  isPending: boolean,
+  firstStep: Step,
+  options?: WorkspaceFlowOptions,
 ) => {
-  const [status, setStatus] = useState<CreateWorkspaceStatus>("idle");
+  const [status, setStatus] = useState<WorkspaceFlowStatus<Step>>("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [npmLines, setNpmLines] = useState<string[]>([]);
   // Which step was running when the error hit; drives the red X + retry row
-  const [failedStep, setFailedStep] = useState<CreateWorkspaceStatusCode | null>(
-    null,
-  );
-  const lastStepRef = useRef<CreateWorkspaceStatusCode | null>(null);
+  const [failedStep, setFailedStep] = useState<Step | null>(null);
+  const lastStepRef = useRef<Step | null>(null);
   // npm output arrives in chunks that can end mid-line; hold the trailing
   // partial line until its remainder arrives
   const partialLineRef = useRef("");
-  const { mutate, isPending } = useCreateWorkspace();
 
   // Only the tail of the log is ever visible; cap the buffer so a long install
   // (hundreds of fetch lines) doesn't grow state and re-render cost unbounded
@@ -39,48 +52,46 @@ export const useCreateWorkspaceFlow = (
   const isCreating =
     status !== "idle" && status !== "done" && status !== "error";
 
-  const start = (name: string) => {
+  const start = (input: string) => {
     setErrorMessage(null);
     setFailedStep(null);
     setNpmLines([]);
     partialLineRef.current = "";
     // Optimistic first step so retry swaps the error state out immediately
     // instead of flashing all-dimmed steps until the first SSE event lands
-    setStatus("CREATING_DIRECTORY");
-    lastStepRef.current = "CREATING_DIRECTORY";
-    mutate(
-      {
-        name,
-        onProgress: (event) => {
-          if (event.type === "status") {
-            lastStepRef.current = event.status;
-            setStatus(event.status);
-            setNpmLines([]);
+    setStatus(firstStep);
+    lastStepRef.current = firstStep;
+    run(
+      input,
+      (event) => {
+        if (event.type === "status") {
+          lastStepRef.current = event.status;
+          setStatus(event.status);
+          setNpmLines([]);
+          partialLineRef.current = "";
+        }
+        if (event.type === "npm") {
+          if (event.output.type === "exit") {
+            // Flush whatever is still buffered without a trailing newline
+            // (e.g. a spawn error message) so it isn't silently dropped
+            const rest = partialLineRef.current.trim();
             partialLineRef.current = "";
+            if (rest) appendNpmLines([rest]);
+          } else {
+            const chunks = (partialLineRef.current + event.output.data).split(
+              "\n",
+            );
+            partialLineRef.current = chunks.pop() ?? "";
+            const lines = chunks.map((line) => line.trim()).filter(Boolean);
+            if (lines.length > 0) appendNpmLines(lines);
           }
-          if (event.type === "npm") {
-            if (event.output.type === "exit") {
-              // Flush whatever is still buffered without a trailing newline
-              // (e.g. a spawn error message) so it isn't silently dropped
-              const rest = partialLineRef.current.trim();
-              partialLineRef.current = "";
-              if (rest) appendNpmLines([rest]);
-            } else {
-              const chunks = (partialLineRef.current + event.output.data).split(
-                "\n",
-              );
-              partialLineRef.current = chunks.pop() ?? "";
-              const lines = chunks.map((line) => line.trim()).filter(Boolean);
-              if (lines.length > 0) appendNpmLines(lines);
-            }
-          }
-          if (event.type === "done") setStatus("done");
-          if (event.type === "error") {
-            setStatus("error");
-            setErrorMessage(event.error.message);
-            setFailedStep(lastStepRef.current);
-          }
-        },
+        }
+        if (event.type === "done") setStatus("done");
+        if (event.type === "error") {
+          setStatus("error");
+          setErrorMessage(event.error.message);
+          setFailedStep(lastStepRef.current);
+        }
       },
       {
         onSuccess: (workspace) => options?.onSuccess?.(workspace),
@@ -113,4 +124,26 @@ export const useCreateWorkspaceFlow = (
     start,
     reset,
   };
+};
+
+/** A new workspace from the template: `start(name)`. */
+export const useCreateWorkspaceFlow = (options?: WorkspaceFlowOptions) => {
+  const { mutate, isPending } = useCreateWorkspace();
+  return useWorkspaceFlow<CreateWorkspaceStatusCode>(
+    (name, onProgress, callbacks) => mutate({ name, onProgress }, callbacks),
+    isPending,
+    "CREATING_DIRECTORY",
+    options,
+  );
+};
+
+/** A new workspace forked from a published site: `start(siteId)`. */
+export const useForkSiteFlow = (options?: WorkspaceFlowOptions) => {
+  const { mutate, isPending } = useForkSite();
+  return useWorkspaceFlow<ForkStatus>(
+    (siteId, onProgress, callbacks) => mutate({ siteId, onProgress }, callbacks),
+    isPending,
+    "FETCHING_SOURCE",
+    options,
+  );
 };

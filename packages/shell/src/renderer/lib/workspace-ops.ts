@@ -4,6 +4,7 @@ import type {
   CreateWorkspaceResponse,
   DevServerState,
   DevServerInfo,
+  ForkSiteResponse,
   PublishedSite,
 } from "@/main/api";
 import { useMutation, useQuery, useQueryClient, skipToken } from "@tanstack/react-query";
@@ -11,6 +12,7 @@ import { useWorkspaceStore } from "@/renderer/store/workspace";
 import { queryKeys } from "./query-keys";
 import {
   createWorkspace,
+  forkSite,
   getWorkspace,
   deleteWorkspace,
   startDevServer,
@@ -43,38 +45,39 @@ export const useWorkspace = (workspaceId: string | null) => {
   });
 };
 
+// The workspace a stream of create or fork events ends with, passing each
+// event on as it comes.
+const workspaceFrom = async <Event extends CreateWorkspaceResponse | ForkSiteResponse>(
+  stream: AsyncGenerator<Event>,
+  onProgress?: (event: Event) => void,
+): Promise<Workspace> => {
+  for await (const event of stream) {
+    onProgress?.(event);
+    if (event.type === "error") throw new Error(event.error.message);
+    if (event.type === "done") return event.workspace;
+  }
+  throw new Error("Workspace creation completed without returning workspace");
+};
+
 export const useCreateWorkspace = () => {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (params: {
-      name: string;
-      onProgress?: (event: CreateWorkspaceResponse) => void;
-    }): Promise<Workspace> => {
-      const { name, onProgress } = params;
-      const stream = createWorkspace(name);
-
-      let workspace: Workspace | undefined;
-
-      for await (const event of stream) {
-        onProgress?.(event);
-
-        if (event.type === "error") {
-          throw new Error(event.error.message);
-        }
-
-        if (event.type === "done") {
-          workspace = event.workspace;
-          break;
-        }
-      }
-
-      if (!workspace) {
-        throw new Error("Workspace creation completed without returning workspace");
-      }
-
-      return workspace;
+    mutationFn: (params: { name: string; onProgress?: (event: CreateWorkspaceResponse) => void }) =>
+      workspaceFrom(createWorkspace(params.name), params.onProgress),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all });
     },
+  });
+};
+
+// A new workspace forked from one of the account's published sites.
+export const useForkSite = () => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (params: { siteId: string; onProgress?: (event: ForkSiteResponse) => void }) =>
+      workspaceFrom(forkSite(params.siteId), params.onProgress),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all });
     },
