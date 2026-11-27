@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { Tabs } from "radix-ui";
 import { create } from "zustand";
 import type { WorkspaceWithThumbnail } from "@/main/api";
@@ -33,6 +34,7 @@ import { Header, type Section, type View } from "./Header";
 import { GridCards, ListRows, SORTERS, type Sort } from "./LocalList";
 import { PublishedCards, PublishedRows } from "./PublishedList";
 import { Btn } from "./kit";
+import { SignInPanel, type SignInState } from "./SignInPanel";
 
 // The Dashboard tab: the workspaces on this Mac (Local), and what the account
 // has published (Published, where publishing is on). Opening one puts it in
@@ -147,13 +149,66 @@ const Notice = ({ children, action }: { children: React.ReactNode; action?: Reac
   </div>
 );
 
-// The Published section: the account's sites, or why there's no list.
+// How long "Connected" shows, once signed in, before the list.
+const CONNECTED_MS = 700;
+// Quick and smooth: a critically damped spring, no overshoot or long tail.
+const SPRING = { type: "spring" as const, visualDuration: 0.18, bounce: 0 };
+
+// The Published section: signed out, the sign-in panel; then the account's
+// sites, or why there's no list.
 const Published = ({ query }: { query: string }) => {
+  const reduce = !!useReducedMotion();
+  const { error } = usePublishedSites();
+  const signIn = useSignIn();
+  const cancelSignIn = useCancelSignIn();
+  const [linked, setLinked] = useState(false);
+  useEffect(() => {
+    if (!linked) return;
+    const timer = setTimeout(() => setLinked(false), CONNECTED_MS);
+    return () => clearTimeout(timer);
+  }, [linked]);
+
+  // Held through "Connected", while the list is asked for again under it.
+  const signedOut = linked || error?.code === "SIGNED_OUT";
+  const state: SignInState =
+    signIn.isPending || linked
+      ? "waiting"
+      : signIn.error && signIn.error.code !== "CANCELLED"
+        ? "error"
+        : "signedOut";
+
+  return (
+    <AnimatePresence mode="wait" initial={false}>
+      {signedOut ? (
+        <motion.div
+          key="signin"
+          initial={{ opacity: 0, y: reduce ? 0 : 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, transition: { duration: 0.12 } }}
+          transition={SPRING}
+        >
+          <SignInPanel
+            state={state}
+            linked={linked}
+            onSignIn={() => signIn.mutate(undefined, { onSuccess: () => setLinked(true) })}
+            // The browser has the sign-in; this ends the wait for it.
+            onCancel={() => cancelSignIn.mutate()}
+          />
+        </motion.div>
+      ) : (
+        <motion.div key="list" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.2 }}>
+          <Sites query={query} />
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+};
+
+// The account's sites, or why there's no list.
+const Sites = ({ query }: { query: string }) => {
   const { data: sites, error, isPending, refetch, isFetching } = usePublishedSites();
   const openPublished = useOpenPublished();
   const view = useDashboardStore((s) => s.view);
-  const signIn = useSignIn();
-  const cancelSignIn = useCancelSignIn();
 
   const q = query.trim().toLowerCase();
   const items = useMemo(
@@ -162,31 +217,6 @@ const Published = ({ query }: { query: string }) => {
   );
 
   if (isPending) return <Notice>Loading…</Notice>;
-
-  if (error?.code === "SIGNED_OUT") {
-    return (
-      <Notice
-        action={
-          signIn.isPending ? (
-            // The browser has the sign-in; this ends the wait for it.
-            <Btn kind="outline" onClick={() => cancelSignIn.mutate()}>
-              Cancel
-            </Btn>
-          ) : (
-            <Btn kind="secondary" onClick={() => signIn.mutate()}>
-              Sign in
-            </Btn>
-          )
-        }
-      >
-        {signIn.isPending
-          ? "Finish signing in in your browser."
-          : signIn.error && signIn.error.code !== "CANCELLED"
-            ? signIn.error.message
-            : "Sign in to see what you've published."}
-      </Notice>
-    );
-  }
   if (error?.code === "PUBLISH_DISABLED") return <Notice>Publishing isn't available yet.</Notice>;
   // The list it had stays up over a failed refresh.
   if (error && !sites) {

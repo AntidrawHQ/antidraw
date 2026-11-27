@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { err, ok } from "neverthrow";
+import { MotionGlobalConfig } from "motion/react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 
 // The window's two tabs and the dashboard in jsdom, with main's API faked:
@@ -43,6 +44,9 @@ vi.mock("@/renderer/hooks/use-update-prompt", () => ({
 vi.useFakeTimers({ toFake: ["Date"] });
 vi.setSystemTime(new Date(2026, 10, 23, 12));
 afterAll(() => vi.useRealTimers());
+// The sections' swaps (the sign-in panel's for the list) finish at once.
+MotionGlobalConfig.skipAnimations = true;
+afterAll(() => void (MotionGlobalConfig.skipAnimations = false));
 
 const DAY = 86_400_000;
 const workspace = (id: string, name: string, madeDaysAgo: number, activeDaysAgo: number) => ({
@@ -806,6 +810,18 @@ const notice = () => {
   const el = document.querySelector("main .py-24");
   return el ? [text(el.querySelector("span")), ...[...el.querySelectorAll("button")].map((b) => `[${text(b)}]`)].join(" ") : null;
 };
+// The sign-in panel, signed out: its title, its line, and its buttons.
+const signInPanel = () => {
+  const el = document.querySelector('main [aria-labelledby="published-sign-in-title"]');
+  if (!el) return null;
+  const alert = el.querySelector('[role="alert"]');
+  return [
+    text(el.querySelector("h2")),
+    text(el.querySelector("p")),
+    ...[...el.querySelectorAll("button")].map((b) => `[${text(b)}${(b as HTMLButtonElement).disabled ? " (disabled)" : ""}]`),
+    ...(alert ? [text(alert)] : []),
+  ].join(" | ");
+};
 const viewer = () => {
   const el = document.querySelector("#viewer");
   if (!el) return null;
@@ -1006,18 +1022,26 @@ it("says why there's no list: signed out, with a way in; an account not let in; 
   await launch("");
   const steps: Record<string, unknown> = {};
   await click(section(/^Published/));
-  steps["signed out"] = { sections: sections(), notice: notice() };
+  steps["signed out"] = { sections: sections(), panel: signInPanel() };
+
+  // Google can't be reached: the panel stays, with another try.
+  api.signIn.mockResolvedValueOnce(err({ status: 502, code: "TIMED_OUT", message: "Sign-in timed out" }));
+  await click(button(/^Sign in with Google$/));
+  steps["failed"] = signInPanel();
 
   // The browser has it until the user is done there.
   let finish!: (value: unknown) => void;
   api.signIn.mockReturnValue(new Promise((resolve) => (finish = resolve)));
-  await click(button(/^Sign in$/));
-  steps["signing in"] = notice();
+  await click(button(/^Try again$/));
+  steps["signing in"] = signInPanel();
   api.getAccount.mockResolvedValue(ok(ACCOUNT));
   api.getPublishedSites.mockResolvedValue(ok([]));
   await act(async () => finish(ok(ACCOUNT)));
   await settle();
-  steps["signed in, nothing published"] = { sections: sections(), notice: notice() };
+  steps["connected"] = signInPanel();
+  await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 900))));
+  await settle();
+  steps["signed in, nothing published"] = { sections: sections(), panel: signInPanel(), notice: notice() };
   act(() => root?.unmount());
 
   api.getPublishedSites.mockResolvedValue(err({ status: 403, code: "PUBLISH_DISABLED", message: "Publishing isn't available yet." }));
@@ -1036,22 +1060,25 @@ it("says why there's no list: signed out, with a way in; an account not let in; 
 
   expect(steps).toMatchInlineSnapshot(`
     {
+      "connected": "Sign in to see what you've published | Finish signing in with Google in your browser. Your sites show up here right after. | [Connected (disabled)] | [Cancel (disabled)]",
+      "failed": "Sign in to see what you've published | Your published sites show up here with their links, once you're signed in. | [Try again] | Couldn't connect to Google. Try again.",
       "not let in": "Publishing isn't available yet.",
       "signed in, nothing published": {
         "notice": "Nothing published yet.",
+        "panel": null,
         "sections": [
           "○ Local3",
           "● Published0",
         ],
       },
       "signed out": {
-        "notice": "Sign in to see what you've published. [Sign in]",
+        "panel": "Sign in to see what you've published | Your published sites show up here with their links, once you're signed in. | [Sign in with Google]",
         "sections": [
           "○ Local3",
           "● Published",
         ],
       },
-      "signing in": "Finish signing in in your browser. [Cancel]",
+      "signing in": "Sign in to see what you've published | Finish signing in with Google in your browser. Your sites show up here right after. | [Waiting for Google… (disabled)] | [Cancel]",
       "tried again": [
         "Paper Shaders | v5 · 2 hours ago",
         "Pricing page | v1 · 3 days ago",
