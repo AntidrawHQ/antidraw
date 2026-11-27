@@ -6,7 +6,11 @@ import { RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 // Errors carry only a message, as the real ones do once they've crossed RPC.
 // Tests drive it through the harness (TestServer.artifacts).
 
-type Repo = { commits: Set<string>; tokens: Map<string, "active" | "revoked"> };
+// commits: main's, oldest first.
+type Repo = {
+  commits: Set<string>;
+  tokens: Map<string, { scope: "read" | "write"; state: "active" | "revoked" }>;
+};
 
 const repos = new Map<string, Repo>();
 const creating = new Map<string, number>();
@@ -32,15 +36,15 @@ class RepoHandle extends RpcTarget {
     call(`createToken ${this.name} ${scope} ${ttl}`);
     const { tokens } = repos.get(this.name)!;
     const id = `token-${tokens.size + 1}`;
-    tokens.set(id, "active");
+    tokens.set(id, { scope, state: "active" });
     return { id, plaintext: `art_test_${scope}?expires=1893456000`, scope, expiresAt: "2030-01-01T00:00:00.000Z" };
   }
 
   listTokens() {
     call(`listTokens ${this.name}`);
-    const tokens = [...repos.get(this.name)!.tokens].map(([id, state]) => ({
+    const tokens = [...repos.get(this.name)!.tokens].map(([id, { scope, state }]) => ({
       id,
-      scope: "write",
+      scope,
       state,
       createdAt: "2029-12-31T23:00:00.000Z",
       expiresAt: "2030-01-01T00:00:00.000Z",
@@ -51,14 +55,21 @@ class RepoHandle extends RpcTarget {
   revokeToken(tokenOrId: string) {
     call(`revokeToken ${this.name} ${tokenOrId}`);
     const { tokens } = repos.get(this.name)!;
-    if (tokens.get(tokenOrId) !== "active") return false;
-    tokens.set(tokenOrId, "revoked");
+    const token = tokens.get(tokenOrId);
+    if (token?.state !== "active") return false;
+    token.state = "revoked";
     return true;
   }
 
   readCommit(hash: string) {
     call(`readCommit ${this.name} ${hash}`);
     return repos.get(this.name)!.commits.has(hash) ? { hash } : null;
+  }
+
+  log({ ref, limit = 50, offset = 0 }: { ref?: string; limit?: number; offset?: number } = {}) {
+    call(`log ${this.name} ${ref} ${limit} ${offset}`);
+    const newestFirst = [...repos.get(this.name)!.commits].reverse();
+    return newestFirst.slice(offset, offset + limit).map((hash) => ({ hash }));
   }
 }
 
@@ -85,7 +96,7 @@ export default class ArtifactsStub extends WorkerEntrypoint {
 
   // For tests.
 
-  /** As if a push to the repo had added the commit. */
+  /** As if a push to the repo had added the commit, on top of main. */
   pushed(name: string, commit: string) {
     repos.get(name)!.commits.add(commit);
   }
@@ -95,9 +106,11 @@ export default class ArtifactsStub extends WorkerEntrypoint {
     creating.set(name, times);
   }
 
-  /** The repo's tokens and whether each is still live, by id. */
+  /** The repo's tokens and whether each is still live, by id: a token that only reads says so. */
   tokens(name: string) {
-    return Object.fromEntries(repos.get(name)!.tokens);
+    return Object.fromEntries(
+      [...repos.get(name)!.tokens].map(([id, { scope, state }]) => [id, scope === "read" ? `${state} (read)` : state]),
+    );
   }
 
   /** The calls made since the last time, oldest first. */

@@ -181,8 +181,18 @@ namespace (`src/services/source.service.ts`). Before a publish, the app asks
 its remote with a write token for it alone (an hour), pushes the workspace's
 source, and then starts the publish with `{ commit }`. The server checks the
 repo has that commit and records it with the publish, so every version that
-goes live can be remixed from its source. Older apps start publishes without
+goes live can be forked from its source. Older apps start publishes without
 a commit.
+
+A fork is a new workspace made from a site's live version. The app asks
+`POST /api/sites/:id/fork`, which answers the repo's remote with a token that
+can only read it (an hour), the live version's `commit`, and its `depth`: how
+many commits down `main` it is, 1 unless publishes after it pushed their
+source and never went live. The app fetches `main` that deep and checks the
+commit out. Only the site's owner can. A version whose source wasn't kept
+answers `409 NOT_FORKABLE`, and `GET /api/sites` says which are (`forkable`).
+A fork's token is left to run out: publishing ends only the tokens that can
+push, so a publish and a fork of the same site don't cut each other short.
 
 Nothing is deleted while publishing, so a site keeps every file and manifest
 it was ever sent. To reclaim space, run `SiteStore.cleanup(siteId, { keep })`

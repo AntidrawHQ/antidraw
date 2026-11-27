@@ -16,11 +16,14 @@ export const shareUrl = (pattern: string, slug: string) => pattern.replace("*", 
 // filesUrl is where its files are served (canvas.json, each component's
 // /preview), for a canvas that shows them itself. version counts the
 // publishes that have gone live, and publishedAt is when the live one did.
+// forkable: the live version's source was kept (see source.service.ts), which
+// versions published by older apps didn't have.
 export type PublishedSite = CreatedSite & {
   title: string;
   filesUrl: string;
   version: number;
   publishedAt: number;
+  forkable: boolean;
 };
 
 /** The user's sites that have a version live, the latest published first. */
@@ -37,17 +40,20 @@ export const listPublishedSites = async (
       version: site.seq,
       committedAt: publish.committedAt,
       startedAt: publish.createdAt,
+      repo: site.sourceRepo,
+      commit: publish.sourceCommit,
     })
     .from(site)
     // Leaves out a site made but never published: it has nothing to show.
     .innerJoin(publish, eq(publish.id, site.livePublishId))
     .where(eq(site.ownerId, ownerId))
     .orderBy(desc(publish.committedAt), site.slug);
-  return rows.map(({ committedAt, startedAt, ...row }) => ({
+  return rows.map(({ committedAt, startedAt, repo, commit, ...row }) => ({
     ...row,
     url: shareUrl(patterns.share, row.slug),
     filesUrl: patterns.files.replace("*", row.slug),
     publishedAt: (committedAt ?? startedAt).getTime(),
+    forkable: repo !== null && commit !== null,
   }));
 };
 
