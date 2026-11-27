@@ -5,7 +5,6 @@ import {
   cancelSignIn,
   getAccount,
   getFeatures,
-  publishWorkspace,
   signIn,
   signOut,
 } from "./api";
@@ -88,30 +87,6 @@ export const useSignOut = () => {
     onSuccess: () => {
       queryClient.setQueryData(queryKeys.account, null);
       void queryClient.invalidateQueries({ queryKey: queryKeys.features });
-    },
-  });
-};
-
-export const usePublishWorkspace = () => {
-  const queryClient = useQueryClient();
-
-  return useMutation<{ url: string }, AccountRequestError, string>({
-    mutationFn: async (workspaceId) => {
-      const result = await publishWorkspace(workspaceId);
-      if (result.isErr()) {
-        throw new AccountRequestError(result.error.code, result.error.message);
-      }
-      return result.value;
-    },
-    onError: (error) => {
-      // The stored token died; main already dropped it.
-      if (error.code === "SIGNED_OUT") {
-        queryClient.setQueryData(queryKeys.account, null);
-      }
-      // Turned off for this user, or signed out of the account it was on for.
-      if (error.code === "PUBLISH_DISABLED" || error.code === "SIGNED_OUT") {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.features });
-      }
     },
   });
 };

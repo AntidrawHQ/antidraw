@@ -2,7 +2,7 @@ import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { publishSite, type PublishOptions, type PublishedSite } from "../publish";
+import { publishSite, type PublishEvent, type PublishOptions, type PublishedSite } from "../publish";
 import { SourceMovedError, SourcePushError, type SourceRemote } from "../source";
 
 // Publishing a workspace end to end: a real `vite build` of a workspace (the
@@ -109,16 +109,19 @@ const publish = async (
     authorization = (_pathname: string) => user.authorization,
     git = gitDir(),
     pushFails = null as "refused" | "moved" | null,
-    duringBuild = (_dir: string) => {},
+    // Gets vite's arguments too, which say where it builds to (--outDir).
+    duringBuild = (_dir: string, _args: string[]) => {},
     // Changes where a request goes, as a server without that route would see it.
     route = (pathname: string) => pathname,
-    // Runs just before each request is sent.
+    // Runs just before each request is sent, and once its answer is in.
     beforeRequest = async (_pathname: string) => {},
+    afterRequest = (_pathname: string, _response: Response) => {},
   } = {},
 ) => {
   const requests: string[] = [];
   const created: PublishedSite[] = [];
   const pushes: string[] = [];
+  const events: PublishEvent[] = [];
   const result = await publishSite({
     sourceDir,
     gitDir: git,
@@ -131,15 +134,18 @@ const publish = async (
       const headers = new Headers(init.headers);
       headers.set("authorization", authorization(target.pathname));
       await beforeRequest(target.pathname);
-      return fetch(target, { ...init, headers });
+      const response = await fetch(target, { ...init, headers });
+      afterRequest(target.pathname, response);
+      return response;
     },
     npm: (args, cwd, { env, ...options }) => {
-      duringBuild(cwd);
+      duringBuild(cwd, args);
       return spawn("npm", args, { ...options, cwd, env: { ...process.env, ...env } });
     },
     onSiteCreated: async (site) => void created.push(site),
+    onEvent: (event) => void events.push(event),
   });
-  return { result, requests, created, pushes, git };
+  return { result, requests, created, pushes, git, events };
 };
 
 /** Runs `publish` with the server's publish flag off, as for a user it doesn't let in yet. */
@@ -206,7 +212,36 @@ let first: PublishedSite;
 let firstGit: string;
 
 it("builds the workspace, makes its site, pushes its source and uploads it", async () => {
-  const { result, requests, created, pushes, git } = await publish(workspace(), null);
+  const { result, requests, created, pushes, git, events } = await publish(workspace(), null);
+  // How it went, as the publish panel hears it: each step, what it found
+  // (the repo's runtime version, the build's time and size vary), and the
+  // upload's last progress.
+  const uploads = events.filter((e) => e.type === "upload");
+  expect({
+    steps: events.flatMap((e) => (e.type === "step" ? [e.step] : e.type === "meta" ? [`${e.step}: ${{ runtime: "<version>", build: "<time> · <size>" }[e.step as string] ?? e.text}`] : [])),
+    builtIn: events.some((e) => e.type === "log" && /^✓ built in /.test(e.line)),
+    lastUpload: { ...uploads.at(-1), file: "<file>" },
+  }).toMatchInlineSnapshot(`
+    {
+      "builtIn": true,
+      "lastUpload": {
+        "done": 8,
+        "file": "<file>",
+        "total": 8,
+        "type": "upload",
+        "unchanged": 0,
+      },
+      "steps": [
+        "runtime",
+        "runtime: <version>",
+        "build",
+        "build: <time> · <size>",
+        "upload",
+        "upload: 8 files",
+        "live",
+      ],
+    }
+  `);
   first = created[0]!;
   firstGit = git;
   const names = { [first.id]: "<site>" };
@@ -282,7 +317,25 @@ it("publishes again to the same site, uploading only what changed", async () => 
   const before = await liveFiles(first.id);
   const previous = await liveCommit(first.id);
   const dir = workspace({ "src/components/user-components/Card.tsx": `export default () => <div>Card, edited</div>\n` });
-  const { result, requests, created, pushes } = await publish(dir, first, { git: firstGit });
+  const { result, requests, created, pushes, events } = await publish(dir, first, { git: firstGit });
+  // What the panel says of it: what went up, and what was live already.
+  expect({
+    meta: events.flatMap((e) => (e.type === "meta" && e.step === "upload" ? [e.text] : [])),
+    lastUpload: { ...events.filter((e) => e.type === "upload").at(-1), file: "<file>" },
+  }).toMatchInlineSnapshot(`
+    {
+      "lastUpload": {
+        "done": 5,
+        "file": "<file>",
+        "total": 5,
+        "type": "upload",
+        "unchanged": 3,
+      },
+      "meta": [
+        "5 sent · 3 cached",
+      ],
+    }
+  `);
   expect(pushes).toHaveLength(1);
   expect(await liveCommit(first.id)).toBe(pushes[0]);
   expect(pushes[0]).not.toBe(previous);
@@ -362,6 +415,74 @@ it("keeps the saved site when a 404 is about the route, not the site", async () 
   `);
 }, 60_000);
 
+it("says where an upload stopped only when it knows which file failed", async () => {
+  // A new site, so every file goes up. The first two go up; the rest go to a
+  // route the server doesn't have, once those two are in, so the bar's file
+  // until then is one that made it.
+  let routed = 0;
+  let up = 0;
+  let twoUp!: () => void;
+  const twoUpYet = new Promise<void>((resolve) => (twoUp = resolve));
+  const unknown = await publish(workspace(), null, {
+    route: (pathname) => (pathname.includes("/files/") && ++routed > 2 ? pathname.replace("/files/", "/nowhere/") : pathname),
+    beforeRequest: async (pathname) => {
+      if (pathname.includes("/nowhere/")) await twoUpYet;
+    },
+    afterRequest: (pathname, response) => {
+      if (pathname.includes("/files/") && response.ok && ++up === 2) twoUp();
+    },
+  });
+  // A file the build wrote that's gone by the time it's sent: the upload names it.
+  let outDir = "";
+  let gone = false;
+  const named = await publish(workspace(), null, {
+    duringBuild: (_dir, args) => void (outDir = args[args.indexOf("--outDir") + 1]!),
+    beforeRequest: async (pathname) => {
+      if (!pathname.endsWith("/plan") || gone) return;
+      gone = true;
+      fs.rmSync(path.join(outDir, "preview.html"));
+    },
+  });
+  const uploads = (events: PublishEvent[]) => events.filter((e) => e.type === "upload");
+  expect({
+    unknown: {
+      code: unknown.result._unsafeUnwrapErr().code,
+      before: uploads(unknown.events).filter((e) => e.file !== "").at(-1)?.done,
+      last: uploads(unknown.events).at(-1)?.file,
+    },
+    named: { code: named.result._unsafeUnwrapErr().code, message: named.result._unsafeUnwrapErr().message, last: uploads(named.events).at(-1)?.file },
+  }).toMatchInlineSnapshot(`
+    {
+      "named": {
+        "code": "UPLOAD_FAILED",
+        "last": "preview.html",
+        "message": "Couldn't upload the site: preview.html can't be read: Unable to open file as blob",
+      },
+      "unknown": {
+        "before": 2,
+        "code": "UPLOAD_FAILED",
+        "last": "",
+      },
+    }
+  `);
+}, 60_000);
+
+it("counts files with the same content as sent, not as already live", async () => {
+  // A first publish: nothing is live yet, though two files are one upload.
+  const { events } = await publish(workspace({ "public/one.txt": "same", "public/two.txt": "same" }), null);
+  expect({
+    meta: events.flatMap((e) => (e.type === "meta" && e.step === "upload" ? [e.text] : [])),
+    unchanged: events.filter((e) => e.type === "upload").at(-1)?.unchanged,
+  }).toMatchInlineSnapshot(`
+    {
+      "meta": [
+        "9 files",
+      ],
+      "unchanged": 0,
+    }
+  `);
+}, 60_000);
+
 it("says why when it can't publish", async () => {
   const outcomes = {
     oldRuntime: await publish(workspace({ "node_modules/@antidrawapp/runtime/package.json": `{"version":"0.4.2"}` }), null),
@@ -412,7 +533,7 @@ it("says why when it can't publish", async () => {
     {
       "brokenComponent": {
         "code": "BUILD_FAILED",
-        "message": "Couldn't build the workspace
+        "message": "Couldn't build the workspace.
     error during build:
     [vite:esbuild] Transform failed with 1 error:
     src/components/user-components/Card.tsx:2:0: ERROR: Unexpected end of file before a closing "div" tag
@@ -438,7 +559,7 @@ it("says why when it can't publish", async () => {
       },
       "oldRuntime": {
         "code": "RUNTIME_TOO_OLD",
-        "message": "Publishing needs @antidrawapp/runtime 0.5.0 or later; this workspace has 0.4.2",
+        "message": "This workspace has @antidrawapp/runtime 0.4.2. Publishing needs 0.5.0 or later.",
         "requests": [],
       },
       "publishingOff": {
