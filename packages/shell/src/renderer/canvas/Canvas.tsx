@@ -84,13 +84,14 @@ const MOVE_SETTLE_MS = 300;
 // Pans and zooms the canvas to one component's frame. For the host's own
 // controls (a component list, a "View" button): call it inside the same
 // ReactFlowProvider as the canvas.
+// It flies there; `{ duration: 0 }` jumps.
 export const useFocusComponent = () => {
   const reactFlow = useReactFlow();
   return useCallback(
-    (componentName: string) => {
+    (componentName: string, { duration = 300 }: { duration?: number } = {}) => {
       reactFlow.fitView({
         nodes: [{ id: frameNodeId(componentName) }],
-        duration: 300,
+        duration,
         padding: 0.3,
       });
     },
