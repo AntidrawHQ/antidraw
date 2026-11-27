@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { AnimatePresence, motion } from "motion/react";
 import { Tabs } from "radix-ui";
 import { create } from "zustand";
 import type { WorkspaceWithThumbnail } from "@/main/api";
@@ -151,13 +151,10 @@ const Notice = ({ children, action }: { children: React.ReactNode; action?: Reac
 
 // How long "Connected" shows, once signed in, before the list.
 const CONNECTED_MS = 700;
-// Quick and smooth: a critically damped spring, no overshoot or long tail.
-const SPRING = { type: "spring" as const, visualDuration: 0.18, bounce: 0 };
 
 // The Published section: signed out, the sign-in panel; then the account's
 // sites, or why there's no list.
 const Published = ({ query }: { query: string }) => {
-  const reduce = !!useReducedMotion();
   const { error } = usePublishedSites();
   const signIn = useSignIn();
   const cancelSignIn = useCancelSignIn();
@@ -180,13 +177,8 @@ const Published = ({ query }: { query: string }) => {
   return (
     <AnimatePresence mode="wait" initial={false}>
       {signedOut ? (
-        <motion.div
-          key="signin"
-          initial={{ opacity: 0, y: reduce ? 0 : 6 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, transition: { duration: 0.12 } }}
-          transition={SPRING}
-        >
+        // There at once, with no entry; it fades out as the list comes.
+        <motion.div key="signin" exit={{ opacity: 0, transition: { duration: 0.12 } }}>
           <SignInPanel
             state={state}
             linked={linked}
