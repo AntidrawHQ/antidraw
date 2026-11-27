@@ -10,6 +10,31 @@ import { CARD, CARDS, CARD_META, CARD_THUMB, HEADINGS, META, NAME, THUMB, ago, c
 
 const COLS = "grid-cols-[minmax(0,2.4fr)_minmax(0,2fr)_88px]";
 
+// The site's preview image: a picture of its canvas, taken by the server
+// when the version went live and served with the site's files (og.jpg). On
+// the canvas's grey: a site that has no picture yet, or whose picture can't
+// be loaded, is that grey alone. The version in the address is for the
+// cache: a new version's picture has a new address.
+const SiteThumb = ({ site, className }: { site: PublishedSite; className: string }) => {
+  const src = `${site.filesUrl}/og.jpg?v=${site.version}`;
+  const [failed, setFailed] = useState<string>();
+  return (
+    <div className={cn(className, "relative overflow-hidden bg-[#282828]")}>
+      {failed !== src && (
+        <img
+          src={src}
+          alt=""
+          draggable={false}
+          loading="lazy"
+          onError={() => setFailed(src)}
+          // Filled, its edges cut: the picture is wider than the tile.
+          className="absolute inset-0 size-full object-cover"
+        />
+      )}
+    </div>
+  );
+};
+
 export const PublishedRows = ({
   items,
   onOpen,
@@ -44,8 +69,7 @@ export const PublishedRows = ({
             )}
           >
             <div role="gridcell" className="flex min-w-0 items-center gap-4">
-              {/* No picture of a published canvas yet: the canvas's grey. */}
-              <div className={cn(THUMB, "bg-[#282828]")} />
+              <SiteThumb site={site} className={THUMB} />
               <span className={NAME}>{site.title}</span>
             </div>
             <span role="gridcell" className={META}>
@@ -84,8 +108,7 @@ export const PublishedCards = ({
           className={cn(CARD, "hover:bg-[#313131]")}
         >
           <div role="gridcell">
-            {/* No picture of a published canvas yet: the canvas's grey. */}
-            <div className={cn(CARD_THUMB, "bg-[#282828]")} />
+            <SiteThumb site={site} className={CARD_THUMB} />
             <div className="mt-2.5 pb-0.5 pl-0.5">
               <div className={NAME}>{site.title}</div>
               <div className={CARD_META}>
