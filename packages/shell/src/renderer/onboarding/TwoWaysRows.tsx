@@ -10,6 +10,7 @@ import type { ReactNode } from "react";
 import { ChevronDown, Info } from "lucide-react";
 import { useMountEffect } from "@/renderer/hooks/use-mount-effect";
 import { useAgentStates, type State } from "./agent-states";
+import { SetupPlace, trackSetup, type SetupSource } from "./setup-analytics";
 import { AGENTS, AgentMark, agent, type Agent } from "./agents";
 import {
   AddButton,
@@ -126,6 +127,7 @@ const Row = ({
   onAdd,
   error,
   compact,
+  source,
 }: {
   a: Agent;
   s: State;
@@ -135,6 +137,7 @@ const Row = ({
   /** Why its "Add" didn't work. */
   error?: string;
   compact?: boolean;
+  source: SetupSource;
 }) => (
   <li className={cx(LINE, "border-t transition-colors", open && "bg-black/[0.1]")}>
     <div className={cx("group relative flex items-center", compact ? "h-11 gap-2.5 px-3.5" : "h-[52px] gap-3 px-4")}>
@@ -169,18 +172,21 @@ const Row = ({
       />
     </div>
     <Reveal open={open}>
-      <div className={compact ? "pb-3.5 pl-14 pr-3.5 pt-1" : "pb-4 pl-16 pr-4 pt-1"}>
-        {/* The row's end says only "Failed": trying again is here, beside why. */}
-        {error && <AddError onRetry={onAdd}>{error}</AddError>}
-        {a.install.kind === "other" ? (
-          <OtherSteps />
-        ) : (
-          <>
-            <p className="mb-1.5 text-[12px] font-medium leading-4 text-neutral-300">Set it up manually</p>
-            <ManualSteps id={a.id} />
-          </>
-        )}
-      </div>
+      {/* Its copy buttons and install link count under this row's agent. */}
+      <SetupPlace.Provider value={{ source, agent: a.id }}>
+        <div className={compact ? "pb-3.5 pl-14 pr-3.5 pt-1" : "pb-4 pl-16 pr-4 pt-1"}>
+          {/* The row's end says only "Failed": trying again is here, beside why. */}
+          {error && <AddError onRetry={onAdd}>{error}</AddError>}
+          {a.install.kind === "other" ? (
+            <OtherSteps />
+          ) : (
+            <>
+              <p className="mb-1.5 text-[12px] font-medium leading-4 text-neutral-300">Set it up manually</p>
+              <ManualSteps id={a.id} />
+            </>
+          )}
+        </div>
+      </SetupPlace.Provider>
     </Reveal>
   </li>
 );
@@ -190,10 +196,14 @@ const Row = ({
  * bare: no card around it, for when a popover already is one.
  * compact: a size down (44px rows, 20px marks) under a lighter header, for
  * the titlebar's popover.
+ * source: where it's shown, for analytics (./setup-analytics).
  */
-export const McpRows = ({ bare, compact }: { bare?: boolean; compact?: boolean }) => {
+export const McpRows = ({ bare, compact, source }: { bare?: boolean; compact?: boolean; source: SetupSource }) => {
   const [open, setOpen] = useState<string | null>(null);
   const { state, error, add, refresh } = useAgentStates();
+
+  // Shown: the onboarding page's step, or the titlebar's popover opened.
+  useMountEffect(() => trackSetup("mcp_setup_viewed", { source }));
 
   // A manual step is run somewhere else (a terminal, the agent's own install
   // prompt): coming back to the window reads the configs again, so the row
@@ -213,11 +223,22 @@ export const McpRows = ({ bare, compact }: { bare?: boolean; compact?: boolean }
             a={a}
             s={state(a.id)}
             open={open === a.id}
-            onToggle={() => setOpen((o) => (o === a.id ? null : a.id))}
-            // An "Add" that didn't work opens the row: why, over the steps to do it by hand.
-            onAdd={() => void add(a.id).then((added) => !added && setOpen(a.id))}
+            onToggle={() => {
+              if (open !== a.id) trackSetup("mcp_manual_steps_opened", { source, agent: a.id });
+              setOpen((o) => (o === a.id ? null : a.id));
+            }}
+            // An "Add" that didn't work opens the row: why, over the steps to do
+            // it by hand. That opens its manual steps too, so it's counted as one.
+            onAdd={() =>
+              void add(a.id, source).then((added) => {
+                if (added) return;
+                if (open !== a.id) trackSetup("mcp_manual_steps_opened", { source, agent: a.id });
+                setOpen(a.id);
+              })
+            }
             error={error(a.id)}
             compact={compact}
+            source={source}
           />
         ))}
       </ul>
@@ -229,6 +250,6 @@ export const McpRows = ({ bare, compact }: { bare?: boolean; compact?: boolean }
 export const TwoWaysRows = () => (
   <>
     <ChatCard />
-    <McpRows />
+    <McpRows source="onboarding" />
   </>
 );

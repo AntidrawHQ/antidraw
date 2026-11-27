@@ -4,6 +4,7 @@ import { isMcpAgentId } from "@/shared/mcp-agents";
 import { addMcpToAgent, getMcpSetup, openMcpInstallLink } from "@/renderer/lib/api";
 import { queryKeys } from "@/renderer/lib/query-keys";
 import type { AgentId } from "./agents";
+import { trackSetup, type SetupSource } from "./setup-analytics";
 
 // Where each agent is in its setup, for the titlebar's popover
 // (components/McpSetup) and the onboarding page's rows (./TwoWaysRows) alike.
@@ -79,12 +80,16 @@ export const useAgentStates = () => {
     error: (id: AgentId) => (state(id) === "failed" ? errors[id] : undefined),
     // "Add", and trying again: main writes the server into the agent's
     // config, and the configs are read again. False when it couldn't, with
-    // why in `error`.
-    add: async (id: AgentId) => {
+    // why in `error`. Counted by how it went, the error by its code alone.
+    add: async (id: AgentId, source: SetupSource) => {
       if (!isMcpAgentId(id) || adding[id]) return true;
       setAdding(id, true);
       fail(id, undefined);
       const result = await addMcpToAgent(id);
+      trackSetup("mcp_agent_added", { source, agent: id }, {
+        ok: result.isOk(),
+        error_code: result.isErr() ? result.error.code : null,
+      });
       if (result.isErr()) fail(id, result.error.message);
       else await queryClient.invalidateQueries({ queryKey: queryKeys.mcpSetup });
       setAdding(id, false);
@@ -98,8 +103,12 @@ export const useAgentStates = () => {
 
 // Opens the agent's own install prompt (Cursor, VS Code), which main makes
 // the link for. Why it couldn't, or null.
-export const openInstallPrompt = async (id: AgentId) => {
+export const openInstallPrompt = async (id: AgentId, source: SetupSource) => {
   if (!isMcpAgentId(id)) return null;
   const result = await openMcpInstallLink(id);
+  trackSetup("mcp_install_link_opened", { source, agent: id }, {
+    ok: result.isOk(),
+    error_code: result.isErr() ? result.error.code : null,
+  });
   return result.isErr() ? result.error.message : null;
 };
