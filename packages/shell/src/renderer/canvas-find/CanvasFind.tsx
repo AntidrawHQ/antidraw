@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useHotkey } from "@tanstack/react-hotkeys";
 import { useFocusComponent } from "@/renderer/canvas/Canvas";
 import { useDesignStore } from "@/renderer/design/store";
+import { CoversCanvas } from "@/renderer/lib/thumbnail";
 import { cn } from "@/renderer/lib/utils";
 import { ComponentSearch } from "./ComponentSearch";
 
@@ -17,7 +18,8 @@ export const CanvasFind = ({
   keysOff = false,
 }: {
   components: { name: string }[];
-  // Out of sight (under the dashboard): ⌘F isn't the canvas's.
+  // Out of sight (under the dashboard), or no frames to find: ⌘F isn't the
+  // canvas's, and an open find closes (keeping its query).
   keysOff?: boolean;
 }) => {
   const focusComponent = useFocusComponent();
@@ -43,11 +45,17 @@ export const CanvasFind = ({
   );
 
   const close = () => {
-    lastQuery.current = card.current?.querySelector("input")?.value ?? "";
+    // Only when open: closed (keysOff coming on), the query stays as it was.
+    const input = card.current?.querySelector("input");
+    if (input) lastQuery.current = input.value;
     setOpen(false);
   };
   const closeRef = useRef(close);
   closeRef.current = close;
+
+  useEffect(() => {
+    if (keysOff) closeRef.current();
+  }, [keysOff]);
 
   // A click outside it closes it: anywhere in the window, or into a frame
   // (a frame is its own document, so that click only shows as the window's blur).
@@ -60,11 +68,17 @@ export const CanvasFind = ({
       setTimeout(() => {
         if (document.activeElement instanceof HTMLIFrameElement) closeRef.current();
       });
+    // A right-click in it is its own, not the canvas's menu (Paste here,
+    // Select all), which listens on the canvas around it.
+    const onContextMenu = (e: MouseEvent) => e.stopPropagation();
+    const el = card.current;
     document.addEventListener("pointerdown", onDown, true);
     window.addEventListener("blur", onBlur);
+    el?.addEventListener("contextmenu", onContextMenu);
     return () => {
       document.removeEventListener("pointerdown", onDown, true);
       window.removeEventListener("blur", onBlur);
+      el?.removeEventListener("contextmenu", onContextMenu);
     };
   }, [open]);
 
@@ -74,11 +88,12 @@ export const CanvasFind = ({
     <div
       ref={card}
       className={cn(
-        // nokey: a key here is never React Flow's (Backspace deleting a frame).
-        "nodrag nopan nowheel nokey absolute z-40",
+        "nodrag nopan nowheel absolute z-40",
         panelOpen ? "right-3 top-3" : "right-[60px] top-4",
       )}
     >
+      {/* Over the canvas: not in its thumbnail. */}
+      <CoversCanvas />
       <ComponentSearch
         components={names}
         initialQuery={lastQuery.current}

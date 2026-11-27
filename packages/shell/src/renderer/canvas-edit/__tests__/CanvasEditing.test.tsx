@@ -79,9 +79,10 @@ const savedLayouts: FrameLayout[] = [
 // the app knows of the files (its queries). `sync` is the watcher: the list
 // read again from the files.
 const hosts = { onSeeCode: vi.fn(), onFullscreen: vi.fn() };
-async function renderEditing({ keysOff = false }: { keysOff?: boolean } = {}) {
+async function renderEditing({ keysOff = false, withFind = false }: { keysOff?: boolean; withFind?: boolean } = {}) {
   const { Canvas } = await import("@/renderer/canvas/Canvas");
   const { CanvasEditing } = await import("../CanvasEditing");
+  const { CanvasFind } = await import("@/renderer/canvas-find/CanvasFind");
   const { useSaveFrameLayouts } = await import("@/renderer/lib/frame-layout-ops");
   // Each test its own workspace: the undo stacks are the app's.
   const workspaceId = `ws-${++workspace}`;
@@ -111,6 +112,7 @@ async function renderEditing({ keysOff = false }: { keysOff?: boolean } = {}) {
         onFullscreen={() => {}}
       >
         <CanvasEditing workspaceId={workspaceId} keysOff={keysOff} onFullscreen={hosts.onFullscreen} onSeeCode={hosts.onSeeCode} />
+        {withFind && <CanvasFind components={components} />}
         <CatchStore />
       </Canvas>
     );
@@ -819,4 +821,38 @@ it("undoes a paste one of whose files is gone already, and redoes the rest", asy
     undone: ["Card-1", "Hero-1"],
     redone: ["Card-1", "CardCopy-1", "Hero-1"],
   });
+});
+
+// The find (⌘F) over the canvas: its field keeps every key it's typed in,
+// Tab included, which would otherwise take the focus to its buttons, where
+// Backspace and Escape are the canvas's.
+it("leaves the find's keys to the find: Tab, Backspace, Escape and a right-click in it", async () => {
+  await renderEditing({ withFind: true });
+  Element.prototype.scrollIntoView ??= () => {};
+  await pick("Card");
+  await press("f", { ctrlKey: true, code: "KeyF" });
+  const field = document.querySelector<HTMLInputElement>('input[placeholder="Find a component"]')!;
+  expect(document.activeElement).toBe(field);
+
+  const tab = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+  await act(async () => {
+    field.dispatchEvent(tab);
+  });
+  const buttons = [...field.closest(".w-\\[280px\\]")!.querySelectorAll("button")];
+  await press("Backspace", {}, field);
+  await act(async () => {
+    field.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 900, clientY: 20 }));
+  });
+  const menu = document.querySelectorAll("[role=menuitem]").length;
+  await press("Escape", {}, field);
+  await settle();
+
+  expect({
+    tabStays: tab.defaultPrevented,
+    tabbable: buttons.filter((b) => b.tabIndex >= 0).length,
+    deleted: api.deleteComponents.mock.calls.length,
+    menu,
+    findOpen: !!document.querySelector('input[placeholder="Find a component"]'),
+    selected: selected(),
+  }).toEqual({ tabStays: true, tabbable: 0, deleted: 0, menu: 0, findOpen: false, selected: ["Card-1"] });
 });

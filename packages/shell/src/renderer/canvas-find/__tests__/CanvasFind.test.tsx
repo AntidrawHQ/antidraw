@@ -55,6 +55,15 @@ const wentTo = () => focus.mock.calls.map(([name, opts]) => `${name} ${JSON.stri
 const highlighted = () => host.querySelector("button[data-i].bg-white\\/\\[0\\.06\\]")?.textContent;
 const bright = () => [...host.querySelectorAll("button[data-i] .text-\\[\\#f5f5f5\\]")].map((s) => s.textContent);
 
+it("opens with the focus in the field and its text selected", () => {
+  ctrlF();
+  type("card");
+  key(input()!, { key: "Escape" });
+  ctrlF();
+  expect(document.activeElement).toBe(input());
+  expect([input()!.selectionStart, input()!.selectionEnd]).toEqual([0, 4]);
+});
+
 it("opens on Ctrl+F, moves the highlight with the arrows, and goes only on Enter or a click", () => {
   expect(input()).toBeNull();
   ctrlF();
@@ -175,9 +184,6 @@ it("keeps the focus in the field through a press on a row, so its keys stay its 
   };
   expect(press(row)).toBe(true); // the press doesn't move the focus
   expect(press(input()!)).toBe(false); // a press in the field still places the caret
-
-  // React Flow leaves keys inside .nokey alone (Backspace would delete a frame).
-  expect(row.closest(".nokey")).not.toBeNull();
 });
 
 it("leaves an Escape a popover already took, and an IME's Enter, alone", () => {
@@ -219,7 +225,33 @@ it("ranks substrings first, by where they start, and ignores spaces in the query
   expect(rows()).toEqual(["Card", "🔥Card", "PricingCard", "CxaxrxD"]);
   expect(bright().slice(0, 2)).toEqual(["Card", "Card"]);
 
+  await render(["X".repeat(120) + "Card", "CxxxAxxxRxxxD", "İkonButton"].map((name) => ({ name })));
+  type("card");
+  expect(rows()).toEqual(["X".repeat(120) + "Card", "CxxxAxxxRxxxD"]); // a substring first, however far in
+  type("ikon");
+  expect(rows()).toEqual(["İkonButton"]);
+  expect(bright()).toEqual(["İkon"]);
+
+  await render(["CxaxrxD", "PricingCard", "Card", "ShowHeroSection", "Hero Section", "🔥Card"].map((name) => ({ name })));
   type("hero section");
   expect(rows()).toEqual(["Hero Section", "ShowHeroSection"]);
   expect(bright().slice(0, 1)).toEqual(["Hero"]);
+});
+
+it("closes when its keys go off (the dashboard over the canvas, or no frames left), keeping the query", async () => {
+  ctrlF();
+  type("card");
+  await render(COMPONENTS, true);
+  expect(input()).toBeNull();
+  await render(COMPONENTS);
+  ctrlF();
+  expect(input()!.value).toBe("card");
+
+  // Closed already when they go off: the query it closed with stays.
+  type("hero");
+  key(input()!, { key: "Escape" });
+  await render(COMPONENTS, true);
+  await render(COMPONENTS);
+  ctrlF();
+  expect(input()!.value).toBe("hero");
 });

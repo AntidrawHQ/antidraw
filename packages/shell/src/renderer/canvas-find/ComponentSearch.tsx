@@ -52,18 +52,21 @@ const SHADOW = ["0 0 0 0.5px #373737", ...[1, 2, 4, 8, 16].map((d) => `0 ${d}px 
 
 type Hit = { name: string; idx: number[]; substring: boolean }
 
+// A letter lowercased, kept to one code point so the indices stay the name's:
+// "İ" lowercases to "i" and a combining dot, and is matched as "i".
+const lower = (ch: string) => [...ch.toLowerCase()][0]!
+
 // Indices are into [...name] (code points, as Name draws it), spaces skipped
 // on both sides, so "hero section" is a substring of "Hero Section".
 function match(q: string, name: string): { idx: number[]; substring: boolean } | null {
-  // Lowercased a letter at a time, as the name is ("İ" lowercases to two).
-  const s = [...q].filter((ch) => !/\s/.test(ch)).map((ch) => ch.toLowerCase())
+  const s = [...q].filter((ch) => !/\s/.test(ch)).map(lower)
   if (!s.length) return { idx: [], substring: true }
   const at: number[] = []
   const n: string[] = []
   ;[...name].forEach((ch, i) => {
     if (/\s/.test(ch)) return
     at.push(i)
-    n.push(ch.toLowerCase())
+    n.push(lower(ch))
   })
   for (let start = 0; start + s.length <= n.length; start++) {
     if (s.every((ch, k) => n[start + k] === ch)) return { idx: s.map((_, k) => at[start + k]!), substring: true }
@@ -79,8 +82,7 @@ function search(q: string, names: string[]): Hit[] {
     const m = match(q, name)
     return m ? [{ name, ...m }] : []
   })
-  const score = ({ idx, substring }: Hit) => (substring ? 0 : 100) + idx[0]!
-  return hits.sort((a, b) => score(a) - score(b))
+  return hits.sort((a, b) => Number(b.substring) - Number(a.substring) || a.idx[0]! - b.idx[0]!)
 }
 
 function Name({ text, idx }: { text: string; idx: number[] }) {
@@ -138,11 +140,14 @@ export function ComponentSearch({
     onGoTo?.(hit.name)
   }
 
-  useEffect(() => input.current?.select(), [])
+  useEffect(() => {
+    input.current?.focus()
+    input.current?.select()
+  }, [])
 
   useEffect(() => {
     list.current?.querySelector<HTMLElement>(`[data-i="${cur}"]`)?.scrollIntoView({ block: "nearest" })
-  }, [cur])
+  }, [cur, hits])
 
   const onKey = (e: React.KeyboardEvent) => {
     // An IME's keys (Enter commits the composition, arrows pick a candidate).
@@ -153,6 +158,10 @@ export function ComponentSearch({
     } else if (e.key === "Enter") {
       e.preventDefault()
       go(cur)
+    } else if (e.key === "Tab") {
+      // The focus stays in the field: on × or a row, Backspace and Esc would
+      // be the canvas's (deleting the selected frames).
+      e.preventDefault()
     } else if (e.key === "Escape" && !e.defaultPrevented) {
       // Not when a popover already took it (it closes first).
       e.preventDefault()
@@ -165,7 +174,8 @@ export function ComponentSearch({
       className="w-[280px] overflow-hidden rounded-[10px] bg-[#2c2c2c]"
       style={{ boxShadow: SHADOW }}
       // A press on a row, ×, or the card around them leaves the focus in the
-      // field: a focused row would hand Esc, Backspace and letters to the canvas.
+      // field (and Tab does, and they're out of the tab order): a focused row
+      // would hand Esc, Backspace and letters to the canvas.
       onMouseDown={(e) => {
         if (e.target !== input.current) e.preventDefault()
       }}
@@ -185,6 +195,7 @@ export function ComponentSearch({
         />
         <button
           aria-label="Close"
+          tabIndex={-1}
           onClick={onClose}
           className="grid size-[24px] shrink-0 place-items-center rounded-[6px] text-[#a3a3a3] hover:bg-[#373737] hover:text-[#e0e0e0]"
         >
@@ -202,6 +213,7 @@ export function ComponentSearch({
                 <button
                   key={h.name}
                   data-i={i}
+                  tabIndex={-1}
                   onClick={() => go(i)}
                   className={`flex w-full items-center gap-2 rounded-[6px] px-2.5 py-1.5 text-left text-[13px] ${on ? "bg-white/[0.06]" : "hover:bg-white/[0.03]"}`}
                 >

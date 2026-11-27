@@ -129,9 +129,10 @@ const WorkspaceCanvas = ({
           <EditBar />
           <ShowPanel />
           <CanvasToolbar />
-          <CanvasFind key={workspaceId} components={userComponents} keysOff={dashboardShown} />
         </>
       )}
+      {/* Mounted with no frames too, so their last query outlives them. */}
+      <CanvasFind key={workspaceId} components={userComponents} keysOff={dashboardShown || empty} />
     </Canvas>
   );
 };
