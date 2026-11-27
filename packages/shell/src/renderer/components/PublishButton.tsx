@@ -39,6 +39,9 @@ const tint = (c: string, p: number) => `color-mix(in oklch, ${c} ${p}%, transpar
 // published toast stays up.
 const LINKED_BEAT_MS = 500;
 const PUBLISHED_TOAST_MS = 4900;
+// How long the account check runs before Publish shows it's checking. Most
+// answer well within it, and a spinner for a moment reads as a flash.
+const CHECK_SPINNER_DELAY_MS = 300;
 
 type Step =
   | "closed"
@@ -94,6 +97,8 @@ export const PublishButton = ({
   const [failure, setFailureState] = useState<Failure | null>(null);
   // Counts failures, so the same message is announced again on a retry.
   const [attempt, setAttempt] = useState(0);
+  // The check has run long enough to show it (CHECK_SPINNER_DELAY_MS).
+  const [slowCheck, setSlowCheck] = useState(false);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const publishButton = useRef<HTMLButtonElement>(null);
   const signInButton = useRef<HTMLButtonElement>(null);
@@ -135,6 +140,13 @@ export const PublishButton = ({
     timers.current = [];
   };
   useEffect(() => clear, []);
+
+  useEffect(() => {
+    setSlowCheck(false);
+    if (step !== "checking") return;
+    const id = setTimeout(() => setSlowCheck(true), CHECK_SPINNER_DELAY_MS);
+    return () => clearTimeout(id);
+  }, [step]);
   const later = (ms: number, fn: () => void) => timers.current.push(setTimeout(fn, ms));
 
   // Whether the panel is up (a retry of the account check keeps it), and
@@ -341,7 +353,9 @@ export const PublishButton = ({
               </>
             ) : (
               <>
-                {step === "checking" ? (
+                {/* The globe stays through a quick check: still busy (aria-busy,
+                    clicks ignored), only not shown as a spinner yet. */}
+                {step === "checking" && slowCheck ? (
                   <LoaderCircle size={13} className="animate-spin" />
                 ) : (
                   <Globe size={13} strokeWidth={2.2} />
