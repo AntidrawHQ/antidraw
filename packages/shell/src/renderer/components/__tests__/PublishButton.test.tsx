@@ -221,6 +221,51 @@ const deferred = <T,>() => {
 };
 const SHARE = ok({ url: "https://antidraw.com/s/paper-shaders" });
 
+it("keeps the globe through a quick account check, and shows the spinner only once it's slow", async () => {
+  await render();
+  // What Publish shows: its globe or the spinner, and whether it's busy.
+  const publish = () => {
+    const b = button(/^Publish$/);
+    return `${b.querySelector(".animate-spin") ? "spinner" : "globe"}${b.getAttribute("aria-busy") === "true" ? ", busy" : ""}`;
+  };
+  const steps: Record<string, unknown> = {};
+
+  // Quick: answered within the delay, straight to the panel.
+  const quick = deferred<unknown>();
+  api.getAccount.mockReturnValueOnce(quick.promise);
+  await click(/^Publish$/);
+  steps["checking"] = publish();
+  await act(async () => quick.resolve(ok(null)));
+  await settle();
+  steps["answered"] = { publish: publish(), dialog: screen().dialog?.[0] ?? null };
+  await key("Escape");
+  await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 300))));
+
+  // Slow: still checking past the delay.
+  const slow = deferred<unknown>();
+  api.getAccount.mockReturnValueOnce(slow.promise);
+  await click(/^Publish$/);
+  steps["slow, at first"] = publish();
+  await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 320))));
+  steps["slow, past the delay"] = publish();
+  await act(async () => slow.resolve(ok(null)));
+  await settle();
+  steps["slow, answered"] = publish();
+
+  expect(steps).toMatchInlineSnapshot(`
+    {
+      "answered": {
+        "dialog": "Sign in to publish",
+        "publish": "globe",
+      },
+      "checking": "globe, busy",
+      "slow, answered": "globe",
+      "slow, at first": "globe, busy",
+      "slow, past the delay": "spinner, busy",
+    }
+  `);
+});
+
 it("publishes once, after a beat of Connected, when sign-in succeeds", async () => {
   api.signIn.mockResolvedValue(ok(ADA));
   api.publishWorkspace.mockResolvedValue(SHARE);
