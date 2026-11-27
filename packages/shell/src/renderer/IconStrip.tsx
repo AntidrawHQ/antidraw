@@ -32,6 +32,8 @@ export const IconStrip = () => {
       if (e.code === "Backslash" && mod && !e.shiftKey && !e.altKey) {
         const s = useWorkspaceStore.getState();
         e.preventDefault();
+        // Held down, it toggles once, not again on each repeat.
+        if (e.repeat) return;
         track("panel_toggled", { panel: "all", open: s.uiHidden, via: "shortcut" });
         s.setUiHidden(!s.uiHidden);
         return;

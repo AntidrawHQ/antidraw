@@ -109,3 +109,14 @@ it("hides all the chrome with Mod+\\ and shows it again as it was, and Mod+B bri
     ]
   `);
 });
+
+it("toggles the chrome once for Mod+\\ held down, not again on each repeat", () => {
+  const backslash = { key: "\\", code: "Backslash", ctrlKey: true };
+  expect([key(backslash), key({ ...backslash, repeat: true }), key({ ...backslash, repeat: true })]).toMatchInlineSnapshot(`
+    [
+      "Ctrl+Backslash: UI hidden, strip hidden, side open",
+      "Ctrl+Backslash: UI hidden, strip hidden, side open",
+      "Ctrl+Backslash: UI hidden, strip hidden, side open",
+    ]
+  `);
+});
