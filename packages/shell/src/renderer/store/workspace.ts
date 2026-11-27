@@ -28,7 +28,9 @@ type WorkspaceStore = {
   sidePanelOpen: boolean;
   toggleSidePanel: () => void;
   focusComponentName: string | null;
-  setFocusComponentName: (name: string | null) => void;
+  // Whether the canvas goes to it at once (jump) rather than gliding there.
+  focusJump: boolean;
+  setFocusComponentName: (name: string | null, jump?: boolean) => void;
   codePanelComponentName: string | null;
   setCodePanelComponentName: (name: string | null) => void;
 };
@@ -55,7 +57,8 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
   sidePanelOpen: true,
   toggleSidePanel: () => set((s) => ({ sidePanelOpen: !s.sidePanelOpen })),
   focusComponentName: null,
-  setFocusComponentName: (name) => set({ focusComponentName: name }),
+  focusJump: false,
+  setFocusComponentName: (name, jump = false) => set({ focusComponentName: name, focusJump: jump }),
   codePanelComponentName: null,
   setCodePanelComponentName: (name) => set({ codePanelComponentName: name }),
 }));

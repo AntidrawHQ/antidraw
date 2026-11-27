@@ -16,7 +16,8 @@ export const TITLEBAR_HEIGHT = 46;
 const NO_DRAG = { WebkitAppRegion: "no-drag" } as CSSProperties;
 
 // One of the window's tabs. Not a <button>: the workspace's holds its close
-// button.
+// button. Its label is medium, as the rest of the bar's text is (the MCP
+// chip, Publish), and in both states: a tab keeps its width when it's picked.
 const Tab = ({
   on,
   onSelect,
@@ -38,7 +39,7 @@ const Tab = ({
     }}
     style={NO_DRAG}
     className={cn(
-      "group flex h-[30px] cursor-default items-center gap-2 rounded-[8px] pr-2 pl-2.5 text-[13px] outline-none focus-visible:ring-1 focus-visible:ring-[#7F8BE0]",
+      "group flex h-[30px] cursor-default items-center gap-2 rounded-[8px] pr-2 pl-2.5 text-[13px] font-medium outline-none focus-visible:bg-[#313131]",
       on ? "bg-[#373737] text-[#EBEBEB]" : "text-[#B2B2B2] hover:bg-[#313131]",
       className,
     )}
@@ -86,19 +87,20 @@ export const Titlebar = ({ tabs = true }: { tabs?: boolean }) => {
 
   return (
     <div
-      // pl-[76px] keeps the tabs clear of the traffic lights. The rule is the
-      // workspace view's: the dashboard is a darker grey than the bar already.
-      className={cn(
-        "relative flex h-[46px] w-full shrink-0 items-center gap-1.5 bg-[#2A2A2A] pr-2 pl-[76px] font-sans antialiased drag-region",
-        !dashboardShown && "border-b border-[#333]",
-      )}
+      // pl-[76px] keeps the tabs clear of the traffic lights. The rule is under
+      // either tab: the dashboard is the bar's grey, as the workspace view is.
+      className="relative flex h-[46px] w-full shrink-0 items-center gap-1.5 border-b border-[#333] bg-[#2A2A2A] pr-2 pl-[76px] font-sans antialiased drag-region"
     >
       {tabs && (
         // Clipped across, in a window too narrow for them: drawn under the
         // right-hand controls, the close button would take their clicks.
         <div role="tablist" className="flex min-w-0 items-center gap-1.5 overflow-x-clip">
-          <Tab on={dashboardShown} onSelect={() => void showDashboard()} className="shrink-0">
-            <Svg size={14}>{ic.grid}</Svg>
+          <Tab on={dashboardShown} onSelect={showDashboard} className="shrink-0">
+            {/* sw 2: at 14px the default 1.6 draws under a pixel, fainter
+                than the label beside it. */}
+            <Svg size={14} sw={2}>
+              {ic.grid}
+            </Svg>
             <span>Dashboard</span>
           </Tab>
           {activeWorkspace && (
@@ -115,7 +117,7 @@ export const Titlebar = ({ tabs = true }: { tabs?: boolean }) => {
           {/* In the workspace's place, never beside it. */}
           {publishedSite && !activeWorkspace && (
             <Tab on={!dashboardShown} onSelect={() => setDashboardShown(false)} className="min-w-0">
-              <Svg size={14} className="shrink-0 max-[640px]:hidden">
+              <Svg size={14} sw={2} className="shrink-0 max-[640px]:hidden">
                 {ic.eye}
               </Svg>
               <span className="max-w-[180px] truncate">{publishedSite.title}</span>

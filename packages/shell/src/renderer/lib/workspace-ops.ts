@@ -130,9 +130,8 @@ export const useSwitchWorkspace = () => {
 };
 
 // The canvas's thumbnail as it's left, while its dev server still serves its
-// frames. Not under the dashboard: what was waiting was taken as it opened,
-// and nothing can be taken while it covers the canvas (a wait would only run
-// out the timeout).
+// frames. Not under the dashboard: nothing can be taken while it covers the
+// canvas (a wait would only run out the timeout).
 const flushLeftCanvas = () =>
   useWorkspaceStore.getState().dashboardShown ? Promise.resolve() : flushThumbnail();
 
@@ -205,13 +204,12 @@ export const closePublished = () => {
   setPublishedSite(null);
 };
 
-// To the dashboard from the tab's workspace, which stays open under it. Its
-// thumbnail is taken first, if one is waiting: nothing can be captured while
-// the dashboard covers the canvas.
-export const showDashboard = async () => {
-  await flushThumbnail();
-  useWorkspaceStore.getState().setDashboardShown(true);
-};
+// To the dashboard from the tab's workspace, which stays open under it, at
+// once: a thumbnail still waiting to be taken isn't waited for (that held the
+// click for up to half a second). It's kept while the dashboard covers the
+// canvas and taken on the way back to it; opening another workspace from the
+// dashboard instead drops it, and that thumbnail stays one change behind.
+export const showDashboard = () => useWorkspaceStore.getState().setDashboardShown(true);
 
 export const useDeleteWorkspace = () => {
   const queryClient = useQueryClient();

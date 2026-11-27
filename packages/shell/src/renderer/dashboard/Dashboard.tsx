@@ -1,4 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { AnimatePresence, motion } from "motion/react";
+import { Tabs } from "radix-ui";
 import { create } from "zustand";
 import type { WorkspaceWithThumbnail } from "@/main/api";
 import { CreateWorkspaceDialog } from "@/renderer/components/CreateWorkspaceDialog";
@@ -28,10 +30,11 @@ import {
   useWorkspaces,
 } from "@/renderer/lib/workspace-ops";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
-import { Header, type Section } from "./Header";
-import { ListRows, RowMenu, SORTERS, type Sort } from "./LocalList";
-import { PublishedRows } from "./PublishedList";
+import { Header, type Section, type View } from "./Header";
+import { GridCards, ListRows, SORTERS, type Sort } from "./LocalList";
+import { PublishedCards, PublishedRows } from "./PublishedList";
 import { Btn } from "./kit";
+import { SignInPanel, type SignInState } from "./SignInPanel";
 
 // The Dashboard tab: the workspaces on this Mac (Local), and what the account
 // has published (Published, where publishing is on). Opening one puts it in
@@ -39,18 +42,23 @@ import { Btn } from "./kit";
 // a published site view-only. Drawn over what that tab holds, which keeps
 // running under it (see App.tsx).
 
-// Which section is up and how Local is sorted, kept while the window is
-// open: the dashboard is unmounted whenever the other tab is the one showing.
+// Which section is up, how Local is sorted, and whether the lists are rows or
+// cards, kept while the window is open: the dashboard is unmounted whenever
+// the other tab is the one showing.
 export const useDashboardStore = create<{
   section: Section;
   setSection: (section: Section) => void;
   sort: Sort;
   setSort: (sort: Sort) => void;
+  view: View;
+  setView: (view: View) => void;
 }>((set) => ({
   section: "local",
   setSection: (section) => set({ section }),
   sort: "active",
   setSort: (sort) => set({ sort }),
+  view: "list",
+  setView: (view) => set({ view }),
 }));
 
 // The dashboard's one column, centred.
@@ -141,12 +149,58 @@ const Notice = ({ children, action }: { children: React.ReactNode; action?: Reac
   </div>
 );
 
-// The Published section: the account's sites, or why there's no list.
+// How long "Connected" shows, once signed in, before the list.
+const CONNECTED_MS = 700;
+
+// The Published section: signed out, the sign-in panel; then the account's
+// sites, or why there's no list.
 const Published = ({ query }: { query: string }) => {
-  const { data: sites, error, isPending, refetch, isFetching } = usePublishedSites();
-  const openPublished = useOpenPublished();
+  const { error } = usePublishedSites();
   const signIn = useSignIn();
   const cancelSignIn = useCancelSignIn();
+  const [linked, setLinked] = useState(false);
+  useEffect(() => {
+    if (!linked) return;
+    const timer = setTimeout(() => setLinked(false), CONNECTED_MS);
+    return () => clearTimeout(timer);
+  }, [linked]);
+
+  // Held through "Connected", while the list is asked for again under it.
+  const signedOut = linked || error?.code === "SIGNED_OUT";
+  const state: SignInState =
+    signIn.isPending || linked
+      ? "waiting"
+      : signIn.error && signIn.error.code !== "CANCELLED"
+        ? "error"
+        : "signedOut";
+
+  return (
+    <AnimatePresence mode="wait" initial={false}>
+      {signedOut ? (
+        // There at once, with no entry; it fades out as the list comes.
+        <motion.div key="signin" exit={{ opacity: 0, transition: { duration: 0.12 } }}>
+          <SignInPanel
+            state={state}
+            linked={linked}
+            onSignIn={() => signIn.mutate(undefined, { onSuccess: () => setLinked(true) })}
+            // The browser has the sign-in; this ends the wait for it.
+            onCancel={() => cancelSignIn.mutate()}
+          />
+        </motion.div>
+      ) : (
+        <motion.div key="list" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.2 }}>
+          <Sites query={query} />
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+};
+
+// The account's sites, or why there's no list.
+const Sites = ({ query }: { query: string }) => {
+  const { data: sites, error, isPending, refetch, isFetching } = usePublishedSites();
+  const openPublished = useOpenPublished();
+  const view = useDashboardStore((s) => s.view);
 
   const q = query.trim().toLowerCase();
   const items = useMemo(
@@ -155,31 +209,6 @@ const Published = ({ query }: { query: string }) => {
   );
 
   if (isPending) return <Notice>Loading…</Notice>;
-
-  if (error?.code === "SIGNED_OUT") {
-    return (
-      <Notice
-        action={
-          signIn.isPending ? (
-            // The browser has the sign-in; this ends the wait for it.
-            <Btn kind="outline" onClick={() => cancelSignIn.mutate()}>
-              Cancel
-            </Btn>
-          ) : (
-            <Btn kind="secondary" onClick={() => signIn.mutate()}>
-              Sign in
-            </Btn>
-          )
-        }
-      >
-        {signIn.isPending
-          ? "Finish signing in in your browser."
-          : signIn.error && signIn.error.code !== "CANCELLED"
-            ? signIn.error.message
-            : "Sign in to see what you've published."}
-      </Notice>
-    );
-  }
   if (error?.code === "PUBLISH_DISABLED") return <Notice>Publishing isn't available yet.</Notice>;
   // The list it had stays up over a failed refresh.
   if (error && !sites) {
@@ -197,13 +226,14 @@ const Published = ({ query }: { query: string }) => {
   }
 
   if (items.length === 0) return <Notice>{q ? `Nothing matches “${query}”.` : "Nothing published yet."}</Notice>;
-  return <PublishedRows items={items} onOpen={(site) => void openPublished(site)} />;
+  const List = view === "grid" ? PublishedCards : PublishedRows;
+  return <List items={items} onOpen={(site) => void openPublished(site)} />;
 };
 
 export const Dashboard = () => {
   const { data: workspaces = [] } = useWorkspaces();
   const switchWorkspace = useSwitchWorkspace();
-  const { sort, setSort, setSection } = useDashboardStore();
+  const { sort, setSort, setSection, view, setView } = useDashboardStore();
   // Published is there where Publish is: for the accounts the server lets in.
   const { data: features } = useFeatures();
   const publishOn = features?.publish === true;
@@ -212,7 +242,6 @@ export const Dashboard = () => {
   const { data: sites } = usePublishedSites(publishOn);
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
-  const [menu, setMenu] = useState<{ workspace: WorkspaceWithThumbnail; x: number; y: number } | null>(null);
   const [creating, setCreating] = useState(false);
   // Delete is held back for now; the dialog below is ready for it.
   // const [deleting, setDeleting] = useState<WorkspaceWithThumbnail | null>(null);
@@ -233,60 +262,69 @@ export const Dashboard = () => {
   const deselect = (e: React.MouseEvent) => e.target === e.currentTarget && setSelected(null);
 
   // The header stays put and the list scrolls under it, the scrollbar at the
-  // window's edge; both share one column.
+  // window's edge; both share one column. The sections are tabs (Radix's): the
+  // header has them, and the list is the panel of the one that's picked.
   return (
-    <main
-      className="absolute inset-0 flex flex-col bg-[#222222] font-sans antialiased"
-      onClick={deselect}
+    <Tabs.Root
+      asChild
+      value={section}
+      onValueChange={(to) => {
+        setSection(to as Section);
+        setQuery("");
+        setSelected(null);
+      }}
     >
-      {/* No thumbnail is taken of the canvas under it. */}
-      <CoversCanvas />
-      <div className={cn(COLUMN, "w-full shrink-0 pt-12")} onClick={deselect}>
-        <Header
-          sections={publishOn ? ["local", "published"] : ["local"]}
-          section={section}
-          onSection={(to) => {
-            setSection(to);
-            setQuery("");
-            setSelected(null);
-          }}
-          counts={{ local: workspaces.length, published: sites?.length }}
-          query={query}
-          onQuery={setQuery}
-          sort={sort}
-          onSort={setSort}
-          onNew={() => setCreating(true)}
-        />
-      </div>
-      <div className="min-h-0 flex-1 overflow-y-auto" onClick={deselect}>
-        <div className={cn(COLUMN, "pb-16")} onClick={deselect}>
-          {section === "published" ? (
-            <Published query={query} />
-          ) : items.length === 0 ? (
-            <Notice>{q ? `Nothing matches “${query}”.` : "No workspaces yet."}</Notice>
-          ) : (
-            <ListRows
-              items={items}
-              selected={selected}
-              onSelect={setSelected}
-              onOpen={open}
-              onMenu={(workspace, x, y) => setMenu({ workspace, x, y })}
-            />
-          )}
+      <main
+        // The grey of the titlebar and the chat, not a darker one of its own.
+        className="absolute inset-0 flex flex-col bg-[#2A2A2A] font-sans antialiased"
+        onClick={deselect}
+      >
+        {/* No thumbnail is taken of the canvas under it. */}
+        <CoversCanvas />
+        <div className={cn(COLUMN, "w-full shrink-0 pt-12")} onClick={deselect}>
+          <Header
+            sections={publishOn ? ["local", "published"] : ["local"]}
+            section={section}
+            counts={{ local: workspaces.length, published: sites?.length }}
+            query={query}
+            onQuery={setQuery}
+            sort={sort}
+            onSort={setSort}
+            view={view}
+            onView={setView}
+            onNew={() => setCreating(true)}
+          />
         </div>
-      </div>
+        <div className="min-h-0 flex-1 overflow-y-auto" onClick={deselect}>
+          {/* Not a stop for Tab itself: its rows are. */}
+          <Tabs.Content value={section} tabIndex={-1} className={cn(COLUMN, "pb-16 outline-none")} onClick={deselect}>
+            {section === "published" ? (
+              <Published query={query} />
+            ) : items.length === 0 ? (
+              <Notice>{q ? `Nothing matches “${query}”.` : "No workspaces yet."}</Notice>
+            ) : view === "grid" ? (
+              <GridCards
+                items={items}
+                selected={selected}
+                onSelect={setSelected}
+                onOpen={open}
+                // onDelete={setDeleting}
+              />
+            ) : (
+              <ListRows
+                items={items}
+                selected={selected}
+                onSelect={setSelected}
+                onOpen={open}
+                // onDelete={setDeleting}
+              />
+            )}
+          </Tabs.Content>
+        </div>
 
-      {menu && (
-        <RowMenu
-          x={menu.x}
-          y={menu.y}
-          onOpen={() => open(menu.workspace)}
-          // onDelete={() => setDeleting(menu.workspace)}
-          onClose={() => setMenu(null)}
-        />
-      )}
-      <CreateWorkspaceDialog open={creating} onOpenChange={setCreating} />
-      {/* <DeleteWorkspaceDialog workspace={deleting} onClose={() => setDeleting(null)} /> */}
-    </main>
+        <CreateWorkspaceDialog open={creating} onOpenChange={setCreating} />
+        {/* <DeleteWorkspaceDialog workspace={deleting} onClose={() => setDeleting(null)} /> */}
+      </main>
+    </Tabs.Root>
   );
 };

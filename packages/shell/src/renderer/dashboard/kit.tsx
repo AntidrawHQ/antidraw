@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 import { skipToken, useQuery } from "@tanstack/react-query";
 import type { WorkspaceWithThumbnail } from "@/main/api";
 import { getWorkspaceThumbnail } from "@/renderer/lib/api";
 import { queryKeys } from "@/renderer/lib/query-keys";
 import { cn } from "@/renderer/lib/utils";
+import { fit, leastWidth, readCapture, type Capture } from "./crop";
 
 // The dashboard's small parts, the titlebar tabs' and the published viewer's:
 // its own icons, button, chip and thumbnail, in the greys of its design
@@ -53,6 +54,8 @@ export const ic = {
     </>
   ),
   down: <path d="m7 10 5 5 5-5" />,
+  list: <path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01" />,
+  sort: <path d="M7.5 5v14m0 0-3.5-3.5M7.5 19l3.5-3.5M16.5 19V5m0 0L13 8.5M16.5 5 20 8.5" />,
   check: <path d="m5 12.5 4.5 4.5L19 7.5" />,
   close: <path d="M6 6l12 12M18 6 6 18" />,
   more: <path d="M5 12h.01M12 12h.01M19 12h.01" strokeWidth={3} />,
@@ -103,9 +106,10 @@ export const Chip = ({ children, className = "" }: { children: ReactNode; classN
 
 // The workspace's canvas as last captured (lib/thumbnail.ts), on the canvas's
 // own grey: a workspace that hasn't been captured yet is that grey alone.
-// The capture is shown whole, not cropped to the tile: it has the shape the
-// canvas had in the window, often taller than wide beside the chat, and the
-// grey around it is the grey it already has at its edges.
+// It's zoomed to the frames on it (./crop), not shown whole: a capture is the
+// canvas as the window had it, with the frames small in the middle. What the
+// tile has past the capture's edge is the grey the capture already has
+// there. A capture with nothing on its canvas is shown whole.
 export const WorkspaceThumb = ({
   workspace,
   className = "",
@@ -119,48 +123,54 @@ export const WorkspaceThumb = ({
     queryFn: version === null ? skipToken : () => getWorkspaceThumbnail(id, version),
     staleTime: Infinity,
   });
-  const [url, setUrl] = useState<string>();
+  // The capture, once it's been read: its URL, its shape, and where its frames are.
+  const [shown, setShown] = useState<Capture & { url: string }>();
+  // The tile's own shape: what's shown is fitted to both.
+  const [tile, setTile] = useState<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!jpeg) return;
     const made = URL.createObjectURL(jpeg);
-    setUrl(made);
+    let current = true;
+    void readCapture(jpeg, `${id}:${version}`)
+      // One that can't be read is shown whole.
+      .catch((): Capture => ({ ratio: 1, frames: null }))
+      .then((capture) => {
+        if (current) setShown({ url: made, ...capture });
+      });
     return () => {
-      setUrl(undefined);
+      current = false;
+      setShown(undefined);
       URL.revokeObjectURL(made);
     };
-  }, [jpeg]);
+  }, [jpeg, id, version]);
 
+  const part =
+    shown?.frames && tile
+      ? fit(shown.frames, shown.ratio, tile.clientWidth / tile.clientHeight, leastWidth(tile.clientWidth))
+      : null;
   return (
-    <div className={cn("relative overflow-hidden bg-[#282828]", className)}>
-      {url && <img src={url} alt="" draggable={false} className="absolute inset-0 size-full object-contain" />}
+    <div ref={setTile} className={cn("relative overflow-hidden bg-[#282828]", className)}>
+      {shown && (
+        <img
+          src={shown.url}
+          alt=""
+          draggable={false}
+          className={cn("absolute max-w-none", !part && "inset-0 size-full object-contain")}
+          style={
+            part
+              ? {
+                  left: `${(-part.x / part.width) * 100}%`,
+                  top: `${(-part.y / part.height) * 100}%`,
+                  width: `${100 / part.width}%`,
+                  height: `${100 / part.height}%`,
+                }
+              : undefined
+          }
+        />
+      )}
     </div>
   );
-};
-
-// For a menu: closes on a press outside it, and on Esc.
-export const useOutside = (open: boolean, close: () => void) => {
-  const ref = useRef<HTMLDivElement>(null);
-  const latest = useRef(close);
-  latest.current = close;
-
-  useEffect(() => {
-    if (!open) return;
-    const off = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) latest.current();
-    };
-    const esc = (e: KeyboardEvent) => {
-      if (e.key === "Escape") latest.current();
-    };
-    document.addEventListener("mousedown", off);
-    document.addEventListener("keydown", esc);
-    return () => {
-      document.removeEventListener("mousedown", off);
-      document.removeEventListener("keydown", esc);
-    };
-  }, [open]);
-
-  return ref;
 };
 
 export const menuItem =

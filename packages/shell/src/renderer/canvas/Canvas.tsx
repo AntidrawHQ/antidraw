@@ -49,14 +49,14 @@ export const frameNodeId = (componentName: string) => `${componentName}-1`;
 
 // Pans and zooms the canvas to one component's frame. For the host's own
 // controls (a component list, a "View" button): call it inside the same
-// ReactFlowProvider as the canvas.
+// ReactFlowProvider as the canvas. Gliding there, or at once with `jump`.
 export const useFocusComponent = () => {
   const reactFlow = useReactFlow();
   return useCallback(
-    (componentName: string) => {
+    (componentName: string, { jump = false }: { jump?: boolean } = {}) => {
       reactFlow.fitView({
         nodes: [{ id: frameNodeId(componentName) }],
-        duration: 300,
+        duration: jump ? 0 : 300,
         padding: 0.3,
       });
     },
