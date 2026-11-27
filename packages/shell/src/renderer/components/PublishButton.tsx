@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Popover as PopoverPrimitive } from "radix-ui";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
@@ -41,7 +41,13 @@ import { EXIT, SPRING, type PublishState } from "./publish/shared";
 
    Both are one modal Radix popover: it traps focus, gives it back
    to the Publish button on close, and takes Escape only when it's
-   the topmost layer. It can't be closed while publishing.
+   the topmost layer. It can't be closed while publishing, unless
+   the run has gone quiet for a while (STALLED_MS).
+
+   Each workspace gets its own (PublishButton keys it): a switch
+   unmounts the last one, closing its panel and dropping a sign-in
+   it was waiting on, and a run already going carries on in the
+   store.
    ──────────────────────────────────────────────────────────── */
 
 const GREEN = "oklch(0.696 0.17 162.48)";
@@ -49,6 +55,13 @@ const RED = "oklch(0.704 0.191 22.216)";
 
 // How long "Connected" shows before publishing starts.
 const LINKED_BEAT_MS = 500;
+
+// How long a run can go without a word before its panel can be closed. A
+// build or a push can be quiet that long and still be fine, so closing
+// doesn't stop it (the titlebar button keeps showing it); but a run that's
+// stuck, behind a proxy that never answers say, mustn't hold the app.
+// Counted from the run's own heardAt, so a remount doesn't start it over.
+export const STALLED_MS = 60_000;
 
 type Panel = "publish" | "signin";
 
@@ -94,17 +107,18 @@ function GoogleG({ size = 16 }: { size?: number }) {
   );
 }
 
-export const PublishButton = ({
-  workspaceId,
-  workspaceName,
-  siteUrl = null,
-  publishedAt = null,
-}: {
+type PublishButtonProps = {
   workspaceId: string;
   workspaceName: string;
   siteUrl?: string | null;
   publishedAt?: Date | string | number | null;
-}) => {
+};
+
+// Keyed by workspace, so a switch can't leave a panel showing one workspace
+// while it acts on another.
+export const PublishButton = (props: PublishButtonProps) => <WorkspacePublishButton key={props.workspaceId} {...props} />;
+
+const WorkspacePublishButton = ({ workspaceId, workspaceName, siteUrl = null, publishedAt = null }: PublishButtonProps) => {
   const reduce = !!useReducedMotion();
   const queryClient = useQueryClient();
   const [panel, setPanelState] = useState<Panel | null>(null);
@@ -127,6 +141,8 @@ export const PublishButton = ({
   const panelRef = useRef(panel);
   const signInStepRef = useRef(signInStep);
   const linkedRef = useRef(linked);
+  const [stalled, setStalledState] = useState(false);
+  const stalledRef = useRef(stalled);
   const setPanel = (next: Panel | null) => {
     panelRef.current = next;
     setPanelState(next);
@@ -139,13 +155,19 @@ export const PublishButton = ({
     linkedRef.current = next;
     setLinkedState(next);
   };
-  // The workspace a publish is for: the active one can change while the
-  // account is checked or the user signs in.
-  const target = useRef({ id: workspaceId, name: workspaceName });
+  const setStalled = (next: boolean) => {
+    stalledRef.current = next;
+    setStalledState(next);
+  };
+  // The workspace as it is now, for a run that starts from an old render (the
+  // sign-in's callback): a publish just now changes its link and time.
+  const props = useRef({ workspaceName, siteUrl, publishedAt });
+  props.current = { workspaceName, siteUrl, publishedAt };
   const site = (): PublishState["site"] => ({
-    name: workspaceName,
-    url: siteUrl,
-    lastPublished: lastPublished(publishedAt),
+    name: props.current.workspaceName,
+    url: props.current.siteUrl,
+    lastPublished: lastPublished(props.current.publishedAt),
+    republish: !!props.current.siteUrl,
   });
 
   const { refetch: refetchAccount } = useAccount();
@@ -159,14 +181,25 @@ export const PublishButton = ({
     timers.current.forEach(clearTimeout);
     timers.current = [];
   };
-  useEffect(() => clear, []);
+  // Unmounted by a workspace switch: whatever it was doing in its panel stops
+  // there (a sign-in that finishes after doesn't publish), and the browser
+  // flow main is waiting on ends.
+  useEffect(
+    () => () => {
+      clear();
+      abandonSignIn();
+      panelRef.current = null;
+    },
+    [],
+  );
   const later = (ms: number, fn: () => void) => timers.current.push(setTimeout(fn, ms));
 
-  const publishing = () => isRunning(usePublishStore.getState().runs[target.current.id]);
+  const publishing = () => isRunning(usePublishStore.getState().runs[workspaceId]);
   // Whether the open panel may close (its Close button), and whether Escape
-  // or a click outside closes it: not while waiting for Google, which
-  // includes the Connected beat.
-  const canClose = () => (panelRef.current === "publish" ? !publishing() : panelRef.current === "signin");
+  // or a click outside closes it: not while publishing (unless it's stalled),
+  // nor while waiting for Google, which includes the Connected beat.
+  const canClose = () =>
+    panelRef.current === "publish" ? !publishing() || stalledRef.current : panelRef.current === "signin";
   const canDismiss = () => canClose() && !(panelRef.current === "signin" && signInStepRef.current === "waiting");
   const canAct = () =>
     panelRef.current === "signin" && (signInStepRef.current === "signin" || signInStepRef.current === "error");
@@ -179,19 +212,16 @@ export const PublishButton = ({
   };
 
   // Main's publish, once the account is known.
-  const publish = async (ws: { id: string }, id: number, account: Account) => {
-    setPublishMeta(ws.id, id, "account", account.email.split("@")[0]!);
-    const ended = await runPublish(ws.id, id);
+  const publish = async (id: number, account: Account) => {
+    setPublishMeta(workspaceId, id, "account", account.email.split("@")[0]!);
+    const ended = await runPublish(workspaceId, id);
     if (ended === "done") void queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all });
     // Turned off for this user, or signed out of the account it was on for.
-    const refused = usePublishStore.getState().runs[ws.id]?.failure?.kind === "PUBLISH_DISABLED";
+    const refused = usePublishStore.getState().runs[workspaceId]?.failure?.kind === "PUBLISH_DISABLED";
     if (refused || ended === "signed-out") void queryClient.invalidateQueries({ queryKey: queryKeys.features });
-    if (ended === "signed-out") {
-      // The stored token died; main already dropped it.
-      queryClient.setQueryData(queryKeys.account, null);
-      clearPublish(ws.id);
-      if (panelRef.current === "publish" && target.current.id === ws.id) openSignIn();
-    }
+    // The stored token died; main already dropped it. The run's SIGNED_OUT
+    // failure takes the panel to sign-in (below).
+    if (ended === "signed-out") queryClient.setQueryData(queryKeys.account, null);
   };
 
   // Checks the account, then publishes or asks to sign in. Asked on every
@@ -199,39 +229,36 @@ export const PublishButton = ({
   // at launch, changes the answer.
   const start = async () => {
     if (publishing()) return;
-    const ws = { id: workspaceId, name: workspaceName };
-    target.current = ws;
-    const id = beginPublish(ws.id, site());
+    const id = beginPublish(workspaceId, site());
     const result = await refetchAccount();
-    if (!isCurrentRun(ws.id, id)) return;
+    if (!isCurrentRun(workspaceId, id)) return;
     // By status: a failed refetch keeps the last account it loaded.
     if (result.isError) {
       const code = result.error instanceof AccountRequestError ? result.error.code : "";
-      failPublish(ws.id, id, { kind: "SERVER_ERROR", message: problem(code) });
+      failPublish(workspaceId, id, { kind: "SERVER_ERROR", message: problem(code) });
     } else if (result.data) {
-      void publish(ws, id, result.data);
+      void publish(id, result.data);
     } else {
-      clearPublish(ws.id);
-      if (panelRef.current === "publish") openSignIn();
+      failPublish(workspaceId, id, { kind: "SIGNED_OUT", message: "Not signed in" });
     }
   };
 
   const askAgent = () => {
-    const ws = target.current;
-    const failed = usePublishStore.getState().runs[ws.id];
+    const failed = usePublishStore.getState().runs[workspaceId];
     if (!failed?.failure || failed.sentToClaude) return;
-    setSentToAgent(ws.id, failed.id, true);
+    const { name } = failed.site;
+    setSentToAgent(workspaceId, failed.id, true);
     sendToChat
       .send({
-        prompt: fixBuildPrompt(ws.name, failed.failure.detail ?? failed.failure.message),
-        title: `Fix the build error in ${ws.name}`,
+        prompt: fixBuildPrompt(name, failed.failure.detail ?? failed.failure.message),
+        title: `Fix the build error in ${name}`,
         model: composer.selectedModelId,
         effort: composer.effort,
-        target: { workspaceId: ws.id, conversationId: null },
+        target: { workspaceId, conversationId: null },
       })
       .catch((error) => {
         console.error("Couldn't send the build error to the agent:", error);
-        setSentToAgent(ws.id, failed.id, false);
+        setSentToAgent(workspaceId, failed.id, false);
       });
   };
 
@@ -260,8 +287,7 @@ export const PublishButton = ({
           if (panelRef.current !== "signin") return;
           setLinked(false);
           setPanel("publish");
-          const ws = target.current;
-          void publish(ws, beginPublish(ws.id, site()), account);
+          void publish(beginPublish(workspaceId, site()), account);
         });
       },
       onError: (error) => {
@@ -292,15 +318,14 @@ export const PublishButton = ({
     // view. A failure stays, with its way forward, until it's tried again.
     // Nor does one the server refused: Publish isn't on for this user, so
     // there's nothing to try again, and the button goes once it's closed.
-    const ended = usePublishStore.getState().runs[target.current.id];
-    if (ended?.step === "done" || ended?.failure?.kind === "PUBLISH_DISABLED") clearPublish(target.current.id);
+    const ended = usePublishStore.getState().runs[workspaceId];
+    if (ended?.step === "done" || ended?.failure?.kind === "PUBLISH_DISABLED") clearPublish(workspaceId);
     setLinked(false);
     setPanel(null);
   };
 
   const onPublishClick = () => {
     if (panelRef.current) return close();
-    target.current = { id: workspaceId, name: workspaceName };
     setPanel("publish");
   };
 
@@ -316,6 +341,24 @@ export const PublishButton = ({
   }, [panel, signInStep, linked]);
 
   const running = isRunning(run);
+
+  // Stalled: running, and nothing heard for STALLED_MS.
+  useEffect(() => {
+    const left = run && isRunning(run) ? run.heardAt + STALLED_MS - Date.now() : Infinity;
+    setStalled(left <= 0);
+    if (left <= 0 || left === Infinity) return;
+    const timer = setTimeout(() => setStalled(true), left);
+    return () => clearTimeout(timer);
+  }, [run]);
+
+  // Signed out, by this button's run or one an earlier mount of it started:
+  // back to the confirm view, and on to sign-in if the panel's open. Before
+  // paint, so the failure never shows.
+  useLayoutEffect(() => {
+    if (run?.failure?.kind !== "SIGNED_OUT") return;
+    clearPublish(workspaceId);
+    if (panelRef.current === "publish") openSignIn();
+  }, [run]);
 
   // Publishing launches behind a server flag: until it's on for this user
   // (or while that can't be told) there's no button, and no sign-in, which
@@ -410,13 +453,14 @@ export const PublishButton = ({
                     state={state}
                     actions={{
                       onPublish: () => {
-                        track("publish_clicked", { workspace_id: target.current.id });
+                        track("publish_clicked", { workspace_id: workspaceId });
                         void start();
                       },
                       onRetry: () => void start(),
                       onAskClaude: askAgent,
-                      onCopyLink: () => track("publish_link_copied", { workspace_id: target.current.id }),
+                      onCopyLink: () => track("publish_link_copied", { workspace_id: workspaceId }),
                     }}
+                    closable={running && stalled}
                     onClose={close}
                   />
                 ) : (
@@ -438,7 +482,7 @@ export const PublishButton = ({
                     <p className="mt-1.5 text-[13px] leading-[1.6] text-[#9a9a9a]">
                       {busy
                         ? "Finish signing in with Google in your browser. We'll publish right after."
-                        : `Once you're signed in, ${target.current.name} goes live on a link you can share.`}
+                        : `Once you're signed in, ${workspaceName} goes live on a link you can share.`}
                     </p>
 
                     <button

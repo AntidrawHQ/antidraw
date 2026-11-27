@@ -91,7 +91,13 @@ const UploadBar = ({ upload, failed }: { upload: NonNullable<PublishState["uploa
     >
       <div className="flex items-baseline justify-between gap-3 text-[11px]">
         <span className="min-w-0 truncate font-mono" style={{ color: failed ? C.errorLog : C.logLast }}>
-          {failed ? `stopped at ${upload.file}` : upload.done === upload.total ? "all files sent" : upload.file}
+          {failed
+            ? upload.file
+              ? `stopped at ${upload.file}`
+              : "stopped"
+            : upload.done === upload.total
+              ? "all files sent"
+              : upload.file}
         </span>
         <span className="shrink-0 font-mono tabular-nums" style={{ color: C.muted }}>
           {upload.done}/{upload.total}
@@ -114,11 +120,15 @@ const UploadBar = ({ upload, failed }: { upload: NonNullable<PublishState["uploa
 
 const FailureRow = ({ state, actions }: { state: PublishState; actions: StepActions }) => {
   const f = state.failure!;
+  // The rest of the message: which files are too big and what to do about
+  // them, say. A build's is vite's error, which its log above already shows.
+  const detail = f.detail && !(f.step === "build" && state.log.length) ? f.detail : undefined;
   return (
     <div className="flex flex-col gap-2.5 pb-2 pl-[28px] animate-in fade-in-0 slide-in-from-bottom-1 duration-300">
-      <span role="alert" className="text-[12px] leading-[1.5]" style={{ color: C.errorText }}>
-        {f.message}
-      </span>
+      <div role="alert" className="flex flex-col gap-1.5 text-[12px] leading-[1.5]" style={{ color: C.errorText }}>
+        <span>{f.message}</span>
+        {detail && <pre className="m-0 whitespace-pre-wrap break-words font-mono text-[11px] leading-[1.6]">{detail}</pre>}
+      </div>
       <div className="flex flex-wrap items-center gap-2">
         {f.kind === "BUILD_FAILED" ? (
           <>

@@ -6,8 +6,11 @@ import type { Failure, PublishState, StepKey } from "@/renderer/components/publi
 // as the publish panel shows it. Kept here rather than in PublishButton, so
 // a run outlives the panel and the button. No run means the confirm view.
 
-/** A run is never on the confirm view; `id` tells a newer run from an older one. */
-export type PublishRun = PublishState & { step: StepKey | "done"; id: number };
+/**
+ * A run is never on the confirm view; `id` tells a newer run from an older one.
+ * `heardAt`: when it last changed, which says how long it's been quiet.
+ */
+export type PublishRun = PublishState & { step: StepKey | "done"; id: number; heardAt: number };
 
 type PublishStore = {
   runs: Record<string, PublishRun>;
@@ -27,7 +30,7 @@ const patch = (workspaceId: string, id: number, change: (run: PublishRun) => Par
   usePublishStore.setState((s) => {
     const run = s.runs[workspaceId];
     if (run?.id !== id) return s;
-    return { runs: { ...s.runs, [workspaceId]: { ...run, ...change(run) } } };
+    return { runs: { ...s.runs, [workspaceId]: { ...run, ...change(run), heardAt: Date.now() } } };
   });
 
 export const isCurrentRun = (workspaceId: string, id: number) => runOf(workspaceId)?.id === id;
@@ -39,7 +42,7 @@ export const isRunning = (run: PublishRun | undefined) => !!run && run.step !== 
 export const beginPublish = (workspaceId: string, site: PublishState["site"]) => {
   const id = ++lastId;
   usePublishStore.setState((s) => ({
-    runs: { ...s.runs, [workspaceId]: { id, site, step: "account", meta: {}, log: [] } },
+    runs: { ...s.runs, [workspaceId]: { id, site, step: "account", meta: {}, log: [], heardAt: Date.now() } },
   }));
   return id;
 };
@@ -87,10 +90,21 @@ export const runPublish = async (workspaceId: string, id: number) => {
           break;
         }
         case "done":
-          patch(workspaceId, id, (run) => ({ site: { ...run.site, url: event.url }, step: "done", upload: undefined }));
+          patch(workspaceId, id, (run) => ({
+            // A site the server no longer had was replaced: a new link.
+            site: { ...run.site, url: event.url, republish: !!run.site.url && run.site.url === event.url },
+            step: "done",
+            upload: undefined,
+          }));
           return "done" as const;
         case "error": {
-          if (event.code === "SIGNED_OUT") return "signed-out" as const;
+          // Kept as the run's failure, for the button that's showing it to
+          // take to sign-in (PublishButton): not necessarily the one that
+          // started it, since a workspace switch remounts the button.
+          if (event.code === "SIGNED_OUT") {
+            failPublish(workspaceId, id, { kind: "SIGNED_OUT", message: event.message });
+            return "signed-out" as const;
+          }
           // The first line says what failed; the rest is the build's error.
           const [message = "", ...detail] = event.message.split("\n");
           failPublish(workspaceId, id, { kind: event.code, message, detail: detail.join("\n") || undefined });

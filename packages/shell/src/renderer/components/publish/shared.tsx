@@ -49,7 +49,7 @@ export type StepKey = (typeof STEPS)[number]["key"];
 
 /**
  * publish.ts's PublishError codes, or another failure's. SIGNED_OUT never
- * shows here: the sign-in panel takes it.
+ * shows: the button showing the run takes it to sign-in before it's painted.
  */
 export type FailureKind = "RUNTIME_TOO_OLD" | "BUILD_FAILED" | "UPLOAD_FAILED" | "SERVER_ERROR" | (string & {});
 
@@ -57,7 +57,12 @@ export type FailureKind = "RUNTIME_TOO_OLD" | "BUILD_FAILED" | "UPLOAD_FAILED" |
 export type Failure = { step: StepKey; kind: FailureKind; message: string; detail?: string };
 
 export type PublishState = {
-  site: { name: string; url: string | null; lastPublished?: string };
+  /**
+   * `republish`: the workspace already had its link, and once live, the link
+   * stayed the same. Not `lastPublished`, which sites published before that
+   * was kept don't have.
+   */
+  site: { name: string; url: string | null; lastPublished?: string; republish?: boolean };
   /** "confirm" before anything runs, then the step running now, then "done" once live. */
   step: StepKey | "done" | "confirm";
   failure?: Failure;

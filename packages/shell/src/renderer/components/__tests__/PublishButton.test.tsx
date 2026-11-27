@@ -120,6 +120,11 @@ const render = async (workspace: Workspace = { id: "w1", name: "Paper Shaders" }
   await act(async () => show(workspace));
   // The button shows once main says publishing is on.
   await settle();
+  /** Switches the titlebar to another workspace, as the switcher or an agent's open_workspace does. */
+  return async (ws: Workspace) => {
+    await act(async () => show(ws));
+    await settle();
+  };
 };
 
 const settle = () => act(async () => void (await new Promise((resolve) => setTimeout(resolve, 20))));
@@ -763,4 +768,275 @@ it("says publishing isn't available when the server refuses, then hides the butt
       "run": null,
     }
   `);
+});
+
+it("shows the rest of a failure's message: which files are too big, and what to do", async () => {
+  api.getAccount.mockResolvedValue(ok(ADA));
+  api.publishWorkspace.mockImplementation(() =>
+    play(
+      { type: "step", step: "runtime" },
+      {
+        type: "error",
+        code: "FILE_TOO_LARGE",
+        message: "A file is too big to publish. Each file can be up to 25 MB:\n  assets/video.mp4 (40 MB)\nDelete it or add it to .gitignore, then publish again.",
+      },
+    ),
+  );
+  await render();
+  await publish();
+  expect({ alert: screen().alert, detail: document.querySelector('[role="alert"] pre')?.textContent, steps: steps() })
+    .toMatchInlineSnapshot(`
+      {
+        "alert": "A file is too big to publish. Each file can be up to 25 MB:  assets/video.mp4 (40 MB)
+      Delete it or add it to .gitignore, then publish again.",
+        "detail": "  assets/video.mp4 (40 MB)
+      Delete it or add it to .gitignore, then publish again.",
+        "steps": [
+          "✓ Checking accountada",
+          "✗ Checking runtime",
+          "· Building site",
+          "· Uploading files",
+          "· Going live",
+        ],
+      }
+    `);
+});
+
+it("says where an upload stopped only when it knows", async () => {
+  api.getAccount.mockResolvedValue(ok(ADA));
+  const stopped = (file: string) => () =>
+    play(
+      { type: "step", step: "upload" },
+      { type: "upload", done: 2, total: 5, unchanged: 0, file },
+      { type: "error", code: "UPLOAD_FAILED", message: "Couldn't upload the site: the connection was reset" },
+    );
+  const label = () => document.querySelector('[role="dialog"] .rounded-md span.font-mono')?.textContent;
+  api.publishWorkspace.mockImplementationOnce(stopped("")).mockImplementationOnce(stopped("assets/video.mp4"));
+  await render();
+  await publish();
+  const unknown = label();
+  await click(inPanel(/Resume upload/));
+  expect({ unknown, named: label() }).toMatchInlineSnapshot(`
+    {
+      "named": "stopped at assets/video.mp4",
+      "unknown": "stopped",
+    }
+  `);
+});
+
+it("closes the panel on a switch to another workspace, and the run goes on for its own", async () => {
+  api.getAccount.mockResolvedValue(ok(ADA));
+  const c = channel();
+  api.publishWorkspace.mockImplementation(c.stream);
+  const switchTo = await render({ id: "w1", name: "Paper Shaders" });
+  await publish();
+  await c.push({ type: "step", step: "runtime" }, { type: "step", step: "build" });
+  // An agent opens another workspace while this one builds.
+  await switchTo({ id: "w2", name: "Field Notes" });
+  const switched = { dialog: screen().dialog, overlay: !!document.querySelector("[data-publish-overlay]"), button: titlebar().textContent };
+  // That workspace's own panel opens and closes as usual.
+  await click(titlebar());
+  const other = screen().dialog;
+  await key("Escape");
+  const otherClosed = screen().dialog;
+  await c.push(
+    { type: "step", step: "upload" },
+    { type: "step", step: "live" },
+    { type: "done", url: "https://antidraw.com/s/paper-shaders" },
+  );
+  c.end();
+  await switchTo({ id: "w1", name: "Paper Shaders" });
+  const back = titlebar().textContent;
+  await click(titlebar());
+  expect({ switched, other, otherClosed, back, reopened: screen().dialog, published: api.publishWorkspace.mock.calls })
+    .toMatchInlineSnapshot(`
+      {
+        "back": "Published",
+        "other": [
+          "Publish Field Notes",
+          "First publish. You'll get a new link.",
+        ],
+        "otherClosed": null,
+        "published": [
+          [
+            "w1",
+          ],
+        ],
+        "reopened": [
+          "Paper Shaders is live",
+          "Your link is ready to share.",
+        ],
+        "switched": {
+          "button": "Publish",
+          "dialog": null,
+          "overlay": false,
+        },
+      }
+    `);
+});
+
+it("doesn't publish when sign-in finishes after a switch to another workspace, and ends the browser flow", async () => {
+  const signedIn = deferred<unknown>();
+  api.signIn.mockReturnValue(signedIn.promise);
+  const switchTo = await render({ id: "w1", name: "Paper Shaders" });
+  await publish();
+  await click(button(/Sign in with Google/));
+  await switchTo({ id: "w2", name: "Field Notes" });
+  const cancelled = api.cancelSignIn.mock.calls.length;
+  await act(async () => signedIn.resolve(ok(ADA)));
+  await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 600))));
+  expect({ cancelled, dialog: screen().dialog, published: api.publishWorkspace.mock.calls.length, runs: usePublishStore.getState().runs })
+    .toMatchInlineSnapshot(`
+      {
+        "cancelled": 1,
+        "dialog": null,
+        "published": 0,
+        "runs": {},
+      }
+    `);
+});
+
+/** The line under a run's header, if any. */
+const hint = () => [...document.querySelectorAll('[role="dialog"] p')].find((p) => /taking a while/i.test(p.textContent ?? ""))?.textContent ?? null;
+
+it("lets a run that's gone quiet for a while be closed, and it keeps going", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    const { STALLED_MS } = await import("../PublishButton");
+    api.getAccount.mockResolvedValue(ok(ADA));
+    const c = channel();
+    api.publishWorkspace.mockImplementation(c.stream);
+    await render();
+    await publish();
+    await c.push({ type: "step", step: "runtime" }, { type: "step", step: "build" });
+    await act(async () => void vi.advanceTimersByTime(STALLED_MS - 1000));
+    const quiet = { close: !!inPanel(/^Close$/), hint: hint() };
+    // A line of output starts the wait again.
+    await c.push({ type: "log", line: "transforming..." });
+    await act(async () => void vi.advanceTimersByTime(STALLED_MS - 1000));
+    const heard = !!inPanel(/^Close$/);
+    await act(async () => void vi.advanceTimersByTime(1000));
+    const stalled = { close: !!inPanel(/^Close$/), hint: hint() };
+    await key("Escape");
+    const closed = { dialog: screen().dialog, overlay: !!document.querySelector("[data-publish-overlay]"), button: titlebar().textContent };
+    await c.push({ type: "step", step: "upload" }, { type: "step", step: "live" }, { type: "done", url: "https://antidraw.com/s/paper-shaders" });
+    c.end();
+    await settle();
+    expect({ quiet, heard, stalled, closed, finished: titlebar().textContent }).toMatchInlineSnapshot(`
+      {
+        "closed": {
+          "button": "Building",
+          "dialog": null,
+          "overlay": false,
+        },
+        "finished": "Published",
+        "heard": false,
+        "quiet": {
+          "close": false,
+          "hint": null,
+        },
+        "stalled": {
+          "close": true,
+          "hint": "This is taking a while. Closing this won't stop it.",
+        },
+      }
+    `);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("says Publish changes and Updated on the same link for a site published before its time was kept", async () => {
+  api.getAccount.mockResolvedValue(ok(ADA));
+  // Live before published_at: a link, and no time.
+  await render({ id: "w1", name: "Paper Shaders", siteUrl: "https://antidraw.com/s/paper-shaders" });
+  await click(titlebar());
+  const confirm = { dialog: screen().dialog, action: inPanel(/^Publish( changes)?$/).textContent };
+  await click(inPanel(/^Publish( changes)?$/));
+  const live = screen().dialog;
+  await click(inPanel(/^Close$/));
+  // The server no longer had the site, so it made a new one: a new link.
+  api.publishWorkspace.mockImplementation(() => play(...LIVE.slice(0, -1), { type: "done", url: "https://antidraw.com/s/paper-shaders-2" }));
+  await publish();
+  expect({ confirm, live, replaced: screen().dialog }).toMatchInlineSnapshot(`
+    {
+      "confirm": {
+        "action": "Publish changes",
+        "dialog": [
+          "Publish Paper Shaders",
+          "antidraw.com/s/paper-shaders",
+        ],
+      },
+      "live": [
+        "Paper Shaders is live",
+        "Updated on the same link.",
+      ],
+      "replaced": [
+        "Paper Shaders is live",
+        "Your link is ready to share.",
+      ],
+    }
+  `);
+});
+
+it("keeps counting a quiet run's wait across a switch away and back", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    const { STALLED_MS } = await import("../PublishButton");
+    api.getAccount.mockResolvedValue(ok(ADA));
+    const c = channel();
+    api.publishWorkspace.mockImplementation(c.stream);
+    const switchTo = await render({ id: "w1", name: "Paper Shaders" });
+    await publish();
+    await c.push({ type: "step", step: "runtime" }, { type: "step", step: "build" });
+    await act(async () => void vi.advanceTimersByTime(STALLED_MS));
+    await key("Escape");
+    await switchTo({ id: "w2", name: "Field Notes" });
+    await switchTo({ id: "w1", name: "Paper Shaders" });
+    await click(titlebar());
+    // Still stuck: closable at once, not another wait from the remount.
+    expect({ dialog: screen().dialog, close: !!inPanel(/^Close$/), hint: hint() }).toMatchInlineSnapshot(`
+      {
+        "close": true,
+        "dialog": [
+          "Publishing Paper Shaders",
+          "First publish.",
+        ],
+        "hint": "This is taking a while. Closing this won't stop it.",
+      }
+    `);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("goes to sign-in when a run started before a switch away and back finds the session gone", async () => {
+  api.getAccount.mockResolvedValue(ok(ADA));
+  const c = channel();
+  api.publishWorkspace.mockImplementation(c.stream);
+  const switchTo = await render({ id: "w1", name: "Paper Shaders" });
+  await publish();
+  await c.push({ type: "step", step: "runtime" }, { type: "step", step: "build" });
+  await switchTo({ id: "w2", name: "Field Notes" });
+  await switchTo({ id: "w1", name: "Paper Shaders" });
+  await click(titlebar());
+  const watching = screen().dialog;
+  await c.push({ type: "error", code: "SIGNED_OUT", message: "Not signed in" });
+  c.end();
+  await settle();
+  expect({ watching, after: screen().dialog, button: titlebar().textContent, run: usePublishStore.getState().runs.w1 ?? null })
+    .toMatchInlineSnapshot(`
+      {
+        "after": [
+          "Sign in to publish",
+          "Once you're signed in, Paper Shaders goes live on a link you can share.",
+        ],
+        "button": "Publish",
+        "run": null,
+        "watching": [
+          "Publishing Paper Shaders",
+          "First publish.",
+        ],
+      }
+    `);
 });

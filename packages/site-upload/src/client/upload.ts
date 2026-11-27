@@ -16,6 +16,12 @@ export type UploadProgress = {
   toUploadBytes: number;
   uploadedFiles: number;
   uploadedBytes: number;
+  /**
+   * Files the server already had, so nothing went up for them. By path, like
+   * totalFiles: files with the same content are one upload, so this isn't
+   * totalFiles - toUploadFiles.
+   */
+  unchangedFiles: number;
 };
 
 export type UploadSiteOptions = {
@@ -61,6 +67,7 @@ export async function uploadSite(options: UploadSiteOptions): Promise<UploadSite
     toUploadBytes: 0,
     uploadedFiles: 0,
     uploadedBytes: 0,
+    unchangedFiles: 0,
   };
   const report = (phase: UploadPhase) => {
     progress.phase = phase;
@@ -75,6 +82,8 @@ export async function uploadSite(options: UploadSiteOptions): Promise<UploadSite
   });
   progress.totalFiles = Object.keys(local.manifest.files).length;
   progress.totalBytes = local.totalBytes;
+  // Every content sent in any round, for unchangedFiles.
+  const sent = new Set<string>();
 
   // A commit can find files missing that the plan said were stored, if the
   // server's cleanup ran in between. One more plan and upload round fixes it.
@@ -91,6 +100,8 @@ export async function uploadSite(options: UploadSiteOptions): Promise<UploadSite
     }
     progress.toUploadFiles += queue.length;
     progress.toUploadBytes += queue.reduce((sum, file) => sum + file.size, 0);
+    for (const file of queue) sent.add(file.hash);
+    progress.unchangedFiles = Object.values(local.manifest.files).filter((entry) => !sent.has(entry.h)).length;
 
     report("uploading");
     await uploadAll(queue, concurrency, options.transport, retry, (file) => {

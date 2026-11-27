@@ -128,6 +128,8 @@ export const publishSite = async (options: PublishOptions): Promise<Result<{ url
     const { site, access } = await siteSource(options);
     const commit = await pushSource(options, files, access);
     const uploadUrl = await startPublish(options, site, commit);
+    // The upload as the panel last heard it, so a failure can say where it stopped.
+    const last: { event?: Extract<PublishEvent, { type: "upload" }> } = {};
     try {
       let file = "";
       await uploadSite({
@@ -136,9 +138,10 @@ export const publishSite = async (options: PublishOptions): Promise<Result<{ url
         immutable: (file) => immutable.has(file),
         onFileUploaded: (uploaded) => void (file = uploaded.path),
         onProgress: (progress) => {
-          const unchanged = progress.totalFiles - progress.toUploadFiles;
+          const unchanged = progress.unchangedFiles;
           if (progress.phase === "uploading") {
-            emit({ type: "upload", done: progress.uploadedFiles, total: progress.toUploadFiles, unchanged, file });
+            last.event = { type: "upload", done: progress.uploadedFiles, total: progress.toUploadFiles, unchanged, file };
+            emit(last.event);
           } else if (progress.phase === "committing") {
             const sent = progress.uploadedFiles;
             emit({ type: "meta", step: "upload", text: unchanged ? `${sent} sent · ${unchanged} cached` : `${sent} files` });
@@ -148,6 +151,10 @@ export const publishSite = async (options: PublishOptions): Promise<Result<{ url
       });
     } catch (error) {
       if (!(error instanceof SiteUploadError)) throw error;
+      // The bar's file is the last one that went up, not the one that failed,
+      // which is only known when the error names it (one that changed or went).
+      const failed = error.details?.path;
+      if (last.event) emit({ ...last.event, file: typeof failed === "string" ? failed : "" });
       if (error.status === 401) SIGNED_OUT();
       // Turned off while this publish was uploading.
       if (error.status === 403 && (error.code as string) === "PUBLISH_DISABLED") PUBLISH_DISABLED(error.message);

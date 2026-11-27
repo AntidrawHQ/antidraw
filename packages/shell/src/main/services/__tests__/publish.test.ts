@@ -109,11 +109,13 @@ const publish = async (
     authorization = (_pathname: string) => user.authorization,
     git = gitDir(),
     pushFails = null as "refused" | "moved" | null,
-    duringBuild = (_dir: string) => {},
+    // Gets vite's arguments too, which say where it builds to (--outDir).
+    duringBuild = (_dir: string, _args: string[]) => {},
     // Changes where a request goes, as a server without that route would see it.
     route = (pathname: string) => pathname,
-    // Runs just before each request is sent.
+    // Runs just before each request is sent, and once its answer is in.
     beforeRequest = async (_pathname: string) => {},
+    afterRequest = (_pathname: string, _response: Response) => {},
   } = {},
 ) => {
   const requests: string[] = [];
@@ -132,10 +134,12 @@ const publish = async (
       const headers = new Headers(init.headers);
       headers.set("authorization", authorization(target.pathname));
       await beforeRequest(target.pathname);
-      return fetch(target, { ...init, headers });
+      const response = await fetch(target, { ...init, headers });
+      afterRequest(target.pathname, response);
+      return response;
     },
     npm: (args, cwd, { env, ...options }) => {
-      duringBuild(cwd);
+      duringBuild(cwd, args);
       return spawn("npm", args, { ...options, cwd, env: { ...process.env, ...env } });
     },
     onSiteCreated: async (site) => void created.push(site),
@@ -313,7 +317,25 @@ it("publishes again to the same site, uploading only what changed", async () => 
   const before = await liveFiles(first.id);
   const previous = await liveCommit(first.id);
   const dir = workspace({ "src/components/user-components/Card.tsx": `export default () => <div>Card, edited</div>\n` });
-  const { result, requests, created, pushes } = await publish(dir, first, { git: firstGit });
+  const { result, requests, created, pushes, events } = await publish(dir, first, { git: firstGit });
+  // What the panel says of it: what went up, and what was live already.
+  expect({
+    meta: events.flatMap((e) => (e.type === "meta" && e.step === "upload" ? [e.text] : [])),
+    lastUpload: { ...events.filter((e) => e.type === "upload").at(-1), file: "<file>" },
+  }).toMatchInlineSnapshot(`
+    {
+      "lastUpload": {
+        "done": 5,
+        "file": "<file>",
+        "total": 5,
+        "type": "upload",
+        "unchanged": 3,
+      },
+      "meta": [
+        "5 sent · 3 cached",
+      ],
+    }
+  `);
   expect(pushes).toHaveLength(1);
   expect(await liveCommit(first.id)).toBe(pushes[0]);
   expect(pushes[0]).not.toBe(previous);
@@ -389,6 +411,74 @@ it("keeps the saved site when a 404 is about the route, not the site", async () 
       "requests": [
         "POST /api/sites/<site>/source-gone",
       ],
+    }
+  `);
+}, 60_000);
+
+it("says where an upload stopped only when it knows which file failed", async () => {
+  // A new site, so every file goes up. The first two go up; the rest go to a
+  // route the server doesn't have, once those two are in, so the bar's file
+  // until then is one that made it.
+  let routed = 0;
+  let up = 0;
+  let twoUp!: () => void;
+  const twoUpYet = new Promise<void>((resolve) => (twoUp = resolve));
+  const unknown = await publish(workspace(), null, {
+    route: (pathname) => (pathname.includes("/files/") && ++routed > 2 ? pathname.replace("/files/", "/nowhere/") : pathname),
+    beforeRequest: async (pathname) => {
+      if (pathname.includes("/nowhere/")) await twoUpYet;
+    },
+    afterRequest: (pathname, response) => {
+      if (pathname.includes("/files/") && response.ok && ++up === 2) twoUp();
+    },
+  });
+  // A file the build wrote that's gone by the time it's sent: the upload names it.
+  let outDir = "";
+  let gone = false;
+  const named = await publish(workspace(), null, {
+    duringBuild: (_dir, args) => void (outDir = args[args.indexOf("--outDir") + 1]!),
+    beforeRequest: async (pathname) => {
+      if (!pathname.endsWith("/plan") || gone) return;
+      gone = true;
+      fs.rmSync(path.join(outDir, "preview.html"));
+    },
+  });
+  const uploads = (events: PublishEvent[]) => events.filter((e) => e.type === "upload");
+  expect({
+    unknown: {
+      code: unknown.result._unsafeUnwrapErr().code,
+      before: uploads(unknown.events).filter((e) => e.file !== "").at(-1)?.done,
+      last: uploads(unknown.events).at(-1)?.file,
+    },
+    named: { code: named.result._unsafeUnwrapErr().code, message: named.result._unsafeUnwrapErr().message, last: uploads(named.events).at(-1)?.file },
+  }).toMatchInlineSnapshot(`
+    {
+      "named": {
+        "code": "UPLOAD_FAILED",
+        "last": "preview.html",
+        "message": "Couldn't upload the site: preview.html can't be read: Unable to open file as blob",
+      },
+      "unknown": {
+        "before": 2,
+        "code": "UPLOAD_FAILED",
+        "last": "",
+      },
+    }
+  `);
+}, 60_000);
+
+it("counts files with the same content as sent, not as already live", async () => {
+  // A first publish: nothing is live yet, though two files are one upload.
+  const { events } = await publish(workspace({ "public/one.txt": "same", "public/two.txt": "same" }), null);
+  expect({
+    meta: events.flatMap((e) => (e.type === "meta" && e.step === "upload" ? [e.text] : [])),
+    unchanged: events.filter((e) => e.type === "upload").at(-1)?.unchanged,
+  }).toMatchInlineSnapshot(`
+    {
+      "meta": [
+        "9 files",
+      ],
+      "unchanged": 0,
     }
   `);
 }, 60_000);

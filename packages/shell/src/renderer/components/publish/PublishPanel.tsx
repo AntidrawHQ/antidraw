@@ -6,7 +6,8 @@
  * link. Signed out, the sign-in panel comes first.
  *
  * It can't be closed while publishing: the run stays in view until it's live
- * or fails. The popover around it (PublishButton) is the dialog.
+ * or fails, or goes quiet so long that it may be stuck (`closable`). The
+ * popover around it (PublishButton) is the dialog.
  */
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
@@ -77,7 +78,7 @@ const LinkField = ({ url, onCopy }: { url: string; onCopy?: () => void }) => {
   );
 };
 
-const Header = ({ state, onClose }: { state: PublishState; onClose?: () => void }) => {
+const Header = ({ state, closable, onClose }: { state: PublishState; closable?: boolean; onClose?: () => void }) => {
   const running = state.step !== "done" && !state.failure;
   const title = state.failure ? "Couldn't publish" : `Publishing ${state.site.name}`;
   return (
@@ -86,7 +87,7 @@ const Header = ({ state, onClose }: { state: PublishState; onClose?: () => void 
         <h2 className="m-0 min-w-0 flex-1 truncate text-[15px] font-medium tracking-[-0.01em]" style={{ color: C.text }}>
           {title}
         </h2>
-        {!running && (
+        {(!running || closable) && (
           <button
             type="button"
             aria-label="Close"
@@ -107,6 +108,11 @@ const Header = ({ state, onClose }: { state: PublishState; onClose?: () => void 
           "First publish."
         )}
       </p>
+      {running && closable && (
+        <p className="m-0 mt-2 text-[12px] leading-[1.5]" style={{ color: C.muted }}>
+          This is taking a while. Closing this won't stop it.
+        </p>
+      )}
     </div>
   );
 };
@@ -120,7 +126,7 @@ const Confirm = ({
   onClose?: () => void;
   onPublish?: () => void;
 }) => {
-  const republish = !!state.site.lastPublished;
+  const republish = !!state.site.republish;
   return (
     <div>
       <div className="flex items-center gap-3">
@@ -170,7 +176,7 @@ const Live = ({
   onClose?: () => void;
   onCopyLink?: () => void;
 }) => {
-  const republish = !!state.site.lastPublished;
+  const republish = !!state.site.republish;
   return (
     <div>
       <div className="flex items-start gap-3">
@@ -204,11 +210,14 @@ const Live = ({
 export default function PublishPanel({
   state,
   actions = {},
+  closable,
   onClose,
   className,
 }: {
   state: PublishState;
   actions?: StepActions;
+  /** A run that's gone quiet can be closed, and keeps going. */
+  closable?: boolean;
   onClose?: () => void;
   className?: string;
 }) {
@@ -245,7 +254,7 @@ export default function PublishPanel({
               animate={{ opacity: 1 }}
               exit={{ opacity: 0, transition: { duration: 0.1 } }}
             >
-              <Header state={state} onClose={onClose} />
+              <Header state={state} closable={closable} onClose={onClose} />
               <div className="mt-3">
                 <PublishSteps state={state} actions={actions} />
               </div>

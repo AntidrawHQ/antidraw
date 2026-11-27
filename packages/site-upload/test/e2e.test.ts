@@ -88,6 +88,7 @@ describe("end to end", () => {
         "toUploadFiles": 6,
         "totalBytes": 20971568,
         "totalFiles": 6,
+        "unchangedFiles": 0,
         "uploadedBytes": 20971568,
         "uploadedFiles": 6,
       }

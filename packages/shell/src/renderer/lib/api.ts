@@ -1285,22 +1285,35 @@ export async function* publishWorkspace(
   const abort = new AbortController();
   const stream = new ReadableStream<PublishStreamEvent>({
     start(controller) {
+      // A controller can only be ended once, and the body ending reaches both
+      // endings: onclose's throw (which stops fetchEventSource reconnecting)
+      // goes on to onerror. Erroring a stream that's closing throws away the
+      // events still queued in it, and a fast failure's last chunk is exactly
+      // that: its final logs and the `error` with vite's message. So whichever
+      // ending comes first wins.
+      let settled = false;
       fetchEventSource(`antidraw://app/api/workspaces/${workspaceId}/publish`, {
         method: "POST",
         headers: appKeyHeader(),
         signal: abort.signal,
         openWhenHidden: true,
         onmessage: (ev) => {
-          controller.enqueue(JSON.parse(ev.data) as PublishStreamEvent);
+          if (!settled) controller.enqueue(JSON.parse(ev.data) as PublishStreamEvent);
         },
         onerror: (error) => {
-          controller.error(error);
+          if (!settled) {
+            settled = true;
+            controller.error(error);
+          }
           throw error;
         },
         onclose: () => {
+          settled = true;
           controller.close();
           throw new Error("Connection closed");
         },
+      }).catch(() => {
+        // Already ended above; the stream says how.
       });
     },
     cancel() {
