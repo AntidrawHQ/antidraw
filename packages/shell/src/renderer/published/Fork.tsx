@@ -18,7 +18,7 @@ const steps = (site: PublishedSite): ProgressStep<ForkStatus>[] => [
 ];
 
 // A version published before its source was kept has none to fork.
-const NOT_FORKABLE = "Publish this site again to fork it";
+export const NOT_FORKABLE = "Publish this site again to fork it";
 
 /**
  * A site's Fork button. In a list, the click and the keys are its own, not

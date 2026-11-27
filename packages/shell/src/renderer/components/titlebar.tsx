@@ -9,6 +9,7 @@ import { useUpdateStore } from "@/renderer/store/update";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
 import { closePublished, showDashboard, useCloseWorkspace, useWorkspaces } from "@/renderer/lib/workspace-ops";
 import { cn } from "@/renderer/lib/utils";
+import { setTitlebarSlot } from "@/renderer/published/titlebar-slot";
 
 // main.ts centres the traffic lights in it (trafficLightPosition).
 export const TITLEBAR_HEIGHT = 46;
@@ -69,7 +70,8 @@ const CloseTab = ({ shown, onClose }: { shown: boolean; onClose: () => void }) =
 
 // The main window's titlebar: its two tabs, the Dashboard and the one
 // workspace, or published site, that's open, then what's for a workspace
-// (the MCP setup, Publish).
+// (the MCP setup, Publish) or for a site (View only, Copy link, Fork: drawn
+// by the viewer, in the place this holds for them).
 export const Titlebar = ({ tabs = true }: { tabs?: boolean }) => {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const dashboardShown = useWorkspaceStore((s) => s.dashboardShown);
@@ -144,6 +146,8 @@ export const Titlebar = ({ tabs = true }: { tabs?: boolean }) => {
             />
           </div>
         )}
+        {/* A published site's controls (published/PublishedViewer.tsx). */}
+        <div ref={setTitlebarSlot} className="contents" />
       </div>
     </div>
   );

@@ -1,22 +1,29 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { createPortal } from "react-dom";
+import { Check } from "lucide-react";
 import { ReactFlowProvider } from "@xyflow/react";
 import { useQuery } from "@tanstack/react-query";
 import { z } from "zod";
-import type { PublishedSite } from "@/main/api";
+import type { ForkStatus, PublishedSite } from "@/main/api";
 import { Canvas } from "@/renderer/canvas/Canvas";
 import type { CanvasFile } from "@/renderer/canvas/canvas-file";
-import { Btn, Chip, Svg, ic } from "@/renderer/dashboard/kit";
+import { Btn, Svg, ic } from "@/renderer/dashboard/kit";
 import { ago } from "@/renderer/dashboard/LocalList";
-import { useAccount } from "@/renderer/lib/account-ops";
 import { queryKeys } from "@/renderer/lib/query-keys";
+import { useForkSiteFlow, type WorkspaceFlowStatus } from "@/renderer/lib/use-create-workspace-flow";
+import { cn } from "@/renderer/lib/utils";
+import { useSwitchWorkspace } from "@/renderer/lib/workspace-ops";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
-import { ForkButton, useFork } from "./Fork";
+import { NOT_FORKABLE } from "./Fork";
+import { useTitlebarSlot } from "./titlebar-slot";
 
 // A published site in the window's tab: its canvas and nothing to change it
 // with. No chat, no panels and no tools; the frames load the site's own
 // pages, as its share page shows them (@antidraw/share-page), and can be
 // looked at, panned, zoomed and used, not moved. To change it, it's forked
-// (./Fork.tsx): the tab becomes the fork.
+// (./Fork.tsx): the tab becomes the fork. Its controls are on the window's
+// titlebar, and the whole of it is in the workspace view's greys: #2A2A2A
+// bar, #333 rule, #282828 canvas, #2c2c2c surfaces over it.
 
 // The parts of canvas.json the canvas reads. The file is the site's, so it's
 // checked: the canvas takes it as it comes.
@@ -101,21 +108,231 @@ const SiteCanvas = ({ site }: { site: PublishedSite }) => {
   );
 };
 
-// Two letters for the account's badge: its first and last names', or the
-// first two of a single name.
-const initials = (name: string) => {
-  const words = name.trim().split(/\s+/).filter(Boolean);
-  const letters = words.length > 1 ? words[0]![0]! + words.at(-1)![0]! : (words[0] ?? "").slice(0, 2);
-  return letters.toUpperCase();
+const COPIED_MS = 1400;
+const OPEN_MS = 120;
+const CLOSE_MS = 150;
+
+const NO_DRAG = { WebkitAppRegion: "no-drag" } as CSSProperties;
+
+// View only, and on hover (or focus) why: a card under it in the MCP
+// popover's look (McpSetup.tsx: #2c2c2c, 14px radius), saying the site can't
+// be changed here and that Fork, beside it, is how to work on it.
+const ViewOnly = ({ site }: { site: PublishedSite }) => {
+  const [open, setOpen] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const later = (to: boolean, ms: number) => {
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => setOpen(to), ms);
+  };
+  useEffect(() => () => clearTimeout(timer.current), []);
+
+  return (
+    <div
+      className="relative min-w-0 max-[720px]:hidden"
+      onMouseEnter={() => later(true, OPEN_MS)}
+      onMouseLeave={() => later(false, CLOSE_MS)}
+      onFocus={() => setOpen(true)}
+      onBlur={(e) => !e.currentTarget.contains(e.relatedTarget) && setOpen(false)}
+    >
+      <span
+        tabIndex={0}
+        aria-describedby="view-only-card"
+        className={cn(
+          "flex h-[26px] min-w-0 cursor-default items-center gap-1.5 rounded-lg px-2 text-[12.5px] transition-colors outline-none",
+          open ? "bg-white/[0.06] text-[#e0e0e0]" : "text-[#9a9a9a] hover:text-[#e0e0e0]",
+        )}
+      >
+        <Svg size={13} sw={2} className="shrink-0">
+          {ic.eye}
+        </Svg>
+        <span className="truncate">View only · Published {ago(site.publishedAt)}</span>
+      </span>
+
+      {open && (
+        <div
+          id="view-only-card"
+          role="tooltip"
+          className="absolute top-[calc(100%+8px)] right-0 z-[80] w-[300px] animate-[view-only-pop_0.18s_cubic-bezier(0.23,1,0.32,1)] rounded-[14px] border border-[#2d2d2d] bg-[#2c2c2c] p-3.5 text-left font-[450] shadow-[0_24px_80px_-20px_rgba(0,0,0,0.8)]"
+        >
+          <style>{`@keyframes view-only-pop { from { opacity: 0; transform: translateY(-4px) scale(0.97); } to { opacity: 1; transform: none; } }`}</style>
+          <h2 className="text-[14px] leading-5 font-medium tracking-[-0.01em] text-neutral-50">
+            This canvas is view only
+          </h2>
+          <p className="mt-0.5 text-[12.5px] leading-[18px] text-balance text-neutral-400">
+            It's a published snapshot, so nothing here can be changed. To work on it, Fork it: you'll get its source
+            as a workspace of your own.
+          </p>
+        </div>
+      )}
+    </div>
+  );
 };
 
-const COPIED_MS = 2200;
+// The titlebar's right side for a published site: View only and when it was
+// published, then Copy link, and Fork as the primary action.
+const SiteDetails = ({
+  site,
+  forking,
+  copied,
+  onCopy,
+  onFork,
+}: {
+  site: PublishedSite;
+  forking: boolean;
+  copied: boolean;
+  onCopy: () => void;
+  onFork: () => void;
+}) => (
+  <>
+    <ViewOnly site={site} />
+    <span className="mx-1 h-4 w-px bg-[#3a3a3a] max-[720px]:hidden" />
+    {/* Its width held, so Fork doesn't move when it reads Copied. As the
+        publish panel's Copy: Copied on the button for a moment, no toast. */}
+    <button
+      onClick={onCopy}
+      className="flex h-[26px] min-w-[94px] shrink-0 cursor-default items-center justify-center gap-1.5 rounded-lg bg-white/[0.06] px-2.5 text-[13px] font-medium text-[#e0e0e0] transition-colors hover:bg-white/[0.1]"
+    >
+      {copied ? (
+        <Check size={13} strokeWidth={2.5} className="text-neutral-400" />
+      ) : (
+        <Svg size={13} sw={2}>
+          {ic.link}
+        </Svg>
+      )}
+      {copied ? "Copied" : "Copy link"}
+    </button>
+    {/* Publish's shape: the one primary action, as Publish is a workspace's. */}
+    <button
+      onClick={onFork}
+      disabled={forking || !site.forkable}
+      title={site.forkable ? undefined : NOT_FORKABLE}
+      aria-label={`Fork ${site.title}`}
+      className="flex h-[26px] min-w-[72px] shrink-0 cursor-default items-center justify-center gap-1.5 rounded-lg bg-[#e0e0e0] px-2.5 text-[13px] font-medium text-neutral-900 transition-colors hover:bg-white disabled:opacity-60 disabled:hover:bg-[#e0e0e0]"
+    >
+      <Svg size={13} sw={2}>
+        {ic.fork}
+      </Svg>
+      Fork
+    </button>
+  </>
+);
+
+// The fork's steps, as main reports them (main/services/fork.ts).
+const FORK_STEPS = (site: PublishedSite): { key: ForkStatus; label: string }[] => [
+  { key: "FETCHING_SOURCE", label: `Pulling the source of v${site.version}` },
+  { key: "INSTALLING_DEPENDENCIES", label: "Installing packages" },
+  { key: "SAVING_WORKSPACE", label: "Starting the canvas" },
+];
+
+// How long the last step shows done before the tab becomes the fork.
+const FORKED_MS = 600;
+
+// Forking: the site's source pulled into a workspace of your own, then opened
+// in this tab, on a card over the canvas it's forking. A failed step is the
+// progress list's red (CreateWorkspaceProgress), with why and Try again.
+const ForkCard = ({
+  site,
+  status,
+  failedStep,
+  errorMessage,
+  onRetry,
+  onClose,
+}: {
+  site: PublishedSite;
+  status: WorkspaceFlowStatus<ForkStatus>;
+  failedStep: ForkStatus | null;
+  errorMessage: string | null;
+  onRetry: () => void;
+  onClose: () => void;
+}) => {
+  const steps = FORK_STEPS(site);
+  const failed = status === "error";
+  const at =
+    status === "done"
+      ? steps.length
+      : steps.findIndex((step) => step.key === (failed ? failedStep : status));
+  return (
+    <div className="absolute inset-0 z-[70] grid place-items-center bg-black/50">
+      <div
+        role="status"
+        className="w-[340px] rounded-[12px] bg-[#2c2c2c] p-5 shadow-[0_0_0_1px_#2d2d2d,0_20px_48px_-8px_rgba(0,0,0,0.75)]"
+      >
+        <div className="mb-4 flex items-center gap-2 text-[15px] text-[#e0e0e0]">
+          <Svg size={15}>{ic.fork}</Svg>
+          <span className="truncate">Forking {site.title}</span>
+        </div>
+        <div className="space-y-2.5">
+          {steps.map((step, i) => {
+            const done = i < at;
+            const active = i === at;
+            const broke = failed && active;
+            return (
+              <div
+                key={step.key}
+                className={cn("flex items-center gap-2.5 text-[13.5px]", done || active ? "text-[#e0e0e0]" : "text-[#a3a3a3]")}
+              >
+                <span
+                  className={cn(
+                    "grid size-[18px] place-items-center rounded-full",
+                    broke
+                      ? "bg-[#d9605c] text-[#1C1C1C]"
+                      : done
+                        ? "bg-[#86D8A6] text-[#1C1C1C]"
+                        : "ring-1 ring-[#a3a3a3] ring-inset",
+                  )}
+                >
+                  {broke ? (
+                    <Svg size={10} sw={2.6}>
+                      {ic.close}
+                    </Svg>
+                  ) : done ? (
+                    <Svg size={11} sw={2.6}>
+                      {ic.check}
+                    </Svg>
+                  ) : active ? (
+                    <span className="size-1.5 animate-pulse rounded-full bg-[#e0e0e0]" />
+                  ) : null}
+                </span>
+                {step.label}
+              </div>
+            );
+          })}
+        </div>
+        {failed && (
+          <>
+            <p role="alert" className="mt-4 text-[12.5px] leading-[18px] text-[#e08a86]">
+              {errorMessage ?? "The fork didn't finish."}
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <Btn kind="ghost" small onClick={onClose}>
+                Close
+              </Btn>
+              <Btn kind="secondary" small onClick={onRetry}>
+                Try again
+              </Btn>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+};
 
 export const PublishedViewer = ({ site }: { site: PublishedSite }) => {
-  // The list is the account's own, so the account is who published it.
-  const { data: account } = useAccount();
+  const dashboardShown = useWorkspaceStore((s) => s.dashboardShown);
+  const slot = useTitlebarSlot((s) => s.el);
   const [copied, setCopied] = useState(false);
-  const { fork, dialog } = useFork();
+  const switchWorkspace = useSwitchWorkspace();
+  const { status, errorMessage, failedStep, isCreating, start, reset } = useForkSiteFlow({
+    onSuccess: (workspace) => {
+      // The last step seen done, then the fork in the site's place.
+      setTimeout(() => {
+        reset();
+        void switchWorkspace(workspace.id);
+      }, FORKED_MS);
+    },
+  });
+  const forking = status !== "idle";
 
   useEffect(() => {
     if (!copied) return;
@@ -128,53 +345,36 @@ export const PublishedViewer = ({ site }: { site: PublishedSite }) => {
     setCopied(true);
   };
 
+  const fork = () => {
+    if (isCreating || !site.forkable) return;
+    start(site.id);
+  };
+
   return (
-    <div className="flex h-full min-h-0 flex-col bg-[#222222] font-sans antialiased">
-      <div className="flex h-[48px] shrink-0 items-center gap-3 border-b border-[#2E2E2E] px-4">
-        <Svg size={15} className="shrink-0 text-[#9B9B9B]">
-          {ic.eye}
-        </Svg>
-        <span className="min-w-0 shrink truncate text-[14px] text-[#EBEBEB]">{site.title}</span>
-        <Chip>View only</Chip>
-        <span className="flex min-w-0 flex-1 items-center gap-1.5 text-[13px] text-[#B2B2B2]">
-          {account && (
-            <span
-              aria-hidden
-              className="grid size-[18px] shrink-0 place-items-center rounded-full bg-[#D9A066] text-[8px] font-semibold text-[#1C1C1C] shadow-[0_0_0_2px_#222222]"
-            >
-              {initials(account.name)}
-            </span>
-          )}
-          <span className="truncate">
-            {account ? `Published by ${account.name}` : "Published"} · v{site.version} · {ago(site.publishedAt)}
-          </span>
-        </span>
-        <Btn kind="ghost" small onClick={copyLink}>
-          <Svg size={13}>{ic.link}</Svg> Copy link
-        </Btn>
-        <ForkButton primary site={site} onFork={fork} />
-      </div>
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[#282828] font-sans antialiased">
+      {/* No bar of its own: the tab names the site, and the rest is on the
+          titlebar's right. Hidden, not gone, under the dashboard. */}
+      {slot &&
+        createPortal(
+          <div style={NO_DRAG} className={cn("flex min-w-0 items-center gap-2", dashboardShown && "hidden")}>
+            <SiteDetails site={site} forking={forking} copied={copied} onCopy={copyLink} onFork={fork} />
+          </div>,
+          slot,
+        )}
       <div className="relative min-h-0 flex-1">
         {/* A new canvas for another site, or another version of this one. */}
         <SiteCanvas key={`${site.id}@${site.version}`} site={site} />
-        {/* Not under the Copied line, which is in its place. */}
-        {!copied && (
-          <div className="pointer-events-none absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-full bg-[#2A2A2A] px-3.5 py-1.5 text-[12.5px] whitespace-nowrap text-[#B2B2B2] ring-1 ring-[#3D3D3D]">
-            {site.forkable
-              ? "A published snapshot: look, pan and zoom. Fork it to get the source and change it."
-              : "A published snapshot: look, pan and zoom."}
-          </div>
-        )}
-        {copied && (
-          <div
-            role="status"
-            className="pointer-events-none absolute bottom-6 left-1/2 z-[60] -translate-x-1/2 rounded-full bg-[#F2F2F2] px-4 py-2 text-[13px] whitespace-nowrap text-[#222222] shadow-xl"
-          >
-            Copied {site.url.replace(/^https?:\/\//, "")}
-          </div>
+        {forking && (
+          <ForkCard
+            site={site}
+            status={status}
+            failedStep={failedStep}
+            errorMessage={errorMessage}
+            onRetry={fork}
+            onClose={reset}
+          />
         )}
       </div>
-      {dialog}
     </div>
   );
 };

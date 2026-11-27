@@ -237,7 +237,10 @@ const type = async (value: string) => {
 const screen = () => ({
   tabs: tabs(),
   dashboard: !!document.querySelector("main"),
-  workspaceControls: !!document.querySelector('[role="tablist"] ~ div div:not(.hidden) > span'),
+  // A workspace's (MCP setup, Publish), not a published site's in its place.
+  workspaceControls: [...document.querySelectorAll('[role="tablist"] ~ div div:not(.hidden) > span')].some(
+    (el) => !el.closest(".contents"),
+  ),
 });
 const saved = () => api.setPreference.mock.calls.map(([key, value]) => `${key}=${JSON.stringify(value)}`);
 
@@ -810,13 +813,18 @@ const notice = () => {
   const el = document.querySelector("main .py-24");
   return el ? [text(el.querySelector("span")), ...[...el.querySelectorAll("button")].map((b) => `[${text(b)}]`)].join(" ") : null;
 };
+// The site's controls, on the titlebar's right where a workspace has Publish.
+const siteBar = () => document.querySelector(".drag-region .contents");
 const viewer = () => {
   const el = document.querySelector("#viewer");
   if (!el) return null;
+  const bar = siteBar();
   return {
-    bar: text(el.querySelector(".h-\\[48px\\]")),
+    bar: text(bar),
     frames: [...el.querySelectorAll("iframe")].map((frame) => frame.getAttribute("src")),
-    controls: [...el.querySelectorAll("button")].map((b) => text(b) || b.getAttribute("aria-label") || b.getAttribute("title")),
+    controls: [...(bar?.querySelectorAll("button") ?? []), ...el.querySelectorAll("button")].map(
+      (b) => text(b) || b.getAttribute("aria-label") || b.getAttribute("title"),
+    ),
   };
 };
 
@@ -900,8 +908,13 @@ it("opens a published site view-only in the one tab, in place of the workspace t
     fetched: [...fetched],
   };
 
+  // Copied on the button itself for a moment, as the publish panel's Copy.
+  const writeText = vi.fn(async (_: string) => {});
+  Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
   await click(button(/Copy link/));
-  steps["Copy link"] = text(document.querySelector('#viewer [role="status"]'));
+  steps["Copy link"] = { copied: writeText.mock.calls.flat(), button: text(button(/^Copied$/)) };
+  await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 1500))));
+  steps["a moment later"] = text(button(/^Copy link$/));
 
   // The dashboard comes back on Published, with the site still in its tab.
   await click(document.querySelectorAll('[role="tab"]')[0]!);
@@ -929,7 +942,12 @@ it("opens a published site view-only in the one tab, in place of the workspace t
 
   expect(steps).toMatchInlineSnapshot(`
     {
-      "Copy link": "Copied antidraw.com/s/paper-shaders",
+      "Copy link": {
+        "button": "Copied",
+        "copied": [
+          "https://antidraw.com/s/paper-shaders",
+        ],
+      },
       "Dashboard tab": {
         "dashboard": true,
         "sections": [
@@ -959,7 +977,7 @@ it("opens a published site view-only in the one tab, in place of the workspace t
           "● Paper Shaders",
         ],
         "viewer": {
-          "bar": "Paper ShadersView onlyALPublished by Ada Lovelace · v5 · 2 hours ago Copy link Fork",
+          "bar": "View only · Published 2 hours agoCopy linkFork",
           "controls": [
             "Copy link",
             "Fork",
@@ -972,6 +990,7 @@ it("opens a published site view-only in the one tab, in place of the workspace t
         "workspace": null,
         "workspaceControls": false,
       },
+      "a moment later": "Copy link",
       "a workspace in its place": {
         "dashboard": false,
         "saved": [
@@ -1161,13 +1180,39 @@ it("forks a published site from its row or from the viewer, showing how it goes,
   await click(rows()[0]!);
   steps["in the viewer"] = {
     tabs: tabs(),
-    note: text(document.querySelector("#viewer .bottom-3")),
+    bar: text(siteBar()),
     stopped: api.stopDevServer.mock.calls.flat(),
   };
+  // Its progress on a card over the canvas, and Fork held while it runs.
+  const card = () => {
+    const el = document.querySelector("#viewer .z-\\[70\\]");
+    if (!el) return null;
+    // Each step with its mark: ✓ done, ● running, ✗ failed, ○ to come.
+    const marks = [...el.querySelectorAll(".space-y-2\\.5 > div")].map((step) => {
+      const dot = step.querySelector("span")!;
+      const mark = dot.className.includes("#86D8A6") ? "✓" : dot.className.includes("#d9605c") ? "✗" : dot.querySelector(".animate-pulse") ? "●" : "○";
+      return `${mark} ${text(step)}`;
+    });
+    return {
+      title: text(el.querySelector(".truncate")),
+      steps: marks,
+      failed: text(el.querySelector('[role="alert"]')),
+      dialog: !!dialog(),
+      forkHeld: forkOf("Paper Shaders").disabled,
+    };
+  };
   go = {};
+  fails = true;
   await click(forkOf("Paper Shaders"));
+  steps["viewer: forking"] = card();
   await next("fetched");
+  steps["viewer: it fails"] = card();
+  fails = false;
+  await click(button(/^Try again$/));
+  await next("fetched");
+  steps["viewer: installing"] = card();
   await next("installed");
+  steps["viewer: done"] = card();
   await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 700))));
   await settle();
   steps["forked from the viewer"] = {
@@ -1203,6 +1248,7 @@ it("forks a published site from its row or from the viewer, showing how it goes,
           "s-shaders",
           "s-shaders",
           "s-shaders",
+          "s-shaders",
         ],
         "tabs": [
           "○ Dashboard",
@@ -1213,7 +1259,7 @@ it("forks a published site from its row or from the viewer, showing how it goes,
         "workspaceControls": true,
       },
       "in the viewer": {
-        "note": "A published snapshot: look, pan and zoom. Fork it to get the source and change it.",
+        "bar": "View only · Published 2 hours agoCopy linkFork",
         "stopped": [
           "w-fork",
         ],
@@ -1254,6 +1300,50 @@ it("forks a published site from its row or from the viewer, showing how it goes,
           "npm http fetch GET 200 react",
         ],
         "said": "Installing packages…",
+        "title": "Forking Paper Shaders",
+      },
+      "viewer: done": {
+        "dialog": false,
+        "failed": null,
+        "forkHeld": true,
+        "steps": [
+          "✓ Pulling the source of v5",
+          "✓ Installing packages",
+          "✓ Starting the canvas",
+        ],
+        "title": "Forking Paper Shaders",
+      },
+      "viewer: forking": {
+        "dialog": false,
+        "failed": null,
+        "forkHeld": true,
+        "steps": [
+          "● Pulling the source of v5",
+          "○ Installing packages",
+          "○ Starting the canvas",
+        ],
+        "title": "Forking Paper Shaders",
+      },
+      "viewer: installing": {
+        "dialog": false,
+        "failed": null,
+        "forkHeld": true,
+        "steps": [
+          "✓ Pulling the source of v5",
+          "● Installing packages",
+          "○ Starting the canvas",
+        ],
+        "title": "Forking Paper Shaders",
+      },
+      "viewer: it fails": {
+        "dialog": false,
+        "failed": "Couldn't fetch the site's source (503). Try again.",
+        "forkHeld": true,
+        "steps": [
+          "✗ Pulling the source of v5",
+          "○ Installing packages",
+          "○ Starting the canvas",
+        ],
         "title": "Forking Paper Shaders",
       },
       "which can be forked": [
