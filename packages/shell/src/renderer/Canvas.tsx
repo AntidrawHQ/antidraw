@@ -129,7 +129,7 @@ const WorkspaceCanvas = ({
           <EditBar />
           <ShowPanel />
           <CanvasToolbar />
-          <CanvasFind key={workspaceId} components={userComponents} />
+          <CanvasFind key={workspaceId} components={userComponents} keysOff={dashboardShown} />
         </>
       )}
     </Canvas>

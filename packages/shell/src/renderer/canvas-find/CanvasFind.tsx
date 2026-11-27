@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useHotkey } from "@tanstack/react-hotkeys";
 import { useFocusComponent } from "@/renderer/canvas/Canvas";
 import { useDesignStore } from "@/renderer/design/store";
 import { cn } from "@/renderer/lib/utils";
@@ -11,9 +12,14 @@ import { ComponentSearch } from "./ComponentSearch";
 // it; ⌘F again puts the focus back in it with its text selected. Closed and reopened, it has
 // the last query.
 
-const isMac = navigator.userAgent.includes("Mac");
-
-export const CanvasFind = ({ components }: { components: { name: string }[] }) => {
+export const CanvasFind = ({
+  components,
+  keysOff = false,
+}: {
+  components: { name: string }[];
+  // Out of sight (under the dashboard): ⌘F isn't the canvas's.
+  keysOff?: boolean;
+}) => {
   const focusComponent = useFocusComponent();
   const [open, setOpen] = useState(false);
   const lastQuery = useRef("");
@@ -22,20 +28,19 @@ export const CanvasFind = ({ components }: { components: { name: string }[] }) =
   // The right panel hidden, its Show button has the corner.
   const panelOpen = useDesignStore((s) => s.panelOpen);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const mod = isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
-      if (e.code !== "KeyF" || !mod || e.shiftKey || e.altKey) return;
-      e.preventDefault();
+  // Mod is ⌘ on macOS, Ctrl elsewhere; the letter F, whatever key types it.
+  // Typing in a field (this one too) doesn't stop it.
+  useHotkey(
+    "Mod+F",
+    () => {
       const input = card.current?.querySelector("input");
       if (input) {
         input.focus();
         input.select();
       } else setOpen(true);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+    },
+    { enabled: !keysOff },
+  );
 
   const close = () => {
     lastQuery.current = card.current?.querySelector("input")?.value ?? "";
@@ -69,7 +74,8 @@ export const CanvasFind = ({ components }: { components: { name: string }[] }) =
     <div
       ref={card}
       className={cn(
-        "nodrag nopan nowheel absolute z-40",
+        // nokey: a key here is never React Flow's (Backspace deleting a frame).
+        "nodrag nopan nowheel nokey absolute z-40",
         panelOpen ? "right-3 top-3" : "right-[60px] top-4",
       )}
     >
