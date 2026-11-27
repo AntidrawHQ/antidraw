@@ -14,7 +14,7 @@ const SECRET = "test-secret-with-enough-entropy-0123456789abcdef";
 export type ArtifactsStub = {
   create(name: string): Promise<unknown>;
   pushed(name: string, commit: string): Promise<void>;
-  tokens(name: string): Promise<Record<string, "active" | "revoked">>;
+  tokens(name: string): Promise<Record<string, string>>;
   setCreating(name: string, times: number): Promise<void>;
   takeCalls(): Promise<string[]>;
   setFailing(value: boolean): Promise<void>;

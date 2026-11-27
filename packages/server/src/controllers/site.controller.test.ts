@@ -580,6 +580,7 @@ describe("GET /api/sites", () => {
           "sites": [
             {
               "filesUrl": "https://first.sites.test",
+              "forkable": true,
               "id": "<first>",
               "publishedAt": "<when>",
               "slug": "first",
@@ -589,6 +590,7 @@ describe("GET /api/sites", () => {
             },
             {
               "filesUrl": "https://second.sites.test",
+              "forkable": true,
               "id": "<second>",
               "publishedAt": "<when>",
               "slug": "second",
@@ -923,6 +925,221 @@ describe("the site's source", () => {
   });
 });
 
+describe("forking a site", () => {
+  const A = "a".repeat(40);
+  const B = "b".repeat(40);
+  const C = "c".repeat(40);
+
+  /** Pushes the commit to the site's source, and starts a publish built from it. */
+  const startFrom = async (user: User, siteId: string, commit: string) => {
+    await post(user, `/api/sites/${siteId}/source`);
+    await server.artifacts.pushed(`site-${siteId}`, commit);
+    const res = await post(user, `/api/sites/${siteId}/publishes`, { commit });
+    expect(res.status).toBe(201);
+    return (await res.json()) as { publishId: string; uploadUrl: string };
+  };
+
+  /** A version built from the commit, live. */
+  const publishFrom = async (user: User, siteId: string, commit: string) => {
+    const { uploadUrl } = await startFrom(user, siteId, commit);
+    await upload(user, uploadUrl, await siteDir({ "index.html": commit }));
+  };
+
+  const fork = (user: User | null, siteId: string) => post(user, `/api/sites/${siteId}/fork`);
+
+  it("answers the live version's commit, and a token that only reads the site's repo", async () => {
+    const user = await server.signIn();
+    const site = await createSite(user, "To Fork");
+    await publishFrom(user, site.id, A);
+    await publishFrom(user, site.id, B);
+    await server.artifacts.takeCalls();
+    const forked = await answer(await fork(user, site.id));
+    expect(
+      readable({ forked, calls: await server.artifacts.takeCalls() }, { [site.id]: "<site>", [A]: "<A>", [B]: "<B>" }),
+    ).toMatchInlineSnapshot(`
+      {
+        "calls": [
+          "get site-<site>",
+          "log site-<site> main 50 0",
+          "info site-<site>",
+          "createToken site-<site> read 3600",
+        ],
+        "forked": {
+          "body": {
+            "commit": "<B>",
+            "depth": 1,
+            "expiresAt": "2030-01-01T00:00:00.000Z",
+            "filesUrl": "https://to-fork.sites.test",
+            "remote": "https://artifacts.test/git/sites/site-<site>.git",
+            "title": "To Fork",
+            "token": "art_test_read?expires=1893456000",
+            "version": 2,
+          },
+          "status": 200,
+        },
+      }
+    `);
+  });
+
+  it("says how far down main the live version is, when publishes after it never went live", async () => {
+    const user = await server.signIn();
+    const site = await createSite(user);
+    await publishFrom(user, site.id, A);
+    // Pushed, and its publish started, but never uploaded.
+    await startFrom(user, site.id, B);
+    // Pushed by a publish that got no further.
+    await post(user, `/api/sites/${site.id}/source`);
+    await server.artifacts.pushed(`site-${site.id}`, C);
+    const { commit, depth, version } = (await answer(await fork(user, site.id))).body;
+    expect({ commit: commit === A, depth, version }).toEqual({ commit: true, depth: 3, version: 1 });
+  });
+
+  it("leaves a publish's token alone, and a publish leaves a fork's", async () => {
+    const user = await server.signIn();
+    const site = await createSite(user);
+    const repo = `site-${site.id}`;
+    await publishFrom(user, site.id, A);
+    // A publish that has its token and is pushing…
+    await post(user, `/api/sites/${site.id}/source`);
+    // …while the site is forked.
+    await fork(user, site.id);
+    const whileForking = await server.artifacts.tokens(repo);
+    // The publish names its commit, and the next one starts.
+    await server.artifacts.pushed(repo, B);
+    await post(user, `/api/sites/${site.id}/publishes`, { commit: B });
+    await post(user, `/api/sites/${site.id}/source`);
+    expect(readable({ whileForking, after: await server.artifacts.tokens(repo) })).toMatchInlineSnapshot(`
+      {
+        "after": {
+          "token-1": "revoked",
+          "token-2": "revoked",
+          "token-3": "active (read)",
+          "token-4": "active",
+        },
+        "whileForking": {
+          "token-1": "revoked",
+          "token-2": "active",
+          "token-3": "active (read)",
+        },
+      }
+    `);
+  });
+
+  it("refuses a site with nothing live, and a version whose source wasn't kept", async () => {
+    const user = await server.signIn();
+    const draft = await createSite(user, "Draft");
+    const old = await createSite(user, "Old");
+    await publishFrom(user, old.id, A);
+    // As a version published by an app from before the source was kept.
+    await server.env.DB.prepare("UPDATE publish SET source_commit = NULL WHERE site_id = ?").bind(old.id).run();
+    const lost = await createSite(user, "Lost");
+    await publishFrom(user, lost.id, A);
+    // The live version's commit isn't on main.
+    await server.env.DB.prepare("UPDATE publish SET source_commit = ? WHERE site_id = ?").bind(B, lost.id).run();
+    await server.artifacts.takeCalls();
+    const listed = (await answer(
+      await server.fetch("/api/sites", { headers: { authorization: user.authorization } }),
+    )).body.sites.map(({ slug, forkable }: { slug: string; forkable: boolean }) => ({ slug, forkable }));
+    expect({
+      draft: await answer(await fork(user, draft.id)),
+      old: await answer(await fork(user, old.id)),
+      lost: await answer(await fork(user, lost.id)),
+      listed,
+      tokens: (await server.artifacts.takeCalls()).filter((call) => call.startsWith("createToken")),
+    }).toMatchInlineSnapshot(`
+      {
+        "draft": {
+          "body": {
+            "error": {
+              "code": "NOT_FORKABLE",
+              "message": "This site has nothing published to fork",
+            },
+          },
+          "status": 409,
+        },
+        "listed": [
+          {
+            "forkable": true,
+            "slug": "lost",
+          },
+          {
+            "forkable": false,
+            "slug": "old",
+          },
+        ],
+        "lost": {
+          "body": {
+            "error": {
+              "code": "NOT_FORKABLE",
+              "message": "Couldn't find this version's source. Publish the site again, then fork it.",
+            },
+          },
+          "status": 409,
+        },
+        "old": {
+          "body": {
+            "error": {
+              "code": "NOT_FORKABLE",
+              "message": "This version's source wasn't kept. Publish the site again, then fork it.",
+            },
+          },
+          "status": 409,
+        },
+        "tokens": [],
+      }
+    `);
+  });
+
+  it("keeps a site's source from other users, and from a caller who isn't signed in", async () => {
+    const owner = await server.signIn();
+    const other = await server.signIn();
+    const site = await createSite(owner);
+    await publishFrom(owner, site.id, A);
+    await server.artifacts.takeCalls();
+    expect({
+      other: await answer(await fork(other, site.id)),
+      signedOut: (await fork(null, site.id)).status,
+      calls: await server.artifacts.takeCalls(),
+    }).toMatchInlineSnapshot(`
+      {
+        "calls": [],
+        "other": {
+          "body": {
+            "error": {
+              "code": "SITE_NOT_FOUND",
+              "message": "No such site",
+            },
+          },
+          "status": 404,
+        },
+        "signedOut": 401,
+      }
+    `);
+  });
+
+  it("says so when Artifacts can't be reached", async () => {
+    const user = await server.signIn();
+    const site = await createSite(user);
+    await publishFrom(user, site.id, A);
+    await server.artifacts.setFailing(true);
+    try {
+      expect(await answer(await fork(user, site.id))).toMatchInlineSnapshot(`
+        {
+          "body": {
+            "error": {
+              "code": "SOURCE_UNAVAILABLE",
+              "message": "Couldn't reach the source storage; try again",
+            },
+          },
+          "status": 502,
+        }
+      `);
+    } finally {
+      await server.artifacts.setFailing(false);
+    }
+  });
+});
+
 describe("with publishing off", () => {
   // The harness starts with it on (see startServer).
   afterEach(async () => {
@@ -943,6 +1160,7 @@ describe("with publishing off", () => {
       list: (await server.fetch("/api/sites", { headers: { authorization: user.authorization } })).status,
       create: (await post(user, "/api/sites", { title: "x" })).status,
       source: (await post(user, `/api/sites/${site.id}/source`)).status,
+      fork: (await post(user, `/api/sites/${site.id}/fork`)).status,
       start: (await post(user, `/api/sites/${site.id}/publishes`, { commit: "c".repeat(40) })).status,
       plan: (await post(user, `${base}/plan`, { v: 1, files: { "index.html": { h: sha256(content), s: content.length } } }))
         .status,
@@ -981,6 +1199,7 @@ describe("with publishing off", () => {
           "commit": 403,
           "create": 403,
           "file": 403,
+          "fork": 403,
           "list": 403,
           "plan": 403,
           "signedOut": 401,

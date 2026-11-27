@@ -8,13 +8,14 @@ import { requireBearer, type AuthedEnv } from "../lib/require-session";
 import { respond, respondError } from "../lib/respond";
 import { siteStore } from "../lib/site-store";
 import { commitPublish, createSite, listPublishedSites, ownsSite, startPublish } from "../services/site.service";
-import { endSourcePush, hasSourceCommit, sourceAccess } from "../services/source.service";
+import { endSourcePush, forkAccess, hasSourceCommit, sourceAccess } from "../services/source.service";
 
 // Publishing a site (see @antidraw/site-upload for the upload protocol):
 //
 //   GET  /api/sites                          -> { sites }  (the user's, with a version live)
 //   POST /api/sites                          { title } -> { id, slug, url }  (url: the share page)
 //   POST /api/sites/:id/source               -> { remote, token, expiresAt }  (pushing the source)
+//   POST /api/sites/:id/fork                 -> { remote, token, expiresAt, commit, depth, title, version, filesUrl }
 //   POST /api/sites/:id/publishes            { commit } -> { publishId, uploadUrl }
 //   POST /api/sites/:id/publishes/:pid/plan          manifest -> { missing }
 //   PUT  /api/sites/:id/publishes/:pid/files/:sha256 bytes -> { ok }
@@ -27,6 +28,11 @@ import { endSourcePush, hasSourceCommit, sourceAccess } from "../services/source
 // publish. Publishes of a site may overlap: the first to commit goes live, and
 // the others get SUPERSEDED (see commitPublish). Nothing is deleted while
 // publishing; clearing old files is SiteStore.cleanup(), run by hand.
+//
+// A fork is a new workspace made from the live version's source: the app
+// fetches `commit` from the site's repo with the token, which can only read,
+// taking main to `depth` commits (services/source.service.ts). Only the
+// site's owner can, as with every route under a site.
 //
 // Every route here is behind the `publish` flag (lib/features.ts), asked
 // about the signed-in user: 403 PUBLISH_DISABLED for a user it doesn't let
@@ -81,8 +87,15 @@ siteController.post("/:siteId/source", async (ctx) =>
   respond(ctx, await sourceAccess(getDb(ctx.env), ctx.env.ARTIFACTS, ctx.req.param("siteId"))),
 );
 
+siteController.post("/:siteId/fork", async (ctx) =>
+  respond(
+    ctx,
+    await forkAccess(getDb(ctx.env), ctx.env.ARTIFACTS, ctx.req.param("siteId"), ctx.env.SITE_URL_PATTERN),
+  ),
+);
+
 // Every version that goes live names the commit it was built from, so it can
-// be remixed from its source.
+// be forked from its source.
 const publishBody = z.object({ commit: z.string().regex(/^[0-9a-f]{40}$/) });
 
 siteController.post("/:siteId/publishes", async (ctx) => {
