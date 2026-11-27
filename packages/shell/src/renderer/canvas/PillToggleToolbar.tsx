@@ -4,6 +4,7 @@ import { Toolbar, ToolbarButton, ToolbarSeparator } from "@ui-sdk/react/toolbar"
 import { cn } from "@/renderer/lib/utils";
 import { SizeMenu } from "./SizeMenu";
 import type { FrameSize } from "./frame-size";
+import type { ComponentType } from "react";
 
 const spring = { type: "spring" as const, stiffness: 800, damping: 40, mass: 0.4 };
 const springGentle = { type: "spring" as const, stiffness: 700, damping: 35, mass: 0.35 };
@@ -62,6 +63,8 @@ type PillToggleToolbarProps = {
     value: FrameSize;
     onChange: (update: (size: FrameSize) => FrameSize) => void;
     huggedHeight: () => number;
+    // Rendered in the menu while it's open (Canvas's sizeMenu).
+    Covers?: ComponentType;
   };
 };
 
@@ -116,7 +119,12 @@ export const PillToggleToolbar = ({ componentName, nodeId, selected, onRefresh, 
                       <Divider className="mx-2" />
                       {size && (
                         <>
-                          <SizeMenu size={size.value} onSizeChange={size.onChange} huggedHeight={size.huggedHeight} />
+                          <SizeMenu
+                            size={size.value}
+                            onSizeChange={size.onChange}
+                            huggedHeight={size.huggedHeight}
+                            Covers={size.Covers}
+                          />
                           <Divider className="mx-1.5" />
                         </>
                       )}

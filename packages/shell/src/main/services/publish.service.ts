@@ -12,6 +12,7 @@ import { spawnNpm } from "@/main/lib/package-manager";
 import { cloudFetch } from "@/main/services/account.service";
 import { publishSite, type PublishError } from "@/main/services/publish";
 import { artifactsRemote } from "@/main/services/source";
+import { canvasLayout } from "@/renderer/canvas/canvas-file";
 
 type PublishWorkspaceError =
   | PublishError
@@ -57,7 +58,7 @@ const run = async (workspaceId: string): Promise<Result<{ url: string }, Publish
       version: 1,
       name,
       components: components.value,
-      layouts: layouts.value.map(({ componentName, x, y, width, height }) => ({ componentName, x, y, width, height })),
+      layouts: layouts.value.map(canvasLayout),
     },
     site: siteId && siteUrl ? { id: siteId, url: siteUrl } : null,
     // cloudFetch as fetch: signed out is the server's 401 (the token is

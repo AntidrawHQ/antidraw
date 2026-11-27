@@ -24,6 +24,7 @@ import {
   useEffect,
   useRef,
   useSyncExternalStore,
+  type ComponentType,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
@@ -90,6 +91,8 @@ type FrameActions = {
   onFullscreen: (url: string) => void;
   // Without it, frames have no size menu.
   onFrameSize?: (id: string, update: (size: FrameSize) => FrameSize) => void;
+  // Rendered in the size menu while it's open (CanvasProps' sizeMenu).
+  MenuCovers?: ComponentType;
   onSeeCode?: (componentName: string) => void;
   onRefresh?: () => void;
   frameLayer?: FrameLayer;
@@ -318,7 +321,7 @@ const IframeNodeRenderer = ({
   // Only a selected node asks: each of them counting every node on each
   // store change (every step of a zoom) is frames × frames.
   const multiSelected = useStore((s) => selected && s.nodes.filter((n) => n.selected).length > 1);
-  const { onFullscreen, onSeeCode, onRefresh, onFrameActivity, onFrameSize } = useContext(FrameActionsContext);
+  const { onFullscreen, onSeeCode, onRefresh, onFrameActivity, onFrameSize, MenuCovers } = useContext(FrameActionsContext);
 
   const store = useStoreApi();
   useEffect(() => {
@@ -384,8 +387,9 @@ const IframeNodeRenderer = ({
       value: { w: w!, h: autoHeight ? null : h! },
       onChange: (update: (size: FrameSize) => FrameSize) => onFrameSize(id, update),
       huggedHeight: () => clampSize(h!),
+      Covers: MenuCovers,
     };
-  }, [onFrameSize, shownSize, autoHeight, id]);
+  }, [onFrameSize, shownSize, autoHeight, id, MenuCovers]);
 
   const iframeUrl = useMemo(() => {
     if (!url) return undefined;
@@ -526,8 +530,10 @@ type CanvasProps = {
   onSeeCode?: (componentName: string) => void;
   // Frames have a size menu in their toolbar, for a host whose frames report
   // their content's height (component-content-size: the shell's frame
-  // agent), which an Auto height follows.
-  sizeMenu?: boolean;
+  // agent), which an Auto height follows. Its Covers, if any, is rendered in
+  // the menu while it's open: a host that captures the canvas (the shell's
+  // thumbnail) waits while something is drawn over it. Pass a stable object.
+  sizeMenu?: boolean | { Covers?: ComponentType };
   // A frame's Refresh button was pressed, for a host that counts it.
   onRefresh?: () => void;
   frameLayer?: FrameLayer;
@@ -644,20 +650,37 @@ export const Canvas = ({
   // height turns Auto.
   const contentHeightsRef = useRef(new Map<string, number>());
 
+  // Each frame being resized by hand, and its height as the resize began.
+  // NodeResizer sends both sides on every move of a resize, and on a drag of
+  // a side edge the height is the one the resize began with, whatever the
+  // height is now (an Auto height follows the content the new width reflows).
+  const resizeStartsRef = useRef(new Map<string, number>());
+
   const handleNodesChange = useCallback(
     (changes: NodeChange<IframeReactFlowNode>[]) => {
-      // A height set by hand (NodeResizer's changes say whether it's resizing)
-      // isn't Auto any more.
-      const handSized = new Set(
-        changes.flatMap((c) => {
-          if (c.type !== "dimensions" || c.resizing === undefined || !c.dimensions) return [];
-          const node = nodesRef.current.find((n) => n.id === c.id);
-          return node?.data.autoHeight && Math.round(c.dimensions.height) !== Math.round(frameHeight(node))
-            ? [c.id]
-            : [];
-        }),
-      );
-      onNodesChange(changes);
+      // A height set by hand (NodeResizer's changes say whether it's resizing:
+      // the canvas's own don't) isn't Auto any more. A resize of the width
+      // only keeps an Auto height, at its content's height.
+      const handSized = new Set<string>();
+      const resized = changes.map((c) => {
+        if (c.type !== "dimensions" || c.resizing === undefined || !c.dimensions) return c;
+        const node = nodesRef.current.find((n) => n.id === c.id);
+        if (!node) return c;
+        const starts = resizeStartsRef.current;
+        const start = starts.get(c.id) ?? Math.round(frameHeight(node));
+        if (c.resizing) starts.set(c.id, start);
+        else starts.delete(c.id);
+        if (!node.data.autoHeight) return c;
+        if (Math.round(c.dimensions.height) !== start) {
+          handSized.add(c.id);
+          return c;
+        }
+        const content = contentHeightsRef.current.get(node.data.componentName);
+        return content === undefined
+          ? c
+          : { ...c, dimensions: { ...c.dimensions, height: clampReportedSize(content) } };
+      });
+      onNodesChange(resized);
       if (handSized.size > 0) {
         setNodes((nodes) =>
           nodes.map((n) => (handSized.has(n.id) ? { ...n, data: { ...n.data, autoHeight: false } } : n)),
@@ -725,6 +748,19 @@ export const Canvas = ({
       // Its content's height, as it changes: an Auto height follows it.
       if (type === "component-content-size") {
         if (!Number.isFinite(height)) return;
+        // The content's height went with the frame's own (min-h-screen under
+        // a header, h-[50vh]): an Auto height would follow it with no end,
+        // to the cap or down to nothing. The frame keeps the height it has,
+        // and isn't Auto any more.
+        if (event.data.followsViewport === true) {
+          if (node.data.autoHeight) {
+            setNodes((nodes) =>
+              nodes.map((n) => (n.id === node.id ? { ...n, data: { ...n.data, autoHeight: false } } : n)),
+            );
+            scheduleSave();
+          }
+          return;
+        }
         contentHeightsRef.current.set(componentName, height);
         if (node.data.autoHeight && Math.round(clampReportedSize(height)) !== Math.round(frameHeight(node))) {
           handleNodesChangeRef.current([
@@ -859,6 +895,7 @@ export const Canvas = ({
     () => ({
       onFullscreen,
       onFrameSize: sizeMenu ? resizeFrame : undefined,
+      MenuCovers: typeof sizeMenu === "object" ? sizeMenu.Covers : undefined,
       onSeeCode,
       onRefresh,
       frameLayer,

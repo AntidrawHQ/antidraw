@@ -1,4 +1,4 @@
-import { useId, useState, type KeyboardEvent } from "react";
+import { useId, useRef, useState, type ComponentType, type KeyboardEvent } from "react";
 import { ArrowLeftRight, Check, ChevronDown, Proportions } from "lucide-react";
 import { Listbox, ListboxItem } from "@ui-sdk/react/listbox";
 import { NumberInput, NumberInputControl, NumberInputGroup, NumberInputScrubArea } from "@ui-sdk/react/number-input";
@@ -24,8 +24,10 @@ export const toolButton =
 
 // A W or H field, styled as the Design panel's number field. What's typed
 // reaches the frame on Enter or on leaving the field, so typing 1280 doesn't
-// run the frame through 12 and 128 on the way. Steps and scrubs apply as
-// they happen; from an empty field they start at `whenEmpty`, not the minimum.
+// run the frame through 12 and 128 on the way, and Esc drops it. Steps and
+// scrubs apply as they happen; from an empty field they start at
+// `whenEmpty`, not the minimum. Home and End move the cursor, as in any
+// text field, and don't set the size to the minimum (a spinbutton's own).
 const SizeField = ({
   axis,
   id,
@@ -50,6 +52,16 @@ const SizeField = ({
     setTyped(undefined);
     onChange(n);
   };
+  // Esc was pressed: what's typed isn't applied as the field loses the focus
+  // (the menu closing), which commits it.
+  const dropped = useRef(false);
+  const ownKeys = (e: KeyboardEvent) => {
+    if (e.key === "Home" || e.key === "End") e.stopPropagation();
+    if (e.key === "Escape") {
+      dropped.current = true;
+      setTyped(undefined);
+    }
+  };
   return (
     <NumberInput
       value={shown}
@@ -58,13 +70,19 @@ const SizeField = ({
         else if (shown === null && n !== null && whenEmpty && details.reason !== "input-commit") apply(whenEmpty());
         else apply(n);
       }}
-      onValueCommit={apply}
+      onValueCommit={(n) => {
+        if (dropped.current) dropped.current = false;
+        else apply(n);
+      }}
       min={MIN_SIZE}
       step={1}
       largeStep={10}
       format={{ useGrouping: false }}
     >
-      <NumberInputGroup className="flex items-center h-7 w-[62px] rounded-[6px] bg-[#373737] hover:bg-[#404040] ring-1 ring-inset ring-transparent focus-within:ring-[#E8E8E8] text-[12px]">
+      <NumberInputGroup
+        // Ahead of the field's own key handling.
+        onKeyDownCapture={ownKeys}
+        className="flex items-center h-7 w-[62px] rounded-[6px] bg-[#373737] hover:bg-[#404040] ring-1 ring-inset ring-transparent focus-within:ring-[#E8E8E8] text-[12px]">
         <NumberInputScrubArea
           pixelsPerStep={1}
           className="self-stretch grid place-items-center min-w-5 pl-1.5 pr-1 text-[11px] text-[#A3A3A3] hover:text-[#F2F2F2] cursor-ew-resize select-none touch-none"
@@ -76,7 +94,10 @@ const SizeField = ({
           aria-label={axis === "W" ? "Width" : "Height"}
           placeholder={placeholder}
           data-autofocus={autoFocus || undefined}
-          onFocus={(e) => e.currentTarget.select()}
+          onFocus={(e) => {
+            dropped.current = false;
+            e.currentTarget.select();
+          }}
           onBlur={() => setTyped(undefined)}
           className="w-full min-w-0 pr-1.5 bg-transparent dk-mono tabular-nums text-[#F2F2F2] placeholder:text-[#A3A3A3] outline-none"
         />
@@ -104,6 +125,7 @@ export const SizeMenu = ({
   size,
   onSizeChange,
   huggedHeight,
+  Covers,
 }: {
   size: FrameSize;
   // Called with how to change the frame's size as it is when applied, so
@@ -111,6 +133,9 @@ export const SizeMenu = ({
   onSizeChange: (update: (size: FrameSize) => FrameSize) => void;
   // The height the frame hugs to right now, for the first step out of Auto.
   huggedHeight: () => number;
+  // Rendered while the menu is open: the host's word that something covers
+  // the canvas.
+  Covers?: ComponentType;
 }) => {
   const [open, setOpen] = useState(false);
   const widthId = useId();
@@ -143,8 +168,12 @@ export const SizeMenu = ({
         align="start"
         sideOffset={10}
         initialFocus="[data-autofocus]"
-        // nokey: as the toolbar's (Canvas's FrameToolbar), as it's drawn
-        // outside it.
+        // In <body>, not in the toolbar (inside the canvas): the keys pressed
+        // in it are the menu's, not the canvas's (the shell's tools take keys
+        // pressed on the canvas), and it doesn't take the toolbar's styles.
+        container={document.body}
+        // nokey: as the toolbar's (Canvas's FrameToolbar): React Flow's node
+        // gets the menu's keys through React's tree all the same.
         className="nokey w-[276px] p-1 rounded-xl bg-[#262626] text-white font-normal shadow-[0_12px_32px_rgba(0,0,0,0.5),0_0_0_1px_rgba(255,255,255,0.07)] origin-(--transform-origin) transition-[opacity,scale] duration-150 data-starting-style:opacity-0 data-starting-style:scale-[0.98] data-ending-style:opacity-0 data-ending-style:scale-[0.98] motion-reduce:transition-none"
       >
         <Listbox
@@ -198,6 +227,7 @@ export const SizeMenu = ({
               id={widthId}
               value={size.w}
               autoFocus={!at}
+              whenEmpty={() => size.w}
               onChange={(n) => n !== null && onSizeChange((s) => ({ ...s, w: n }))}
             />
             <button
@@ -225,6 +255,7 @@ export const SizeMenu = ({
             className={cn("shrink-0 text-white", at && "opacity-0")}
           />
         </div>
+        {Covers && <Covers />}
       </PopoverContent>
     </Popover>
   );
