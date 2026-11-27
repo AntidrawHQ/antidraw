@@ -254,21 +254,46 @@ it("gives any other agent the command's full path, as its server settings and co
 // done. Never a config's path, the command, or why a config wasn't changed.
 it("counts the setup by where it's shown, each agent's Add, and leaving onboarding with what was added", async () => {
   const events = () => analytics.track.mock.calls.map(([event, props]) => [event, props]);
+  // Everything heard, across the resets between the test's parts.
+  const heard: unknown[] = [];
+  const reset = () => {
+    heard.push(...events());
+    analytics.track.mockReset();
+  };
 
   let page = await show(<McpSetup />);
   expect(events()).toEqual([]);
   await click(entry(page));
   expect(events()).toEqual([["mcp_setup_viewed", { source: "titlebar" }]]);
 
-  analytics.track.mockReset();
+  // A failed Add opens the row to its manual steps, and that counts as opening
+  // them; the command copied there is the titlebar's.
+  reset();
   api.addMcpToAgent.mockResolvedValue(err({ status: 409, code: "CONFIG_NOT_CHANGED", message: "config.toml wasn't changed: /Users/me/.codex is locked." }));
   await click(label(page, "Add to Codex"));
+  await click(row(page, "Codex").querySelector('[aria-label="Copy"]'));
+  // Trying again in the open row doesn't open it again.
+  await click(button(row(page, "Codex"), "Try again"));
   expect(events()).toEqual([
     ["mcp_agent_added", { source: "titlebar", agent: "codex", ok: false, error_code: "CONFIG_NOT_CHANGED" }],
+    ["mcp_manual_steps_opened", { source: "titlebar", agent: "codex" }],
+    ["mcp_setup_copied", { source: "titlebar", agent: "codex", what: "command" }],
+    ["mcp_agent_added", { source: "titlebar", agent: "codex", ok: false, error_code: "CONFIG_NOT_CHANGED" }],
+  ]);
+
+  // An install prompt that couldn't be opened sends its code, not its message.
+  reset();
+  api.openMcpInstallLink.mockResolvedValue(err({ status: 500, code: "OPEN_FAILED", message: "Couldn't open /Users/me/.cursor/mcp.json." }));
+  await click(label(page, "Cursor: set it up manually"));
+  await click(button(row(page, "Cursor"), "Or install it from Cursor"));
+  expect(events()).toEqual([
+    ["mcp_manual_steps_opened", { source: "titlebar", agent: "cursor" }],
+    ["mcp_install_link_opened", { source: "titlebar", agent: "cursor", ok: false, error_code: "OPEN_FAILED" }],
   ]);
   act(() => root?.unmount());
 
-  analytics.track.mockReset();
+  reset();
+  api.openMcpInstallLink.mockResolvedValue(ok(true));
   api.addMcpToAgent.mockResolvedValue(ok(true));
   const opened = vi.fn();
   page = await show(<OnboardingTwoWays onOpenWorkspace={opened} />);
@@ -298,5 +323,5 @@ it("counts the setup by where it's shown, each agent's Add, and leaving onboardi
     ["onboarding_two_ways_continued", { agents_added: ["claude"], agents_added_count: 1 }],
   ]);
   expect(opened).toHaveBeenCalledOnce();
-  expect(JSON.stringify(events())).not.toMatch(/Users|antidraw|locked|mcp\.json/);
+  expect(JSON.stringify([...heard, ...events()])).not.toMatch(/Users|antidraw|locked|couldn't|mcp\.json/i);
 });

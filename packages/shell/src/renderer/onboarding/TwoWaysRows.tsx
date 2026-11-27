@@ -227,8 +227,15 @@ export const McpRows = ({ bare, compact, source }: { bare?: boolean; compact?: b
               if (open !== a.id) trackSetup("mcp_manual_steps_opened", { source, agent: a.id });
               setOpen((o) => (o === a.id ? null : a.id));
             }}
-            // An "Add" that didn't work opens the row: why, over the steps to do it by hand.
-            onAdd={() => void add(a.id, source).then((added) => !added && setOpen(a.id))}
+            // An "Add" that didn't work opens the row: why, over the steps to do
+            // it by hand. That opens its manual steps too, so it's counted as one.
+            onAdd={() =>
+              void add(a.id, source).then((added) => {
+                if (added) return;
+                if (open !== a.id) trackSetup("mcp_manual_steps_opened", { source, agent: a.id });
+                setOpen(a.id);
+              })
+            }
             error={error(a.id)}
             compact={compact}
             source={source}
