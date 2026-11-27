@@ -818,7 +818,7 @@ const signInPanel = () => {
   return [
     text(el.querySelector("h2")),
     text(el.querySelector("p")),
-    ...[...el.querySelectorAll("button")].map((b) => `[${text(b)}${(b as HTMLButtonElement).disabled ? " (disabled)" : ""}]`),
+    ...[...el.querySelectorAll("button")].map((b) => `[${text(b)}${(b as HTMLButtonElement).disabled || b.getAttribute("aria-disabled") === "true" ? " (disabled)" : ""}]`),
     ...(alert ? [text(alert)] : []),
   ].join(" | ");
 };
