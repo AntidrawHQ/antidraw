@@ -15,6 +15,7 @@ import { useOutbox } from "./Outbox";
 import { PANEL_W, useDesignStore, useTab, type Tab } from "./store";
 import { useDesign } from "./use-design";
 import { track } from "@/renderer/lib/analytics";
+import { useWorkspaceStore } from "@/renderer/store/workspace";
 
 const setTab = (t: Tab) => useDesignStore.getState().setTab(t);
 
@@ -35,10 +36,14 @@ const useToggleKey = () =>
       const mod = isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
       // Off macOS, AltGr arrives as Ctrl+Alt: AltGr+B types a character on some layouts ({ in Hungarian).
       if (e.code !== "KeyB" || !mod || !e.altKey || e.shiftKey || e.getModifierState("AltGraph")) return;
+      const w = useWorkspaceStore.getState();
       e.preventDefault();
       const s = useDesignStore.getState();
-      track("panel_toggled", { panel: "right", open: !s.panelOpen, via: "shortcut" });
-      s.setPanelOpen(!s.panelOpen);
+      // With the chrome hidden (Mod+\), it comes back with the panel open.
+      const open = w.uiHidden || !s.panelOpen;
+      track("panel_toggled", { panel: "right", open, via: "shortcut" });
+      w.setUiHidden(false);
+      s.setPanelOpen(open);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -95,7 +100,8 @@ const floatShadow = { boxShadow: "0 4px 16px rgba(0,0,0,.4), 0 0 0 1px rgba(255,
 // canvas.
 export const ShowPanel = () => {
   const panelOpen = useDesignStore((s) => s.panelOpen);
-  return panelOpen ? null : (
+  const uiHidden = useWorkspaceStore((s) => s.uiHidden);
+  return panelOpen || uiHidden ? null : (
     <button
       type="button"
       title={`Show panel (${KEYS})`}
@@ -157,7 +163,8 @@ const ResizeHandle = ({ panel }: { panel: React.RefObject<HTMLElement | null> })
 
 // The panel beside the canvas.
 export const RightPanel = () => {
-  const panelOpen = useDesignStore((s) => s.panelOpen);
+  const uiHidden = useWorkspaceStore((s) => s.uiHidden);
+  const panelOpen = useDesignStore((s) => s.panelOpen) && !uiHidden;
   const width = useDesignStore((s) => s.width);
   useToggleKey();
   const aside = useRef<HTMLElement>(null);

@@ -147,6 +147,45 @@ const FrameToolbar = ({
   );
 };
 
+// The window's own element that had the focus last (the chat's box, a
+// panel's field), outside the frames: where a frame that takes the focus by
+// itself gives it back, so what the user was typing keeps going there. None
+// once the focus left it for the page itself (a press on the canvas): then
+// the window has it, and the canvas's keys.
+let shellFocus: HTMLElement | null = null;
+let trackingShellFocus = false;
+const trackShellFocus = () => {
+  if (trackingShellFocus) return;
+  trackingShellFocus = true;
+  document.addEventListener(
+    "focusin",
+    (e) => {
+      if (e.target instanceof HTMLElement && !(e.target instanceof HTMLIFrameElement)) shellFocus = e.target;
+    },
+    true,
+  );
+  document.addEventListener(
+    "focusout",
+    (e) => {
+      const left = e.target;
+      // Into a frame, it's still the one to give back to; settled after this event.
+      setTimeout(() => {
+        if (shellFocus === left && document.activeElement === document.body) shellFocus = null;
+      });
+    },
+    true,
+  );
+};
+
+// The focus out of a frame: to the window's element that had it before, when
+// it's still there to take it, or else to the window.
+const takeFocusFrom = (iframe: HTMLIFrameElement) => {
+  iframe.blur();
+  const to = shellFocus;
+  if (to?.isConnected) to.focus({ preventScroll: true });
+  if (!to || document.activeElement !== to) window.focus();
+};
+
 type IframeNodeProps = {
   componentName: string;
   url: string | undefined;
@@ -171,6 +210,42 @@ const IframeNode = memo(({ componentName, url, selected, onLoad }: IframeNodePro
       setInteractionMode(false);
     }
   }, [selected]);
+
+  // A frame's page can take the focus by itself (an input that autofocuses as
+  // it loads), and the keys would go to it: none of the window's shortcuts
+  // would work until a click took the focus back. Only a frame in use (in
+  // interaction mode, or under the inspector) keeps it; any other gives it
+  // back to where it was taken from (see shellFocus).
+  const inUse = interactionMode || !!framesTakePointer;
+  const inUseRef = useRef(inUse);
+  inUseRef.current = inUse;
+  useEffect(() => {
+    if (!iframe) return;
+    trackShellFocus();
+    const giveBack = () => {
+      if (inUseRef.current || document.activeElement !== iframe) return;
+      takeFocusFrom(iframe);
+    };
+    // The window's blur is the focus going into a frame (or to another app,
+    // when nothing here has it): after it, it's settled where it went.
+    const onBlur = () => setTimeout(giveBack);
+    const onLoad = () => setTimeout(giveBack);
+    window.addEventListener("blur", onBlur);
+    iframe.addEventListener("load", onLoad);
+    giveBack();
+    return () => {
+      window.removeEventListener("blur", onBlur);
+      iframe.removeEventListener("load", onLoad);
+    };
+  }, [iframe]);
+  // Leaving interaction mode, the frame gives the focus back too: to the
+  // window, as the user was on the canvas, not to a field they left before.
+  useEffect(() => {
+    if (!inUse && iframe && document.activeElement === iframe) {
+      shellFocus = null;
+      takeFocusFrom(iframe);
+    }
+  }, [inUse, iframe]);
 
   const handleDoubleClick = useCallback(() => {
     setInteractionMode(true);

@@ -1,6 +1,7 @@
 import { Panel } from "@xyflow/react";
 import { MessageCircle, MousePointer2, SquareDashedMousePointer } from "lucide-react";
 import { cn } from "@/renderer/lib/utils";
+import { useWorkspaceStore } from "@/renderer/store/workspace";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/renderer/components/ui/tooltip";
 import { pickCanvasTool, useCanvasTool, type CanvasTool } from "@/renderer/comments/store";
 
@@ -66,10 +67,13 @@ export const ToolButton = ({
 
 export const CanvasToolbar = () => {
   const mode = useCanvasTool();
+  // Hidden with the rest of the chrome (Mod+\); its keys still pick tools.
+  const uiHidden = useWorkspaceStore((s) => s.uiHidden);
 
   // Picking a tool selects it; picking the active one again leaves it on.
   const select = (id: Mode) => pickCanvasTool(id, "click");
 
+  if (uiHidden) return null;
   return (
     <Panel position="top-left">
       <div

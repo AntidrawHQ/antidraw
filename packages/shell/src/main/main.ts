@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, net, protocol, session, shell } from "electron";
+import { app, BrowserWindow, ipcMain, net, protocol, screen, session, shell } from "electron";
 import electronUpdater from "electron-updater";
 
 const { autoUpdater } = electronUpdater;
@@ -105,9 +105,20 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const previewWindows = new Set<Electron.WebContents>();
 
 const createWindow = () => {
+  // As big as the screen it opens on, less the menu bar and the Dock (not
+  // macOS full screen, its own Space): the chat, the canvas and the panel
+  // beside it all need the room. Opened smaller and then zoomed (maximize),
+  // so the titlebar's double-click and Window > Zoom have that size to go
+  // back to: opened at the full size, macOS takes it as zoomed already, with
+  // nothing smaller to restore.
+  const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
+  const width = Math.min(1280, area.width);
+  const height = Math.min(832, area.height);
   const win = new BrowserWindow({
-    width: 900,
-    height: 670,
+    x: area.x + Math.round((area.width - width) / 2),
+    y: area.y + Math.round((area.height - height) / 2),
+    width,
+    height,
     // The titlebar's workspace switcher and Publish button need the room.
     minWidth: 480,
     titleBarStyle: "hidden",
@@ -121,6 +132,8 @@ const createWindow = () => {
       backgroundThrottling: false,
     },
   });
+  // Once it's shown: a window not shown yet saves no size to go back to.
+  win.maximize();
   mainWindow = win;
   win.on("closed", () => {
     if (mainWindow === win) mainWindow = null;
