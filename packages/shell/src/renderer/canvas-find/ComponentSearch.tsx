@@ -4,8 +4,7 @@
  *
  * WHERE IT GOES
  *   Floats over the canvas, top right, 12px in from the canvas's edges. The
- *   canvas is not dimmed and nothing on it is highlighted except the normal
- *   selection of the component landed on.
+ *   canvas is not dimmed, and nothing on it is highlighted or selected.
  *
  * BEHAVIOUR
  *   ⌘F / Ctrl+F    opens it with the field focused and its text selected
@@ -14,13 +13,15 @@
  *   ↓ / ↑          moves the highlight (wraps); the canvas stays put.
  *   ↵              goes to the highlighted match.
  *   click a row    goes to that match.
- *   Esc / ×        closes; you stay on the component you landed on.
+ *   Esc / ×        closes; the camera stays where it is.
  *   "Goes to" = what clicking a row in the Components tab does: the camera
- *   frames it (here at once, not flying). With no query, or no matches, only
- *   the field shows.
+ *   frames it (here at once, not flying), selecting nothing. With no query,
+ *   or no matches, only the field shows. The focus stays in the field
+ *   throughout, so its keys stay its own.
  *
  * MATCHING
- *   Case-insensitive, spaces ignored. A substring match first; otherwise the
+ *   Case-insensitive, spaces ignored (in the query and the name). A
+ *   substring match first; otherwise the
  *   letters in order ("chf" → CheckoutForm). Substring matches rank first,
  *   then by where the match starts. Matched letters are #f5f5f5, the rest of
  *   the name #a3a3a3.
@@ -33,11 +34,11 @@
  *            search icon 14px #a3a3a3 · text 13px #e0e0e0 · placeholder #a3a3a3
  *            close: 24px button, 6px radius, 12px icon #a3a3a3,
  *                   hover #373737 bg / #e0e0e0 icon
- *            (same as the dashboard's search field, Header.tsx:27)
+ *            (same as the dashboard's search field)
  *   divider  0.5px #373737
  *   list     4px padding, max 232px tall, then scrolls
  *   row      px 10 / py 6, 6px radius, 8px gap, 13px · lucide Blocks 14px
- *            (the dashboard's menu item, kit.tsx:148)
+ *            (the dashboard's menu item)
  *            idle icon #a3a3a3 · hover bg white/3% ·
  *            current bg white/6%, icon #e0e0e0
  *   font     Geist
@@ -49,26 +50,36 @@ const SHADOW = ["0 0 0 0.5px #373737", ...[1, 2, 4, 8, 16].map((d) => `0 ${d}px 
 
 /* ── Matching ─────────────────────────────────────────────────────────── */
 
-type Hit = { name: string; idx: number[] }
+type Hit = { name: string; idx: number[]; substring: boolean }
 
-function match(q: string, name: string): number[] | null {
-  const s = q.toLowerCase().replace(/\s+/g, "")
-  if (!s) return []
-  const n = name.toLowerCase()
-  const at = n.indexOf(s)
-  if (at >= 0) return Array.from({ length: s.length }, (_, i) => at + i)
+// Indices are into [...name] (code points, as Name draws it), spaces skipped
+// on both sides, so "hero section" is a substring of "Hero Section".
+function match(q: string, name: string): { idx: number[]; substring: boolean } | null {
+  // Lowercased a letter at a time, as the name is ("İ" lowercases to two).
+  const s = [...q].filter((ch) => !/\s/.test(ch)).map((ch) => ch.toLowerCase())
+  if (!s.length) return { idx: [], substring: true }
+  const at: number[] = []
+  const n: string[] = []
+  ;[...name].forEach((ch, i) => {
+    if (/\s/.test(ch)) return
+    at.push(i)
+    n.push(ch.toLowerCase())
+  })
+  for (let start = 0; start + s.length <= n.length; start++) {
+    if (s.every((ch, k) => n[start + k] === ch)) return { idx: s.map((_, k) => at[start + k]!), substring: true }
+  }
   const idx: number[] = []
-  for (let i = 0, j = 0; i < n.length && j < s.length; i++) if (n[i] === s[j]) idx.push(i), j++
-  return idx.length === s.length ? idx : null
+  for (let i = 0, j = 0; i < n.length && j < s.length; i++) if (n[i] === s[j]) idx.push(at[i]!), j++
+  return idx.length === s.length ? { idx, substring: false } : null
 }
 
 function search(q: string, names: string[]): Hit[] {
   if (!q.trim()) return []
   const hits = names.flatMap((name) => {
-    const idx = match(q, name)
-    return idx ? [{ name, idx }] : []
+    const m = match(q, name)
+    return m ? [{ name, ...m }] : []
   })
-  const score = ({ idx }: Hit) => (idx[idx.length - 1]! - idx[0]! + 1 === idx.length ? 0 : 100) + idx[0]!
+  const score = ({ idx, substring }: Hit) => (substring ? 0 : 100) + idx[0]!
   return hits.sort((a, b) => score(a) - score(b))
 }
 
@@ -103,24 +114,27 @@ export function ComponentSearch({
   /** Names of the components on the canvas. */
   components: string[]
   initialQuery?: string
-  /** Fly to and select this component (what a Components tab row does). */
+  /** Go to this component (frame it, as a Components tab row does). */
   onGoTo?: (name: string) => void
   onClose?: () => void
 }) {
   const [q, setQ] = useState(initialQuery)
-  // The highlighted match: ↓ / ↑ move it, ↵ goes to it.
-  const [cur, setCur] = useState(0)
+  // The highlighted match, by name: ↓ / ↑ move it, ↵ goes to it. By name so
+  // it stays on the same component while the list changes under it (a frame
+  // added or deleted); the first match when it's gone, or after typing.
+  const [curName, setCurName] = useState<string | null>(null)
   const hits = useMemo(() => search(q, components), [q, components])
+  const cur = Math.max(0, hits.findIndex((h) => h.name === curName))
   const input = useRef<HTMLInputElement>(null)
   const list = useRef<HTMLDivElement>(null)
 
   const move = (i: number) => {
-    if (hits.length) setCur((i + hits.length) % hits.length)
+    if (hits.length) setCurName(hits[(i + hits.length) % hits.length]!.name)
   }
   const go = (i: number) => {
     const hit = hits[i]
     if (!hit) return
-    setCur(i)
+    setCurName(hit.name)
     onGoTo?.(hit.name)
   }
 
@@ -131,17 +145,31 @@ export function ComponentSearch({
   }, [cur])
 
   const onKey = (e: React.KeyboardEvent) => {
+    // An IME's keys (Enter commits the composition, arrows pick a candidate).
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault()
       move(cur + (e.key === "ArrowDown" ? 1 : -1))
     } else if (e.key === "Enter") {
       e.preventDefault()
       go(cur)
-    } else if (e.key === "Escape") onClose?.()
+    } else if (e.key === "Escape" && !e.defaultPrevented) {
+      // Not when a popover already took it (it closes first).
+      e.preventDefault()
+      onClose?.()
+    }
   }
 
   return (
-    <div className="w-[280px] overflow-hidden rounded-[10px] bg-[#2c2c2c]" style={{ boxShadow: SHADOW }}>
+    <div
+      className="w-[280px] overflow-hidden rounded-[10px] bg-[#2c2c2c]"
+      style={{ boxShadow: SHADOW }}
+      // A press on a row, ×, or the card around them leaves the focus in the
+      // field: a focused row would hand Esc, Backspace and letters to the canvas.
+      onMouseDown={(e) => {
+        if (e.target !== input.current) e.preventDefault()
+      }}
+    >
       <div className="flex h-[32px] items-center gap-2 pr-1 pl-2.5">
         <Search className="size-3.5 shrink-0 text-[#a3a3a3]" />
         <input
@@ -149,7 +177,7 @@ export function ComponentSearch({
           value={q}
           onChange={(e) => {
             setQ(e.target.value)
-            setCur(0)
+            setCurName(null)
           }}
           onKeyDown={onKey}
           placeholder="Find a component"
