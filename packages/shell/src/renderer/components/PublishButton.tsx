@@ -415,12 +415,12 @@ export const PublishButton = ({
                     <X size={14} />
                   </button>
 
-                  <img src={antidrawIcon} alt="Antidraw" className="h-10 w-10" />
+                  <img src={antidrawIcon} alt="Antidraw" className="h-7 w-7" />
 
-                  <h2 id="publish-handshake-title" className="mt-4 text-base font-medium tracking-[-0.01em] text-[#e0e0e0]">
+                  <h2 id="publish-handshake-title" className="mt-3 text-[14px] font-medium tracking-[-0.01em] text-[#e0e0e0]">
                     {retryingPublish ? "Couldn't publish" : "Sign in to publish"}
                   </h2>
-                  <p className="mt-1.5 text-[13px] leading-[1.6] text-[#9a9a9a]">
+                  <p className="mt-1 text-[12px] leading-[1.45] text-[#9a9a9a]">
                     {busy
                       ? "Finish signing in with Google in your browser. We'll publish right after."
                       : retryingPublish
@@ -434,7 +434,7 @@ export const PublishButton = ({
                     label={step === "error" ? "Try again" : undefined}
                     google={!retryingPublish}
                     onClick={retryingPublish ? retryPublish : signIn}
-                    className="mt-5"
+                    className="mt-4"
                   />
 
                   {/* Announced: what the button now shows. The page behind is hidden from
@@ -451,7 +451,7 @@ export const PublishButton = ({
 
                   {/* only shown when there's something to say */}
                   {(busy || step === "error" || rechecking) && (
-                    <div className="mt-3 flex min-h-4 items-center text-[11px]">
+                    <div className="mt-2.5 flex min-h-4 items-center text-[12px]">
                       {busy ? (
                         <button
                           type="button"
@@ -463,7 +463,7 @@ export const PublishButton = ({
                         </button>
                       ) : (
                         // Keyed by attempt, so the same message is announced again.
-                        <span key={attempt} role="alert" style={{ color: RED }}>
+                        <span key={attempt} role="alert" className="leading-[1.5]" style={{ color: RED }}>
                           {failure?.message}
                         </span>
                       )}
