@@ -365,3 +365,26 @@ it("takes the focus back from a frame that took it by itself, but leaves it with
   await settle();
   expect({ card: cardBlur.mock.calls.length, hero: heroBlur.mock.calls.length }).toEqual({ card: 1, hero: 0 });
 });
+
+it("gives the focus a frame took back to the window's field it was taken from, and to none once the field was left", async () => {
+  await renderCanvas();
+  await act(async () => {});
+  const [card] = [...document.querySelectorAll<HTMLIFrameElement>(".react-flow__node iframe")];
+  const chat = document.body.appendChild(document.createElement("textarea"));
+  const settle = () => act(async () => void (await new Promise((r) => setTimeout(r, 0))));
+  const steal = async () => {
+    card!.focus();
+    window.dispatchEvent(new Event("blur"));
+    await settle();
+    return document.activeElement === chat ? "back in the chat" : "not in the chat";
+  };
+  // Typing in the chat when a frame's page focuses its input.
+  chat.focus();
+  await settle();
+  const whileTyping = await steal();
+  // A press on the canvas: the focus is the page's, and the canvas's keys.
+  chat.blur();
+  await settle();
+  const afterLeaving = await steal();
+  expect({ whileTyping, afterLeaving }).toEqual({ whileTyping: "back in the chat", afterLeaving: "not in the chat" });
+});
