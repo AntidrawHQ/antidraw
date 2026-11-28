@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { Check } from "lucide-react";
+import { Dialog as DialogPrimitive } from "radix-ui";
 import { ReactFlowProvider } from "@xyflow/react";
 import { useQuery } from "@tanstack/react-query";
 import { z } from "zod";
@@ -64,8 +65,7 @@ const Message = ({ children }: { children: React.ReactNode }) => (
   </div>
 );
 
-const SiteCanvas = ({ site }: { site: PublishedSite }) => {
-  const dashboardShown = useWorkspaceStore((s) => s.dashboardShown);
+const SiteCanvas = ({ site, keysOff }: { site: PublishedSite; keysOff: boolean }) => {
   const files = siteFiles(site);
   const { data, error, isPending, isFetching, refetch } = useQuery({
     queryKey: queryKeys.published.canvas(site.id, site.version),
@@ -101,8 +101,8 @@ const SiteCanvas = ({ site }: { site: PublishedSite }) => {
         frameUrl={files.frameUrl}
         onFullscreen={openInBrowser}
         readOnly
-        // Under the dashboard: see the workspace's canvas (renderer/Canvas.tsx).
-        keysOff={dashboardShown}
+        // Under the dashboard or a fork: see the workspace's canvas (renderer/Canvas.tsx).
+        keysOff={keysOff}
       />
     </ReactFlowProvider>
   );
@@ -131,8 +131,18 @@ const ViewOnly = ({ site }: { site: PublishedSite }) => {
       className="relative min-w-0 max-[720px]:hidden"
       onMouseEnter={() => later(true, OPEN_MS)}
       onMouseLeave={() => later(false, CLOSE_MS)}
-      onFocus={() => setOpen(true)}
+      onFocus={() => {
+        // A close the pointer scheduled doesn't outlast the focus.
+        clearTimeout(timer.current);
+        setOpen(true);
+      }}
       onBlur={(e) => !e.currentTarget.contains(e.relatedTarget) && setOpen(false)}
+      // Hover and focus content can be put away where it is (WCAG 1.4.13).
+      onKeyDown={(e) => {
+        if (e.key !== "Escape" || !open) return;
+        clearTimeout(timer.current);
+        setOpen(false);
+      }}
     >
       <span
         tabIndex={0}
@@ -145,7 +155,8 @@ const ViewOnly = ({ site }: { site: PublishedSite }) => {
         <Svg size={13} sw={2} className="shrink-0">
           {ic.eye}
         </Svg>
-        <span className="truncate">View only · Published {ago(site.publishedAt)}</span>
+        {/* ago() is written to stand alone: "Just now" mid-sentence is "just now". */}
+        <span className="truncate">View only · Published {ago(site.publishedAt).replace(/^Just/, "just")}</span>
       </span>
 
       {open && (
@@ -159,8 +170,11 @@ const ViewOnly = ({ site }: { site: PublishedSite }) => {
             This canvas is view only
           </h2>
           <p className="mt-0.5 text-[12.5px] leading-[18px] text-balance text-neutral-400">
-            It's a published snapshot, so nothing here can be changed. To work on it, Fork it: you'll get its source
-            as a workspace of your own.
+            It's a published snapshot, so nothing here can be changed.{" "}
+            {site.forkable
+              ? "To work on it, Fork it: you'll get its source as a workspace of your own."
+              : // Fork's own reason is a title on a disabled button, which keys can't reach.
+                `It was published before its source was kept, so it can't be forked yet. ${NOT_FORKABLE}.`}
           </p>
         </div>
       )}
@@ -201,6 +215,10 @@ const SiteDetails = ({
       )}
       {copied ? "Copied" : "Copy link"}
     </button>
+    {/* The button's new name isn't read out on its own. */}
+    <span role="status" className="sr-only">
+      {copied ? "Link copied" : ""}
+    </span>
     {/* Publish's shape: the one primary action, as Publish is a workspace's. */}
     <button
       onClick={onFork}
@@ -230,7 +248,13 @@ const FORKED_MS = 600;
 // Forking: the site's source pulled into a workspace of your own, then opened
 // in this tab, on a card over the canvas it's forking. A failed step is the
 // progress list's red (CreateWorkspaceProgress), with why and Try again.
+//
+// Drawn over the canvas, but modal to the whole window, as the rows' fork
+// dialog is: until it's done or has failed, nothing else can be used, the
+// titlebar's tabs included. So the site can't be left, or another put in its
+// place, under a fork of it, and the fork's outcome always lands here.
 const ForkCard = ({
+  container,
   site,
   status,
   failedStep,
@@ -238,6 +262,7 @@ const ForkCard = ({
   onRetry,
   onClose,
 }: {
+  container: HTMLElement | null;
   site: PublishedSite;
   status: WorkspaceFlowStatus<ForkStatus>;
   failedStep: ForkStatus | null;
@@ -251,82 +276,99 @@ const ForkCard = ({
     status === "done"
       ? steps.length
       : steps.findIndex((step) => step.key === (failed ? failedStep : status));
+  // Only once it has failed: there's no stopping a fork under way.
+  const closeIfFailed = (e: Event) => !failed && e.preventDefault();
   return (
-    <div className="absolute inset-0 z-[70] grid place-items-center bg-black/50">
-      <div
-        role="status"
-        className="w-[340px] rounded-[12px] bg-[#2c2c2c] p-5 shadow-[0_0_0_1px_#2d2d2d,0_20px_48px_-8px_rgba(0,0,0,0.75)]"
-      >
-        <div className="mb-4 flex items-center gap-2 text-[15px] text-[#e0e0e0]">
-          <Svg size={15}>{ic.fork}</Svg>
-          <span className="truncate">Forking {site.title}</span>
-        </div>
-        <div className="space-y-2.5">
-          {steps.map((step, i) => {
-            const done = i < at;
-            const active = i === at;
-            const broke = failed && active;
-            return (
-              <div
-                key={step.key}
-                className={cn("flex items-center gap-2.5 text-[13.5px]", done || active ? "text-[#e0e0e0]" : "text-[#a3a3a3]")}
-              >
-                <span
-                  className={cn(
-                    "grid size-[18px] place-items-center rounded-full",
-                    broke
-                      ? "bg-[#d9605c] text-[#1C1C1C]"
-                      : done
-                        ? "bg-[#86D8A6] text-[#1C1C1C]"
-                        : "ring-1 ring-[#a3a3a3] ring-inset",
-                  )}
-                >
-                  {broke ? (
-                    <Svg size={10} sw={2.6}>
-                      {ic.close}
-                    </Svg>
-                  ) : done ? (
-                    <Svg size={11} sw={2.6}>
-                      {ic.check}
-                    </Svg>
-                  ) : active ? (
-                    <span className="size-1.5 animate-pulse rounded-full bg-[#e0e0e0]" />
-                  ) : null}
-                </span>
-                {step.label}
-              </div>
-            );
-          })}
-        </div>
-        {failed && (
-          <>
-            <p role="alert" className="mt-4 text-[12.5px] leading-[18px] text-[#e08a86]">
-              {errorMessage ?? "The fork didn't finish."}
-            </p>
-            <div className="mt-4 flex justify-end gap-2">
-              <Btn kind="ghost" small onClick={onClose}>
-                Close
-              </Btn>
-              <Btn kind="secondary" small onClick={onRetry}>
-                Try again
-              </Btn>
+    <DialogPrimitive.Root open onOpenChange={(open) => !open && failed && onClose()}>
+      <DialogPrimitive.Portal container={container}>
+        <DialogPrimitive.Overlay className="absolute inset-0 z-[70] grid place-items-center bg-black/50">
+          <DialogPrimitive.Content
+            aria-describedby={undefined}
+            onEscapeKeyDown={closeIfFailed}
+            onPointerDownOutside={closeIfFailed}
+            className="w-[340px] rounded-[12px] bg-[#2c2c2c] p-5 shadow-[0_0_0_1px_#2d2d2d,0_20px_48px_-8px_rgba(0,0,0,0.75)] outline-none"
+          >
+            <DialogPrimitive.Title className="mb-4 flex items-center gap-2 text-[15px] font-normal text-[#e0e0e0]">
+              <Svg size={15}>{ic.fork}</Svg>
+              <span className="truncate">Forking {site.title}</span>
+            </DialogPrimitive.Title>
+            {/* The steps alone are read out as they change, not the buttons. */}
+            <div role="status" className="space-y-2.5">
+              {steps.map((step, i) => {
+                const done = i < at;
+                const active = i === at;
+                const broke = failed && active;
+                return (
+                  <div
+                    key={step.key}
+                    className={cn("flex items-center gap-2.5 text-[13.5px]", done || active ? "text-[#e0e0e0]" : "text-[#a3a3a3]")}
+                  >
+                    <span
+                      className={cn(
+                        "grid size-[18px] place-items-center rounded-full",
+                        broke
+                          ? "bg-[#d9605c] text-[#1C1C1C]"
+                          : done
+                            ? "bg-[#86D8A6] text-[#1C1C1C]"
+                            : "ring-1 ring-[#a3a3a3] ring-inset",
+                      )}
+                    >
+                      {broke ? (
+                        <Svg size={10} sw={2.6}>
+                          {ic.close}
+                        </Svg>
+                      ) : done ? (
+                        <Svg size={11} sw={2.6}>
+                          {ic.check}
+                        </Svg>
+                      ) : active ? (
+                        <span className="size-1.5 animate-pulse rounded-full bg-[#e0e0e0]" />
+                      ) : null}
+                    </span>
+                    {step.label}
+                  </div>
+                );
+              })}
             </div>
-          </>
-        )}
-      </div>
-    </div>
+            {failed && (
+              <>
+                <p role="alert" className="mt-4 text-[12.5px] leading-[18px] text-[#e08a86]">
+                  {errorMessage ?? "The fork didn't finish."}
+                </p>
+                <div className="mt-4 flex justify-end gap-2">
+                  <Btn kind="ghost" small onClick={onClose}>
+                    Close
+                  </Btn>
+                  {/* Where the keys go once it has failed. */}
+                  <Btn kind="secondary" small autoFocus onClick={onRetry}>
+                    Try again
+                  </Btn>
+                </div>
+              </>
+            )}
+          </DialogPrimitive.Content>
+        </DialogPrimitive.Overlay>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
   );
 };
 
 export const PublishedViewer = ({ site }: { site: PublishedSite }) => {
   const dashboardShown = useWorkspaceStore((s) => s.dashboardShown);
   const slot = useTitlebarSlot((s) => s.el);
+  const [canvasEl, setCanvasEl] = useState<HTMLDivElement | null>(null);
   const [copied, setCopied] = useState(false);
+  // The site being forked: the card's words and Try again are its, whatever
+  // the tab shows.
+  const [forked, setForked] = useState<PublishedSite | null>(null);
+  const forkedTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(forkedTimer.current), []);
   const switchWorkspace = useSwitchWorkspace();
   const { status, errorMessage, failedStep, isCreating, start, reset } = useForkSiteFlow({
     onSuccess: (workspace) => {
       // The last step seen done, then the fork in the site's place.
-      setTimeout(() => {
+      forkedTimer.current = setTimeout(() => {
+        setForked(null);
         reset();
         void switchWorkspace(workspace.id);
       }, FORKED_MS);
@@ -340,14 +382,23 @@ export const PublishedViewer = ({ site }: { site: PublishedSite }) => {
     return () => clearTimeout(id);
   }, [copied]);
 
+  // Copied only once it is.
   const copyLink = () => {
-    navigator.clipboard?.writeText(site.url).catch(() => {});
-    setCopied(true);
+    navigator.clipboard?.writeText(site.url).then(
+      () => setCopied(true),
+      () => {},
+    );
   };
 
   const fork = () => {
     if (isCreating || !site.forkable) return;
+    setForked(site);
     start(site.id);
+  };
+
+  const close = () => {
+    setForked(null);
+    reset();
   };
 
   return (
@@ -361,17 +412,18 @@ export const PublishedViewer = ({ site }: { site: PublishedSite }) => {
           </div>,
           slot,
         )}
-      <div className="relative min-h-0 flex-1">
+      <div ref={setCanvasEl} className="relative min-h-0 flex-1">
         {/* A new canvas for another site, or another version of this one. */}
-        <SiteCanvas key={`${site.id}@${site.version}`} site={site} />
-        {forking && (
+        <SiteCanvas key={`${site.id}@${site.version}`} site={site} keysOff={dashboardShown || forking} />
+        {forking && forked && (
           <ForkCard
-            site={site}
+            container={canvasEl}
+            site={forked}
             status={status}
             failedStep={failedStep}
             errorMessage={errorMessage}
-            onRetry={fork}
-            onClose={reset}
+            onRetry={() => !isCreating && start(forked.id)}
+            onClose={close}
           />
         )}
       </div>

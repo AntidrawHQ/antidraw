@@ -918,7 +918,13 @@ it("opens a published site view-only in the one tab, in place of the workspace t
 
   // The dashboard comes back on Published, with the site still in its tab.
   await click(document.querySelectorAll('[role="tab"]')[0]!);
-  steps["Dashboard tab"] = { ...screen(), sections: sections(), viewerKept: !!viewer() };
+  steps["Dashboard tab"] = {
+    ...screen(),
+    sections: sections(),
+    viewerKept: !!viewer(),
+    // Its controls stay in the titlebar, hidden.
+    siteControlsHidden: siteBar()?.firstElementChild?.classList.contains("hidden"),
+  };
 
   // A site whose canvas.json can't be had.
   await click(rows()[1]!);
@@ -954,6 +960,7 @@ it("opens a published site view-only in the one tab, in place of the workspace t
           "○ Local3",
           "● Published2",
         ],
+        "siteControlsHidden": true,
         "tabs": [
           "● Dashboard",
           "○ Paper Shaders",
@@ -1197,14 +1204,32 @@ it("forks a published site from its row or from the viewer, showing how it goes,
       title: text(el.querySelector(".truncate")),
       steps: marks,
       failed: text(el.querySelector('[role="alert"]')),
-      dialog: !!dialog(),
+      // Modal to the window: the titlebar's tabs can't be used under it.
+      modal: !!dialog() && document.body.style.pointerEvents === "none",
+      titlebarHidden: !!document.querySelector(".drag-region")?.closest('[aria-hidden="true"]'),
+      focus: focused(),
       forkHeld: forkOf("Paper Shaders").disabled,
     };
+  };
+  // Where the keys are: on one of the card's buttons, on the card, or elsewhere.
+  const focused = () => {
+    const el = document.activeElement;
+    if (!el?.closest('[role="dialog"]')) return "outside the card";
+    return el.tagName === "BUTTON" ? text(el) : "the card";
+  };
+  const escape = async () => {
+    await act(async () => {
+      document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    });
+    await settle();
   };
   go = {};
   fails = true;
   await click(forkOf("Paper Shaders"));
   steps["viewer: forking"] = card();
+  // There's no stopping a fork under way.
+  await escape();
+  steps["viewer: Escape while it runs"] = !!card();
   await next("fetched");
   steps["viewer: it fails"] = card();
   fails = false;
@@ -1302,49 +1327,58 @@ it("forks a published site from its row or from the viewer, showing how it goes,
         "said": "Installing packages…",
         "title": "Forking Paper Shaders",
       },
+      "viewer: Escape while it runs": true,
       "viewer: done": {
-        "dialog": false,
         "failed": null,
+        "focus": "the card",
         "forkHeld": true,
+        "modal": true,
         "steps": [
           "✓ Pulling the source of v5",
           "✓ Installing packages",
           "✓ Starting the canvas",
         ],
         "title": "Forking Paper Shaders",
+        "titlebarHidden": true,
       },
       "viewer: forking": {
-        "dialog": false,
         "failed": null,
+        "focus": "the card",
         "forkHeld": true,
+        "modal": true,
         "steps": [
           "● Pulling the source of v5",
           "○ Installing packages",
           "○ Starting the canvas",
         ],
         "title": "Forking Paper Shaders",
+        "titlebarHidden": true,
       },
       "viewer: installing": {
-        "dialog": false,
         "failed": null,
+        "focus": "the card",
         "forkHeld": true,
+        "modal": true,
         "steps": [
           "✓ Pulling the source of v5",
           "● Installing packages",
           "○ Starting the canvas",
         ],
         "title": "Forking Paper Shaders",
+        "titlebarHidden": true,
       },
       "viewer: it fails": {
-        "dialog": false,
         "failed": "Couldn't fetch the site's source (503). Try again.",
+        "focus": "Try again",
         "forkHeld": true,
+        "modal": true,
         "steps": [
           "✗ Pulling the source of v5",
           "○ Installing packages",
           "○ Starting the canvas",
         ],
         "title": "Forking Paper Shaders",
+        "titlebarHidden": true,
       },
       "which can be forked": [
         "Paper Shaders: Fork",
