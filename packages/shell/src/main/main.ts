@@ -276,10 +276,10 @@ app.whenReady().then(async () => {
   // forward, show the comment, and with `send`, send the drafts there. With
   // the main window closed (macOS keeps the app open), it's opened again,
   // and its canvas asks for the request once it listens ("comments:pending").
-  // It opens on the comment's workspace: on the dashboard, or on another
-  // workspace, no canvas of this one would ask, and the request would wait
-  // for the next to open, then show and send there unasked. So it's held only
-  // as long as a window takes to open.
+  // It opens on the comment's workspace. On the dashboard no canvas would
+  // ask, and the request would wait for the next workspace opened, to show
+  // and send there unasked (on another workspace, its canvas would take the
+  // request and drop it). So it's held only as long as a window takes to open.
   let pendingShow: { shown: object; at: number } | null = null;
   const PENDING_SHOW_MS = 30_000;
   ipcMain.handle("comments:show", async (event, request: unknown) => {

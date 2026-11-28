@@ -1,4 +1,4 @@
-import { useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { McpSetup } from "@/renderer/components/McpSetup";
 import { PublishButton } from "@/renderer/components/PublishButton";
 import { UpdateReminder } from "@/renderer/components/UpdateReminder";
@@ -47,6 +47,11 @@ const Tab = ({
   </div>
 );
 
+const leaveTabs = () => {
+  const focused = document.activeElement;
+  if (focused instanceof HTMLElement && focused.closest("[role=tablist]")) focused.blur();
+};
+
 // The main window's titlebar: its two tabs, the Dashboard and the one
 // workspace that's open, then what's for that workspace (the MCP setup,
 // Publish).
@@ -61,13 +66,16 @@ export const Titlebar = ({ tabs = true }: { tabs?: boolean }) => {
   const [lastWorkspace, setLastWorkspace] = useState(activeWorkspace);
   if (activeWorkspace && activeWorkspace !== lastWorkspace) setLastWorkspace(activeWorkspace);
   const closeWorkspace = useCloseWorkspace();
-  // Back to the canvas, and its keys with it: they're the canvas's only while
-  // nothing else has focus (renderer/inspector, renderer/comments), and a
-  // click or Enter leaves it on the tab.
+  // Back on the canvas, its keys are back too: they're the canvas's only
+  // while nothing else has focus (renderer/inspector, renderer/comments), and
+  // a click or Enter leaves it on a tab. Whatever brought the canvas back:
+  // the workspace's tab, or an agent's open_workspace or focus_component, or
+  // a frame window's Show, from under the Dashboard tab.
+  useEffect(() => {
+    if (!dashboardShown) leaveTabs();
+  }, [dashboardShown]);
   const showWorkspace = () => {
-    if (document.activeElement instanceof HTMLElement && document.activeElement.closest("[role=tablist]")) {
-      document.activeElement.blur();
-    }
+    leaveTabs();
     setDashboardShown(false);
   };
   const { pendingVersion, showReminder } = useUpdatePrompt();

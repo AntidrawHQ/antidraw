@@ -425,6 +425,28 @@ it("leaves the canvas its keys on the way back from the dashboard: the tab click
     `);
 });
 
+it("leaves the canvas its keys when something else brings it back from under the Dashboard tab", async () => {
+  const store = await launch("w-videos");
+  const [dashboardTab] = document.querySelectorAll<HTMLElement>('[role="tab"]');
+  dashboardTab!.focus();
+  await click(dashboardTab!);
+  // An agent's focus_component, or a frame window's Show.
+  act(() => store.setState({ dashboardShown: false }));
+  await settle();
+  expect({ ...screen(), focus: document.activeElement === document.body ? "body" : text(document.activeElement) })
+    .toMatchInlineSnapshot(`
+      {
+        "dashboard": false,
+        "focus": "body",
+        "tabs": [
+          "○ Dashboard",
+          "● Twitter Videos",
+        ],
+        "workspaceControls": true,
+      }
+    `);
+});
+
 // Delete is held back for now (Dashboard.tsx).
 it.skip("deletes a workspace from its menu once confirmed, closing its tab first if it's the one open", async () => {
   const store = await launch("w-videos");
