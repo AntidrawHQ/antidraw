@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Tabs } from "radix-ui";
 import { create } from "zustand";
-import type { WorkspaceWithThumbnail } from "@/main/api";
+import type { PublishedSite, WorkspaceWithThumbnail } from "@/main/api";
 import { CreateWorkspaceDialog } from "@/renderer/components/CreateWorkspaceDialog";
 import { Button } from "@/renderer/components/ui/button";
 import {
@@ -148,11 +148,22 @@ const Notice = ({ children, action }: { children: React.ReactNode; action?: Reac
   </div>
 );
 
-// The Published section: the account's sites, or why there's no list.
+// The Published section: the account's sites, or why there's no list. A
+// fork's dialog stays up whichever it is: the list can go from under it, as a
+// fork that finds the user signed out makes it.
 const Published = ({ query }: { query: string }) => {
+  const { fork, dialog } = useFork();
+  return (
+    <>
+      <PublishedSites query={query} onFork={fork} />
+      {dialog}
+    </>
+  );
+};
+
+const PublishedSites = ({ query, onFork }: { query: string; onFork: (site: PublishedSite) => void }) => {
   const { data: sites, error, isPending, refetch, isFetching } = usePublishedSites();
   const openPublished = useOpenPublished();
-  const { fork, dialog } = useFork();
   const view = useDashboardStore((s) => s.view);
   const signIn = useSignIn();
   const cancelSignIn = useCancelSignIn();
@@ -207,12 +218,7 @@ const Published = ({ query }: { query: string }) => {
 
   if (items.length === 0) return <Notice>{q ? `Nothing matches “${query}”.` : "Nothing published yet."}</Notice>;
   const List = view === "grid" ? PublishedCards : PublishedRows;
-  return (
-    <>
-      <List items={items} onOpen={(site) => void openPublished(site)} onFork={fork} />
-      {dialog}
-    </>
-  );
+  return <List items={items} onOpen={(site) => void openPublished(site)} onFork={onFork} />;
 };
 
 export const Dashboard = () => {

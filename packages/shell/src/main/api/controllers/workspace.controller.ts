@@ -97,7 +97,17 @@ workspaceController.post(
     track("workspace_fork_started", { site_id: siteId });
 
     return streamSSE(ctx, async (stream) => {
-      for await (const event of forkPublishedSite(siteId)) {
+      // Cancelling is the renderer letting go of the stream. Under Electron's
+      // protocol.handle that reaches only the response body, as onAbort; the
+      // request's signal is how it ends anywhere else (see the conversation
+      // stream in api/index.ts). Either stops the fork, which then clears up
+      // after itself, its last events written to no one.
+      const cancel = new AbortController();
+      const stop = () => cancel.abort();
+      stream.onAbort(stop);
+      ctx.req.raw.signal.addEventListener("abort", stop, { once: true });
+      if (stream.aborted || ctx.req.raw.signal.aborted) stop();
+      for await (const event of forkPublishedSite(siteId, cancel.signal)) {
         if (event.type === "status") step = event.status;
         if (event.type === "done")
           track("workspace_fork_completed", {
@@ -105,7 +115,13 @@ workspaceController.post(
             site_id: siteId,
             duration_ms: Date.now() - startedAt,
           });
-        if (event.type === "error")
+        if (event.type === "error" && event.error.code === "CANCELLED")
+          track("workspace_fork_cancelled", {
+            site_id: siteId,
+            step,
+            duration_ms: Date.now() - startedAt,
+          });
+        else if (event.type === "error")
           track("workspace_fork_failed", {
             site_id: siteId,
             failed_step: step,

@@ -45,6 +45,16 @@ export const useWorkspace = (workspaceId: string | null) => {
   });
 };
 
+/** A create or fork that ended in an error event, with the code main gave it. */
+export class WorkspaceEventError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 // The workspace a stream of create or fork events ends with, passing each
 // event on as it comes.
 const workspaceFrom = async <Event extends CreateWorkspaceResponse | ForkSiteResponse>(
@@ -53,7 +63,7 @@ const workspaceFrom = async <Event extends CreateWorkspaceResponse | ForkSiteRes
 ): Promise<Workspace> => {
   for await (const event of stream) {
     onProgress?.(event);
-    if (event.type === "error") throw new Error(event.error.message);
+    if (event.type === "error") throw new WorkspaceEventError(event.error.code, event.error.message);
     if (event.type === "done") return event.workspace;
   }
   throw new Error("Workspace creation completed without returning workspace");
@@ -71,15 +81,33 @@ export const useCreateWorkspace = () => {
   });
 };
 
-// A new workspace forked from one of the account's published sites.
+// A new workspace forked from one of the account's published sites. The
+// signal cancels it.
 export const useForkSite = () => {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (params: { siteId: string; onProgress?: (event: ForkSiteResponse) => void }) =>
-      workspaceFrom(forkSite(params.siteId), params.onProgress),
+    mutationFn: (params: { siteId: string; signal?: AbortSignal; onProgress?: (event: ForkSiteResponse) => void }) =>
+      workspaceFrom(forkSite(params.siteId, params.signal), params.onProgress),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all });
+    },
+    onError: (error, { signal }) => {
+      // A cancel that reached main as it was saving the workspace doesn't undo
+      // it: the list is asked again, to show it if it's there.
+      if (signal?.aborted) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all });
+        return;
+      }
+      // As a publish does: the stored token died, and main already dropped
+      // it; or publishing is off for this account. The Published list is
+      // asked again, to say so in place of its Fork buttons.
+      const code = error instanceof WorkspaceEventError ? error.code : null;
+      if (code === "SIGNED_OUT") queryClient.setQueryData(queryKeys.account, null);
+      if (code === "SIGNED_OUT" || code === "PUBLISH_DISABLED") {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.features });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.published.sites });
+      }
     },
   });
 };

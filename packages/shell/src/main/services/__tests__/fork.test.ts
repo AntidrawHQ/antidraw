@@ -75,11 +75,16 @@ const site = async () => {
   };
 };
 
-/** What's in a folder: each file's content, `-> target` for a link, `(exec)` after a file that can run. */
+/**
+ * What's in a folder: each file's content, `-> target` for a link, `(exec)`
+ * after a file that can run, and `(empty)` for a folder with nothing in it.
+ */
 const read = async (dir: string) => {
   const files: Record<string, string> = {};
   const walk = async (rel: string) => {
-    for (const entry of await fs.readdir(path.join(dir, rel), { withFileTypes: true })) {
+    const entries = await fs.readdir(path.join(dir, rel), { withFileTypes: true });
+    if (rel && entries.length === 0) files[`${rel}/`] = "(empty)";
+    for (const entry of entries) {
       const file = rel ? `${rel}/${entry.name}` : entry.name;
       const full = path.join(dir, file);
       if (entry.isDirectory()) await walk(file);
@@ -217,11 +222,66 @@ describe("checkoutSource", () => {
           fetch,
         }),
       ).rejects.toThrow(`the source has a file that can't be written: ${name}`);
-      expect(await read(path.join(work, "ws"))).toEqual({});
+      // Nothing written; clearing up the folder is forkSite's.
+      expect(await read(path.join(work, "ws"))).toEqual({ "source/": "(empty)" });
     }
 
-    // A link and a folder that are one name on a disk that ignores case: the
-    // folder's file must not land where the link points.
+    // Names that are one name on a disk that ignores case, as the Mac's does
+    // unless asked otherwise: none is written over another, and the fork
+    // says why. A disk that minds case has room for both.
+    const probe = await tmp();
+    await fs.writeFile(path.join(probe, "case"), "");
+    const caseless = await fs.access(path.join(probe, "CASE")).then(
+      () => true,
+      () => false,
+    );
+    const written = (dir: Promise<string>) =>
+      dir.then(
+        () => "both written",
+        (error: unknown) => (error instanceof ForkSourceError ? error.message : `not a ForkSourceError: ${error}`),
+      );
+    const clash = (name: string) => (caseless ? `the source has two files with one name: ${name}` : "both written");
+    const folder = await git.writeTree({
+      fs: nodeFs,
+      gitdir: repo.gitDir,
+      tree: [{ path: "x.ts", mode: "100644", oid: blob, type: "blob" }],
+    });
+    const other = await git.writeBlob({ fs: nodeFs, gitdir: repo.gitDir, blob: Buffer.from("other") });
+    expect({
+      fileThenFolder: await written(
+        checkout(
+          repo,
+          await commitTree([
+            { path: "B", mode: "100644", oid: blob, type: "blob" },
+            { path: "b", mode: "040000", oid: folder, type: "tree" },
+          ]),
+          1,
+        ),
+      ),
+      folderThenFile: await written(
+        checkout(
+          repo,
+          await commitTree([
+            { path: "C", mode: "040000", oid: folder, type: "tree" },
+            { path: "c", mode: "100644", oid: blob, type: "blob" },
+          ]),
+          1,
+        ),
+      ),
+      twoFiles: await written(
+        checkout(
+          repo,
+          await commitTree([
+            { path: "D", mode: "100644", oid: blob, type: "blob" },
+            { path: "d", mode: "100644", oid: other, type: "blob" },
+          ]),
+          1,
+        ),
+      ),
+    }).toEqual({ fileThenFolder: clash("b"), folderThenFile: clash("c"), twoFiles: clash("d") });
+
+    // A link and a folder: the folder's file must not land where the link
+    // points.
     const outside = await tmp();
     const link = await git.writeBlob({ fs: nodeFs, gitdir: repo.gitDir, blob: Buffer.from(outside) });
     const inside = await git.writeTree({
@@ -233,7 +293,7 @@ describe("checkoutSource", () => {
       { path: "A", mode: "120000", oid: link, type: "blob" },
       { path: "a", mode: "040000", oid: inside, type: "tree" },
     ]);
-    await checkout(repo, commit, 1).catch((error) => expect(error).toBeInstanceOf(ForkSourceError));
+    expect(await written(checkout(repo, commit, 1))).toBe(clash("A"));
     expect(await read(outside)).toEqual({});
   });
 });
@@ -579,6 +639,112 @@ describe("forkSite", () => {
           "requests": [
             "POST /api/sites/site-1/fork",
           ],
+        },
+      }
+    `);
+  });
+
+  it("stops where it is when cancelled, and leaves nothing behind", async () => {
+    const repo = await site();
+    const commit = await repo.commit({ "package.json": "{}" });
+    // What the fork waits on, held up until it's cancelled: a server or a git
+    // host that's stopped answering.
+    const stalled = (signal: AbortSignal) =>
+      new Promise<never>((_, reject) => {
+        if (signal.aborted) reject(signal.reason);
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    // Each fork is cancelled at one step, as Cancel would be, in its own folder.
+    const at = async (step: string, options: (cancel: AbortController) => Partial<ForkOptions<ForkedWorkspace>>) => {
+      const cancel = new AbortController();
+      const root = await tmp();
+      const saved: string[] = [];
+      const { events } = await fork({
+        answer: () => forkable(repo, commit),
+        signal: cancel.signal,
+        workspaceDir: path.join(root, step),
+        sourceDir: path.join(root, step, "source"),
+        save: async (workspace) => {
+          saved.push(workspace.name);
+          return workspace;
+        },
+        ...options(cancel),
+      });
+      return { events: events.map((event) => JSON.stringify(event)), saved, left: await fs.readdir(root) };
+    };
+    const git: string[] = [];
+    expect({
+      asking: await at("asking", (cancel) => ({
+        request: async (_pathname, init) => {
+          cancel.abort();
+          return stalled(init!.signal!);
+        },
+      })),
+      // Midway through the pack: the git host has gone quiet with the
+      // connection still open, so only the cancel ends the request.
+      fetching: await at("fetching", (cancel) => ({
+        fetch: async (input, init) => {
+          // As fetch does with a signal that's gone already.
+          init?.signal?.throwIfAborted();
+          const url = String(input);
+          git.push(`${init?.method ?? "GET"} ${url.replace(/^.*\.git/, "")} ${init?.signal === cancel.signal ? "cancellable" : "not cancellable"}`);
+          if (!url.endsWith("/git-upload-pack")) return fetch(input, init);
+          const signal = init!.signal!;
+          return new Response(
+            new ReadableStream({
+              start(body) {
+                body.enqueue(new TextEncoder().encode("0008NAK\n"));
+                signal.addEventListener("abort", () => body.error(signal.reason), { once: true });
+                // Cancel, once it's stuck.
+                setTimeout(() => cancel.abort(), 10);
+              },
+            }),
+            { headers: { "Content-Type": "application/x-git-upload-pack-result" } },
+          );
+        },
+      })),
+      installing: await at("installing", (cancel) => ({
+        async *npmInstall(_cwd, signal): AsyncGenerator<NpmOutput> {
+          yield { type: "stdout", data: "npm http fetch GET 200 react\n" };
+          cancel.abort();
+          // As runNpm does once npm is killed.
+          expect(signal?.aborted).toBe(true);
+          yield { type: "exit", code: null };
+        },
+      })),
+      git,
+    }).toMatchInlineSnapshot(`
+      {
+        "asking": {
+          "events": [
+            "{"type":"status","status":"FETCHING_SOURCE"}",
+            "{"type":"error","error":{"code":"CANCELLED","message":"The fork was cancelled."}}",
+          ],
+          "left": [],
+          "saved": [],
+        },
+        "fetching": {
+          "events": [
+            "{"type":"status","status":"FETCHING_SOURCE"}",
+            "{"type":"error","error":{"code":"CANCELLED","message":"The fork was cancelled."}}",
+          ],
+          "left": [],
+          "saved": [],
+        },
+        "git": [
+          "GET /info/refs?service=git-upload-pack cancellable",
+          "POST /git-upload-pack cancellable",
+        ],
+        "installing": {
+          "events": [
+            "{"type":"status","status":"FETCHING_SOURCE"}",
+            "{"type":"status","status":"INSTALLING_DEPENDENCIES"}",
+            "{"type":"npm","output":{"type":"stdout","data":"npm http fetch GET 200 react\\n"}}",
+            "{"type":"npm","output":{"type":"exit","code":null}}",
+            "{"type":"error","error":{"code":"CANCELLED","message":"The fork was cancelled."}}",
+          ],
+          "left": [],
+          "saved": [],
         },
       }
     `);

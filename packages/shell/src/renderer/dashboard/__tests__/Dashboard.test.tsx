@@ -1136,7 +1136,7 @@ it("forks a published site from its row or from the viewer, showing how it goes,
   // From its row. The click is the button's: the site isn't opened.
   fails = true;
   await click(forkOf("Paper Shaders"));
-  steps["Fork, from the row"] = { asked: api.forkSite.mock.calls.flat(), ...progress(), tabs: tabs() };
+  steps["Fork, from the row"] = { asked: api.forkSite.mock.calls.map(([siteId]) => siteId), ...progress(), tabs: tabs() };
   await next("fetched");
   steps["it fails"] = progress();
   fails = false;
@@ -1174,7 +1174,7 @@ it("forks a published site from its row or from the viewer, showing how it goes,
     ...screen(),
     viewer: !!document.querySelector("#viewer"),
     workspace: store.getState().activeWorkspaceId,
-    forks: api.forkSite.mock.calls.flat(),
+    forks: api.forkSite.mock.calls.map(([siteId]) => siteId),
   };
 
   expect(steps).toMatchInlineSnapshot(`
@@ -1185,7 +1185,7 @@ it("forks a published site from its row or from the viewer, showing how it goes,
         ],
         "failed": null,
         "log": [],
-        "said": "Pulling the source of v5…",
+        "said": "Pulling the source of its live version…",
         "tabs": [
           "● Dashboard",
         ],
@@ -1225,7 +1225,7 @@ it("forks a published site from its row or from the viewer, showing how it goes,
       "it fails": {
         "failed": "Couldn't fetch the site's source (503). Try again.",
         "log": [],
-        "said": "Pulling the source of v5 failed",
+        "said": "Pulling the source of its live version failed",
         "title": "Forking Paper Shaders",
       },
       "one that can't": {
@@ -1260,6 +1260,120 @@ it("forks a published site from its row or from the viewer, showing how it goes,
         "Paper Shaders: Fork",
         "Pricing page: Publish this site again to fork it",
       ],
+    }
+  `);
+});
+
+it("stops a fork under way with Cancel, until it's saving the workspace", async () => {
+  api.getFeatures.mockResolvedValue(ok({ publish: true }));
+  api.getAccount.mockResolvedValue(ok(ACCOUNT));
+  api.getPublishedSites.mockResolvedValue(ok(SITES));
+  const forked = workspace("w-fork", "Paper Shaders (fork)", 0, 0);
+  let saving: () => void = () => {};
+  // Main's side: the first fork stalls until cancelled, and ends as the
+  // event stream does when it's let go; the next one stops while saving.
+  api.forkSite.mockImplementation(async function* (_siteId: string, signal: AbortSignal) {
+    yield { type: "status", status: "FETCHING_SOURCE" };
+    if (api.forkSite.mock.calls.length === 1) {
+      await new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+    }
+    yield { type: "status", status: "SAVING_WORKSPACE" };
+    await new Promise<void>((resolve) => (saving = resolve));
+    listed = [forked, ...WORKSPACES];
+    yield { type: "done", workspace: forked };
+  });
+  const dialog = () => document.querySelector('[role="dialog"]');
+  const cancel = () => [...(dialog()?.querySelectorAll("button") ?? [])].find((b) => text(b) === "Cancel");
+  const said = () => ({
+    dialog: text(dialog()?.querySelector("h2")),
+    said: text(dialog()?.querySelector('[role="status"]')),
+    cancel: !!cancel(),
+  });
+  const store = await launch("");
+  const steps: Record<string, unknown> = {};
+
+  await click(section(/^Published/));
+  await click(button(/^Fork Paper Shaders$/));
+  steps["pulling"] = said();
+  await click(cancel()!);
+  const [, signal] = api.forkSite.mock.calls[0]!;
+  steps["cancelled"] = { ...said(), stopped: (signal as AbortSignal).aborted, tabs: tabs() };
+
+  await click(button(/^Fork Paper Shaders$/));
+  steps["forked again, saving"] = said();
+  await act(async () => saving());
+  await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 700))));
+  await settle();
+  steps["done"] = { ...said(), tabs: tabs(), workspace: store.getState().activeWorkspaceId };
+
+  expect(steps).toMatchInlineSnapshot(`
+    {
+      "cancelled": {
+        "cancel": false,
+        "dialog": null,
+        "said": null,
+        "stopped": true,
+        "tabs": [
+          "● Dashboard",
+        ],
+      },
+      "done": {
+        "cancel": false,
+        "dialog": null,
+        "said": null,
+        "tabs": [
+          "○ Dashboard",
+          "● Paper Shaders (fork)",
+        ],
+        "workspace": "w-fork",
+      },
+      "forked again, saving": {
+        "cancel": false,
+        "dialog": "Forking Paper Shaders",
+        "said": "Opening the workspace…",
+      },
+      "pulling": {
+        "cancel": true,
+        "dialog": "Forking Paper Shaders",
+        "said": "Pulling the source of its live version…",
+      },
+    }
+  `);
+});
+
+it("signs out with a fork that finds the user signed out, its dialog up over the list that says so", async () => {
+  api.getFeatures.mockResolvedValue(ok({ publish: true }));
+  api.getAccount.mockResolvedValue(ok(ACCOUNT));
+  api.getPublishedSites.mockResolvedValue(ok(SITES));
+  // Main's side: the server answered 401, so main dropped the token.
+  api.forkSite.mockImplementation(async function* () {
+    yield { type: "status", status: "FETCHING_SOURCE" };
+    api.getAccount.mockResolvedValue(ok(null));
+    api.getPublishedSites.mockResolvedValue(err(SIGNED_OUT));
+    yield { type: "error", error: { code: "SIGNED_OUT", message: "Sign in to fork this site." } };
+  });
+  const dialog = () => document.querySelector('[role="dialog"]');
+  await launch("");
+
+  await click(section(/^Published/));
+  const asked = api.getPublishedSites.mock.calls.length;
+  await click(button(/^Fork Paper Shaders$/));
+  await settle();
+  expect({
+    dialog: text(dialog()?.querySelector("h2")),
+    failed: text(dialog()?.querySelector('[role="alert"]')),
+    buttons: [...(dialog()?.querySelectorAll("button") ?? [])].map((b) => text(b) || b.getAttribute("aria-label")),
+    listAskedAgain: api.getPublishedSites.mock.calls.length > asked,
+    behind: (text(document.querySelector("main")) ?? "").includes("Sign in to see what you've published."),
+  }).toMatchInlineSnapshot(`
+    {
+      "behind": true,
+      "buttons": [
+        "Close",
+      ],
+      "dialog": "Forking Paper Shaders",
+      "failed": "Sign in to fork this site.",
+      "listAskedAgain": true,
     }
   `);
 });

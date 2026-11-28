@@ -24,12 +24,18 @@ export const spawnNpm = (
     env: getShimmedSpawnEnv(options.env),
   });
 
-export async function* runNpm(args: string[], cwd: string): AsyncGenerator<NpmOutput> {
+// An abort kills npm; its output then ends as a kill does, with an exit
+// whose code is null.
+export async function* runNpm(args: string[], cwd: string, signal?: AbortSignal): AsyncGenerator<NpmOutput> {
   try {
 
     const stream = new ReadableStream<NpmOutput>({
       start(controller) {
         const child = spawnNpm(args, cwd);
+        const kill = () => child.kill();
+        if (signal?.aborted) kill();
+        else signal?.addEventListener("abort", kill, { once: true });
+        child.on("close", () => signal?.removeEventListener("abort", kill));
 
         child.stdout?.on("data", (data: Buffer) => {
           controller.enqueue({ type: "stdout", data: data.toString() });
@@ -62,8 +68,8 @@ export async function* runNpm(args: string[], cwd: string): AsyncGenerator<NpmOu
 // --loglevel info makes npm stream per-request fetch lines and lifecycle
 // events (extract, postinstall scripts); without it, npm install is silent
 // until the final summary and the UI looks frozen
-export const npmInstall = (cwd: string) =>
-  runNpm(["install", "--loglevel", "info"], cwd);
+export const npmInstall = (cwd: string, signal?: AbortSignal) =>
+  runNpm(["install", "--loglevel", "info"], cwd, signal);
 
 export const npmCreate = (template: string, name: string, cwd: string) =>
   runNpm(["create", `${template}@latest`, name, "--yes", "--loglevel", "info"], cwd);

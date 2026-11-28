@@ -11,11 +11,17 @@ import { useSwitchWorkspace } from "@/renderer/lib/workspace-ops";
 // fork is the user's own copy: the site stays as it is, and publishing the
 // fork makes a new one.
 
-const steps = (site: PublishedSite): ProgressStep<ForkStatus>[] => [
-  { key: "FETCHING_SOURCE", label: `Pulling the source of v${site.version}` },
+// The live version, which is the one forked: not always the one in view,
+// when the site was published again since it was opened.
+const steps: ProgressStep<ForkStatus>[] = [
+  { key: "FETCHING_SOURCE", label: "Pulling the source of its live version" },
   { key: "INSTALLING_DEPENDENCIES", label: "Installing packages", streams: true },
   { key: "SAVING_WORKSPACE", label: "Opening the workspace" },
 ];
+
+// Failures another try won't get past: signed out, publishing off, the site
+// gone, or its live version without its source.
+const FINAL = new Set(["SIGNED_OUT", "PUBLISH_DISABLED", "SITE_NOT_FOUND", "NOT_FORKABLE"]);
 
 // A version published before its source was kept has none to fork.
 const NOT_FORKABLE = "Publish this site again to fork it";
@@ -62,7 +68,7 @@ export const useFork = (): { fork: (site: PublishedSite) => void; dialog: ReactN
   // The dialog's words outlive `site`, which goes as it closes.
   const [shown, setShown] = useState<PublishedSite | null>(null);
   const switchWorkspace = useSwitchWorkspace();
-  const { status, errorMessage, npmLines, failedStep, isCreating, start, reset } = useForkSiteFlow({
+  const { status, errorMessage, errorCode, npmLines, failedStep, isCreating, start, reset, cancel } = useForkSiteFlow({
     onSuccess: (workspace) => {
       // Brief moment so the last step is seen done before it closes.
       setTimeout(() => {
@@ -81,11 +87,19 @@ export const useFork = (): { fork: (site: PublishedSite) => void; dialog: ReactN
     start(next.id);
   };
 
-  // Only once it has failed: there's no stopping a fork under way.
+  // Only once it has failed: one under way is stopped with Cancel.
   const close = () => {
     if (isCreating || status === "done") return;
     setSite(null);
     reset();
+  };
+
+  // Main stops it and removes what it had made. By the time the workspace is
+  // being saved it's as good as made, so there's nothing left to cancel.
+  const cancellable = isCreating && status !== "SAVING_WORKSPACE";
+  const stop = () => {
+    cancel();
+    setSite(null);
   };
 
   const dialog = (
@@ -109,14 +123,21 @@ export const useFork = (): { fork: (site: PublishedSite) => void; dialog: ReactN
         </DialogHeader>
         {shown && (
           <CreateWorkspaceProgress
-            steps={steps(shown)}
+            steps={steps}
             status={status}
             lines={npmLines}
             failedStep={failedStep}
             errorMessage={errorMessage}
-            onRetry={() => start(shown.id)}
+            onRetry={errorCode && FINAL.has(errorCode) ? undefined : () => start(shown.id)}
             doneLabel="Workspace forked"
           />
+        )}
+        {cancellable && (
+          <div className="flex justify-end">
+            <Btn small kind="outline" onClick={stop}>
+              Cancel
+            </Btn>
+          </div>
         )}
       </DialogContent>
     </Dialog>

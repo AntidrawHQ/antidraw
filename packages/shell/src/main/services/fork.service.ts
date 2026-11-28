@@ -1,6 +1,5 @@
 import { net } from "electron";
-import fs from "node:fs/promises";
-import { getWorkspacePath, getWorkspaceSourcePath, getWorkspacesPath } from "@/main/api/init";
+import { getWorkspacePath, getWorkspaceSourcePath } from "@/main/api/init";
 import { workspaces, type Workspace } from "@/main/api/models/workspace.model";
 import { saveFrameLayouts } from "@/main/api/services/frame-layout.service";
 import { db } from "@/main/db";
@@ -13,11 +12,14 @@ import { forkSite, type ForkEvent } from "@/main/services/fork";
 
 export type ForkWorkspaceEvent = ForkEvent<Workspace>;
 
-export async function* forkPublishedSite(siteId: string): AsyncGenerator<ForkWorkspaceEvent> {
+/** The signal cancels it (fork.ts's `signal`). */
+export async function* forkPublishedSite(siteId: string, signal?: AbortSignal): AsyncGenerator<ForkWorkspaceEvent> {
   const id = crypto.randomUUID();
-  await fs.mkdir(getWorkspacesPath(), { recursive: true });
+  // forkSite makes the workspace's folder, and the folder of workspaces with
+  // it, where a failure is one it says.
   yield* forkSite<Workspace>({
     siteId,
+    signal,
     workspaceDir: getWorkspacePath(id),
     sourceDir: getWorkspaceSourcePath(id),
     // cloudFetch as fetch, as a publish has it: signed out is the server's

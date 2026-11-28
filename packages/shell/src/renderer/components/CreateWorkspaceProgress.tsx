@@ -97,7 +97,8 @@ export const CreateWorkspaceProgress = <Step extends string>({
   lines: string[];
   failedStep: Step | null;
   errorMessage: string | null;
-  onRetry: () => void;
+  /** Left out when trying again wouldn't help: there's then no Try again. */
+  onRetry?: () => void;
   steps?: ProgressStep<Step>[];
   /** Read out once it's done. */
   doneLabel?: string;
@@ -210,13 +211,15 @@ export const CreateWorkspaceProgress = <Step extends string>({
                 >
                   {errorMessage}
                 </span>
-                <button
-                  type="button"
-                  onClick={onRetry}
-                  className="shrink-0 rounded-md border border-white/[0.08] bg-white/[0.06] px-2.5 py-1 text-[12px] font-medium text-[#e0e0e0] transition-colors hover:bg-white/[0.1]"
-                >
-                  Try again
-                </button>
+                {onRetry && (
+                  <button
+                    type="button"
+                    onClick={onRetry}
+                    className="shrink-0 rounded-md border border-white/[0.08] bg-white/[0.06] px-2.5 py-1 text-[12px] font-medium text-[#e0e0e0] transition-colors hover:bg-white/[0.1]"
+                  >
+                    Try again
+                  </button>
+                )}
               </div>
             ) : null}
           </div>
