@@ -61,6 +61,15 @@ export const Titlebar = ({ tabs = true }: { tabs?: boolean }) => {
   const [lastWorkspace, setLastWorkspace] = useState(activeWorkspace);
   if (activeWorkspace && activeWorkspace !== lastWorkspace) setLastWorkspace(activeWorkspace);
   const closeWorkspace = useCloseWorkspace();
+  // Back to the canvas, and its keys with it: they're the canvas's only while
+  // nothing else has focus (renderer/inspector, renderer/comments), and a
+  // click or Enter leaves it on the tab.
+  const showWorkspace = () => {
+    if (document.activeElement instanceof HTMLElement && document.activeElement.closest("[role=tablist]")) {
+      document.activeElement.blur();
+    }
+    setDashboardShown(false);
+  };
   const { pendingVersion, showReminder } = useUpdatePrompt();
   const clearDismissal = useUpdateStore((state) => state.clearDismissal);
 
@@ -82,7 +91,7 @@ export const Titlebar = ({ tabs = true }: { tabs?: boolean }) => {
             <span>Dashboard</span>
           </Tab>
           {activeWorkspace && (
-            <Tab on={!dashboardShown} onSelect={() => setDashboardShown(false)} className="min-w-0">
+            <Tab on={!dashboardShown} onSelect={showWorkspace} className="min-w-0">
               {/* Its icon, as the switcher had it; gone in a narrow window,
                   for the close button's room. */}
               <span className="max-[640px]:hidden">

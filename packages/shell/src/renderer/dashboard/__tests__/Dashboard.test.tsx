@@ -22,6 +22,13 @@ const api = vi.hoisted(() => ({
   setPreference: vi.fn(),
 }));
 vi.mock("@/renderer/lib/api", () => api);
+// A thumbnail capture the test holds open, as one waiting on main's
+// capturePage would be; with none held, the real flush.
+const thumbnail = vi.hoisted(() => ({ held: null as Promise<void> | null }));
+vi.mock("@/renderer/lib/thumbnail", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/renderer/lib/thumbnail")>();
+  return { ...actual, flushThumbnail: () => thumbnail.held ?? actual.flushThumbnail() };
+});
 // The titlebar's own, each with a test of its own.
 vi.mock("@/renderer/components/McpSetup", () => ({ McpSetup: () => <span>MCP</span> }));
 vi.mock("@/renderer/components/PublishButton", () => ({ PublishButton: () => <span>Publish</span> }));
@@ -78,6 +85,7 @@ beforeEach(() => {
   api.setPreference.mockResolvedValue(ok(true));
 });
 afterEach(async () => {
+  thumbnail.held = null;
   act(() => root?.unmount());
   root = undefined;
   document.body.innerHTML = "";
@@ -128,6 +136,10 @@ const tabs = () =>
 const rows = () => [...document.querySelectorAll('main [role="button"]')];
 const names = () => rows().map((row) => text(row.querySelector(".truncate")));
 const row = (name: string) => rows().find((r) => text(r.querySelector(".truncate")) === name)!;
+// The selected row's ring: the class itself, not focus-visible:ring-1, which
+// every row has.
+const selectedRows = () =>
+  rows().filter((r) => r.classList.contains("ring-1")).map((r) => text(r.querySelector(".truncate")));
 const button = (name: RegExp) =>
   [...document.querySelectorAll("button")].find((b) => name.test(text(b) ?? "") || name.test(b.getAttribute("aria-label") ?? ""))!;
 const click = async (el: Element) => {
@@ -262,7 +274,7 @@ it("opens a workspace in the one tab on a double click, in place of the one ther
   steps["Dashboard tab"] = { ...screen(), open: store.getState().activeWorkspaceId };
 
   await click(row("Paper Shaders"));
-  steps["a click selects"] = { ...screen(), selected: row("Paper Shaders").className.includes("ring-1") };
+  steps["a click selects"] = { ...screen(), selected: selectedRows() };
 
   await fire(row("Paper Shaders"), "dblclick");
   steps["a double click opens"] = {
@@ -289,7 +301,9 @@ it("opens a workspace in the one tab on a double click, in place of the one ther
       },
       "a click selects": {
         "dashboard": true,
-        "selected": true,
+        "selected": [
+          "Paper Shaders",
+        ],
         "tabs": [
           "● Dashboard",
           "○ Twitter Videos",
@@ -358,6 +372,57 @@ it("closes the tab onto the dashboard, stopping its dev server", async () => {
       "workspaceControls": false,
     }
   `);
+});
+
+it("closes only the workspace asked to close: one opened while the close waits on its thumbnail stays", async () => {
+  const store = await launch("w-videos");
+  let capture = () => {};
+  thumbnail.held = new Promise((resolve) => (capture = resolve));
+  await click(button(/^Close tab$/));
+  // An agent's open_workspace, meanwhile.
+  act(() => store.setState({ activeWorkspaceId: "w-shaders", dashboardShown: false }));
+  await act(async () => capture());
+  await settle();
+  expect({
+    ...screen(),
+    open: store.getState().activeWorkspaceId,
+    stopped: api.stopDevServer.mock.calls.flat(),
+    saved: saved(),
+  }).toMatchInlineSnapshot(`
+    {
+      "dashboard": false,
+      "open": "w-shaders",
+      "saved": [],
+      "stopped": [],
+      "tabs": [
+        "○ Dashboard",
+        "● Paper Shaders",
+      ],
+      "workspaceControls": true,
+    }
+  `);
+});
+
+it("leaves the canvas its keys on the way back from the dashboard: the tab clicked doesn't keep focus", async () => {
+  await launch("w-videos");
+  const [dashboardTab, workspaceTab] = document.querySelectorAll<HTMLElement>('[role="tab"]');
+  // As a click does in Chromium; jsdom's click() doesn't focus.
+  dashboardTab!.focus();
+  await click(dashboardTab!);
+  workspaceTab!.focus();
+  await click(workspaceTab!);
+  expect({ ...screen(), focus: document.activeElement === document.body ? "body" : text(document.activeElement) })
+    .toMatchInlineSnapshot(`
+      {
+        "dashboard": false,
+        "focus": "body",
+        "tabs": [
+          "○ Dashboard",
+          "● Twitter Videos",
+        ],
+        "workspaceControls": true,
+      }
+    `);
 });
 
 // Delete is held back for now (Dashboard.tsx).

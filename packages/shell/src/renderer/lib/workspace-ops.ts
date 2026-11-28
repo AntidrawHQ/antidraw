@@ -143,14 +143,17 @@ export const useCloseWorkspace = () => {
   const stopDevServer = useStopDevServer();
 
   return async () => {
-    if (!useWorkspaceStore.getState().activeWorkspaceId) return;
+    const closing = useWorkspaceStore.getState().activeWorkspaceId;
+    if (!closing) return;
 
     await flushLeftCanvas();
 
-    // Read after the wait: the tab may have changed, or been closed, meanwhile.
+    // Read after the wait: the tab may have been closed meanwhile, or now
+    // hold another workspace (an agent's open_workspace), which isn't the
+    // one asked to close.
     const { activeWorkspaceId, setActiveWorkspaceId, setActiveConversationId, setDashboardShown } =
       useWorkspaceStore.getState();
-    if (!activeWorkspaceId) return;
+    if (activeWorkspaceId !== closing) return;
 
     setDashboardShown(true);
     setActiveWorkspaceId(null);

@@ -54,8 +54,10 @@ export const useOutsideAgent = () => {
     const stops = [
       window.electronAPI?.onOpenWorkspace?.((id) => void latest.current(id).catch(console.error)),
       // Shown to the user: off the dashboard, onto the workspace it's in.
+      // None, with the tab just closed: main checked a mirror sent before.
       window.electronAPI?.onFocusComponent?.((name) => {
-        const { setFocusComponentName, setDashboardShown } = useWorkspaceStore.getState();
+        const { activeWorkspaceId, setFocusComponentName, setDashboardShown } = useWorkspaceStore.getState();
+        if (!activeWorkspaceId) return;
         setDashboardShown(false);
         setFocusComponentName(name);
       }),
