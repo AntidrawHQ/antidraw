@@ -278,7 +278,23 @@ describe("checkoutSource", () => {
           1,
         ),
       ),
-    }).toEqual({ fileThenFolder: clash("b"), folderThenFile: clash("c"), twoFiles: clash("d") });
+      // Nothing written over, but one folder where the source has two.
+      twoFolders: await written(
+        checkout(
+          repo,
+          await commitTree([
+            { path: "E", mode: "040000", oid: folder, type: "tree" },
+            { path: "e", mode: "040000", oid: folder, type: "tree" },
+          ]),
+          1,
+        ),
+      ),
+    }).toEqual({
+      fileThenFolder: clash("b"),
+      folderThenFile: clash("c"),
+      twoFiles: clash("d"),
+      twoFolders: clash("e"),
+    });
 
     // A link and a folder: the folder's file must not land where the link
     // points.
@@ -673,6 +689,7 @@ describe("forkSite", () => {
       return { events: events.map((event) => JSON.stringify(event)), saved, left: await fs.readdir(root) };
     };
     const git: string[] = [];
+    const fetched: string[] = [];
     expect({
       asking: await at("asking", (cancel) => ({
         request: async (_pathname, init) => {
@@ -684,10 +701,11 @@ describe("forkSite", () => {
       // connection still open, so only the cancel ends the request.
       fetching: await at("fetching", (cancel) => ({
         fetch: async (input, init) => {
+          const url = String(input);
+          // Each request git tries, even one after the cancel.
+          git.push(`${init?.method ?? "GET"} ${url.replace(/^.*\.git/, "")} ${init?.signal === cancel.signal ? "cancellable" : "not cancellable"}`);
           // As fetch does with a signal that's gone already.
           init?.signal?.throwIfAborted();
-          const url = String(input);
-          git.push(`${init?.method ?? "GET"} ${url.replace(/^.*\.git/, "")} ${init?.signal === cancel.signal ? "cancellable" : "not cancellable"}`);
           if (!url.endsWith("/git-upload-pack")) return fetch(input, init);
           const signal = init!.signal!;
           return new Response(
@@ -703,13 +721,36 @@ describe("forkSite", () => {
           );
         },
       })),
+      // Cancelled just as git's answer ends, whole: git says nothing of it,
+      // and it's the fork that has to see it, not fetch again.
+      fetched: await at("fetched", (cancel) => ({
+        fetch: async (input, init) => {
+          const url = String(input);
+          fetched.push(`${init?.method ?? "GET"} ${url.replace(/^.*\.git/, "")}`);
+          init?.signal?.throwIfAborted();
+          if (!url.endsWith("/git-upload-pack")) return fetch(input, init);
+          cancel.abort();
+          return new Response("0008NAK\n0000", {
+            headers: { "Content-Type": "application/x-git-upload-pack-result" },
+          });
+        },
+      })),
+      fetchedAsked: fetched,
       installing: await at("installing", (cancel) => ({
         async *npmInstall(_cwd, signal): AsyncGenerator<NpmOutput> {
           yield { type: "stdout", data: "npm http fetch GET 200 react\n" };
           cancel.abort();
-          // As runNpm does once npm is killed.
           expect(signal?.aborted).toBe(true);
+          // As runNpm does once npm is stopped.
           yield { type: "exit", code: null };
+        },
+      })),
+      // Cancelled as npm was finishing: it's done, but the fork still isn't saved.
+      installed: await at("installed", (cancel) => ({
+        async *npmInstall(): AsyncGenerator<NpmOutput> {
+          yield { type: "stdout", data: "added 1 package\n" };
+          cancel.abort();
+          yield { type: "exit", code: 0 };
         },
       })),
       git,
@@ -723,6 +764,18 @@ describe("forkSite", () => {
           "left": [],
           "saved": [],
         },
+        "fetched": {
+          "events": [
+            "{"type":"status","status":"FETCHING_SOURCE"}",
+            "{"type":"error","error":{"code":"CANCELLED","message":"The fork was cancelled."}}",
+          ],
+          "left": [],
+          "saved": [],
+        },
+        "fetchedAsked": [
+          "GET /info/refs?service=git-upload-pack",
+          "POST /git-upload-pack",
+        ],
         "fetching": {
           "events": [
             "{"type":"status","status":"FETCHING_SOURCE"}",
@@ -735,6 +788,17 @@ describe("forkSite", () => {
           "GET /info/refs?service=git-upload-pack cancellable",
           "POST /git-upload-pack cancellable",
         ],
+        "installed": {
+          "events": [
+            "{"type":"status","status":"FETCHING_SOURCE"}",
+            "{"type":"status","status":"INSTALLING_DEPENDENCIES"}",
+            "{"type":"npm","output":{"type":"stdout","data":"added 1 package\\n"}}",
+            "{"type":"npm","output":{"type":"exit","code":0}}",
+            "{"type":"error","error":{"code":"CANCELLED","message":"The fork was cancelled."}}",
+          ],
+          "left": [],
+          "saved": [],
+        },
         "installing": {
           "events": [
             "{"type":"status","status":"FETCHING_SOURCE"}",

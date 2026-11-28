@@ -1350,6 +1350,9 @@ it("signs out with a fork that finds the user signed out, its dialog up over the
     yield { type: "status", status: "FETCHING_SOURCE" };
     api.getAccount.mockResolvedValue(ok(null));
     api.getPublishedSites.mockResolvedValue(err(SIGNED_OUT));
+    // Signed out, the server can say Publish is off: the Published section
+    // goes, and the dialog mustn't go with it.
+    api.getFeatures.mockResolvedValue(ok({ publish: false }));
     yield { type: "error", error: { code: "SIGNED_OUT", message: "Sign in to fork this site." } };
   });
   const dialog = () => document.querySelector('[role="dialog"]');
@@ -1357,6 +1360,7 @@ it("signs out with a fork that finds the user signed out, its dialog up over the
 
   await click(section(/^Published/));
   const asked = api.getPublishedSites.mock.calls.length;
+  const askedFeatures = api.getFeatures.mock.calls.length;
   await click(button(/^Fork Paper Shaders$/));
   await settle();
   expect({
@@ -1364,16 +1368,20 @@ it("signs out with a fork that finds the user signed out, its dialog up over the
     failed: text(dialog()?.querySelector('[role="alert"]')),
     buttons: [...(dialog()?.querySelectorAll("button") ?? [])].map((b) => text(b) || b.getAttribute("aria-label")),
     listAskedAgain: api.getPublishedSites.mock.calls.length > asked,
-    behind: (text(document.querySelector("main")) ?? "").includes("Sign in to see what you've published."),
+    featuresAskedAgain: api.getFeatures.mock.calls.length > askedFeatures,
+    sections: [...document.querySelectorAll('main [role="tab"]')].map(text),
   }).toMatchInlineSnapshot(`
     {
-      "behind": true,
       "buttons": [
         "Close",
       ],
       "dialog": "Forking Paper Shaders",
       "failed": "Sign in to fork this site.",
+      "featuresAskedAgain": true,
       "listAskedAgain": true,
+      "sections": [
+        "Local3",
+      ],
     }
   `);
 });

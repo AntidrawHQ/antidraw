@@ -100,12 +100,16 @@ export const useForkSite = () => {
         return;
       }
       // As a publish does: the stored token died, and main already dropped
-      // it; or publishing is off for this account. The Published list is
-      // asked again, to say so in place of its Fork buttons.
+      // it; or publishing is off for this account.
       const code = error instanceof WorkspaceEventError ? error.code : null;
       if (code === "SIGNED_OUT") queryClient.setQueryData(queryKeys.account, null);
       if (code === "SIGNED_OUT" || code === "PUBLISH_DISABLED") {
         void queryClient.invalidateQueries({ queryKey: queryKeys.features });
+      }
+      // The Published list is out of date, and asked again, to show what's
+      // so in place of a Fork that can't work: the user signed out, the
+      // site gone, or its live version one with no source.
+      if (code === "SIGNED_OUT" || code === "PUBLISH_DISABLED" || code === "SITE_NOT_FOUND" || code === "NOT_FORKABLE") {
         void queryClient.invalidateQueries({ queryKey: queryKeys.published.sites });
       }
     },

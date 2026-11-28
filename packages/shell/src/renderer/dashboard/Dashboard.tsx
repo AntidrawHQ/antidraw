@@ -148,20 +148,8 @@ const Notice = ({ children, action }: { children: React.ReactNode; action?: Reac
   </div>
 );
 
-// The Published section: the account's sites, or why there's no list. A
-// fork's dialog stays up whichever it is: the list can go from under it, as a
-// fork that finds the user signed out makes it.
-const Published = ({ query }: { query: string }) => {
-  const { fork, dialog } = useFork();
-  return (
-    <>
-      <PublishedSites query={query} onFork={fork} />
-      {dialog}
-    </>
-  );
-};
-
-const PublishedSites = ({ query, onFork }: { query: string; onFork: (site: PublishedSite) => void }) => {
+// The Published section: the account's sites, or why there's no list.
+const Published = ({ query, onFork }: { query: string; onFork: (site: PublishedSite) => void }) => {
   const { data: sites, error, isPending, refetch, isFetching } = usePublishedSites();
   const openPublished = useOpenPublished();
   const view = useDashboardStore((s) => s.view);
@@ -234,6 +222,10 @@ export const Dashboard = () => {
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  // A fork's dialog is the dashboard's, not the Published section's: what
+  // the fork finds can take the section away (signed out, or publishing off
+  // for the account), and the dialog has to stay to say so.
+  const { fork, dialog: forkDialog } = useFork();
   // Delete is held back for now; the dialog below is ready for it.
   // const [deleting, setDeleting] = useState<WorkspaceWithThumbnail | null>(null);
 
@@ -290,7 +282,7 @@ export const Dashboard = () => {
           {/* Not a stop for Tab itself: its rows are. */}
           <Tabs.Content value={section} tabIndex={-1} className={cn(COLUMN, "pb-16 outline-none")} onClick={deselect}>
             {section === "published" ? (
-              <Published query={query} />
+              <Published query={query} onFork={fork} />
             ) : items.length === 0 ? (
               <Notice>{q ? `Nothing matches “${query}”.` : "No workspaces yet."}</Notice>
             ) : view === "grid" ? (
@@ -314,6 +306,7 @@ export const Dashboard = () => {
         </div>
 
         <CreateWorkspaceDialog open={creating} onOpenChange={setCreating} />
+        {forkDialog}
         {/* <DeleteWorkspaceDialog workspace={deleting} onClose={() => setDeleting(null)} /> */}
       </main>
     </Tabs.Root>

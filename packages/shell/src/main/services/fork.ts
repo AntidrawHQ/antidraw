@@ -266,7 +266,9 @@ export const checkoutSource = async ({
       if (!safeName(entry.path)) throw new ForkSourceError(`the source has a file that can't be written: ${rel}${entry.path}`);
       const file = path.join(dir, rel, entry.path);
       if (entry.type === "tree") {
-        await fs.mkdir(file, { recursive: true }).catch(clash(file));
+        // Not recursive: its parent is there already, so anything at its
+        // name is one of the source's, under another case.
+        await fs.mkdir(file).catch(clash(file));
         await write(entry.oid, `${rel}${entry.path}/`);
         continue;
       }
