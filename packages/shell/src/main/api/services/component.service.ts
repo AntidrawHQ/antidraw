@@ -98,6 +98,143 @@ export const getComponentSource = async (
   }
 };
 
+// A component's file, or null for a name that would leave the components
+// directory (the routes validate names; this holds whatever the caller passed).
+const componentPath = (workspaceId: string, name: string) => {
+  const dir = getComponentsDir(workspaceId);
+  const filePath = path.resolve(dir, `${name}.tsx`);
+  return path.dirname(filePath) === dir ? filePath : null;
+};
+
+export type NewComponent = { name: string; source: string };
+
+// New frames, from the canvas (a paste, a duplicate, an undone delete): all of
+// them or none. A name already taken is refused, never overwritten. The
+// watcher puts them on the canvas as for any other new file.
+export const createComponents = async (workspaceId: string, components: NewComponent[]) => {
+  // macOS's file system ignores case: Card and card are one file.
+  const names = components.map((c) => c.name.toLowerCase());
+  if (new Set(names).size !== names.length) {
+    return err({ status: 400 as const, code: "DUPLICATE_NAME", message: "Two of the new components have the same name" });
+  }
+  const paths = components.map((c) => componentPath(workspaceId, c.name));
+  if (paths.some((p) => p === null)) {
+    return err({ status: 400 as const, code: "INVALID_NAME", message: "Invalid component name" });
+  }
+
+  try {
+    await fs.mkdir(getComponentsDir(workspaceId), { recursive: true });
+    const existing = new Set(
+      (await fs.readdir(getComponentsDir(workspaceId))).map((f) => f.toLowerCase()),
+    );
+    const taken = components.find((c) => existing.has(`${c.name}.tsx`.toLowerCase()));
+    if (taken) {
+      return err({ status: 409 as const, code: "EXISTS", message: `${taken.name} is already on the canvas` });
+    }
+
+    const written: string[] = [];
+    try {
+      for (const [i, component] of components.entries()) {
+        // wx: a file that appeared since the check above is still never replaced.
+        await fs.writeFile(paths[i]!, component.source, { encoding: "utf-8", flag: "wx" });
+        written.push(paths[i]!);
+      }
+    } catch (e: any) {
+      // The one that failed may be there too, part written: wx makes the file
+      // before it writes it. Not when it was there already (EEXIST): that
+      // one isn't ours.
+      const partial = e?.code === "EEXIST" ? [] : [paths[written.length]!];
+      await Promise.all([...written, ...partial].map((p) => fs.rm(p, { force: true })));
+      throw e;
+    }
+    return ok(components.map((c) => c.name));
+  } catch (e: any) {
+    if (e?.code === "EEXIST") {
+      return err({ status: 409 as const, code: "EXISTS", message: "A component with that name is already on the canvas" });
+    }
+    return err({ status: 500 as const, code: "FS_ERROR", message: "Failed to create components" });
+  }
+};
+
+// The OS trash, so a frame deleted on the canvas can still be had back after
+// the app's own undo is gone (a restart). Electron's, loaded only when used.
+let trashItem = async (filePath: string) => {
+  const { shell } = await import("electron");
+  await shell.trashItem(filePath);
+};
+export const setTrashItemForTests = (fn: typeof trashItem) => {
+  trashItem = fn;
+};
+
+export type DeletedComponent = { name: string; source: string };
+
+// Frames deleted from the canvas: each file read (for the canvas's undo) and
+// moved to the trash. `expected` is each one's source as the canvas last
+// wrote or read it: one that differs (the agent edited it since) is refused,
+// and nothing is deleted. A file the trash refuses (or one edited while the
+// ones before it went, when `expected` says what it was) is left, and listed
+// in `failed`; the rest are still deleted. (A list, not an object by name: a
+// frame can be named __proto__.)
+export const deleteComponents = async (
+  workspaceId: string,
+  names: string[],
+  expected?: { name: string; source: string }[],
+) => {
+  const want = new Map((expected ?? []).map((e) => [e.name, e.source]));
+  const paths = names.map((name) => componentPath(workspaceId, name));
+  if (paths.some((p) => p === null)) {
+    return err({ status: 400 as const, code: "INVALID_NAME", message: "Invalid component name" });
+  }
+
+  // A file that's gone already (the agent's doing) is `missing`, and the rest
+  // still go: only with none of them there is there nothing to delete.
+  const sources = new Map<string, string>();
+  const missing: string[] = [];
+  for (const [i, name] of names.entries()) {
+    try {
+      sources.set(name, await fs.readFile(paths[i]!, "utf-8"));
+    } catch (e: any) {
+      if (e?.code !== "ENOENT") {
+        return err({ status: 500 as const, code: "FS_ERROR", message: "Failed to read components" });
+      }
+      missing.push(name);
+      continue;
+    }
+    if (want.has(name) && want.get(name) !== sources.get(name)) {
+      return err({ status: 409 as const, code: "CHANGED", message: `${name} has changed since` });
+    }
+  }
+  if (sources.size === 0) {
+    return err({ status: 404 as const, code: "NOT_FOUND", message: `${names.join(", ")} isn't on the canvas` });
+  }
+
+  const deleted: DeletedComponent[] = [];
+  const failed: string[] = [];
+  for (const [i, name] of names.entries()) {
+    if (!sources.has(name)) continue;
+    try {
+      // Read again, as it goes: trashing the ones before it took a while, and
+      // an edit made meanwhile is the source an undo brings back, or, with
+      // `expected`, a file to leave.
+      const source = await fs.readFile(paths[i]!, "utf-8");
+      if (want.has(name) && want.get(name) !== source) {
+        failed.push(name);
+        continue;
+      }
+      await trashItem(paths[i]!);
+      deleted.push({ name, source });
+    } catch (e: any) {
+      if (e?.code === "ENOENT") {
+        missing.push(name);
+        continue;
+      }
+      console.error(`[deleteComponents] couldn't trash ${name}`, e);
+      failed.push(name);
+    }
+  }
+  return ok({ deleted, failed, missing });
+};
+
 export const startComponentWatcher = async (workspaceId: string) => {
   if (componentWatchers.has(workspaceId)) {
     return;

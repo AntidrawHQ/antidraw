@@ -12,6 +12,7 @@ export const RENDERER_EVENTS = [
   "frame_copied",
   "frame_opened_in_window",
   "frame_refreshed",
+  "canvas_frames_edited",
   "canvas_tool_selected",
   "element_tagged",
   "panel_toggled",

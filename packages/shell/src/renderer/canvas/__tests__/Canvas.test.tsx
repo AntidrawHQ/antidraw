@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
-import { act, StrictMode } from "react";
+import { act, StrictMode, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { ReactFlowProvider } from "@xyflow/react";
 import { afterEach, beforeAll, expect, it, vi } from "vitest";
-import type { FrameLayer, FrameLayout } from "../Canvas";
+import type { CanvasControls, FrameLayer, FrameLayout } from "../Canvas";
 
 // The shared canvas in jsdom, as the shell and the share page render it: what
 // each frame loads, which messages may size a frame, and where layout changes go.
@@ -45,24 +45,32 @@ async function renderCanvas(
     components = [{ name: "Card" }, { name: "Hero Card" }],
     savedLayouts = [{ componentName: "Card", x: 10, y: 20, width: 300, height: 200 }],
     strict = false,
-  }: { components?: { name: string }[]; savedLayouts?: FrameLayout[]; strict?: boolean } = {},
+    children,
+  }: {
+    components?: { name: string }[];
+    savedLayouts?: FrameLayout[];
+    strict?: boolean;
+    children?: ReactNode;
+  } = {},
 ) {
   const { Canvas } = await import("../Canvas");
   const container = document.body.appendChild(document.createElement("div"));
   const Mode = strict ? StrictMode : "div";
-  const render = (onChange: typeof onLayoutsChange, list = components) =>
+  const render = (onChange: typeof onLayoutsChange, list = components, layouts = savedLayouts) =>
     root!.render(
       <Mode>
         <ReactFlowProvider>
           <div style={{ width: 1200, height: 800 }}>
             <Canvas
               components={list}
-              savedLayouts={savedLayouts}
+              savedLayouts={layouts}
               frameUrl={frameUrl}
               onLayoutsChange={onChange}
               onFullscreen={() => {}}
               frameLayer={frameLayer}
-            />
+            >
+              {children}
+            </Canvas>
           </div>
         </ReactFlowProvider>
       </Mode>,
@@ -74,7 +82,9 @@ async function renderCanvas(
     addComponents: (more: { name: string }[]) =>
       act(() => render(onLayoutsChange, [...components, ...more])),
     // The host's list now, as after a component's file is added or deleted.
-    setComponents: (list: { name: string }[]) => act(() => render(onLayoutsChange, list)),
+    // And where its frames are saved to go, when the host has more to say.
+    setComponents: (list: { name: string }[], layouts?: FrameLayout[]) =>
+      act(() => render(onLayoutsChange, list, layouts)),
   };
 }
 
@@ -342,4 +352,247 @@ it("draws a host's layer over each frame, handing it the frame's iframe", async 
       },
     ]
   `);
+});
+
+// The canvas's controls, for a host that edits it, caught from inside it.
+async function withControls(options: Parameters<typeof renderCanvas>[2] = {}, onLayoutsChange?: (layouts: FrameLayout[]) => void) {
+  const { useCanvasControls } = await import("../Canvas");
+  const caught: { controls?: CanvasControls } = {};
+  const Catch = () => {
+    caught.controls = useCanvasControls();
+    return null;
+  };
+  const canvas = await renderCanvas(onLayoutsChange, undefined, { ...options, children: <Catch /> });
+  return { canvas, controls: caught.controls! };
+}
+
+const pressOn = (id: string, key: string) =>
+  act(async () => {
+    const node = document.querySelector<HTMLElement>(`.react-flow__node[data-id="${id}"]`)!;
+    node.focus();
+    node.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+  });
+
+const CARD = { componentName: "Card", x: 10, y: 20, width: 300, height: 200 };
+const CARD_COPY = { componentName: "CardCopy", x: 48, y: 640, width: 300, height: 200 };
+
+it("puts a frame that arrives where it's saved to go, and lines the rest up, leaving the others be", async () => {
+  const canvas = await renderCanvas();
+  const first = [{ name: "Card" }, { name: "Hero Card" }];
+  // A host's paste: the frame's place, then its component.
+  await canvas.setComponents(first, [CARD, CARD_COPY]);
+  await canvas.setComponents([...first, { name: "CardCopy" }, { name: "Footer" }], [CARD, CARD_COPY]);
+  const placed = { positions: positions(), sizes: frames().map((f) => `${f.node}: ${f.size}`) };
+  // Gone, its place forgotten, and back (the agent wrote it again): lined up
+  // like any new frame.
+  await canvas.setComponents([...first, { name: "Footer" }], [CARD]);
+  await canvas.setComponents([...first, { name: "Footer" }, { name: "CardCopy" }], [CARD]);
+  expect({ placed, again: positions()["CardCopy-1"] }).toMatchInlineSnapshot(`
+    {
+      "again": "translate(1410px,20px)",
+      "placed": {
+        "positions": {
+          "Card-1": "translate(10px,20px)",
+          "CardCopy-1": "translate(48px,640px)",
+          "Footer-1": "translate(910px,20px)",
+          "Hero Card-1": "translate(410px,20px)",
+        },
+        "sizes": [
+          "Card-1: 300px × 200px",
+          "Hero Card-1: 400px × 300px",
+          "CardCopy-1: 300px × 200px",
+          "Footer-1: 400px × 300px",
+        ],
+      },
+    }
+  `);
+});
+
+it("opens with no frames, and takes its first where they'd start", async () => {
+  const canvas = await renderCanvas(undefined, undefined, { components: [], savedLayouts: [] });
+  const empty = positions();
+  await canvas.setComponents([{ name: "Card" }, { name: "Hero" }], []);
+  expect({ empty, first: positions() }).toEqual({
+    empty: {},
+    first: { "Card-1": "translate(100px,100px)", "Hero-1": "translate(600px,100px)" },
+  });
+});
+
+it("saves a frame put where it's saved to go, though its component never sizes it", async () => {
+  vi.useFakeTimers();
+  try {
+    const onLayoutsChange = vi.fn();
+    // StrictMode runs the sync's updater twice.
+    const canvas = await renderCanvas(onLayoutsChange, undefined, { strict: true });
+    await canvas.setComponents([{ name: "Card" }, { name: "Hero Card" }, { name: "CardCopy" }], [CARD, CARD_COPY]);
+    await act(async () => vi.advanceTimersByTime(500));
+    expect(onLayoutsChange.mock.calls.at(-1)?.[0].at(-1)).toEqual(CARD_COPY);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("tells the host of each move the user makes once it ends, from where it began", async () => {
+  vi.useFakeTimers();
+  try {
+    const { controls } = await withControls();
+    const moves = vi.fn();
+    controls.onFramesMoved(moves);
+    await pressOn("Hero Card-1", "Enter");
+    for (let i = 0; i < 3; i++) await pressOn("Hero Card-1", "ArrowRight");
+    const during = moves.mock.calls.length;
+    await act(async () => vi.advanceTimersByTime(300));
+    expect({ during, moves: moves.mock.calls, now: positions()["Hero Card-1"] }).toMatchInlineSnapshot(`
+      {
+        "during": 0,
+        "moves": [
+          [
+            [
+              {
+                "componentName": "Hero Card",
+                "from": {
+                  "x": 410,
+                  "y": 20,
+                },
+                "to": {
+                  "x": 425,
+                  "y": 20,
+                },
+              },
+            ],
+          ],
+        ],
+        "now": "translate(425px,20px)",
+      }
+    `);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+// A drag of a frame by the mouse, from its corner, dropped where it's let go.
+const drag = async (id: string, by: { x: number; y: number }) => {
+  const node = document.querySelector<HTMLElement>(`.react-flow__node[data-id="${id}"]`)!;
+  const mouse = (type: string, x: number, y: number, target: EventTarget) =>
+    act(async () => {
+      const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y });
+      // d3-drag listens on the event's window; jsdom won't take vitest's as one.
+      Object.defineProperty(event, "view", { value: window });
+      target.dispatchEvent(event);
+    });
+  await mouse("mousedown", 0, 0, node);
+  await mouse("mousemove", by.x / 2, by.y / 2, window);
+  await mouse("mousemove", by.x, by.y, window);
+  await mouse("mouseup", by.x, by.y, window);
+};
+
+it("tells the host of a drag as it's dropped, and of the next drag as its own", async () => {
+  const { controls } = await withControls();
+  const moves = vi.fn();
+  controls.onFramesMoved(moves);
+  await drag("Card-1", { x: 80, y: 40 });
+  const afterFirst = moves.mock.calls.length;
+  // At once: no waiting for the first to settle.
+  await drag("Hero Card-1", { x: 160, y: 0 });
+  expect({ afterFirst, moves: moves.mock.calls.map(([m]) => m), now: positions() }).toMatchInlineSnapshot(`
+    {
+      "afterFirst": 1,
+      "moves": [
+        [
+          {
+            "componentName": "Card",
+            "from": {
+              "x": 10,
+              "y": 20,
+            },
+            "to": {
+              "x": 50,
+              "y": 40,
+            },
+          },
+        ],
+        [
+          {
+            "componentName": "Hero Card",
+            "from": {
+              "x": 410,
+              "y": 20,
+            },
+            "to": {
+              "x": 490,
+              "y": 20,
+            },
+          },
+        ],
+      ],
+      "now": {
+        "Card-1": "translate(50px,40px)",
+        "Hero Card-1": "translate(490px,20px)",
+      },
+    }
+  `);
+});
+
+it("moves frames for the host, and saves it, without calling it the user's move", async () => {
+  vi.useFakeTimers();
+  try {
+    const onLayoutsChange = vi.fn();
+    const { controls } = await withControls({}, onLayoutsChange);
+    const moves = vi.fn();
+    controls.onFramesMoved(moves);
+    await act(async () => controls.moveFrames([{ componentName: "Card", x: 800, y: 800 }, { componentName: "Gone", x: 0, y: 0 }]));
+    await act(async () => vi.advanceTimersByTime(500));
+    expect({
+      at: positions()["Card-1"],
+      saved: onLayoutsChange.mock.calls.at(-1)?.[0][0],
+      moves: moves.mock.calls.length,
+    }).toMatchInlineSnapshot(`
+      {
+        "at": "translate(800px,800px)",
+        "moves": 0,
+        "saved": {
+          "componentName": "Card",
+          "height": 200,
+          "width": 300,
+          "x": 800,
+          "y": 800,
+        },
+      }
+    `);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("leaves an interactive frame selected on the Escape that ends its interaction", async () => {
+  await renderCanvas();
+  await pressOn("Card-1", "Enter");
+  const node = document.querySelector<HTMLElement>('.react-flow__node[data-id="Card-1"]')!;
+  const isSelected = () => node.classList.contains("selected");
+  const escape = () =>
+    act(async () => {
+      node.querySelector(".iframe-node-container")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    });
+  // Into the frame: its cover goes.
+  await act(async () => {
+    node.querySelector(".cursor-grab")!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+  });
+  const interactive = node.querySelector(".cursor-grab") === null;
+  await escape();
+  const afterFirst = { selected: isSelected(), interactive: node.querySelector(".cursor-grab") === null };
+  await escape();
+  expect({ interactive, afterFirst, afterSecond: isSelected() }).toEqual({
+    interactive: true,
+    afterFirst: { selected: true, interactive: false },
+    afterSecond: false,
+  });
+});
+
+it("leaves a selected frame on the canvas on Backspace: deleting one is the host's", async () => {
+  await renderCanvas();
+  await pressOn("Card-1", "Enter");
+  await act(async () => {
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Backspace", bubbles: true }));
+  });
+  expect(Object.keys(positions())).toEqual(["Card-1", "Hero Card-1"]);
 });

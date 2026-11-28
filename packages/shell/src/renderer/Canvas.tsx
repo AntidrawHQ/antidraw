@@ -3,10 +3,10 @@ import { useCallback, useEffect } from "react";
 import { useUserComponents, useUserComponentsWatcher } from "./store/userComponents";
 import { useWorkspaceStore } from "./store/workspace";
 import { useDevServerStatus, useAutoStartDevServer } from "./lib/workspace-ops";
-import { useFrameLayouts } from "./lib/frame-layout-ops";
-import { saveFrameLayouts, type FrameLayoutData } from "./lib/api";
+import { useFrameLayouts, useSaveFrameLayouts } from "./lib/frame-layout-ops";
+import type { FrameLayoutData } from "./lib/api";
 import { cn } from "./lib/utils";
-import { Canvas, useFocusComponent, type FrameLayer, type FrameLayout } from "./canvas/Canvas";
+import { Canvas, useFocusComponent, type FrameLayer } from "./canvas/Canvas";
 import { CanvasToolbar } from "./components/CanvasToolbar";
 import { OnboardingList } from "./onboarding/OnboardingList";
 import { renderFrameInspector } from "./inspector/FrameInspector";
@@ -20,6 +20,7 @@ import { EditBar } from "./design/EditBar";
 import { DesignSync } from "./design/use-design";
 import { showCode } from "./design/store";
 import { useCanvasThumbnail } from "./lib/thumbnail";
+import { CanvasEditing } from "./canvas-edit/CanvasEditing";
 import { track } from "@/renderer/lib/analytics";
 
 // Over each frame: the tools (the inspector's and the Comment tool's).
@@ -84,12 +85,9 @@ const WorkspaceCanvas = ({
   // A deleted component's frame leaves the canvas, and its selection with it.
   useEffect(() => keepSelectionIn(new Set(userComponents.map((c) => c.name))), [userComponents]);
 
-  const saveLayouts = useCallback(
-    (layouts: FrameLayout[]) => {
-      saveFrameLayouts(workspaceId, layouts); // fire-and-forget
-    },
-    [workspaceId],
-  );
+  const saveLayouts = useSaveFrameLayouts(workspaceId);
+
+  const empty = userComponents.length === 0;
 
   return (
     <Canvas
@@ -107,13 +105,31 @@ const WorkspaceCanvas = ({
       className={className}
     >
       <FocusRequestedComponent />
-      <InspectorControls />
-      <CommentControls />
-      <CommentFlow />
-      <DesignSync />
-      <EditBar />
-      <ShowPanel />
-      <CanvasToolbar />
+      <CanvasEditing
+        key={workspaceId}
+        workspaceId={workspaceId}
+        keysOff={dashboardShown}
+        onFullscreen={openFullscreen}
+        onSeeCode={seeCode}
+      />
+      {empty ? (
+        // No frames (a new workspace, or its last one deleted): the
+        // onboarding's prompts, each run in the chat. Over the canvas, not in
+        // its place, so frames just deleted can still be undone or pasted back.
+        <div className="nodrag nopan nowheel absolute inset-0 z-10 flex overflow-auto bg-[#282828]">
+          <OnboardingList className="m-auto" />
+        </div>
+      ) : (
+        <>
+          <InspectorControls />
+          <CommentControls />
+          <CommentFlow />
+          <DesignSync />
+          <EditBar />
+          <ShowPanel />
+          <CanvasToolbar />
+        </>
+      )}
     </Canvas>
   );
 };
@@ -176,15 +192,6 @@ export const AppCanvas = ({ className }: AppCanvasProps) => {
     return <CanvasPlaceholder subtitle="Error loading components" className={className} />;
   }
 
-  // A new workspace: the onboarding's prompts, each run in the chat.
-  if (userComponents.length === 0) {
-    return (
-      <div className={cn("flex-1 flex bg-[#282828] relative overflow-auto", className)}>
-        <OnboardingList className="m-auto" />
-      </div>
-    );
-  }
-
   // The right panel (Design, Comments) beside the frames.
   return (
     <ReactFlowProvider>
@@ -196,7 +203,7 @@ export const AppCanvas = ({ className }: AppCanvasProps) => {
           savedLayouts={frameLayouts}
           className="min-w-0 flex-1"
         />
-        <RightPanel />
+        {userComponents.length > 0 && <RightPanel />}
       </div>
     </ReactFlowProvider>
   );

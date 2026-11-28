@@ -26,6 +26,8 @@ import {
 import {
   listComponents,
   getComponentSource,
+  createComponents,
+  deleteComponents,
   componentEvents,
   type ComponentStreamEvent,
 } from "../services/component.service";
@@ -306,6 +308,55 @@ workspaceController.get(
 
     return ctx.json(result.value);
   }
+);
+
+const componentName = z.string().refine(isComponentName, "invalid component name");
+
+const createComponentsSchema = z.object({
+  components: z.array(z.object({ name: componentName, source: z.string() })).min(1),
+});
+
+// New frames from the canvas: a paste, a duplicate, an undone delete.
+workspaceController.post(
+  "/:workspaceId/components",
+  zValidator("param", workspaceIdParamSchema),
+  zValidator("json", createComponentsSchema),
+  async (ctx) => {
+    const { workspaceId } = ctx.req.valid("param");
+    const { components } = ctx.req.valid("json");
+    const result = await createComponents(workspaceId, components);
+
+    if (result.isErr()) {
+      const { status, code, message } = result.error;
+      return ctx.json({ error: { code, message } }, status);
+    }
+
+    return ctx.json({ created: result.value });
+  },
+);
+
+const deleteComponentsSchema = z.object({
+  names: z.array(componentName).min(1),
+  expected: z.array(z.object({ name: componentName, source: z.string() })).optional(),
+});
+
+// Frames deleted on the canvas, to the trash, with their sources for its undo.
+workspaceController.post(
+  "/:workspaceId/components/delete",
+  zValidator("param", workspaceIdParamSchema),
+  zValidator("json", deleteComponentsSchema),
+  async (ctx) => {
+    const { workspaceId } = ctx.req.valid("param");
+    const { names, expected } = ctx.req.valid("json");
+    const result = await deleteComponents(workspaceId, names, expected);
+
+    if (result.isErr()) {
+      const { status, code, message } = result.error;
+      return ctx.json({ error: { code, message } }, status);
+    }
+
+    return ctx.json(result.value);
+  },
 );
 
 workspaceController.get(
