@@ -4,6 +4,7 @@ import type {
   CreateWorkspaceResponse,
   DevServerState,
   DevServerInfo,
+  ForkSiteResponse,
   PublishedSite,
 } from "@/main/api";
 import { useMutation, useQuery, useQueryClient, skipToken } from "@tanstack/react-query";
@@ -11,6 +12,7 @@ import { useWorkspaceStore } from "@/renderer/store/workspace";
 import { queryKeys } from "./query-keys";
 import {
   createWorkspace,
+  forkSite,
   getWorkspace,
   deleteWorkspace,
   startDevServer,
@@ -43,40 +45,73 @@ export const useWorkspace = (workspaceId: string | null) => {
   });
 };
 
+/** A create or fork that ended in an error event, with the code main gave it. */
+export class WorkspaceEventError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+// The workspace a stream of create or fork events ends with, passing each
+// event on as it comes.
+const workspaceFrom = async <Event extends CreateWorkspaceResponse | ForkSiteResponse>(
+  stream: AsyncGenerator<Event>,
+  onProgress?: (event: Event) => void,
+): Promise<Workspace> => {
+  for await (const event of stream) {
+    onProgress?.(event);
+    if (event.type === "error") throw new WorkspaceEventError(event.error.code, event.error.message);
+    if (event.type === "done") return event.workspace;
+  }
+  throw new Error("Workspace creation completed without returning workspace");
+};
+
 export const useCreateWorkspace = () => {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (params: {
-      name: string;
-      onProgress?: (event: CreateWorkspaceResponse) => void;
-    }): Promise<Workspace> => {
-      const { name, onProgress } = params;
-      const stream = createWorkspace(name);
-
-      let workspace: Workspace | undefined;
-
-      for await (const event of stream) {
-        onProgress?.(event);
-
-        if (event.type === "error") {
-          throw new Error(event.error.message);
-        }
-
-        if (event.type === "done") {
-          workspace = event.workspace;
-          break;
-        }
-      }
-
-      if (!workspace) {
-        throw new Error("Workspace creation completed without returning workspace");
-      }
-
-      return workspace;
-    },
+    mutationFn: (params: { name: string; onProgress?: (event: CreateWorkspaceResponse) => void }) =>
+      workspaceFrom(createWorkspace(params.name), params.onProgress),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all });
+    },
+  });
+};
+
+// A new workspace forked from one of the account's published sites. The
+// signal cancels it.
+export const useForkSite = () => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (params: { siteId: string; signal?: AbortSignal; onProgress?: (event: ForkSiteResponse) => void }) =>
+      workspaceFrom(forkSite(params.siteId, params.signal), params.onProgress),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all });
+    },
+    onError: (error, { signal }) => {
+      // A cancel that reached main as it was saving the workspace doesn't undo
+      // it: the list is asked again, to show it if it's there.
+      if (signal?.aborted) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.all });
+        return;
+      }
+      // As a publish does: the stored token died, and main already dropped
+      // it; or publishing is off for this account.
+      const code = error instanceof WorkspaceEventError ? error.code : null;
+      if (code === "SIGNED_OUT") queryClient.setQueryData(queryKeys.account, null);
+      if (code === "SIGNED_OUT" || code === "PUBLISH_DISABLED") {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.features });
+      }
+      // The Published list is out of date, and asked again, to show what's
+      // so in place of a Fork that can't work: the user signed out, the
+      // site gone, or its live version one with no source.
+      if (code === "SIGNED_OUT" || code === "PUBLISH_DISABLED" || code === "SITE_NOT_FOUND" || code === "NOT_FORKABLE") {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.published.sites });
+      }
     },
   });
 };

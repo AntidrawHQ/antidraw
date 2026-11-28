@@ -66,6 +66,14 @@ export const ic = {
     </>
   ),
   link: <path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1-1" />,
+  fork: (
+    <>
+      <circle cx="7" cy="5.5" r="2.2" />
+      <circle cx="17" cy="5.5" r="2.2" />
+      <circle cx="12" cy="18.5" r="2.2" />
+      <path d="M7 7.7v1.8a3 3 0 0 0 3 3h4a3 3 0 0 0 3-3V7.7M12 12.5v3.8" />
+    </>
+  ),
 };
 
 type BtnKind = "primary" | "secondary" | "ghost" | "outline";

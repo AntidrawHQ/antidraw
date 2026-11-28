@@ -1,12 +1,20 @@
 import { useState } from "react";
 import type { PublishedSite } from "@/main/api";
+import { ForkButton } from "@/renderer/published/Fork";
 import { cn } from "@/renderer/lib/utils";
 import { CARD, CARDS, CARD_META, CARD_THUMB, HEADINGS, META, NAME, THUMB, ago, cardKeys, rowKeys, useFirstRows } from "./LocalList";
 
 // What the account has published, as rows, the latest published first. A
-// click, or Enter, opens one view-only in the window's other tab. One stop for
-// Tab, and ↑ ↓ Home End through it, as the Local list. As cards too, as that
-// list is.
+// click, or Enter, opens one view-only in the window's other tab; its Fork
+// makes a workspace of it (published/Fork.tsx). One stop for Tab, and ↑ ↓ Home
+// End through it, as the Local list; Tab from a row goes to its Fork. As cards
+// too, as that list is.
+
+type Props = {
+  items: PublishedSite[];
+  onOpen: (site: PublishedSite) => void;
+  onFork: (site: PublishedSite) => void;
+};
 
 const COLS = "grid-cols-[minmax(0,2.4fr)_minmax(0,2fr)_88px]";
 
@@ -35,13 +43,7 @@ const SiteThumb = ({ site, className }: { site: PublishedSite; className: string
   );
 };
 
-export const PublishedRows = ({
-  items,
-  onOpen,
-}: {
-  items: PublishedSite[];
-  onOpen: (site: PublishedSite) => void;
-}) => {
+export const PublishedRows = ({ items, onOpen, onFork }: Props) => {
   const shown = useFirstRows(items);
   // Tab stops at the row the keys were last on, or at the first.
   const [last, setLast] = useState<string>();
@@ -62,7 +64,8 @@ export const PublishedRows = ({
             tabIndex={stop === site.id ? 0 : -1}
             onFocus={() => setLast(site.id)}
             onClick={() => onOpen(site)}
-            onKeyDown={(e) => e.key === "Enter" && onOpen(site)}
+            // Its own Enter, not its Fork's.
+            onKeyDown={(e) => e.key === "Enter" && e.target === e.currentTarget && onOpen(site)}
             className={cn(
               "group -mx-2 grid scroll-mt-9 scroll-mb-2 cursor-default items-center gap-4 rounded-[10px] px-2 py-1.5 outline-none hover:bg-[#313131] focus-visible:bg-[#313131]",
               COLS,
@@ -75,8 +78,9 @@ export const PublishedRows = ({
             <span role="gridcell" className={META}>
               v{site.version} · {ago(site.publishedAt)}
             </span>
-            {/* Fork's place. */}
-            <span role="gridcell" />
+            <span role="gridcell" className="flex justify-end">
+              <ForkButton site={site} onFork={onFork} tabIndex={stop === site.id ? 0 : -1} />
+            </span>
           </div>
         ))}
       </div>
@@ -84,13 +88,7 @@ export const PublishedRows = ({
   );
 };
 
-export const PublishedCards = ({
-  items,
-  onOpen,
-}: {
-  items: PublishedSite[];
-  onOpen: (site: PublishedSite) => void;
-}) => {
+export const PublishedCards = ({ items, onOpen, onFork }: Props) => {
   const shown = useFirstRows(items);
   // Tab stops at the card the keys were last on, or at the first.
   const [last, setLast] = useState<string>();
@@ -104,16 +102,19 @@ export const PublishedCards = ({
           tabIndex={stop === site.id ? 0 : -1}
           onFocus={() => setLast(site.id)}
           onClick={() => onOpen(site)}
-          onKeyDown={(e) => e.key === "Enter" && onOpen(site)}
+          onKeyDown={(e) => e.key === "Enter" && e.target === e.currentTarget && onOpen(site)}
           className={cn(CARD, "hover:bg-[#313131]")}
         >
           <div role="gridcell">
             <SiteThumb site={site} className={CARD_THUMB} />
-            <div className="mt-2.5 pb-0.5 pl-0.5">
-              <div className={NAME}>{site.title}</div>
-              <div className={CARD_META}>
-                v{site.version} · {ago(site.publishedAt)}
+            <div className="mt-2.5 flex items-start gap-2 pb-0.5 pl-0.5">
+              <div className="min-w-0 flex-1">
+                <div className={NAME}>{site.title}</div>
+                <div className={CARD_META}>
+                  v{site.version} · {ago(site.publishedAt)}
+                </div>
               </div>
+              <ForkButton site={site} onFork={onFork} tabIndex={stop === site.id ? 0 : -1} />
             </div>
           </div>
         </div>

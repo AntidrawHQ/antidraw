@@ -12,6 +12,7 @@ import type {
   DevServerInfo,
   DevServerState,
   EffortLevel,
+  ForkSiteResponse,
   ModelInfo,
   StreamEvent,
   WorkspaceWithThumbnail,
@@ -149,24 +150,33 @@ export const triggerClaudeLogin = async () => {
 // Workspace API
 // ============================================================================
 
-export async function* createWorkspace(
-  name: string,
-): AsyncGenerator<CreateWorkspaceResponse> {
+// A POST whose answer is a stream of events (SSE), as they arrive. The signal
+// lets go of the stream, which main takes as a cancel, and ends the events
+// with its reason.
+async function* postEvents<Event>(url: string, body: unknown, signal?: AbortSignal): AsyncGenerator<Event> {
   const abort = new AbortController();
-  const stream = new ReadableStream<CreateWorkspaceResponse>({
+  const stream = new ReadableStream<Event>({
     start(controller) {
-      fetchEventSource("antidraw://app/api/workspaces", {
+      // fetchEventSource ends quietly when aborted, saying nothing to either
+      // callback, so the events end here.
+      const cancel = () => {
+        abort.abort();
+        controller.error(signal?.reason);
+      };
+      if (signal?.aborted) return cancel();
+      signal?.addEventListener("abort", cancel, { once: true });
+      fetchEventSource(url, {
         method: "POST",
         headers: {
           ...appKeyHeader(),
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ name }),
+        body: JSON.stringify(body),
         signal: abort.signal,
         openWhenHidden: true,
 
         onmessage: (ev) => {
-          const event = JSON.parse(ev.data) as CreateWorkspaceResponse;
+          const event = JSON.parse(ev.data) as Event;
           controller.enqueue(event);
         },
         onerror: (error) => {
@@ -186,6 +196,14 @@ export async function* createWorkspace(
 
   yield* stream;
 }
+
+export const createWorkspace = (name: string) =>
+  postEvents<CreateWorkspaceResponse>("antidraw://app/api/workspaces", { name });
+
+// A new workspace forked from one of the account's published sites. The
+// signal cancels it.
+export const forkSite = (siteId: string, signal?: AbortSignal) =>
+  postEvents<ForkSiteResponse>("antidraw://app/api/workspaces/fork", { siteId }, signal);
 
 export const listWorkspaces = async () => {
   try {

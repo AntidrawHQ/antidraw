@@ -1,6 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { CreateWorkspaceStatusCode } from "@/main/api";
-import type { CreateWorkspaceStatus } from "@/renderer/lib/use-create-workspace-flow";
+import type { WorkspaceFlowStatus } from "@/renderer/lib/use-create-workspace-flow";
 
 // Inline log: the mini terminal renders inside the active step itself,
 // indented to align with the step label. No fill — just a very subtle border.
@@ -8,14 +7,16 @@ import type { CreateWorkspaceStatus } from "@/renderer/lib/use-create-workspace-
 // X, the log stays open with npm ERR! lines tinted, and a retry affordance
 // appears under the failed step.
 
-const STEPS = [
-  { key: "CREATING_DIRECTORY", label: "Creating directory" },
-  { key: "SCAFFOLDING_PROJECT", label: "Scaffolding project" },
-  { key: "INSTALLING_DEPENDENCIES", label: "Installing dependencies" },
-  { key: "SAVING_WORKSPACE", label: "Saving workspace" },
-] as const;
+// A step of the list; `streams` for one that runs npm, whose output it shows.
+export type ProgressStep<Key extends string = string> = { key: Key; label: string; streams?: boolean };
 
-type StepKey = (typeof STEPS)[number]["key"];
+// A new workspace from the template. A fork has its own (published/Fork.tsx).
+const CREATE_STEPS: ProgressStep[] = [
+  { key: "CREATING_DIRECTORY", label: "Creating directory" },
+  { key: "SCAFFOLDING_PROJECT", label: "Scaffolding project", streams: true },
+  { key: "INSTALLING_DEPENDENCIES", label: "Installing dependencies", streams: true },
+  { key: "SAVING_WORKSPACE", label: "Saving workspace" },
+];
 
 const ICON_SIZE = 18;
 
@@ -65,19 +66,15 @@ const HalfCircleIcon = ({ active }: { active: boolean }) => (
 );
 
 const stepIndex = (
-  status: CreateWorkspaceStatus,
-  failedStep: CreateWorkspaceStatusCode | null,
+  steps: ProgressStep[],
+  status: WorkspaceFlowStatus<string>,
+  failedStep: string | null,
 ): number =>
   status === "done"
-    ? STEPS.length
+    ? steps.length
     : status === "error"
-      ? STEPS.findIndex((s) => s.key === failedStep)
-      : STEPS.findIndex((s) => s.key === status);
-
-const STREAMING_STEPS: StepKey[] = [
-  "SCAFFOLDING_PROJECT",
-  "INSTALLING_DEPENDENCIES",
-];
+      ? steps.findIndex((s) => s.key === failedStep)
+      : steps.findIndex((s) => s.key === status);
 
 const lineTone = (line: string): string =>
   // npm >= 10.2 prints "npm error"; older versions print "npm ERR!"
@@ -87,21 +84,27 @@ const lineTone = (line: string): string =>
       ? "text-[#c99a62]"
       : "text-neutral-400";
 
-export const CreateWorkspaceProgress = ({
+export const CreateWorkspaceProgress = <Step extends string>({
   status,
   lines,
   failedStep,
   errorMessage,
   onRetry,
+  steps = CREATE_STEPS as ProgressStep<Step>[],
+  doneLabel = "Workspace created",
 }: {
-  status: CreateWorkspaceStatus;
+  status: WorkspaceFlowStatus<Step>;
   lines: string[];
-  failedStep: CreateWorkspaceStatusCode | null;
+  failedStep: Step | null;
   errorMessage: string | null;
-  onRetry: () => void;
+  /** Left out when trying again wouldn't help: there's then no Try again. */
+  onRetry?: () => void;
+  steps?: ProgressStep<Step>[];
+  /** Read out once it's done. */
+  doneLabel?: string;
 }) => {
   const hasError = status === "error";
-  const current = stepIndex(status, failedStep);
+  const current = stepIndex(steps, status, failedStep);
   const logRef = useRef<HTMLDivElement>(null);
 
   // Pin the log to the bottom as new lines stream in
@@ -110,10 +113,10 @@ export const CreateWorkspaceProgress = ({
     if (el) el.scrollTop = el.scrollHeight;
   }, [lines]);
 
-  const currentLabel = STEPS[current]?.label;
+  const currentLabel = steps[current]?.label;
   const announcement =
     status === "done"
-      ? "Workspace created"
+      ? doneLabel
       : hasError
         ? `${currentLabel ?? "Workspace creation"} failed`
         : currentLabel
@@ -125,14 +128,12 @@ export const CreateWorkspaceProgress = ({
       <div role="status" aria-live="polite" className="sr-only">
         {announcement}
       </div>
-      {STEPS.map((step, i) => {
+      {steps.map((step, i) => {
         const isFailed = hasError && current === i;
         const isDone = !isFailed && (status === "done" || current > i);
         const isActive = !hasError && status !== "done" && current === i;
         const showLog =
-          (isActive || isFailed) &&
-          STREAMING_STEPS.includes(step.key) &&
-          lines.length > 0;
+          (isActive || isFailed) && !!step.streams && lines.length > 0;
 
         return (
           <div key={step.key}>
@@ -161,7 +162,7 @@ export const CreateWorkspaceProgress = ({
               </span>
             </div>
 
-            {STREAMING_STEPS.includes(step.key) ? (
+            {step.streams ? (
               <div
                 className={
                   "grid transition-[grid-template-rows,opacity] duration-300 ease-out " +
@@ -210,13 +211,15 @@ export const CreateWorkspaceProgress = ({
                 >
                   {errorMessage}
                 </span>
-                <button
-                  type="button"
-                  onClick={onRetry}
-                  className="shrink-0 rounded-md border border-white/[0.08] bg-white/[0.06] px-2.5 py-1 text-[12px] font-medium text-[#e0e0e0] transition-colors hover:bg-white/[0.1]"
-                >
-                  Try again
-                </button>
+                {onRetry && (
+                  <button
+                    type="button"
+                    onClick={onRetry}
+                    className="shrink-0 rounded-md border border-white/[0.08] bg-white/[0.06] px-2.5 py-1 text-[12px] font-medium text-[#e0e0e0] transition-colors hover:bg-white/[0.1]"
+                  >
+                    Try again
+                  </button>
+                )}
               </div>
             ) : null}
           </div>

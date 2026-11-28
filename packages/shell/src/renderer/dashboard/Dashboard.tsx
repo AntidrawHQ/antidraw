@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Tabs } from "radix-ui";
 import { create } from "zustand";
-import type { WorkspaceWithThumbnail } from "@/main/api";
+import type { PublishedSite, WorkspaceWithThumbnail } from "@/main/api";
 import { CreateWorkspaceDialog } from "@/renderer/components/CreateWorkspaceDialog";
 import { Button } from "@/renderer/components/ui/button";
 import {
@@ -28,6 +28,7 @@ import {
   useSwitchWorkspace,
   useWorkspaces,
 } from "@/renderer/lib/workspace-ops";
+import { useFork } from "@/renderer/published/Fork";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
 import { Header, type Section, type View } from "./Header";
 import { GridCards, ListRows, SORTERS, type Sort } from "./LocalList";
@@ -148,7 +149,7 @@ const Notice = ({ children, action }: { children: React.ReactNode; action?: Reac
 );
 
 // The Published section: the account's sites, or why there's no list.
-const Published = ({ query }: { query: string }) => {
+const Published = ({ query, onFork }: { query: string; onFork: (site: PublishedSite) => void }) => {
   const { data: sites, error, isPending, refetch, isFetching } = usePublishedSites();
   const openPublished = useOpenPublished();
   const view = useDashboardStore((s) => s.view);
@@ -205,7 +206,7 @@ const Published = ({ query }: { query: string }) => {
 
   if (items.length === 0) return <Notice>{q ? `Nothing matches “${query}”.` : "Nothing published yet."}</Notice>;
   const List = view === "grid" ? PublishedCards : PublishedRows;
-  return <List items={items} onOpen={(site) => void openPublished(site)} />;
+  return <List items={items} onOpen={(site) => void openPublished(site)} onFork={onFork} />;
 };
 
 export const Dashboard = () => {
@@ -221,6 +222,10 @@ export const Dashboard = () => {
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  // A fork's dialog is the dashboard's, not the Published section's: what
+  // the fork finds can take the section away (signed out, or publishing off
+  // for the account), and the dialog has to stay to say so.
+  const { fork, dialog: forkDialog } = useFork();
   // Delete is held back for now; the dialog below is ready for it.
   // const [deleting, setDeleting] = useState<WorkspaceWithThumbnail | null>(null);
 
@@ -277,7 +282,7 @@ export const Dashboard = () => {
           {/* Not a stop for Tab itself: its rows are. */}
           <Tabs.Content value={section} tabIndex={-1} className={cn(COLUMN, "pb-16 outline-none")} onClick={deselect}>
             {section === "published" ? (
-              <Published query={query} />
+              <Published query={query} onFork={fork} />
             ) : items.length === 0 ? (
               <Notice>{q ? `Nothing matches “${query}”.` : "No workspaces yet."}</Notice>
             ) : view === "grid" ? (
@@ -301,6 +306,7 @@ export const Dashboard = () => {
         </div>
 
         <CreateWorkspaceDialog open={creating} onOpenChange={setCreating} />
+        {forkDialog}
         {/* <DeleteWorkspaceDialog workspace={deleting} onClose={() => setDeleting(null)} /> */}
       </main>
     </Tabs.Root>

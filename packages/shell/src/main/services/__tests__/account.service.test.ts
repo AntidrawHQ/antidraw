@@ -558,11 +558,15 @@ it("lists what the account has published, and says why when it can't", async () 
     filesUrl: "https://paper-shaders.antidraw.app",
     version: 3,
     publishedAt: 1_700_000_000_000,
+    forkable: true,
   };
   const signedOut = outcome(await getPublishedSites());
   await signIn();
   worker.sites = { status: 200, body: JSON.stringify({ sites: [site] }) };
   const listed = outcome(await getPublishedSites());
+  // A server from before it said which sites can be forked: none, as far as the app knows.
+  worker.sites = { status: 200, body: JSON.stringify({ sites: [{ ...site, forkable: undefined }] }) };
+  expect((await getPublishedSites())._unsafeUnwrap()[0]!.forkable).toBe(false);
   // A page to load frames from must be a web address.
   worker.sites = { status: 200, body: JSON.stringify({ sites: [{ ...site, filesUrl: "file:///etc" }] }) };
   const notWeb = outcome(await getPublishedSites());
@@ -582,6 +586,7 @@ it("lists what the account has published, and says why when it can't", async () 
         "ok": [
           {
             "filesUrl": "https://paper-shaders.antidraw.app",
+            "forkable": true,
             "id": "site-1",
             "publishedAt": 1700000000000,
             "slug": "paper-shaders",

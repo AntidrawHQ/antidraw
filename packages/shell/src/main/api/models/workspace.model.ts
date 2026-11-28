@@ -12,6 +12,10 @@ export const workspaces = sqliteTable("workspaces", {
   // The cloud site this workspace publishes to (@antidraw/server), once it has.
   siteId: text("site_id"),
   siteUrl: text("site_url"),
+  // The published site this workspace was forked from, and which of its
+  // versions (main/services/fork.ts). Not its own site: publishing it makes one.
+  forkedFromSiteId: text("forked_from_site_id"),
+  forkedFromVersion: integer("forked_from_version"),
   createdAt: integer("created_at", { mode: "timestamp_ms" })
     .notNull()
     .default(sql`(unixepoch() * 1000)`),
