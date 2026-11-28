@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, expect, test, vi } from "vitest"
+import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest"
 import { startInspector } from "../agent"
 import { AGENT_NS, type FromFrame, type ToFrame, type Tool, type WheelMode } from "../protocol"
 
@@ -95,6 +95,131 @@ test("says it's ready to any parent, and whether the dev server tagged it", () =
     { msg: { ns: AGENT_NS, type: "ready", componentName: "Card", tagged: true }, origin: "*" },
   ])
   expect(ask({ type: "hello", id: 7 })).toMatchObject({ msg: { type: "ready", id: 7 }, origin: CANVAS })
+})
+
+test("tells the canvas the component's height, once it knows where the canvas is and as it changes", () => {
+  stop()
+  // jsdom has no ResizeObserver or layout: both are the test's.
+  let resized = () => {}
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      constructor(on: () => void) {
+        resized = on
+      }
+      observe() {}
+      disconnect() {}
+    },
+  )
+  let height = 640
+  Object.defineProperty(container, "scrollHeight", { configurable: true, get: () => height })
+  stop = startInspector(container, "Card")
+  const heights = () =>
+    sent.filter(({ msg }) => (msg as { type: string }).type === "component-content-size")
+
+  // Not before the canvas has said hello: the height goes only to it.
+  resized()
+  expect(heights()).toEqual([])
+  ask({ type: "hello", id: 1 })
+  expect(heights()).toEqual([
+    { msg: { type: "component-content-size", componentName: "Card", height: 640 }, origin: CANVAS },
+  ])
+  // Once per change.
+  resized()
+  height = 900
+  resized()
+  expect(heights().map(({ msg }) => (msg as unknown as { height: number }).height)).toEqual([640, 900])
+})
+
+// The agent again, with the test's ResizeObserver, layout and viewport.
+const measuring = () => {
+  stop()
+  let resized = () => {}
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      constructor(on: () => void) {
+        resized = on
+      }
+      observe() {}
+      disconnect() {}
+    },
+  )
+  const page = { height: 640 }
+  Object.defineProperty(container, "scrollHeight", { configurable: true, get: () => page.height })
+  const was = { width: window.innerWidth, height: window.innerHeight }
+  const viewport = (width: number, height: number) => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: width })
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: height })
+  }
+  viewport(390, 844)
+  onTestFinished(() => viewport(was.width, was.height))
+  stop = startInspector(container, "Card")
+  return {
+    page,
+    resized: () => resized(),
+    // The frame resized: the page's own resize, then its content's, if its
+    // content's box changed with it (a ResizeObserver says nothing otherwise).
+    framed: (width: number, height: number, { contentToo = true } = {}) => {
+      viewport(width, height)
+      window.dispatchEvent(new Event("resize"))
+      if (contentToo) resized()
+    },
+    heights: () =>
+      sent
+        .filter(({ msg }) => (msg as { type: string }).type === "component-content-size")
+        .map(({ msg }) => msg as unknown as { height: number; followsViewport?: true }),
+  }
+}
+
+test("doesn't tell the canvas a height of 0, as of a page with nothing in its flow yet", () => {
+  const m = measuring()
+  m.page.height = 0
+  ask({ type: "hello", id: 1 })
+  m.resized()
+  m.page.height = 300
+  m.resized()
+  expect(m.heights()).toEqual([{ type: "component-content-size", componentName: "Card", height: 300 }])
+})
+
+test("says when the height changed with the frame's own, its width the same: the page is sized by the viewport", () => {
+  const m = measuring()
+  ask({ type: "hello", id: 1 })
+  // min-h-screen under a 64px header: 64 more than the frame's height.
+  m.page.height = 908
+  m.framed(390, 844)
+  m.page.height = 972
+  m.framed(390, 908)
+  // Its content's own change, the frame as it was.
+  m.page.height = 1200
+  m.resized()
+  // A wider frame, its page reflowed.
+  m.page.height = 1000
+  m.framed(800, 908)
+  // A taller frame, its page as it was, and later its content's own change:
+  // not one the frame's height made.
+  m.framed(800, 1400, { contentToo: false })
+  m.page.height = 1100
+  m.resized()
+  expect(m.heights().map(({ height, followsViewport }) => `${height}${followsViewport ? " (follows the viewport)" : ""}`)).toEqual([
+    "640",
+    "908",
+    "972 (follows the viewport)",
+    "1200",
+    "1000",
+    "1100",
+  ])
+})
+
+test("tells the canvas the height on its first word, though that isn't a hello", () => {
+  // An agent started again on the component as it mounted: the canvas answers
+  // its ready with the tool, and says no hello.
+  const m = measuring()
+  m.resized()
+  expect(m.heights()).toEqual([])
+  ask({ type: "tool", id: 0, tool: null, wheel: "pass", zoom: 1 })
+  ask({ type: "tool", id: 0, tool: null, wheel: "pass", zoom: 1 })
+  expect(m.heights()).toEqual([{ type: "component-content-size", componentName: "Card", height: 640 }])
 })
 
 test("names the element clicked by its source location, and where the component used it", () => {

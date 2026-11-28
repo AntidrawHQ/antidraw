@@ -252,6 +252,8 @@ const frameLayoutSchema = z.object({
       y: z.number(),
       width: z.number().positive(),
       height: z.number().positive(),
+      sized: z.boolean().optional(),
+      autoHeight: z.boolean().optional(),
     }),
   ),
 });

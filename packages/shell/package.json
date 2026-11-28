@@ -60,6 +60,8 @@
     "@tailwindcss/typography": "^0.5.19",
     "@tanstack/react-query": "^5.90.12",
     "@tanstack/react-router": "^1.168.2",
+    "@ui-sdk/core": "0.1.0-beta.16",
+    "@ui-sdk/react": "0.1.0-beta.16",
     "@xyflow/react": "^12.10.0",
     "border-beam": "^1.4.1",
     "boring-avatars": "^2.0.4",

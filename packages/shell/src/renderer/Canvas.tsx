@@ -19,7 +19,7 @@ import { RightPanel, ShowPanel } from "./design/RightPanel";
 import { EditBar } from "./design/EditBar";
 import { DesignSync } from "./design/use-design";
 import { showCode } from "./design/store";
-import { useCanvasThumbnail } from "./lib/thumbnail";
+import { CoversCanvas, useCanvasThumbnail } from "./lib/thumbnail";
 import { track } from "@/renderer/lib/analytics";
 
 // Over each frame: the tools (the inspector's and the Comment tool's).
@@ -56,6 +56,10 @@ const openFullscreen = (url: string) => {
   track("frame_opened_in_window");
   window.electronAPI.openPreviewWindow(url, useWorkspaceStore.getState().activeWorkspaceId ?? undefined);
 };
+
+// The frames' size menu. It covers the canvas while it's open, so the
+// workspace's thumbnail isn't taken with it showing.
+const SIZE_MENU = { Covers: CoversCanvas };
 
 const WorkspaceCanvas = ({
   workspaceId,
@@ -99,6 +103,7 @@ const WorkspaceCanvas = ({
       onFrameActivity={onFrameActivity}
       onFullscreen={openFullscreen}
       onSeeCode={seeCode}
+      sizeMenu={SIZE_MENU}
       onRefresh={trackRefresh}
       frameLayer={renderFrameLayers}
       framesTakePointer={picking}

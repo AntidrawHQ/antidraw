@@ -1,13 +1,19 @@
 import { motion, AnimatePresence, LayoutGroup } from "motion/react";
 import { Code, RefreshCw, Maximize2 } from "lucide-react";
+import { Toolbar, ToolbarButton, ToolbarSeparator } from "@ui-sdk/react/toolbar";
 import { cn } from "@/renderer/lib/utils";
+import { SizeMenu } from "./SizeMenu";
+import type { FrameSize } from "./frame-size";
+import type { ComponentType } from "react";
 
 const spring = { type: "spring" as const, stiffness: 800, damping: 40, mass: 0.4 };
 const springGentle = { type: "spring" as const, stiffness: 700, damping: 35, mass: 0.35 };
 
+// A button in the toolbar's (@ui-sdk) Toolbar, which arrow keys move between.
 const IconBtn = ({
   icon,
   label,
+  ariaLabel,
   danger,
   accent,
   onClick,
@@ -15,15 +21,18 @@ const IconBtn = ({
 }: {
   icon: React.ReactNode;
   label?: string;
+  // For a button without a label.
+  ariaLabel?: string;
   danger?: boolean;
   accent?: boolean;
   onClick?: () => void;
   size?: number;
 }) => (
-  <button
+  <ToolbarButton
     onClick={onClick}
+    aria-label={ariaLabel}
     className={cn(
-      "flex items-center justify-center gap-[5px] border-none bg-transparent cursor-pointer rounded-md text-xs font-medium font-[inherit] transition-all duration-150 ease-[cubic-bezier(0.25,0.1,0.25,1)] active:scale-[0.92]",
+      "flex items-center justify-center gap-[5px] border-none bg-transparent cursor-pointer rounded-md text-xs font-medium font-[inherit] transition-all duration-150 ease-[cubic-bezier(0.25,0.1,0.25,1)] active:scale-[0.92] outline-none focus-visible:text-white/80 focus-visible:ring-1 focus-visible:ring-[#E8E8E8]",
       label && "w-auto px-2",
       danger && "text-white/50 hover:text-red-500 hover:bg-red-500/[0.12]",
       accent && "text-white/50 hover:text-indigo-500 hover:bg-indigo-500/15",
@@ -33,11 +42,11 @@ const IconBtn = ({
   >
     {icon}
     {label && <span>{label}</span>}
-  </button>
+  </ToolbarButton>
 );
 
 const Divider = ({ className }: { className?: string }) => (
-  <div className={cn("w-px h-4 bg-white/[0.06] shrink-0", className)} />
+  <ToolbarSeparator className={cn("w-px h-4 bg-white/[0.06] shrink-0", className)} />
 );
 
 type PillToggleToolbarProps = {
@@ -46,11 +55,20 @@ type PillToggleToolbarProps = {
   selected?: boolean;
   onRefresh?: () => void;
   onFullscreen?: () => void;
-  // Without it, the See Code button is left out.
+  // Without it, the Code button is left out.
   onSeeCode?: () => void;
+  // The frame's size, for its size menu (SizeMenu). Without it, the menu is
+  // left out.
+  size?: {
+    value: FrameSize;
+    onChange: (update: (size: FrameSize) => FrameSize) => void;
+    huggedHeight: () => number;
+    // Rendered in the menu while it's open (Canvas's sizeMenu).
+    Covers?: ComponentType;
+  };
 };
 
-export const PillToggleToolbar = ({ componentName, nodeId, selected, onRefresh, onFullscreen, onSeeCode }: PillToggleToolbarProps) => {
+export const PillToggleToolbar = ({ componentName, nodeId, selected, onRefresh, onFullscreen, onSeeCode, size }: PillToggleToolbarProps) => {
   return (
     <LayoutGroup id={nodeId}>
       <div>
@@ -94,17 +112,28 @@ export const PillToggleToolbar = ({ componentName, nodeId, selected, onRefresh, 
                     }}
                     className="overflow-hidden origin-left"
                   >
-                    <div className="flex items-center whitespace-nowrap w-max">
+                    <Toolbar
+                      aria-label={`${componentName} frame`}
+                      className="flex items-center whitespace-nowrap w-max"
+                    >
                       <Divider className="mx-2" />
-                      {onSeeCode && (
+                      {size && (
                         <>
-                          <IconBtn icon={<Code size={14} />} label="See Code" size={26} onClick={onSeeCode} />
+                          <SizeMenu
+                            size={size.value}
+                            onSizeChange={size.onChange}
+                            huggedHeight={size.huggedHeight}
+                            Covers={size.Covers}
+                          />
                           <Divider className="mx-1.5" />
                         </>
                       )}
-                      <IconBtn icon={<RefreshCw size={14} />} size={26} onClick={onRefresh} />
-                      <IconBtn icon={<Maximize2 size={14} />} size={26} onClick={onFullscreen} />
-                    </div>
+                      {onSeeCode && (
+                        <IconBtn icon={<Code size={14} aria-hidden="true" />} label="Code" size={26} onClick={onSeeCode} />
+                      )}
+                      <IconBtn icon={<RefreshCw size={14} aria-hidden="true" />} ariaLabel="Refresh" size={26} onClick={onRefresh} />
+                      <IconBtn icon={<Maximize2 size={14} aria-hidden="true" />} ariaLabel="Full screen" size={26} onClick={onFullscreen} />
+                    </Toolbar>
                   </motion.div>
                 )}
               </AnimatePresence>

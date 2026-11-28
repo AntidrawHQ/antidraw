@@ -1,3 +1,8 @@
+/* UI SDK (@ui-sdk/react, in the canvas's frame toolbar) adds its few runtime
+   styles in this layer; declared first so Tailwind's layers and utilities win
+   over it. */
+@layer ui-sdk;
+
 @font-face {
   font-family: "Geist Sans";
   src: url("../../../shell/src/renderer/assets/Geist-Variable.woff2") format("woff2");
