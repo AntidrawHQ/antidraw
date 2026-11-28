@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import type { CanvasMirror } from "@/shared/canvas-mirror";
 import { useInspectorStore } from "@/renderer/inspector/store";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
+import { forkUnderWay } from "./use-create-workspace-flow";
 import { useSwitchWorkspace } from "./workspace-ops";
 
 // The main window, for coding agents outside the app (main/mcp): only this
@@ -52,7 +53,11 @@ export const useOutsideAgent = () => {
 
   useEffect(() => {
     const stops = [
-      window.electronAPI?.onOpenWorkspace?.((id) => void latest.current(id).catch(console.error)),
+      window.electronAPI?.onOpenWorkspace?.((id) => {
+        // Not under a fork: the tab is the fork's to take when it's done.
+        if (forkUnderWay()) return console.warn(`open_workspace ${id}: a fork is under way; not opened`);
+        void latest.current(id).catch(console.error);
+      }),
       // Shown to the user: off the dashboard, onto the workspace it's in.
       window.electronAPI?.onFocusComponent?.((name) => {
         const { setFocusComponentName, setDashboardShown } = useWorkspaceStore.getState();

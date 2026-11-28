@@ -150,6 +150,9 @@ beforeEach(() => {
 afterEach(async () => {
   act(() => root?.unmount());
   root = undefined;
+  // A test's own clipboard and main, not the next one's.
+  Reflect.deleteProperty(navigator, "clipboard");
+  Reflect.deleteProperty(window, "electronAPI");
   document.body.innerHTML = "";
   const { useWorkspaceStore } = await import("@/renderer/store/workspace");
   useWorkspaceStore.setState({ activeWorkspaceId: null, publishedSite: null, dashboardShown: false });
@@ -168,9 +171,11 @@ const launch = async (saved: string | null) => {
   const { useAutoSelectWorkspace } = await import("@/renderer/lib/workspace-ops");
   const { useWorkspaceStore } = await import("@/renderer/store/workspace");
   const { PublishedViewer } = await import("@/renderer/published/PublishedViewer");
+  const { useOutsideAgent } = await import("@/renderer/lib/outside-agent");
   // App.tsx's part in it, without the workspace view.
   const Window = () => {
     useAutoSelectWorkspace();
+    useOutsideAgent();
     const dashboardShown = useWorkspaceStore((s) => s.dashboardShown);
     const publishedSite = useWorkspaceStore((s) => s.publishedSite);
     return (
@@ -198,6 +203,14 @@ const launch = async (saved: string | null) => {
 };
 
 const text = (el: Element | null | undefined) => el?.textContent?.replace(/\s+/g, " ").trim() ?? null;
+// What's shown and read of it: without what's hidden from both (a label laid
+// under another only to hold the width).
+const seen = (el: Element | null | undefined) => {
+  if (!el) return null;
+  const copy = el.cloneNode(true) as Element;
+  copy.querySelectorAll('[aria-hidden="true"]').forEach((hidden) => hidden.remove());
+  return text(copy);
+};
 // The window's tabs: the titlebar's, not the dashboard's sections under it.
 const tabs = () =>
   [...document.querySelector('[role="tablist"]')!.querySelectorAll('[role="tab"]')].map(
@@ -820,10 +833,10 @@ const viewer = () => {
   if (!el) return null;
   const bar = siteBar();
   return {
-    bar: text(bar),
+    bar: seen(bar),
     frames: [...el.querySelectorAll("iframe")].map((frame) => frame.getAttribute("src")),
     controls: [...(bar?.querySelectorAll("button") ?? []), ...el.querySelectorAll("button")].map(
-      (b) => text(b) || b.getAttribute("aria-label") || b.getAttribute("title"),
+      (b) => seen(b) || b.getAttribute("aria-label") || b.getAttribute("title"),
     ),
   };
 };
@@ -909,12 +922,28 @@ it("opens a published site view-only in the one tab, in place of the workspace t
   };
 
   // Copied on the button itself for a moment, as the publish panel's Copy.
-  const writeText = vi.fn(async (_: string) => {});
+  let copies = true;
+  const writeText = vi.fn(async (_: string) => {
+    if (!copies) throw new DOMException("Document is not focused.", "NotAllowedError");
+  });
   Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
-  await click(button(/Copy link/));
-  steps["Copy link"] = { copied: writeText.mock.calls.flat(), button: text(button(/^Copied$/)) };
+  const copyButton = () => button(/Copy link/);
+  const said = () => text(siteBar()?.querySelector('[role="status"]'));
+  await click(copyButton());
+  steps["Copy link"] = { copied: writeText.mock.calls.flat(), button: seen(copyButton()), said: said() };
+  // Again before it's gone: read out again, and up for a whole moment from now.
+  await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 1000))));
+  await click(copyButton());
+  steps["again"] = { button: seen(copyButton()), said: said() };
+  await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 700))));
+  steps["0.7s after"] = seen(copyButton());
+  await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 800))));
+  steps["a moment later"] = { button: seen(copyButton()), said: said() };
+  // One that can't be copied says so.
+  copies = false;
+  await click(copyButton());
+  steps["it can't be copied"] = { button: seen(copyButton()), said: said() };
   await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 1500))));
-  steps["a moment later"] = text(button(/^Copy link$/));
 
   // The dashboard comes back on Published, with the site still in its tab.
   await click(document.querySelectorAll('[role="tab"]')[0]!);
@@ -948,11 +977,13 @@ it("opens a published site view-only in the one tab, in place of the workspace t
 
   expect(steps).toMatchInlineSnapshot(`
     {
+      "0.7s after": "Copied",
       "Copy link": {
         "button": "Copied",
         "copied": [
           "https://antidraw.com/s/paper-shaders",
         ],
+        "said": "Link copied",
       },
       "Dashboard tab": {
         "dashboard": true,
@@ -997,7 +1028,10 @@ it("opens a published site view-only in the one tab, in place of the workspace t
         "workspace": null,
         "workspaceControls": false,
       },
-      "a moment later": "Copy link",
+      "a moment later": {
+        "button": "Copy link",
+        "said": "",
+      },
       "a workspace in its place": {
         "dashboard": false,
         "saved": [
@@ -1012,6 +1046,10 @@ it("opens a published site view-only in the one tab, in place of the workspace t
         "workspace": "w-shaders",
         "workspaceControls": true,
       },
+      "again": {
+        "button": "Copied",
+        "said": "Link copied again",
+      },
       "closed": {
         "dashboard": true,
         "tabs": [
@@ -1020,6 +1058,10 @@ it("opens a published site view-only in the one tab, in place of the workspace t
         "viewer": null,
         "workspace": null,
         "workspaceControls": false,
+      },
+      "it can't be copied": {
+        "button": "Not copied",
+        "said": "The link couldn't be copied",
       },
       "one that can't be loaded": {
         "tabs": [
@@ -1149,6 +1191,13 @@ it("forks a published site from its row or from the viewer, showing how it goes,
     failed: text(dialog()?.querySelector('[role="alert"]')),
     log: [...(dialog()?.querySelectorAll(".font-mono") ?? [])].map(text),
   });
+  // Main's open_workspace, as a coding agent outside the app asks it.
+  let openWorkspace: ((id: string) => void) | undefined;
+  Object.defineProperty(window, "electronAPI", {
+    value: { onOpenWorkspace: (on: (id: string) => void) => ((openWorkspace = on), () => {}) },
+    configurable: true,
+  });
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
   const store = await launch("");
   const steps: Record<string, unknown> = {};
 
@@ -1187,7 +1236,7 @@ it("forks a published site from its row or from the viewer, showing how it goes,
   await click(rows()[0]!);
   steps["in the viewer"] = {
     tabs: tabs(),
-    bar: text(siteBar()),
+    bar: seen(siteBar()),
     stopped: api.stopDevServer.mock.calls.flat(),
   };
   // Its progress on a card over the canvas, and Fork held while it runs.
@@ -1204,6 +1253,7 @@ it("forks a published site from its row or from the viewer, showing how it goes,
       title: text(el.querySelector(".truncate")),
       steps: marks,
       failed: text(el.querySelector('[role="alert"]')),
+      said: text(el.querySelector('[role="status"]')),
       // Modal to the window: the titlebar's tabs can't be used under it.
       modal: !!dialog() && document.body.style.pointerEvents === "none",
       titlebarHidden: !!document.querySelector(".drag-region")?.closest('[aria-hidden="true"]'),
@@ -1232,10 +1282,29 @@ it("forks a published site from its row or from the viewer, showing how it goes,
   steps["viewer: Escape while it runs"] = !!card();
   await next("fetched");
   steps["viewer: it fails"] = card();
+  // Put away once it has failed: the keys back on Fork, and Fork can be had again.
+  await escape();
+  steps["viewer: Escape once it has failed"] = {
+    card: !!card(),
+    focusOnFork: document.activeElement === forkOf("Paper Shaders"),
+    forkHeld: forkOf("Paper Shaders").disabled,
+  };
+  await click(forkOf("Paper Shaders"));
+  await next("fetched");
+  steps["viewer: forked again, it fails"] = card()?.failed;
   fails = false;
   await click(button(/^Try again$/));
   await next("fetched");
   steps["viewer: installing"] = card();
+  // An agent outside the app can't take the tab from under it either.
+  await act(async () => openWorkspace!("w-2"));
+  await settle();
+  steps["viewer: an agent's open_workspace under it"] = {
+    card: !!card(),
+    tabs: tabs(),
+    workspace: store.getState().activeWorkspaceId,
+    warned: warn.mock.calls.flat(),
+  };
   await next("installed");
   steps["viewer: done"] = card();
   await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 700))));
@@ -1270,6 +1339,7 @@ it("forks a published site from its row or from the viewer, showing how it goes,
       "forked from the viewer": {
         "dashboard": false,
         "forks": [
+          "s-shaders",
           "s-shaders",
           "s-shaders",
           "s-shaders",
@@ -1327,27 +1397,46 @@ it("forks a published site from its row or from the viewer, showing how it goes,
         "said": "Installing packages…",
         "title": "Forking Paper Shaders",
       },
+      "viewer: Escape once it has failed": {
+        "card": false,
+        "focusOnFork": true,
+        "forkHeld": false,
+      },
       "viewer: Escape while it runs": true,
+      "viewer: an agent's open_workspace under it": {
+        "card": true,
+        "tabs": [
+          "○ Dashboard",
+          "● Paper Shaders",
+        ],
+        "warned": [
+          "open_workspace w-2: a fork is under way; not opened",
+        ],
+        "workspace": null,
+      },
       "viewer: done": {
         "failed": null,
         "focus": "the card",
         "forkHeld": true,
         "modal": true,
+        "said": "Forked",
         "steps": [
-          "✓ Pulling the source of v5",
+          "✓ Pulling the site's source",
           "✓ Installing packages",
           "✓ Starting the canvas",
         ],
         "title": "Forking Paper Shaders",
         "titlebarHidden": true,
       },
+      "viewer: forked again, it fails": "Couldn't fetch the site's source (503). Try again.",
       "viewer: forking": {
         "failed": null,
         "focus": "the card",
         "forkHeld": true,
         "modal": true,
+        "said": "Pulling the site's source…",
         "steps": [
-          "● Pulling the source of v5",
+          "● Pulling the site's source",
           "○ Installing packages",
           "○ Starting the canvas",
         ],
@@ -1359,8 +1448,9 @@ it("forks a published site from its row or from the viewer, showing how it goes,
         "focus": "the card",
         "forkHeld": true,
         "modal": true,
+        "said": "Installing packages…",
         "steps": [
-          "✓ Pulling the source of v5",
+          "✓ Pulling the site's source",
           "● Installing packages",
           "○ Starting the canvas",
         ],
@@ -1372,8 +1462,9 @@ it("forks a published site from its row or from the viewer, showing how it goes,
         "focus": "Try again",
         "forkHeld": true,
         "modal": true,
+        "said": "Pulling the site's source failed",
         "steps": [
-          "✗ Pulling the source of v5",
+          "✗ Pulling the site's source",
           "○ Installing packages",
           "○ Starting the canvas",
         ],

@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CreateWorkspaceStatusCode, ForkStatus, Workspace } from "@/main/api";
 import { useCreateWorkspace, useForkSite } from "@/renderer/lib/workspace-ops";
 
@@ -137,13 +137,27 @@ export const useCreateWorkspaceFlow = (options?: WorkspaceFlowOptions) => {
   );
 };
 
+// How many forks are under way, from their start until the tab is the fork
+// (or they've failed). While any is, nothing outside the user's hands may
+// change what the tab holds (outside-agent.ts): the fork's outcome is told
+// to the view that started it, and is lost if that view goes.
+let forksUnderWay = 0;
+export const forkUnderWay = () => forksUnderWay > 0;
+
 /** A new workspace forked from a published site: `start(siteId)`. */
 export const useForkSiteFlow = (options?: WorkspaceFlowOptions) => {
   const { mutate, isPending } = useForkSite();
-  return useWorkspaceFlow<ForkStatus>(
+  const flow = useWorkspaceFlow<ForkStatus>(
     (siteId, onProgress, callbacks) => mutate({ siteId, onProgress }, callbacks),
     isPending,
     "FETCHING_SOURCE",
     options,
   );
+  const underWay = flow.status !== "idle" && flow.status !== "error";
+  useEffect(() => {
+    if (!underWay) return;
+    forksUnderWay++;
+    return () => void forksUnderWay--;
+  }, [underWay]);
+  return flow;
 };

@@ -125,38 +125,51 @@ const ViewOnly = ({ site }: { site: PublishedSite }) => {
     timer.current = setTimeout(() => setOpen(to), ms);
   };
   useEffect(() => () => clearTimeout(timer.current), []);
+  // Hover and focus content can be put away where it is, wherever the keys
+  // are (WCAG 1.4.13): a card the pointer opened hasn't the focus.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      clearTimeout(timer.current);
+      setOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open]);
 
   return (
     <div
       className="relative min-w-0 max-[720px]:hidden"
       onMouseEnter={() => later(true, OPEN_MS)}
-      onMouseLeave={() => later(false, CLOSE_MS)}
+      // Open while either is on it: the pointer leaving doesn't close a card
+      // the focus is on.
+      onMouseLeave={(e) => !e.currentTarget.contains(document.activeElement) && later(false, CLOSE_MS)}
       onFocus={() => {
         // A close the pointer scheduled doesn't outlast the focus.
         clearTimeout(timer.current);
         setOpen(true);
       }}
       onBlur={(e) => !e.currentTarget.contains(e.relatedTarget) && setOpen(false)}
-      // Hover and focus content can be put away where it is (WCAG 1.4.13).
-      onKeyDown={(e) => {
-        if (e.key !== "Escape" || !open) return;
-        clearTimeout(timer.current);
-        setOpen(false);
-      }}
     >
       <span
         tabIndex={0}
         aria-describedby="view-only-card"
         className={cn(
-          "flex h-[26px] min-w-0 cursor-default items-center gap-1.5 rounded-lg px-2 text-[12.5px] transition-colors outline-none",
+          // Its focus shows with the card put away, too.
+          "flex h-[26px] min-w-0 cursor-default items-center gap-1.5 rounded-lg px-2 text-[12.5px] transition-colors outline-none focus-visible:bg-white/[0.06] focus-visible:text-[#e0e0e0]",
           open ? "bg-white/[0.06] text-[#e0e0e0]" : "text-[#9a9a9a] hover:text-[#e0e0e0]",
         )}
       >
         <Svg size={13} sw={2} className="shrink-0">
           {ic.eye}
         </Svg>
-        {/* ago() is written to stand alone: "Just now" mid-sentence is "just now". */}
-        <span className="truncate">View only · Published {ago(site.publishedAt).replace(/^Just/, "just")}</span>
+        <span className="truncate">
+          View only
+          {/* When, only where there's room for it beside the site's tab. ago()
+              is written to stand alone: "Just now" mid-sentence is "just now". */}
+          <span className="max-[960px]:hidden"> · Published {ago(site.publishedAt).replace(/^Just/, "just")}</span>
+        </span>
       </span>
 
       {open && (
@@ -182,62 +195,94 @@ const ViewOnly = ({ site }: { site: PublishedSite }) => {
   );
 };
 
+// What Copy link last did, for a moment: each copy its own, so a second one
+// keeps it up and is read out again.
+type Copy = { said: "copied" | "failed"; n: number } | null;
+
+const COPY_LABELS = { idle: "Copy link", copied: "Copied", failed: "Not copied" } as const;
+
 // The titlebar's right side for a published site: View only and when it was
 // published, then Copy link, and Fork as the primary action.
 const SiteDetails = ({
   site,
   forking,
-  copied,
+  copy,
   onCopy,
   onFork,
+  forkRef,
 }: {
   site: PublishedSite;
   forking: boolean;
-  copied: boolean;
+  copy: Copy;
   onCopy: () => void;
   onFork: () => void;
-}) => (
-  <>
-    <ViewOnly site={site} />
-    <span className="mx-1 h-4 w-px bg-[#3a3a3a] max-[720px]:hidden" />
-    {/* Its width held, so Fork doesn't move when it reads Copied. As the
-        publish panel's Copy: Copied on the button for a moment, no toast. */}
-    <button
-      onClick={onCopy}
-      className="flex h-[26px] min-w-[94px] shrink-0 cursor-default items-center justify-center gap-1.5 rounded-lg bg-white/[0.06] px-2.5 text-[13px] font-medium text-[#e0e0e0] transition-colors hover:bg-white/[0.1]"
-    >
-      {copied ? (
-        <Check size={13} strokeWidth={2.5} className="text-neutral-400" />
-      ) : (
+  forkRef: React.Ref<HTMLButtonElement>;
+}) => {
+  const said = copy?.said ?? "idle";
+  return (
+    <>
+      <ViewOnly site={site} />
+      <span className="mx-1 h-4 w-px bg-[#3a3a3a] max-[720px]:hidden" />
+      {/* As the publish panel's Copy: what happened on the button for a
+          moment, no toast. Each label is laid in the same cell, the ones not
+          showing hidden, so the button is as wide as the widest and nothing
+          beside it moves. */}
+      <button
+        onClick={onCopy}
+        className="flex h-[26px] shrink-0 cursor-default items-center justify-center gap-1.5 rounded-lg bg-white/[0.06] px-2.5 text-[13px] font-medium text-[#e0e0e0] transition-colors hover:bg-white/[0.1]"
+      >
+        {said === "copied" ? (
+          <Check size={13} strokeWidth={2.5} className="text-neutral-400" />
+        ) : (
+          <Svg size={13} sw={2}>
+            {said === "failed" ? ic.close : ic.link}
+          </Svg>
+        )}
+        <span className="grid">
+          {(Object.keys(COPY_LABELS) as (keyof typeof COPY_LABELS)[]).map((key) => (
+            <span
+              key={key}
+              data-copy-label
+              className={cn("col-start-1 row-start-1 text-center", key !== said && "invisible")}
+              aria-hidden={key !== said || undefined}
+            >
+              {COPY_LABELS[key]}
+            </span>
+          ))}
+        </span>
+      </button>
+      {/* The button's new name isn't read out on its own. */}
+      <span role="status" className="sr-only">
+        {copy?.said === "copied"
+          ? copy.n % 2
+            ? "Link copied"
+            : "Link copied again"
+          : copy?.said === "failed"
+            ? "The link couldn't be copied"
+            : ""}
+      </span>
+      {/* Publish's shape: the one primary action, as Publish is a workspace's. */}
+      <button
+        ref={forkRef}
+        onClick={onFork}
+        disabled={forking || !site.forkable}
+        title={site.forkable ? undefined : NOT_FORKABLE}
+        aria-label={`Fork ${site.title}`}
+        className="flex h-[26px] min-w-[72px] shrink-0 cursor-default items-center justify-center gap-1.5 rounded-lg bg-[#e0e0e0] px-2.5 text-[13px] font-medium text-neutral-900 transition-colors hover:bg-white disabled:opacity-60 disabled:hover:bg-[#e0e0e0]"
+      >
         <Svg size={13} sw={2}>
-          {ic.link}
+          {ic.fork}
         </Svg>
-      )}
-      {copied ? "Copied" : "Copy link"}
-    </button>
-    {/* The button's new name isn't read out on its own. */}
-    <span role="status" className="sr-only">
-      {copied ? "Link copied" : ""}
-    </span>
-    {/* Publish's shape: the one primary action, as Publish is a workspace's. */}
-    <button
-      onClick={onFork}
-      disabled={forking || !site.forkable}
-      title={site.forkable ? undefined : NOT_FORKABLE}
-      aria-label={`Fork ${site.title}`}
-      className="flex h-[26px] min-w-[72px] shrink-0 cursor-default items-center justify-center gap-1.5 rounded-lg bg-[#e0e0e0] px-2.5 text-[13px] font-medium text-neutral-900 transition-colors hover:bg-white disabled:opacity-60 disabled:hover:bg-[#e0e0e0]"
-    >
-      <Svg size={13} sw={2}>
-        {ic.fork}
-      </Svg>
-      Fork
-    </button>
-  </>
-);
+        Fork
+      </button>
+    </>
+  );
+};
 
-// The fork's steps, as main reports them (main/services/fork.ts).
-const FORK_STEPS = (site: PublishedSite): { key: ForkStatus; label: string }[] => [
-  { key: "FETCHING_SOURCE", label: `Pulling the source of v${site.version}` },
+// The fork's steps, as main reports them (main/services/fork.ts). No version:
+// main forks the site's live one, which may be newer than the one shown.
+const FORK_STEPS: { key: ForkStatus; label: string }[] = [
+  { key: "FETCHING_SOURCE", label: "Pulling the site's source" },
   { key: "INSTALLING_DEPENDENCIES", label: "Installing packages" },
   { key: "SAVING_WORKSPACE", label: "Starting the canvas" },
 ];
@@ -252,7 +297,8 @@ const FORKED_MS = 600;
 // Drawn over the canvas, but modal to the whole window, as the rows' fork
 // dialog is: until it's done or has failed, nothing else can be used, the
 // titlebar's tabs included. So the site can't be left, or another put in its
-// place, under a fork of it, and the fork's outcome always lands here.
+// place, under a fork of it; and nor can a coding agent outside the app do it
+// (forkUnderWay, lib/outside-agent.ts). The fork's outcome lands here.
 const ForkCard = ({
   container,
   site,
@@ -261,6 +307,7 @@ const ForkCard = ({
   errorMessage,
   onRetry,
   onClose,
+  onClosed,
 }: {
   container: HTMLElement | null;
   site: PublishedSite;
@@ -269,8 +316,10 @@ const ForkCard = ({
   errorMessage: string | null;
   onRetry: () => void;
   onClose: () => void;
+  // Where the keys go once it's put away: it has no trigger of its own.
+  onClosed: () => void;
 }) => {
-  const steps = FORK_STEPS(site);
+  const steps = FORK_STEPS;
   const failed = status === "error";
   const at =
     status === "done"
@@ -286,14 +335,28 @@ const ForkCard = ({
             aria-describedby={undefined}
             onEscapeKeyDown={closeIfFailed}
             onPointerDownOutside={closeIfFailed}
+            onCloseAutoFocus={(e) => {
+              e.preventDefault();
+              onClosed();
+            }}
             className="w-[340px] rounded-[12px] bg-[#2c2c2c] p-5 shadow-[0_0_0_1px_#2d2d2d,0_20px_48px_-8px_rgba(0,0,0,0.75)] outline-none"
           >
             <DialogPrimitive.Title className="mb-4 flex items-center gap-2 text-[15px] font-normal text-[#e0e0e0]">
               <Svg size={15}>{ic.fork}</Svg>
               <span className="truncate">Forking {site.title}</span>
             </DialogPrimitive.Title>
-            {/* The steps alone are read out as they change, not the buttons. */}
-            <div role="status" className="space-y-2.5">
+            {/* What's read out as it goes: the marks beside the steps say it
+                only to the eye. As CreateWorkspaceProgress has it. */}
+            <div role="status" className="sr-only">
+              {status === "done"
+                ? "Forked"
+                : failed
+                  ? `${steps[at]?.label ?? "The fork"} failed`
+                  : steps[at]
+                    ? `${steps[at].label}…`
+                    : ""}
+            </div>
+            <div className="space-y-2.5">
               {steps.map((step, i) => {
                 const done = i < at;
                 const active = i === at;
@@ -357,7 +420,8 @@ export const PublishedViewer = ({ site }: { site: PublishedSite }) => {
   const dashboardShown = useWorkspaceStore((s) => s.dashboardShown);
   const slot = useTitlebarSlot((s) => s.el);
   const [canvasEl, setCanvasEl] = useState<HTMLDivElement | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [copy, setCopy] = useState<Copy>(null);
+  const forkButton = useRef<HTMLButtonElement>(null);
   // The site being forked: the card's words and Try again are its, whatever
   // the tab shows.
   const [forked, setForked] = useState<PublishedSite | null>(null);
@@ -376,17 +440,20 @@ export const PublishedViewer = ({ site }: { site: PublishedSite }) => {
   });
   const forking = status !== "idle";
 
+  // Each copy keeps it up for the whole moment.
   useEffect(() => {
-    if (!copied) return;
-    const id = setTimeout(() => setCopied(false), COPIED_MS);
+    if (!copy) return;
+    const id = setTimeout(() => setCopy(null), COPIED_MS);
     return () => clearTimeout(id);
-  }, [copied]);
+  }, [copy]);
 
-  // Copied only once it is.
+  // Copied only once it is; and if it can't be, saying so.
   const copyLink = () => {
-    navigator.clipboard?.writeText(site.url).then(
-      () => setCopied(true),
-      () => {},
+    const said = (said: "copied" | "failed") => setCopy((last) => ({ said, n: (last?.n ?? 0) + 1 }));
+    if (!navigator.clipboard) return said("failed");
+    navigator.clipboard.writeText(site.url).then(
+      () => said("copied"),
+      () => said("failed"),
     );
   };
 
@@ -408,7 +475,14 @@ export const PublishedViewer = ({ site }: { site: PublishedSite }) => {
       {slot &&
         createPortal(
           <div style={NO_DRAG} className={cn("flex min-w-0 items-center gap-2", dashboardShown && "hidden")}>
-            <SiteDetails site={site} forking={forking} copied={copied} onCopy={copyLink} onFork={fork} />
+            <SiteDetails
+              site={site}
+              forking={forking}
+              copy={copy}
+              onCopy={copyLink}
+              onFork={fork}
+              forkRef={forkButton}
+            />
           </div>,
           slot,
         )}
@@ -424,6 +498,7 @@ export const PublishedViewer = ({ site }: { site: PublishedSite }) => {
             errorMessage={errorMessage}
             onRetry={() => !isCreating && start(forked.id)}
             onClose={close}
+            onClosed={() => forkButton.current?.focus()}
           />
         )}
       </div>
