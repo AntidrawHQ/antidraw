@@ -56,20 +56,25 @@ function FileUpload({
       e.stopPropagation()
     }
 
+    // Disabled, a drop is still swallowed (or the window would navigate to
+    // the file), but shows nothing and adds nothing.
     const handleDragIn = (e: DragEvent) => {
       handleDrag(e)
+      if (disabled) return
       dragCounter.current++
       if (e.dataTransfer?.items.length) setIsDragging(true)
     }
 
     const handleDragOut = (e: DragEvent) => {
       handleDrag(e)
+      if (disabled) return
       dragCounter.current--
       if (dragCounter.current === 0) setIsDragging(false)
     }
 
     const handleDrop = (e: DragEvent) => {
       handleDrag(e)
+      if (disabled) return
       setIsDragging(false)
       dragCounter.current = 0
       if (e.dataTransfer?.files.length) {
@@ -88,7 +93,14 @@ function FileUpload({
       window.removeEventListener("dragover", handleDrag)
       window.removeEventListener("drop", handleDrop)
     }
-  }, [handleFiles, onFilesAdded, multiple])
+  }, [handleFiles, onFilesAdded, multiple, disabled])
+
+  // Disabled mid-drag: the overlay goes, and the count starts over.
+  useEffect(() => {
+    if (!disabled) return
+    setIsDragging(false)
+    dragCounter.current = 0
+  }, [disabled])
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files?.length) {

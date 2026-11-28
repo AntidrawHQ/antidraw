@@ -1,4 +1,4 @@
-import { createFileRoute, Outlet } from "@tanstack/react-router";
+import { createFileRoute, Outlet, useMatch } from "@tanstack/react-router";
 import { Toaster } from "sonner";
 import { TooltipProvider } from "@/renderer/components/ui/tooltip";
 import { Titlebar } from "@/renderer/components/titlebar";
@@ -11,11 +11,13 @@ const MainLayout = () => {
   // Single "update-downloaded" subscription for the app, plus the toast it drives.
   useUpdateSubscription();
   useUpdateToast();
+  // The tabs are the app's, past sign-in and onboarding.
+  const onApp = !!useMatch({ from: "/_main/_authed/", shouldThrow: false });
 
   return (
     <TooltipProvider>
       <div className="flex h-screen w-full flex-col">
-        <Titlebar />
+        <Titlebar tabs={onApp} />
 
         <div className="flex-1 overflow-hidden">
           <Outlet />

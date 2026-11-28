@@ -73,6 +73,7 @@ const WorkspaceCanvas = ({
   // Inspect and Comment pick in the frames themselves.
   const picking = useCanvasTool() !== "pointer";
   const onFrameActivity = useCanvasThumbnail(workspaceId);
+  const dashboardShown = useWorkspaceStore((s) => s.dashboardShown);
 
   const frameUrl = useCallback(
     (componentName: string) =>
@@ -102,6 +103,7 @@ const WorkspaceCanvas = ({
       onRefresh={trackRefresh}
       frameLayer={renderFrameLayers}
       framesTakePointer={picking}
+      keysOff={dashboardShown}
       className={className}
     >
       <FocusRequestedComponent />

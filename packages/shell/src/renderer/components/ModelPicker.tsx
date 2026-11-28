@@ -85,7 +85,7 @@ export default function ModelPicker({
         </button>
       </PopoverTrigger>
 
-      {/* antidraw WorkspaceSwitcher menu surface: #2c2c2c card, #2d2d2d border,
+      {/* antidraw's menu surface: #2c2c2c card, #2d2d2d border,
           rounded-lg, shadow-lg. Scoped `dark` + explicit colors so it holds up
           once portaled out of the composer's dark wrapper. */}
       <PopoverContent

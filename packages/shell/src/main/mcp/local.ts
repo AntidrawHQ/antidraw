@@ -9,6 +9,7 @@ import {
   listComments,
 } from "@/main/api/services/comment.service";
 import { listEdits, markEditsWritten } from "@/main/api/services/edit.service";
+import type { CanvasMirror } from "@/shared/canvas-mirror";
 import { getMirror, waitForMirror } from "./canvas-mirror";
 import type { CanvasState, WorkspaceHost } from "./types";
 
@@ -57,9 +58,11 @@ export const localCanvasState = (getWindow: () => AppWindow | null, openTimeoutM
     openWorkspace: async (workspaceId) => {
       const win = window();
       if (!win) return err({ message: "Antidraw's main window is closed" });
-      if (getMirror().activeWorkspaceId === workspaceId) return ok(undefined);
+      // In view: in the tab, and not under the dashboard.
+      const inView = (m: CanvasMirror) => m.activeWorkspaceId === workspaceId && !m.dashboardShown;
+      if (inView(getMirror())) return ok(undefined);
       win.webContents.send("mcp:open-workspace", workspaceId);
-      const opened = await waitForMirror((m) => m.activeWorkspaceId === workspaceId, openTimeoutMs);
+      const opened = await waitForMirror(inView, openTimeoutMs);
       return opened ? ok(undefined) : err({ message: `Antidraw didn't switch to workspace ${workspaceId} in time` });
     },
     focusComponent: async (name) => {

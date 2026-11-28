@@ -134,6 +134,8 @@ export const CommentFlow = () => {
       // Optional: a renderer hot-reloaded over an older preload lacks it.
       window.electronAPI.onCommentsShown?.((request) => {
         if (request.workspaceId !== workspaceId) return;
+        // What it asks to show is on this canvas: off the dashboard onto it.
+        useWorkspaceStore.getState().setDashboardShown(false);
         const { commentId, send, chat } = request;
         void (async () => {
           const queryKey = queryKeys.comments.byWorkspace(workspaceId);

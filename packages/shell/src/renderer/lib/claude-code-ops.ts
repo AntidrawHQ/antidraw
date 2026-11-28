@@ -7,7 +7,7 @@ import type {
 import type { ImageAttachment } from "@/shared/utils/message";
 import { createUserSDKMessage } from "@/shared/utils/message";
 import { mutationOptions, queryOptions, useMutation, useQuery, useQueryClient, skipToken } from "@tanstack/react-query";
-import type { QueryClient } from "@tanstack/react-query";
+import { QueryObserver, type QueryClient, type QueryObserverOptions } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef } from "react";
 import { useWorkspaceStore } from "@/renderer/store/workspace";
 import type { ToolPart } from "@/renderer/components/ui/tool";
@@ -103,7 +103,16 @@ export const openConversationSubscription = (
     queryKey: queryKeys.conversations.failedMessageIds(conversationId),
   });
   subscribeToStream(conversationId, queryClient);
-  return () => releaseStream(conversationId);
+  // The stream's mirrors are kept for as long as it's held, on screen or not.
+  // Only the stream writes them, and only as they change: one dropped from
+  // the cache while no chat showed it (past gcTime, with the chat panel
+  // swapped out) would come back empty, and an open question with it,
+  // leaving the CLI waiting on a card that can't be answered.
+  const held = holdMirrors(conversationId, queryClient);
+  return () => {
+    held.forEach((stop) => stop());
+    releaseStream(conversationId);
+  };
 };
 
 // No staleTime on purpose. The list view mounts only when the user opens it
@@ -151,15 +160,16 @@ export const useToolMap = (conversationId: string | null) => {
 
 // Reads the live in-flight content block from the cache.
 // Populated imperatively by stream-subscription's reducer; queryFn is a noop.
-export const useLivePartial = (conversationId: string | null) => {
-  return useQuery<LivePartial | null>({
+const livePartialQuery = (conversationId: string | null) =>
+  queryOptions<LivePartial | null>({
     queryKey: queryKeys.conversations.livePartial(conversationId),
     queryFn: () => null,
     enabled: false,
     initialData: null,
     staleTime: Infinity,
   });
-};
+export const useLivePartial = (conversationId: string | null) =>
+  useQuery(livePartialQuery(conversationId));
 
 // The CLI's live model catalog. One fetch per session, cached forever:
 // the catalog is pinned to the bundled CLI binary, which can only change
@@ -183,28 +193,30 @@ export const useSupportedModels = () => {
 // userMessageIds the backend has handed the CLI but the CLI has not acked.
 // Mirror-only: the sole writer is stream-subscription applying the backend's
 // `queue` snapshots. Nothing is persisted; a refetch clears it.
-export const useQueuedMessageIds = (conversationId: string | null) => {
-  return useQuery<string[]>({
+const queuedMessageIdsQuery = (conversationId: string | null) =>
+  queryOptions<string[]>({
     queryKey: queryKeys.conversations.queuedMessageIds(conversationId),
     queryFn: () => [],
     enabled: false,
     initialData: [],
     staleTime: Infinity,
   });
-};
+export const useQueuedMessageIds = (conversationId: string | null) =>
+  useQuery(queuedMessageIdsQuery(conversationId));
 
 // tool_use ids of the questions the CLI is blocked on. Mirror-only, like the
 // queue: the sole writer is stream-subscription applying the backend's
 // `questions` snapshots, seeded on every attach.
-export const usePendingQuestionIds = (conversationId: string | null) => {
-  return useQuery<string[]>({
+const pendingQuestionIdsQuery = (conversationId: string | null) =>
+  queryOptions<string[]>({
     queryKey: queryKeys.conversations.pendingQuestionIds(conversationId),
     queryFn: () => [],
     enabled: false,
     initialData: [],
     staleTime: Infinity,
   });
-};
+export const usePendingQuestionIds = (conversationId: string | null) =>
+  useQuery(pendingQuestionIdsQuery(conversationId));
 
 // Drops a question from the mirror once the backend has settled it. The
 // `questions` event that follows says the same; this only spares the card a
@@ -278,14 +290,29 @@ export type SendIntent = "queue" | "direct";
 // it, and the deck must hold it from the start. And every follow-up to a live
 // CLI passes through the queue, idle or not — an idle send is listed for the
 // few milliseconds its ack takes, and must not flash through the deck.
-export const useSendIntents = (conversationId: string | null) => {
-  return useQuery<Record<string, SendIntent>>({
+const sendIntentsQuery = (conversationId: string | null) =>
+  queryOptions<Record<string, SendIntent>>({
     queryKey: queryKeys.conversations.sendIntents(conversationId),
     queryFn: () => ({}),
     enabled: false,
     initialData: {},
     staleTime: Infinity,
   });
+export const useSendIntents = (conversationId: string | null) =>
+  useQuery(sendIntentsQuery(conversationId));
+
+// Observes what only the stream writes (see openConversationSubscription),
+// with the hooks' own options: whichever observes first makes the query.
+// Returns the stops.
+const holdMirrors = (conversationId: string, queryClient: QueryClient) => {
+  const hold = <T,>(options: QueryObserverOptions<T, Error, T, T, readonly unknown[]>) =>
+    new QueryObserver(queryClient, options).subscribe(() => {});
+  return [
+    hold(livePartialQuery(conversationId)),
+    hold(queuedMessageIdsQuery(conversationId)),
+    hold(pendingQuestionIdsQuery(conversationId)),
+    hold(sendIntentsQuery(conversationId)),
+  ];
 };
 
 // userMessageIds the CLI never received: persisted, never acked, and not held

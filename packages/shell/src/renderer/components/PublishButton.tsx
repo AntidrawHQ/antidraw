@@ -80,9 +80,14 @@ function GoogleG({ size = 16 }: { size?: number }) {
 export const PublishButton = ({
   workspaceId,
   workspaceName,
+  hidden = false,
 }: {
   workspaceId: string;
   workspaceName: string;
+  // Out of sight (the dashboard is showing) with a flow maybe under way: a
+  // panel it comes to waits until the button is back, rather than opening
+  // anchored to nothing over the dashboard. Its toasts still show.
+  hidden?: boolean;
 }) => {
   const reduce = !!useReducedMotion();
   const [step, setStep] = useState<Step>("closed");
@@ -307,7 +312,8 @@ export const PublishButton = ({
 
   // A retry of the account check keeps the panel it came from.
   const rechecking = step === "checking" && failure?.retry === "publish";
-  const panelOpen = step === "signin" || step === "waiting" || step === "error" || rechecking;
+  const panelOpen =
+    !hidden && (step === "signin" || step === "waiting" || step === "error" || rechecking);
   const busy = step === "waiting";
   const retryingPublish = failure?.retry === "publish";
 

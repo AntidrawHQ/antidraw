@@ -28,6 +28,7 @@ import { runMigrations } from "./db/migrate";
 import { isNewInstall, shutdownPostHog, track } from "./lib/posthog";
 import { isRendererEvent, toAnalyticsProperties } from "@/shared/analytics";
 import { listWorkspaces } from "./api/services/workspace.service";
+import { setGlobalPreference } from "./api/services/preference.service";
 import { APP_KEY, APP_KEY_ARG } from "@/main/lib/app-key";
 import { injectFrameAgent } from "./frame-agent";
 import { trustsCertificateErrorOn, verifyCertificate } from "@/main/lib/certificate-verify";
@@ -108,10 +109,11 @@ const createWindow = () => {
   const win = new BrowserWindow({
     width: 900,
     height: 670,
-    // The titlebar's workspace switcher and Publish button need the room.
+    // The titlebar's tabs and Publish button need the room.
     minWidth: 480,
     titleBarStyle: "hidden",
-    trafficLightPosition: { x: 12, y: 13 },
+    // Centred in the titlebar's 46px (renderer/components/titlebar.tsx).
+    trafficLightPosition: { x: 12, y: 17 },
     backgroundColor: "#0a0a0a",
     webPreferences: {
       preload: path.join(__dirname, "../preload/preload.cjs"),
@@ -274,8 +276,13 @@ app.whenReady().then(async () => {
   // forward, show the comment, and with `send`, send the drafts there. With
   // the main window closed (macOS keeps the app open), it's opened again,
   // and its canvas asks for the request once it listens ("comments:pending").
-  let pendingShow: object | null = null;
-  ipcMain.handle("comments:show", (event, request: unknown) => {
+  // It opens on the comment's workspace. On the dashboard no canvas would
+  // ask, and the request would wait for the next workspace opened, to show
+  // and send there unasked (on another workspace, its canvas would take the
+  // request and drop it). So it's held only as long as a window takes to open.
+  let pendingShow: { shown: object; at: number } | null = null;
+  const PENDING_SHOW_MS = 30_000;
+  ipcMain.handle("comments:show", async (event, request: unknown) => {
     if (!previewWindows.has(event.sender)) return;
     const { workspaceId, commentId, send, chat } = (request ?? {}) as {
       workspaceId?: unknown;
@@ -291,8 +298,11 @@ app.whenReady().then(async () => {
       ...(typeof chat === "string" && UUID_RE.test(chat) && { chat }),
     };
     if (!mainWindow) {
-      pendingShow = shown;
-      createWindow();
+      pendingShow = { shown, at: Date.now() };
+      // What the window opens on (renderer/lib/workspace-ops.ts).
+      await setGlobalPreference("activeWorkspaceId", workspaceId);
+      // Another request may have opened it meanwhile.
+      if (!mainWindow) createWindow();
       return;
     }
     if (mainWindow.isMinimized()) mainWindow.restore();
@@ -302,9 +312,9 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle("comments:pending", (event) => {
     if (!mainWindow || event.sender !== mainWindow.webContents) return null;
-    const shown = pendingShow;
+    const pending = pendingShow;
     pendingShow = null;
-    return shown;
+    return pending && Date.now() - pending.at < PENDING_SHOW_MS ? pending.shown : null;
   });
 
   // The main window's canvas, as the workspace's thumbnail. `rect` is the

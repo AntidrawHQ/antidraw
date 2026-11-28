@@ -582,6 +582,8 @@ function Composer({
   const [input, setInput] = useState("");
   const [attachedImages, setAttachedImages] = useState<File[]>([]);
   const isLoading = isSendPending || isStreaming;
+  // Under the dashboard, a file dropped on the window isn't for this chat.
+  const dashboardShown = useWorkspaceStore((s) => s.dashboardShown);
 
   const handleFilesAdded = (files: File[]) => {
     const imageFiles = files.filter((f) =>
@@ -658,7 +660,7 @@ function Composer({
   };
 
   return (
-    <FileUpload onFilesAdded={handleFilesAdded} accept="image/*">
+    <FileUpload onFilesAdded={handleFilesAdded} accept="image/*" disabled={dashboardShown}>
       <div className="p-4 pt-2">
         {streamFailed && <StreamError onReconnect={onReconnect} />}
         <PromptInput

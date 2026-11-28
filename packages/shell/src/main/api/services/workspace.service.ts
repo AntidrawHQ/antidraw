@@ -1,6 +1,7 @@
 import { workspaces } from "@/main/api/models/workspace.model";
+import { conversations, messages } from "@/main/api/models/chat.model";
 import { db } from "@/main/db";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { ok, err } from "neverthrow";
 import fs from "node:fs/promises";
 import {
@@ -9,6 +10,7 @@ import {
   getWorkspacesPath,
 } from "@/main/api/init";
 import { getThumbnailVersion } from "@/main/services/thumbnail.service";
+import { endConversation } from "@/main/lib/conversation-store/store";
 import {
   npmCreate,
   npmInstall,
@@ -123,25 +125,57 @@ export const createWorkspace = async function* (
   }
 };
 
-// A workspace with its thumbnail's version (null: none yet), for the viewer.
+// A workspace as the dashboard lists it: with its thumbnail's version (null:
+// none yet) and when it was last worked in.
 export type WorkspaceWithThumbnail = typeof workspaces.$inferSelect & {
   thumbnailVersion: number | null;
+  lastActiveAt: number;
+};
+
+// When each workspace was last worked in: its newest message, in any of its
+// conversations. Not workspaces.updated_at, which nothing moves. A workspace
+// without a message isn't in the map: it was last active when it was made.
+//
+// Each conversation's newest message is its highest seq, found in the
+// (conversation_id, seq) index, so one message is read per conversation.
+// max(created_at) over them all reads every message, its transcript JSON
+// included: most of a second on a database of 400,000, each time the list
+// is asked for.
+const lastActive = async (workspaceId?: string) => {
+  const rows = await db
+    .select({
+      workspaceId: conversations.workspaceId,
+      at: sql<number>`max(${messages.createdAt})`,
+    })
+    .from(conversations)
+    .innerJoin(
+      messages,
+      sql`${messages.seq} = (select max(newest.seq) from messages as newest where newest.conversation_id = ${conversations.id})`,
+    )
+    .where(workspaceId ? eq(conversations.workspaceId, workspaceId) : undefined)
+    .groupBy(conversations.workspaceId);
+  return new Map(rows.map((row) => [row.workspaceId, row.at]));
 };
 
 const withThumbnail = async (
   workspace: typeof workspaces.$inferSelect,
+  active: Map<string, number>,
 ): Promise<WorkspaceWithThumbnail> => ({
   ...workspace,
   thumbnailVersion: await getThumbnailVersion(workspace.id),
+  lastActiveAt: active.get(workspace.id) ?? workspace.createdAt.getTime(),
 });
 
 export const listWorkspaces = async () => {
   try {
-    const result = await db.query.workspaces.findMany({
-      orderBy: (workspaces, { desc }) => desc(workspaces.createdAt),
-    });
+    const [result, active] = await Promise.all([
+      db.query.workspaces.findMany({
+        orderBy: (workspaces, { desc }) => desc(workspaces.createdAt),
+      }),
+      lastActive(),
+    ]);
 
-    return ok(await Promise.all(result.map(withThumbnail)));
+    return ok(await Promise.all(result.map((workspace) => withThumbnail(workspace, active))));
   } catch (_e) {
     return err({
       status: 500 as const,
@@ -165,7 +199,7 @@ export const getWorkspace = async (id: string) => {
       });
     }
 
-    return ok(await withThumbnail(workspace));
+    return ok(await withThumbnail(workspace, await lastActive(id)));
   } catch (_e) {
     return err({
       status: 500 as const,
@@ -189,6 +223,14 @@ export const deleteWorkspace = async (id: string) => {
         message: "Workspace not found",
       });
     }
+
+    // Its chats' turns end first: a turn left running would write its files
+    // back into the folder as it goes, and its messages to rows that are gone.
+    const chats = await db
+      .select({ id: conversations.id })
+      .from(conversations)
+      .where(eq(conversations.workspaceId, id));
+    for (const chat of chats) endConversation(chat.id);
 
     // Delete from database (cascade will delete conversations/messages)
     await db.delete(workspaces).where(eq(workspaces.id, id));

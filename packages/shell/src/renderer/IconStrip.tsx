@@ -27,8 +27,10 @@ export const IconStrip = () => {
     const onKey = (e: KeyboardEvent) => {
       const mod = isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
       if (e.key !== "b" || !mod || e.shiftKey || e.altKey) return;
-      e.preventDefault();
       const s = useWorkspaceStore.getState();
+      // Under the dashboard there's no panel on screen to fold.
+      if (s.dashboardShown) return;
+      e.preventDefault();
       track("panel_toggled", { panel: "side", open: !s.sidePanelOpen, via: "shortcut" });
       s.toggleSidePanel();
     };

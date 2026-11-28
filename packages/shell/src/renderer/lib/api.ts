@@ -234,6 +234,15 @@ export const getWorkspace = async (id: string) => {
   }
 };
 
+// The canvas as last captured (see lib/thumbnail.ts). Fetched rather than
+// set as an <img>'s src: the API wants the app key, which an image request
+// can't carry.
+export const getWorkspaceThumbnail = async (id: string, version: number) => {
+  const response = await apiFetch(`antidraw://app/api/workspaces/${id}/thumbnail?v=${version}`);
+  if (!response.ok) throw new Error(`thumbnail: ${response.status}`);
+  return response.blob();
+};
+
 export const deleteWorkspace = async (id: string) => {
   try {
     const response = await apiFetch(`antidraw://app/api/workspaces/${id}`, {

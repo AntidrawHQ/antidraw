@@ -19,6 +19,7 @@ const pick = z.object({
 });
 const mirrorSchema = z.object({
   activeWorkspaceId: z.string().nullable(),
+  dashboardShown: z.boolean().optional(),
   selection: pick.nullable(),
   tags: z.array(pick),
 });

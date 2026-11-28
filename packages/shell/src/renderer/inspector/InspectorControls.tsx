@@ -3,6 +3,7 @@ import type { WalkDirection } from "@/agent/protocol";
 import { clearSelection, tagSelection, walk } from "./bridge";
 import { useInspectorStore } from "./store";
 import { pickCanvasTool } from "../comments/store";
+import { useWorkspaceStore } from "@/renderer/store/workspace";
 
 // The inspector's keys, mounted inside the canvas. Its switch is the canvas
 // toolbar's Inspect tool.
@@ -25,8 +26,10 @@ const isTyping = (target: EventTarget | null) =>
   (target instanceof HTMLElement && target.isContentEditable);
 
 // Keys are the inspector's only when nothing else has focus, or the canvas
-// does: in a menu, a dialog or a panel they're that one's.
+// does: in a menu, a dialog or a panel they're that one's. And never under
+// the dashboard, where the canvas isn't on screen.
 const isCanvasKey = (e: KeyboardEvent) =>
+  !useWorkspaceStore.getState().dashboardShown &&
   !e.metaKey &&
   !e.ctrlKey &&
   !e.altKey &&

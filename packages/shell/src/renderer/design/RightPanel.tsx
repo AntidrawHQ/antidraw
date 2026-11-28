@@ -15,6 +15,7 @@ import { useOutbox } from "./Outbox";
 import { PANEL_W, useDesignStore, useTab, type Tab } from "./store";
 import { useDesign } from "./use-design";
 import { track } from "@/renderer/lib/analytics";
+import { useWorkspaceStore } from "@/renderer/store/workspace";
 
 const setTab = (t: Tab) => useDesignStore.getState().setTab(t);
 
@@ -35,6 +36,8 @@ const useToggleKey = () =>
       const mod = isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
       // Off macOS, AltGr arrives as Ctrl+Alt: AltGr+B types a character on some layouts ({ in Hungarian).
       if (e.code !== "KeyB" || !mod || !e.altKey || e.shiftKey || e.getModifierState("AltGraph")) return;
+      // Under the dashboard there's no panel on screen to fold.
+      if (useWorkspaceStore.getState().dashboardShown) return;
       e.preventDefault();
       const s = useDesignStore.getState();
       track("panel_toggled", { panel: "right", open: !s.panelOpen, via: "shortcut" });

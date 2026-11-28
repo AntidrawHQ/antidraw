@@ -67,6 +67,24 @@ describe("the conversation subscription effect", () => {
     await flush();
   });
 
+  test("what only the stream writes stays while it's held, with no chat on screen", async () => {
+    // Collected at once when nothing observes it, so a drop shows straight away.
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const id = freshId();
+    const key = queryKeys.conversations.pendingQuestionIds(id);
+    const later = () => new Promise((resolve) => setTimeout(resolve, 10));
+
+    const cleanup = openConversationSubscription(id, client);
+    client.setQueryData(key, ["toolu_1"]);
+    await later();
+    expect(client.getQueryData(key)).toEqual(["toolu_1"]);
+
+    cleanup!();
+    await flush();
+    await later();
+    expect(client.getQueryData(key)).toBeUndefined();
+  });
+
   test("its cleanup releases, and the release reaches the transport", async () => {
     const id = freshId();
     const cleanup = openConversationSubscription(id, queryClient);

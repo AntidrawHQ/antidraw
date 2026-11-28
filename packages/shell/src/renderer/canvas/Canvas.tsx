@@ -488,6 +488,10 @@ type CanvasProps = {
   // The frames have the pointer, for a host's tool that picks in them
   // (the shell's inspector): no layer over them takes it.
   framesTakePointer?: boolean;
+  // Out of sight (under the shell's dashboard): React Flow's keys, which it
+  // listens for on the whole document, are off. Backspace would delete the
+  // selected frames, and Space would be taken from what's on screen.
+  keysOff?: boolean;
   className?: string;
   // Rendered inside React Flow, for hosts that drive the viewport (useReactFlow).
   children?: ReactNode;
@@ -505,6 +509,7 @@ export const Canvas = ({
   onRefresh,
   frameLayer,
   framesTakePointer,
+  keysOff = false,
   className,
   children,
 }: CanvasProps) => {
@@ -774,7 +779,12 @@ export const Canvas = ({
           // which feels heavy next to a scrolling page.
           panOnScrollSpeed={1.2}
           panOnDrag={touch ? true : [1, 2]}
-          panActivationKeyCode="Space"
+          panActivationKeyCode={keysOff ? null : "Space"}
+          // undefined: React Flow's own default for each.
+          deleteKeyCode={keysOff ? null : undefined}
+          selectionKeyCode={keysOff ? null : undefined}
+          multiSelectionKeyCode={keysOff ? null : undefined}
+          zoomActivationKeyCode={keysOff ? null : undefined}
           onlyRenderVisibleElements={false}
           proOptions={{ hideAttribution: true }}
         >
